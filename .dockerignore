@@ -1,0 +1,15 @@
+.git
+.agents
+.env
+.env.local
+node_modules
+dist
+dist-server
+preview
+data
+runtime
+docs/references
+.codex-dev*.log
+.codex-mineradio-verify*.log
+npm-debug.log*
+Dockerfile.local

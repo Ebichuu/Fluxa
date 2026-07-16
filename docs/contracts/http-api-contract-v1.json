@@ -1,0 +1,64 @@
+{
+  "contractVersion": 1,
+  "frozenAt": "2026-07-16",
+  "baselineCommit": "f4bde54",
+  "pathVersioning": "unversioned-v1-compatibility",
+  "routeCount": 47,
+  "routes": [
+    { "method": "GET", "path": "/healthz", "audience": "bootstrap", "auth": "none", "effect": "read", "response": "json", "success": [200], "migrationGroup": "auth", "client": false },
+    { "method": "GET", "path": "/auth/login", "audience": "bootstrap", "auth": "none", "effect": "read", "response": "html-or-redirect", "success": [200, 303], "migrationGroup": "auth", "client": true },
+    { "method": "POST", "path": "/auth/login", "audience": "bootstrap", "auth": "none", "effect": "session", "response": "html-or-redirect", "success": [303], "migrationGroup": "auth", "client": true },
+    { "method": "POST", "path": "/auth/logout", "audience": "bootstrap", "auth": "none", "effect": "session", "response": "redirect", "success": [303], "migrationGroup": "auth", "client": true },
+    { "method": "GET", "path": "/api/auth/session", "audience": "bootstrap", "auth": "none", "effect": "read", "response": "json", "success": [200], "migrationGroup": "auth", "client": true },
+
+    { "method": "GET", "path": "/api/health", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "health", "client": true },
+
+    { "method": "GET", "path": "/api/media/home", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "media", "client": true },
+    { "method": "GET", "path": "/api/media/emby/overview", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "media", "client": true },
+    { "method": "GET", "path": "/api/media/emby/refresh-status", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "media", "client": true },
+    { "method": "POST", "path": "/api/media/emby/refresh", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [202], "migrationGroup": "media", "client": true },
+    { "method": "GET", "path": "/api/media/external-image", "audience": "browser", "auth": "session", "effect": "read", "response": "binary-or-empty", "success": [200, 204], "migrationGroup": "media", "client": true },
+    { "method": "GET", "path": "/api/media/image/:itemId/:imageType", "audience": "browser", "auth": "session", "effect": "read", "response": "binary-or-empty", "success": [200, 204], "migrationGroup": "media", "client": true },
+
+    { "method": "GET", "path": "/api/qbittorrent/summary", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "qbittorrent", "client": true },
+    { "method": "POST", "path": "/api/qbittorrent/actions/pause", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200, 202], "migrationGroup": "qbittorrent", "client": true },
+    { "method": "POST", "path": "/api/qbittorrent/actions/resume", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200, 202], "migrationGroup": "qbittorrent", "client": true },
+
+    { "method": "GET", "path": "/api/torra/summary", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "torra", "client": true },
+    { "method": "GET", "path": "/api/symedia/summary", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "symedia", "client": true },
+    { "method": "GET", "path": "/api/tasks/chain", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "tasks", "client": true },
+
+    { "method": "GET", "path": "/api/subscriptions/items", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": true },
+    { "method": "POST", "path": "/api/subscriptions/save", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": true },
+    { "method": "GET", "path": "/api/subscriptions/push-preview", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": true },
+    { "method": "PATCH", "path": "/api/subscriptions/:id/category", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": true },
+    { "method": "POST", "path": "/api/subscriptions/push", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": false },
+    { "method": "GET", "path": "/api/subscriptions/config", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": true },
+    { "method": "POST", "path": "/api/subscriptions/config", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": true },
+    { "method": "POST", "path": "/api/subscriptions/run", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": true },
+    { "method": "POST", "path": "/api/subscriptions/block", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": true },
+    { "method": "POST", "path": "/api/subscriptions/unblock", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": true },
+    { "method": "POST", "path": "/api/subscriptions/clear", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": true },
+    { "method": "GET", "path": "/api/subscriptions/detail", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": true },
+    { "method": "POST", "path": "/api/subscriptions/season", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": true },
+    { "method": "POST", "path": "/api/subscriptions/delete", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": true },
+    { "method": "GET", "path": "/api/subscriptions/calendar", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": true },
+    { "method": "POST", "path": "/api/subscriptions/import-nasemby", "audience": "legacy", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": false },
+
+    { "method": "GET", "path": "/api/discover/browse", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "discover", "client": true },
+    { "method": "GET", "path": "/api/discover/trending", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "discover", "client": true },
+    { "method": "GET", "path": "/api/discover/search", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "discover", "client": true },
+    { "method": "GET", "path": "/api/discover/resources/search", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "discover", "client": true },
+    { "method": "GET", "path": "/api/activity/logs", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "activity", "client": false },
+
+    { "method": "GET", "path": "/api/internal/nasemby-core/status", "audience": "internal", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "nasemby-internal", "client": false },
+    { "method": "GET", "path": "/api/internal/nasemby-core/subscriptions", "audience": "internal", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "nasemby-internal", "client": false },
+    { "method": "GET", "path": "/api/internal/nasemby-core/subscriptions/detail", "audience": "internal", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "nasemby-internal", "client": false },
+    { "method": "GET", "path": "/api/internal/nasemby-core/calendar", "audience": "internal", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "nasemby-internal", "client": false },
+    { "method": "GET", "path": "/api/internal/nasemby-core/discover/search", "audience": "internal", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "nasemby-internal", "client": false },
+    { "method": "GET", "path": "/api/internal/nasemby-core/discover/resources/search", "audience": "internal", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "nasemby-internal", "client": false },
+    { "method": "GET", "path": "/api/internal/nasemby-core/discover/:source", "audience": "internal", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "nasemby-internal", "client": false },
+
+    { "method": "GET", "path": "/mineradio/embed", "audience": "browser", "auth": "session", "effect": "read", "response": "html", "success": [200], "migrationGroup": "mineradio", "client": true }
+  ]
+}

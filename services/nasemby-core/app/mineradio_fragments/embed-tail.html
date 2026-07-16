@@ -1,0 +1,691 @@
+
+<style>
+html.mcc-mineradio-embed-root #splash,
+html.mcc-mineradio-embed-root #search-area,
+html.mcc-mineradio-embed-root #top-right,
+html.mcc-mineradio-embed-root #bottom-handle,
+html.mcc-mineradio-embed-root #bottom-bar,
+html.mcc-mineradio-embed-root #playlist-panel,
+html.mcc-mineradio-embed-root #trial-banner,
+html.mcc-mineradio-embed-root #login-guide-canvas,
+html.mcc-mineradio-embed-root #login-modal,
+html.mcc-mineradio-embed-root #user-modal,
+html.mcc-mineradio-embed-root #drop-overlay,
+html.mcc-mineradio-embed-root #loading-overlay,
+html.mcc-mineradio-embed-root #gesture-hud,
+html.mcc-mineradio-embed-root #hand-canvas,
+html.mcc-mineradio-embed-root #thumb-wrap,
+html.mcc-mineradio-embed-root #free-camera-hint,
+html.mcc-mineradio-embed-root #desktop-titlebar,
+html.mcc-mineradio-embed-root #fullscreen-diy-zone,
+html.mcc-mineradio-embed-root #empty-home {
+  display: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+html.mcc-mineradio-embed-root #fx-panel {
+  display: block !important;
+}
+@media (min-width: 761px) {
+  html.mcc-mineradio-embed-root #fx-panel {
+    right: -534px !important;
+    width: min(480px, calc(100vw - 72px)) !important;
+    top: 56px !important;
+    bottom: 74px !important;
+    height: auto !important;
+    max-height: none !important;
+    border-radius: 22px !important;
+    padding: 22px 22px 24px !important;
+  }
+  html.mcc-mineradio-embed-root #fx-panel.show,
+  html.mcc-mineradio-embed-root #fx-panel.peek {
+    right: 48px !important;
+  }
+  html.mcc-mineradio-embed-root #fx-panel .fx-title {
+    font-size: 16px !important;
+  }
+  html.mcc-mineradio-embed-root #fx-panel .fx-sub {
+    font-size: 10.5px !important;
+  }
+  html.mcc-mineradio-embed-root #fx-panel .fx-panel-tabs button {
+    height: 34px !important;
+    padding: 0 13px !important;
+    font-size: 12px !important;
+  }
+  html.mcc-mineradio-embed-root #fx-panel .preset-grid {
+    gap: 12px !important;
+  }
+  html.mcc-mineradio-embed-root #fx-panel .preset-card {
+    min-height: 112px !important;
+    padding: 12px !important;
+  }
+  html.mcc-mineradio-embed-root #fx-panel .fx-slider {
+    grid-template-columns: minmax(92px, 108px) minmax(0, 1fr) 52px 32px !important;
+    min-height: 50px !important;
+    padding: 10px 12px !important;
+  }
+  html.mcc-mineradio-embed-root #fx-panel .fx-slider label {
+    font-size: 12.5px !important;
+  }
+}
+@media (max-width: 760px) {
+  html.mcc-mineradio-embed-root #fx-panel {
+    right: -110vw !important;
+  }
+  html.mcc-mineradio-embed-root #fx-panel.show,
+  html.mcc-mineradio-embed-root #fx-panel.peek {
+    right: 12px !important;
+  }
+}
+</style>
+<script>
+(function installMediaCenterBridge(){
+  var lastCover = '';
+  var lastQueueSignature = '';
+  var lastLibrarySignature = '';
+  var lastVisualFxSignature = '';
+  var lastAppliedVisualFx = null;
+  var pendingPayload = null;
+  var readySent = false;
+  var bridgeShelfIndex = 0;
+  var bridgeLibraryCount = 0;
+  var suppressVisualFxPost = false;
+  var responsiveShelfResizeTimer = null;
+  var posterSafeCoverCache = {};
+  var posterSafeCoverPending = {};
+
+  function qs(id) { return document.getElementById(id); }
+  function text(id, value) {
+    var el = qs(id);
+    if (el) el.textContent = value || '';
+  }
+  function stopAudio() {
+    try {
+      if (window.audio) {
+        window.audio.pause();
+        window.audio.removeAttribute && window.audio.removeAttribute('src');
+        window.audio.src = '';
+      }
+      window.playing = false;
+      if (typeof window.setPlayIcon === 'function') window.setPlayIcon(false);
+    } catch (e) {}
+  }
+  function mediaArtist(item) {
+    if (!item) return '';
+    var parts = [];
+    if (item.year) parts.push(String(item.year));
+    if (Array.isArray(item.genres) && item.genres.length) parts.push(item.genres.slice(0, 2).join(' / '));
+    if (item.type) parts.push(String(item.type));
+    return parts.join(' · ');
+  }
+  function proxiedCover(src) {
+    if (!src) return '';
+    try {
+      var url = new URL(src, window.location.href);
+      if (url.origin === window.location.origin) return url.href;
+      return window.location.origin + '/api/media/external-image?src=' + encodeURIComponent(url.href);
+    } catch (e) {
+      return src;
+    }
+  }
+  function makePosterSafeCover(src) {
+    if (!src) return Promise.reject(new Error('empty cover'));
+    if (posterSafeCoverCache[src]) return Promise.resolve(posterSafeCoverCache[src]);
+    if (posterSafeCoverPending[src]) return posterSafeCoverPending[src];
+    posterSafeCoverPending[src] = new Promise(function(resolve, reject) {
+      var img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.decoding = 'async';
+      img.onload = function() {
+        try {
+          var size = 1024;
+          var iw = img.naturalWidth || img.width;
+          var ih = img.naturalHeight || img.height;
+          if (!iw || !ih) throw new Error('cover has no size');
+          var canvas = document.createElement('canvas');
+          canvas.width = size;
+          canvas.height = size;
+          var ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#090504';
+          ctx.fillRect(0, 0, size, size);
+
+          var bgScale = Math.max(size / iw, size / ih);
+          var bgW = iw * bgScale;
+          var bgH = ih * bgScale;
+          ctx.save();
+          ctx.filter = 'blur(30px) saturate(1.08) brightness(0.48)';
+          ctx.globalAlpha = 0.82;
+          ctx.drawImage(img, (size - bgW) / 2, (size - bgH) / 2, bgW, bgH);
+          ctx.restore();
+
+          var fgScale = Math.min((size * 0.94) / iw, (size * 0.94) / ih);
+          var fgW = iw * fgScale;
+          var fgH = ih * fgScale;
+          var fgX = (size - fgW) / 2;
+          var fgY = (size - fgH) / 2;
+          ctx.save();
+          ctx.shadowColor = 'rgba(0, 0, 0, 0.42)';
+          ctx.shadowBlur = 26;
+          ctx.shadowOffsetY = 12;
+          ctx.drawImage(img, fgX, fgY, fgW, fgH);
+          ctx.restore();
+
+          var dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+          posterSafeCoverCache[src] = dataUrl;
+          delete posterSafeCoverPending[src];
+          resolve(dataUrl);
+        } catch (error) {
+          delete posterSafeCoverPending[src];
+          reject(error);
+        }
+      };
+      img.onerror = function() {
+        delete posterSafeCoverPending[src];
+        reject(new Error('cover load failed'));
+      };
+      img.src = src;
+    });
+    return posterSafeCoverPending[src];
+  }
+  function applyPosterSafeCover(src, opts) {
+    opts = opts || {};
+    if (!src) return;
+    if (typeof window.applyCoverDataUrl !== 'function') {
+      if (typeof window.loadCoverFromUrl === 'function') window.loadCoverFromUrl(src, opts);
+      return;
+    }
+    var expectedSongId = window.currentSong && window.currentSong.id;
+    makePosterSafeCover(src)
+      .then(function(dataUrl) {
+        if (window.currentSong && expectedSongId && window.currentSong.id !== expectedSongId) return;
+        window.applyCoverDataUrl(dataUrl, Object.assign({}, opts, {
+          coverKey: src,
+          coverSourceKind: 'url',
+          coverSource: src
+        }));
+      })
+      .catch(function() {
+        if (typeof window.loadCoverFromUrl === 'function') window.loadCoverFromUrl(src, opts);
+      });
+  }
+  function mediaSong(item, index) {
+    item = item || {};
+    var cover = proxiedCover(item.posterUrl || item.backdropUrl || item.cover || item.image || '');
+    var title = item.title || item.name || '媒体项目';
+    var artist = mediaArtist(item);
+    return {
+      id: item.id || ('mcc-media-' + index),
+      name: title,
+      title: title,
+      artist: artist,
+      cover: cover,
+      picUrl: cover,
+      al: { picUrl: cover },
+      type: 'media',
+      source: 'media-center',
+      mccIndex: index,
+      mccItem: item
+    };
+  }
+  function mediaLibrary(library, index, activeLibraryId) {
+    library = library || {};
+    var cover = proxiedCover(library.posterUrl || library.backdropUrl || library.cover || library.image || '');
+    var title = library.name || library.title || 'Media Library';
+    var count = Number(library.itemCount || 0);
+    return {
+      id: library.id || ('mcc-library-' + index),
+      name: title,
+      title: title,
+      artist:
+        (library.id === activeLibraryId ? 'Active library' : 'Media library') +
+        (count ? (' / ' + count + ' items') : ''),
+      cover: cover,
+      picUrl: cover,
+      al: { picUrl: cover },
+      trackCount: count,
+      playCount: 0,
+      subscribed: library.id !== activeLibraryId,
+      provider: 'mcc',
+      type: 'library',
+      source: 'media-center',
+      mccLibraryId: library.id || '',
+      mccLibrary: library
+    };
+  }
+  function queueSignature(queue, index) {
+    return [
+      index,
+      queue.length,
+      queue.slice(0, 4).concat(queue.slice(Math.max(4, queue.length - 4))).map(function(song) {
+        return [song.id, song.name, song.cover].join('|');
+      }).join('||')
+    ].join('::');
+  }
+  function postSelection(index) {
+    if (!window.parent) return;
+    window.parent.postMessage({ type: 'mineradio:item-select', index: index }, window.location.origin);
+  }
+  function postLibrarySelection(libraryId) {
+    if (!window.parent || !libraryId) return;
+    window.parent.postMessage({ type: 'mineradio:library-select', libraryId: libraryId }, window.location.origin);
+  }
+  function postVisualFxChange(visualFx) {
+    if (!window.parent || suppressVisualFxPost || !visualFx) return;
+    window.parent.postMessage({ type: 'mineradio:visual-fx-change', visualFx: visualFx }, window.location.origin);
+  }
+  function visualFxSignature(visualFx) {
+    if (!visualFx) return '';
+    var keys = [
+      'preset',
+      'intensity',
+      'depth',
+      'coverResolution',
+      'point',
+      'speed',
+      'twist',
+      'color',
+      'scatter',
+      'bgFade',
+      'bloom',
+      'bloomEnabled',
+      'edgeEnabled',
+      'cinema',
+      'shelfAngle',
+      'shelfOpacity',
+      'shelfBgOpacity',
+      'shelfPresence',
+      'shelfSize',
+      'shelfOffsetX',
+      'shelfOffsetY',
+      'shelfOffsetZ'
+    ];
+    return keys.map(function(key) { return key + '=' + String(visualFx[key]); }).join('|');
+  }
+  function applySongAt(index, opts) {
+    opts = opts || {};
+    var queue = Array.isArray(window.playQueue) ? window.playQueue : [];
+    if (!queue.length) return Promise.resolve(false);
+    var safeIndex = Math.max(0, Math.min(queue.length - 1, Number(index) || 0));
+    window.currentIdx = safeIndex;
+    window.currentSong = queue[safeIndex];
+    stopAudio();
+    if (window.currentSong && window.currentSong.mccLibraryId) {
+      var libraryCover = window.currentSong.cover;
+      if (libraryCover && libraryCover !== lastCover) {
+        lastCover = libraryCover;
+        applyPosterSafeCover(libraryCover, { colorMixDuration: 520, deferHeavy: true });
+      }
+      if (!opts.silent && opts.selectLibrary !== false) postLibrarySelection(window.currentSong.mccLibraryId);
+      return Promise.resolve(true);
+    }
+    if (typeof window.updateControlTrackInfo === 'function') window.updateControlTrackInfo(window.currentSong);
+    text('thumb-title', window.currentSong.name);
+    text('thumb-artist', window.currentSong.artist);
+    text('control-title', window.currentSong.name);
+    text('control-artist', window.currentSong.artist);
+    if (typeof window.safeRenderQueuePanel === 'function') {
+      window.safeRenderQueuePanel('media-center-bridge-select', { scrollCurrent: false, deferWhenHidden: false });
+    }
+    if (typeof window.safeShelfRebuild === 'function' && opts.rebuildShelf) {
+      window.safeShelfRebuild('media-center-bridge-select', true);
+    }
+    var cover = window.currentSong && window.currentSong.cover;
+    if (cover && cover !== lastCover) {
+      lastCover = cover;
+      applyPosterSafeCover(cover, { colorMixDuration: 520, deferHeavy: true });
+    }
+    if (!opts.silent) {
+      var itemIndex = Number.isInteger(window.currentSong.mccIndex) ? window.currentSong.mccIndex : safeIndex;
+      postSelection(itemIndex);
+    }
+    return Promise.resolve(true);
+  }
+  function installPlaybackBridge() {
+    if (window.__mccPlaybackBridgeInstalled) return;
+    window.__mccPlaybackBridgeInstalled = true;
+    window.coverProxySrc = function(url) { return url || ''; };
+    window.playQueueAt = function(index) {
+      return applySongAt(index, { rebuildShelf: false });
+    };
+    window.nextTrack = function() {
+      var queue = Array.isArray(window.playQueue) ? window.playQueue : [];
+      if (!queue.length) return;
+      var nextIndex = ((Number(window.currentIdx) || 0) + 1) % queue.length;
+      return applySongAt(nextIndex, { selectLibrary: false });
+    };
+    window.prevTrack = function() {
+      var queue = Array.isArray(window.playQueue) ? window.playQueue : [];
+      if (!queue.length) return;
+      var prevIndex = ((Number(window.currentIdx) || 0) - 1 + queue.length) % queue.length;
+      return applySongAt(prevIndex, { selectLibrary: false });
+    };
+    window.togglePlay = function() {
+      stopAudio();
+      return Promise.resolve(false);
+    };
+  }
+  function installShelfBridge() {
+    if (!window.shelfManager || window.shelfManager.__mccShelfBridgeInstalled) return;
+    var originalOpenContent = window.shelfManager.openContent;
+    var originalPlayPlaylistAt = window.shelfManager.playPlaylistAt;
+    var originalScrollBy = window.shelfManager.scrollBy;
+    var originalNext = window.shelfManager.next;
+    var originalPrev = window.shelfManager.prev;
+    window.shelfManager.__mccShelfBridgeInstalled = true;
+    function clampShelfIndex(index) {
+      var queue = Array.isArray(window.playQueue) ? window.playQueue : [];
+      return Math.max(0, Math.min(Math.max(0, queue.length - 1), Number(index) || 0));
+    }
+    function syncShelfIndex(index) {
+      bridgeShelfIndex = clampShelfIndex(index);
+      return applySongAt(bridgeShelfIndex, { rebuildShelf: false, selectLibrary: false });
+    }
+    window.shelfManager.openContent = function(cardIdx) {
+      var card = window.shelfManager.getCardAt && window.shelfManager.getCardAt(cardIdx);
+      var item = card && card.item;
+      var libraryId = item && item.mccLibraryId;
+      if (libraryId) {
+        postLibrarySelection(libraryId);
+        return true;
+      }
+      return originalOpenContent ? originalOpenContent.apply(window.shelfManager, arguments) : undefined;
+    };
+    window.shelfManager.scrollBy = function(delta) {
+      var result = originalScrollBy ? originalScrollBy.apply(window.shelfManager, arguments) : undefined;
+      syncShelfIndex(bridgeShelfIndex + Math.round(Number(delta) || 0));
+      return result;
+    };
+    window.shelfManager.next = function() {
+      var result = originalNext ? originalNext.apply(window.shelfManager, arguments) : undefined;
+      syncShelfIndex(bridgeShelfIndex + 1);
+      return result;
+    };
+    window.shelfManager.prev = function() {
+      var result = originalPrev ? originalPrev.apply(window.shelfManager, arguments) : undefined;
+      syncShelfIndex(bridgeShelfIndex - 1);
+      return result;
+    };
+    window.shelfManager.playPlaylistAt = function(cardIdx) {
+      var card = window.shelfManager.getCardAt && window.shelfManager.getCardAt(cardIdx);
+      var item = card && card.item;
+      var libraryId = item && item.mccLibraryId;
+      if (libraryId) {
+        postLibrarySelection(libraryId);
+        return true;
+      }
+      return originalPlayPlaylistAt ? originalPlayPlaylistAt.apply(window.shelfManager, arguments) : false;
+    };
+  }
+  function installShelfWheelGuard() {
+    var canvas = window.renderer && window.renderer.domElement;
+    if (!canvas || canvas.__mccShelfWheelGuardBound) return;
+    canvas.__mccShelfWheelGuardBound = true;
+
+    function viewportWidth() {
+      return window.innerWidth || document.documentElement.clientWidth || 0;
+    }
+
+    function viewportHeight() {
+      return window.innerHeight || document.documentElement.clientHeight || 0;
+    }
+
+    function shelfGuardZoneHit(event) {
+      var width = viewportWidth();
+      var height = viewportHeight();
+      if (!width || !height || !event) return false;
+      var x = Number(event.clientX) || 0;
+      var y = Number(event.clientY) || 0;
+      if (y < 96 || y > height - 96) return false;
+      var compact = width <= 760;
+      var edge = Math.min(compact ? 380 : 520, Math.max(compact ? 168 : 260, width * (compact ? 0.44 : 0.34)));
+      return x >= width - edge;
+    }
+
+    function shouldGuardShelfWheel(event) {
+      var shelf = window.shelfManager;
+      if (!shelf || (shelf.getMode && shelf.getMode() === 'off')) return false;
+      if (shelf.canInteract && !shelf.canInteract()) return false;
+      if (typeof window.isPointerOverUi === 'function' && window.isPointerOverUi(event)) return false;
+
+      if (shelf.hasOpenContent && shelf.hasOpenContent()) {
+        var list = shelf.getContentList && shelf.getContentList();
+        if (!list) return false;
+        if (typeof list.screenContainsPanel === 'function' && list.screenContainsPanel(event.clientX, event.clientY)) return true;
+        return shelfGuardZoneHit(event);
+      }
+
+      if (shelf.pickCardAtScreen && shelf.pickCardAtScreen(event.clientX, event.clientY, isCompactViewport() ? 96 : 132)) return true;
+      if (typeof window.isShelfWheelZone === 'function' && window.isShelfWheelZone(event)) return true;
+      return shelfGuardZoneHit(event);
+    }
+
+    canvas.addEventListener('wheel', function(event) {
+      if (!shouldGuardShelfWheel(event)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (typeof window.markRenderInteraction === 'function') window.markRenderInteraction('mcc-shelf-wheel-guard', 900);
+      if (window.shelfManager && typeof window.shelfManager.scrollBy === 'function') {
+        window.shelfManager.scrollBy(event.deltaY > 0 ? 1 : -1);
+      }
+    }, { passive: false, capture: true });
+  }
+  function installVisualFxBridge() {
+    if (window.__mccVisualFxBridgeInstalled || typeof window.setPreset !== 'function') return;
+    var originalSetPreset = window.setPreset;
+    window.__mccVisualFxBridgeInstalled = true;
+    window.setPreset = function(preset) {
+      var result = originalSetPreset.apply(window, arguments);
+      var numericPreset = Number(preset);
+      if (Number.isFinite(numericPreset)) postVisualFxChange({ preset: numericPreset });
+      return result;
+    };
+  }
+  function installFxPanelToggleBridge() {
+    var fab = document.getElementById('fx-fab');
+    var panel = document.getElementById('fx-panel');
+    if (!fab || !panel || fab.__mccFxToggleBound) return;
+    fab.__mccFxToggleBound = true;
+    fab.setAttribute('type', 'button');
+    fab.addEventListener('click', function(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      var isOpen = panel.classList.contains('show') || panel.classList.contains('peek');
+      panel.classList.remove('closing', 'peek');
+      panel.classList.toggle('show', !isOpen);
+      fab.classList.toggle('active', !isOpen);
+    }, true);
+  }
+  function isCompactViewport() {
+    var width = window.innerWidth || document.documentElement.clientWidth || 0;
+    return width > 0 && width <= 760;
+  }
+  function applyResponsiveShelfTuning(visualFx) {
+    if (!window.fx) return;
+    if (isCompactViewport()) {
+      window.fx.shelfSize = 0.65;
+      window.fx.shelfOffsetX = -1.2;
+      return;
+    }
+    if (!visualFx) return;
+    if (visualFx.shelfSize !== undefined) window.fx.shelfSize = visualFx.shelfSize;
+    if (visualFx.shelfOffsetX !== undefined) window.fx.shelfOffsetX = visualFx.shelfOffsetX;
+  }
+  function syncResponsiveShelfTuning() {
+    if (!lastAppliedVisualFx || !window.fx) return;
+    applyResponsiveShelfTuning(lastAppliedVisualFx);
+    if (typeof window.syncFxUniforms === 'function') window.syncFxUniforms();
+    if (typeof window.syncFxPanel === 'function') window.syncFxPanel();
+  }
+  function scheduleResponsiveShelfTuning() {
+    if (responsiveShelfResizeTimer) clearTimeout(responsiveShelfResizeTimer);
+    responsiveShelfResizeTimer = setTimeout(function() {
+      responsiveShelfResizeTimer = null;
+      syncResponsiveShelfTuning();
+    }, 120);
+  }
+  function applyVisualFx(visualFx) {
+    if (!visualFx || !window.fx) return false;
+    installVisualFxBridge();
+    installFxPanelToggleBridge();
+    suppressVisualFxPost = true;
+    try {
+      if (Number.isFinite(Number(visualFx.preset))) {
+        var preset = Number(visualFx.preset);
+        if (typeof window.setPreset === 'function') window.setPreset(preset);
+        else window.fx.preset = preset;
+      }
+      var map = {
+        intensity: 'intensity',
+        depth: 'depth',
+        coverResolution: 'coverResolution',
+        point: 'point',
+        speed: 'speed',
+        twist: 'twist',
+        color: 'color',
+        scatter: 'scatter',
+        bgFade: 'bgFade',
+        bloom: 'bloomStrength',
+        shelfAngle: 'shelfAngleY',
+        shelfOpacity: 'shelfOpacity',
+        shelfBgOpacity: 'shelfBgOpacity',
+        shelfPresence: 'shelfPresence',
+        shelfSize: 'shelfSize',
+        shelfOffsetX: 'shelfOffsetX',
+        shelfOffsetY: 'shelfOffsetY',
+        shelfOffsetZ: 'shelfOffsetZ'
+      };
+      Object.keys(map).forEach(function(key) {
+        if (visualFx[key] !== undefined) window.fx[map[key]] = visualFx[key];
+      });
+      window.fx.bloom = !!visualFx.bloomEnabled;
+      window.fx.edge = visualFx.edgeEnabled !== false;
+      window.fx.cinema = visualFx.cinema !== false;
+      window.fx.shelf = 'side';
+      applyResponsiveShelfTuning(visualFx);
+      if (typeof window.syncFxUniforms === 'function') window.syncFxUniforms();
+      if (typeof window.syncFxPanel === 'function') window.syncFxPanel();
+      if (typeof window.applyCoverParticleResolution === 'function') {
+        window.applyCoverParticleResolution(window.fx.coverResolution, { reload: true });
+      }
+      return true;
+    } finally {
+      suppressVisualFxPost = false;
+    }
+  }
+  function applyParentVisualFx(visualFx, force) {
+    var signature = visualFxSignature(visualFx);
+    if (!force && signature && signature === lastVisualFxSignature) {
+      lastAppliedVisualFx = visualFx;
+      return true;
+    }
+    if (applyVisualFx(visualFx)) {
+      lastAppliedVisualFx = visualFx;
+      lastVisualFxSignature = signature;
+      return true;
+    }
+    return false;
+  }
+  function applyHomeData(payload) {
+    pendingPayload = payload;
+    if (!payload || !window.THREE || !window.scene || !window.renderer || !window.uniforms) return false;
+    installPlaybackBridge();
+    installShelfBridge();
+    installShelfWheelGuard();
+    var item = payload.activeItem || (payload.items && payload.items[0]) || null;
+    var mediaQueue =
+      Array.isArray(payload.items) && payload.items.length
+        ? payload.items.map(mediaSong)
+        : [mediaSong(item, 0)];
+    var libraryQueue = Array.isArray(payload.libraries) ? payload.libraries.map(function(library, index) {
+      return mediaLibrary(library, index, payload.activeLibraryId);
+    }) : [];
+    bridgeLibraryCount = libraryQueue.length;
+    var queue = libraryQueue.concat(mediaQueue);
+    var activeId = item && item.id;
+    var mediaIndex = Math.max(0, mediaQueue.findIndex(function(song) { return song.id === activeId; }));
+    var nextIndex = libraryQueue.length + mediaIndex;
+    var nextSignature = queueSignature(queue, nextIndex);
+    var nextLibrarySignature = libraryQueue.map(function(library) {
+      return [
+        library.id,
+        library.name,
+        library.cover,
+        library.trackCount,
+        library.mccLibraryId === payload.activeLibraryId ? 1 : 0
+      ].join('|');
+    }).join('||');
+    window.playlist = queue;
+    window.playQueue = queue;
+    window.userPlaylists = [];
+    window.currentIdx = nextIndex;
+    window.currentSong = queue[nextIndex];
+    bridgeShelfIndex = nextIndex;
+    installVisualFxBridge();
+    installFxPanelToggleBridge();
+    if (lastQueueSignature !== nextSignature || lastLibrarySignature !== nextLibrarySignature) {
+      lastQueueSignature = nextSignature;
+      lastLibrarySignature = nextLibrarySignature;
+      if (typeof window.safeRenderQueuePanel === 'function') {
+        window.safeRenderQueuePanel('media-center-bridge-queue', { scrollCurrent: false, deferWhenHidden: false });
+      }
+      if (window.fx) window.fx.shelf = 'side';
+      if (window.shelfManager && typeof window.shelfManager.setMode === 'function') window.shelfManager.setMode('side');
+      installShelfBridge();
+      if (typeof window.safeShelfRebuild === 'function') window.safeShelfRebuild('media-center-bridge-queue', true);
+    }
+    applySongAt(nextIndex, { silent: true, rebuildShelf: false });
+    applyParentVisualFx(payload.visualFx, false);
+    document.body.classList.remove('splash-active', 'empty-home-active');
+    var splash = qs('splash');
+    if (splash) splash.style.display = 'none';
+    return true;
+  }
+  function flushPending() {
+    if (pendingPayload) applyHomeData(pendingPayload);
+  }
+  window.mccMineradioBridge = {
+    applyHomeData: applyHomeData,
+    applyVisualFx: function(visualFx) { return applyParentVisualFx(visualFx, true); },
+    flush: flushPending,
+    stopAudio: stopAudio
+  };
+  window.MineradioAPI = {
+    updateData: applyHomeData,
+    updateVisualFx: function(visualFx) { return applyParentVisualFx(visualFx, true); },
+    selectItem: function(index) {
+      return applySongAt(bridgeLibraryCount + Math.max(0, Number(index) || 0), { silent: true, rebuildShelf: true });
+    },
+    selectLibrary: postLibrarySelection,
+    reset: flushPending,
+    destroy: stopAudio
+  };
+  window.addEventListener('message', function(event) {
+    var data = event.data || {};
+    if (data.type === 'mcc:mineradio-data') applyHomeData(data.payload);
+  });
+  window.addEventListener('resize', scheduleResponsiveShelfTuning);
+  document.addEventListener('DOMContentLoaded', function() {
+    document.documentElement.classList.add('mcc-mineradio-embed-root');
+    document.body.classList.add('mcc-mineradio-embed');
+    stopAudio();
+    if (!readySent && window.parent) {
+      readySent = true;
+      window.parent.postMessage({ type: 'mineradio:ready' }, window.location.origin);
+    }
+  });
+  window.addEventListener('load', function() {
+    stopAudio();
+    installVisualFxBridge();
+    installFxPanelToggleBridge();
+    flushPending();
+    setTimeout(flushPending, 250);
+    setTimeout(flushPending, 900);
+  });
+  setInterval(function() {
+    stopAudio();
+    installVisualFxBridge();
+    installFxPanelToggleBridge();
+    flushPending();
+  }, 1800);
+})();
+</script>

@@ -1,196 +1,184 @@
-# 媒体控制中心 v2 目录收口设计
+# 媒体控制中心 v2 目录收口与源码保留设计
 
-状态：待用户确认后实施  
+状态：用户已确认“不要继续删除核心源码”
 日期：2026-07-17
 
 ## 1. 目标
 
-`D:\Projects\媒体控制中心v2` 成为后续唯一开发主目录，包含当前最新代码、运行所需资源、测试、部署文件和有效资料。v2 使用全新 Git 历史，不复制旧仓库的 `.git`。
+`D:\Projects\媒体控制中心v2` 成为后续唯一开发主目录，包含最新代码、运行资源、测试、部署文件、接口调用依据和有效资料。v2 使用全新 Git 历史，不复制旧仓库的 `.git`。
 
-原目录 `D:\Projects\媒体控制中心` 只作为迁移前归档保留，本轮不删除、不覆盖，也不继续作为开发目录。
+原目录 `D:\Projects\媒体控制中心` 继续作为迁移前只读归档保留，不删除、不覆盖，也不再作为开发目录。
 
-## 2. 迁移基线
+## 2. 已确认架构
 
-- 代码基线：原仓库 `codex/python-backend-unification` 分支最新提交 `7368790`。
-- 后端：Python 3.13、Flask、Gunicorn。
+- 后端：Python 3.13、Flask、Gunicorn 单服务。
 - 前端：React、TypeScript、Vite；Node.js 只负责构建。
-- 订阅业务：直接使用已经可运行的 NasEmby Python 源码和唯一台账。
-- 获取策略：PT / Torra 优先，自动云盘兜底关闭。
+- 订阅业务：使用 NasEmby Python 源码和唯一台账。
+- 获取策略：PT / Torra 优先，网盘为受开关控制的第二通道。
+- 自动云盘兜底：默认关闭。
 - UI 边界：不修改影院大厅、顶部导航、媒体队列和 Mineradio 原视觉。
+- 部署：fnOS 上使用一个 Docker 容器和 8787 端口。
 
-## 3. v2 保留内容
+## 3. 源码保留原则
 
-### 3.1 生产代码与资源
+v2 不再根据“旧页面”“legacy”“当前 React 没调用”或“路由暂时返回 404”判断代码无用。
 
-- `src/`：React 页面、导航、影院大厅外壳和工作页。
-- `services/nasemby-core/app/` 中当前统一后端与 NasEmby 业务源码。
-- `vendor/mineradio-public/` 与 `public/`：Mineradio 原始视觉资源。
-- 根 `Dockerfile`、`docker-compose.yml`、`.env.example`。
-- `package.json`、`package-lock.json`、TypeScript 与 Vite 配置。
-- Python 与前端自动测试。
-- `docs/contracts/http-api-contract-v1.json`：47 条冻结接口契约。
+必须保留：
 
-### 3.2 仍属于业务依赖的 NasEmby 模块
+- 订阅、发现、日历、资源规则和调度源码。
+- 115、Telegram、HDHive / pansou、Symedia 和 provider 能力。
+- Torra、qBittorrent、Emby 和四步任务链适配器。
+- 原 NasEmby 接口实现、参数处理、错误语义和调用关系。
+- 原静态管理页面源码，作为页面合并和接口行为参考；生产不启用该页面。
+- Python 与前端测试、Docker 文件和 Mineradio 运行资源。
+- 未完成的代码计划和实机验证计划。
 
-以下代码虽然来自 NasEmby 旧工程或名称带有 legacy，但仍会被发现、资源搜索、provider、通知或可选获取逻辑动态调用，因此不能仅凭目录名删除：
+可以排除的内容仅限：
 
-- `discover_runtime.py`、`services.py`。
-- `telegram_runtime.py`。
-- `hdhive_auth.py` 与 `hdhive/` 受保护运行资产。
-- `legacy/` 中仍被可选 115 / 123 获取逻辑引用的模块。
-
-这些模块继续受统一入口、写入闸门和默认关闭开关保护，不恢复旧管理页面或独立服务。
-
-### 3.3 参考资料
-
-- 保留解压后的 `media-automation-maintenance` 资料目录。
-- 在 v2 中统一放入 `docs/references/media-automation-maintenance/`。
-- 不保留内容相同的 ZIP 副本。
-
-## 4. v2 删除与重构内容
-
-### 4.1 不复制的生成物和本机状态
-
-- 原 `.git/` 历史。
-- `node_modules/`、`dist/`、`__pycache__/`、`.pyc`。
-- `.env`、真实凭据、Cookie、Token、会话和用户配置。
+- `.git/`、`node_modules/`、`dist/`、`__pycache__/` 等可重新生成内容。
+- `.env`、Cookie、Token、会话、真实账号和其他敏感状态。
 - `runtime/`、`data/`、`db/`、`upload/` 中的本机运行数据。
-- 临时预览、测试容器数据和日志。
+- 已确认内容完全相同的重复压缩包。
 
-### 4.2 确认无生产入口的旧代码
+业务源码没有等价替代证明前，只允许隔离、停止注册或标记待迁移，不允许删除。
 
-- 删除 NasEmby 原静态管理页面 `app/static/`。
-- 删除 NasEmby 原页面模板 `app/templates/index.html`，保留当前登录模板。
-- 把 `app/main.py` 收口为统一应用装配、健康/状态接口和后台调度入口；移除已经被 404 守卫遮蔽的旧 115、Telegram、HDHive、provider 和原页面 Flask 路由外壳。
-- 删除 `services/nasemby-core/Dockerfile` 与该目录重复的环境示例；v2 只允许根 Dockerfile 和根 Compose 作为正式部署入口。
+## 4. 核心接口恢复策略
 
-删除路由外壳不等于删除 NasEmby 业务函数。当前 React、47 条契约、订阅台账、发现、资源搜索、Torra、qB、Symedia、Emby 和任务链必须继续工作。
+原 `services/nasemby-core/app/main.py` 同时保存页面路由和核心业务入口，不能压缩成只剩应用装配。v2 已恢复其中的 115、Telegram、HDHive、provider、配置和活动日志接口。
 
-### 4.3 旧文档和重复说明
+安全策略：
 
-- 删除迁移期 `docs/superpowers/plans/`、`docs/superpowers/specs/`。
-- 删除根目录与 `docs/` 中重复的 Mineradio 迁移计划、旧 UI 对比、临时 HTML 和已经完成的阶段记录。
-- 不在 v2 主文档继续叙述 Express → Python 的逐阶段迁移过程。
-- 不把已删除的 `server/*.ts`、双服务 Compose、内部 Core 端口或旧 Node 台账写成当前结构。
+- 当前 React 接口保持原样。
+- 原核心接口保留在 Flask URL map 中。
+- `MCC_PRESERVED_CORE_API_ENABLED=false` 时，尚未统一接入的接口返回 `503 PRESERVED_CORE_API_DISABLED`。
+- 模拟测试可以显式开启该开关并替换外部函数，不连接真实服务。
+- 生产不得整体开启该兼容开关；后续为每组操作建立独立安全接口和细分写入开关。
+- 原静态管理页面不注册为第二套生产 UI，但源码必须保留。
 
-## 5. v2 正式文档结构
+逐接口用途、调用函数、副作用和替代状态见 `docs/CORE_API_CAPABILITY_MATRIX.md`。
 
-v2 最终只保留面向当前项目的文档：
+## 5. v2 正式内容
 
-- `README.md`：项目定位、开发、部署和安全开关。
-- `docs/PLAN.md`：当前完成状态、剩余实机阶段和下一步。
-- `docs/FRAMEWORK.md`：一套 Python 后端的总体框架。
-- `docs/API_CONTRACT.md`：当前 v1 接口和兼容边界。
-- `docs/DEPLOYMENT.md`：fnOS 单容器部署、备份与回滚。
-- `docs/UI_STANDARD.md`：页面与固定 UI 边界。
-- `docs/IMPLEMENTATION_SOURCES.md`：当前文件到能力的映射，不写迁移流水账。
-- `services/nasemby-core/README.md`、`DESIGN.md`、`SECURITY_REVIEW.md`：Python 模块说明、安全边界和已知限制。
-- `docs/references/`：原始参考资料，不参与运行。
+### 5.1 生产代码与资源
 
-## 6. 安全边界
+- `src/`：React 页面、顶部导航、影院大厅外壳和工作页。
+- `services/nasemby-core/app/`：统一 Python 后端与 NasEmby 业务源码。
+- `vendor/mineradio-public/`、`public/`：Mineradio 视觉资源。
+- 根 `Dockerfile`、`docker-compose.yml` 和 `.env.example`。
+- Python、TypeScript、Vite 配置和全部自动测试。
 
-- v2 不复制任何真实账号、密码、API Key、Token 或 `.env`。
-- 生产默认继续固定关闭：
+### 5.2 参考源码与资料
+
+- NasEmby 原静态页面源码：只作为调用关系和迁移参考，不进入生产页面入口。
+- `docs/references/media-automation-maintenance/`：fnOS、Torra、qB、115、Symedia 和 Emby 维护资料。
+- 原目录只读归档：用于核对尚未迁入 v2 的文件和二进制资源。
+
+### 5.3 活动文档
+
+- `README.md`：项目定位、开发和部署入口。
+- `docs/PLAN.md`：当前完成状态和下一步。
+- `docs/FRAMEWORK.md`：产品与技术总体框架。
+- `docs/API_CONTRACT.md`：当前 React v1 接口。
+- `docs/CORE_API_CAPABILITY_MATRIX.md`：原核心接口逐条用途与迁移状态。
+- `docs/ROADMAP.md`：所有未完成代码和实机工作。
+- `docs/CLOUD_ACQUISITION_PLAN.md`：PT 优先、网盘可开关的详细路线。
+- `docs/DEPLOYMENT.md`：fnOS 部署、备份、回滚和写入闸门。
+- `docs/IMPLEMENTATION_SOURCES.md`：文件到能力的映射。
+
+## 6. 完整性验收
+
+### 源码
+
+- 原提交中的业务 Python 模块在 v2 均有对应文件。
+- 原 `main.py` 的核心接口和调用函数保留。
+- 原页面源码作为参考迁入，不要求生产可访问。
+- 不存在第二套订阅台账、第二套调度器或 Node 运行后端。
+
+### 接口
+
+- 当前 47 条 React v1 契约继续通过。
+- 原核心接口默认返回明确的 503 保留状态，而不是伪装成不存在。
+- 测试开启保留接口时全部使用 mock，不发出真实外部写入。
+- 每条外部动作都能在能力矩阵中查到用途、副作用和替代计划。
+
+### 安全
+
+- 生产默认关闭：
   - `MCC_SUBSCRIPTION_SCHEDULER_ENABLED=false`
   - `NASEMBY_CORE_WRITE_ENABLED=false`
+  - `MCC_PRESERVED_CORE_API_ENABLED=false`
   - `TORRA_PUSH_ENABLED=false`
-- 本次迁移不创建真实订阅，不调用 Torra 搜索、qB 动作、115 / Symedia 转存或 Emby 刷新。
-- 旧管理路由删除后必须继续返回 404；不能因删除守卫而重新暴露原页面。
+- 本阶段不创建真实订阅，不调用 Torra 搜索、qB 动作、115 / Symedia 转存或 Emby 刷新。
+- v2 不包含真实凭据和运行数据。
 
-## 7. 验收标准
+### 构建与部署
 
-### 7.1 结构
+- Python 测试、前端测试、类型检查和 Vite 构建通过。
+- Docker 只有 `media-control-center` 一个服务和 8787 一个端口。
+- 最终容器只有 Gunicorn / Python 常驻，无 Node 运行时。
+- 登录、只读 API、写闸门、持久化和重启验证通过。
 
-- v2 是独立新 Git 仓库，旧提交历史不存在。
-- v2 不包含旧 `server/`、重复 Docker 入口、旧管理页面、历史迁移计划、缓存和真实运行数据。
-- 所有主文档只引用实际存在的当前文件。
+## 7. 实施顺序
 
-### 7.2 代码与接口
+### 阶段 0：迁移基线
 
-- Python 测试全部通过。
-- 前端类型检查与 Vite 生产构建通过。
-- 47 条冻结接口仍全部存在，无重复方法/路径。
-- 42 条受保护路由和全部受保护写路由继续通过认证与 Origin 测试。
-- legacy 管理接口与 `/static/app.js` 继续返回 404。
+- [x] 记录原提交 `7368790`。
+- [x] 建立 v2 全新 Git。
+- [x] 保留原目录只读归档。
+- [x] 暂缓实机写入测试。
 
-### 7.3 Docker
+### 阶段 1：源码完整性恢复
 
-- 根镜像重新构建成功。
-- Compose 只有 `media-control-center` 一个服务和 8787 一个端口。
-- 最终容器只有 Gunicorn/Python，无 Node 可执行文件。
-- 登录、只读订阅、写闸门、重启与持久化复验通过。
+- [x] 迁入当前 React、Python、测试、Docker 和 Mineradio 文件。
+- [x] 恢复原 `main.py` 的核心路由和调用关系。
+- [x] 恢复“接口存在但默认关闭”的测试语义。
+- [x] 迁入原静态页面参考源码和二进制资源，不注册生产页面。
+- [x] 对照原提交生成最终文件完整性报告，152 个文件均已在当前路径或参考快照中保留。
 
-### 7.4 质量与安全
+### 阶段 2：接口梳理
 
-- 变更检查和 `git diff --check` 通过。
-- 质量扫描没有新增高风险问题。
-- 安全扫描没有真实凭据、Critical 或未处理的 High 问题。
-- 参考资料与生产代码明确隔离。
+- [x] 建立核心接口能力矩阵。
+- [ ] 为 115、Telegram、HDHive / pansou、MoviePilot、Torra 和 Symedia 补齐逐接口模拟契约。
+- [ ] 为原配置接口建立字段白名单与脱敏说明。
+- [ ] 建立旧接口到统一 React 接口的逐项映射。
 
-## 8. v2 代码实施顺序
+### 阶段 3：统一页面接入
 
-实机测试不属于当前代码收口阶段。v2 先按以下顺序完成本地代码工作：
+- [ ] 实现 115、Telegram 和 HDHive / pansou 只读连接状态。
+- [ ] 实现网盘候选预览和全局、订阅级开关。
+- [ ] 实现单条受控转存、查重、幂等、冷却和审计。
+- [ ] 在任务中心补充 PT 主链和网盘支线证据。
+- [ ] 自动云盘兜底代码完成后仍保持默认关闭。
 
-### 阶段 0：冻结迁移输入
+### 阶段 4：文档与测试收口
 
-- 记录原仓库提交、受控文件清单和参考资料清单。
-- 扫描 `.env`、运行目录、缓存和凭据，确保它们不进入 v2。
-- 记录迁移前 Python、TypeScript、Vite 和 Docker 验收结果，作为清理后的对照基线。
+- [x] 同步 README、FRAMEWORK、PLAN、ROADMAP、API、DEPLOYMENT 和模块文档。
+- [x] 运行全部 Python 与前端测试。
+- [x] 运行 Docker 隔离冒烟、质量、安全、凭据和引用检查。
+- [ ] 从 v2 启动最终本地预览。
 
-### 阶段 1：建立干净代码快照
+### 阶段 5：v2 基线交付
 
-- 复制当前受控生产代码、测试、资源和根部署文件，不复制旧 `.git` 与生成物。
-- 把维护资料的解压目录整理到 `docs/references/`，不复制重复 ZIP。
-- 建立 v2 全新 Git 基线，确认没有旧 `server/`、`dist-server`、Node 后端依赖或双服务 Compose。
+- [ ] 提交完整源码基线。
+- [ ] 确认后续开发只使用 v2。
+- [ ] 保持原目录为只读回退资料。
 
-### 阶段 2：收口 Python 应用入口
+## 8. 以后进行的实机阶段
 
-- 缩减 `services/nasemby-core/app/main.py`，只保留统一应用装配、`/api/status`、`/api/health` 和三类后台调度入口。
-- 移除已经被统一入口隐藏的旧管理路由外壳，但保留当前订阅、发现和 provider 仍会动态调用的 Python 业务函数。
-- 删除原 NasEmby 静态管理页和 `templates/index.html`，保留登录模板、React 静态托管和 Mineradio 桥接。
-- 删除模块内重复 Dockerfile 和环境示例，根 Dockerfile / Compose 成为唯一部署入口。
+以下工作等待用户明确进入实机窗口：
 
-### 阶段 3：补强结构回归测试
-
-- 更新源码结构测试，明确 `main.py` 不再包含旧 115、Telegram、HDHive、provider 管理路由。
-- 保留 47 条冻结接口、42 条认证路由、全部受保护写接口 Origin、legacy 404 和 `/static/app.js` 404 回归。
-- 增加当前 Python 入口不得注册第二套页面、第二套台账或第二套调度器的检查。
-- 继续使用临时台账和模拟外部客户端，不连接真实服务执行写操作。
-
-### 阶段 4：重写当前文档
-
-- 从当前运行架构重新编写 README、计划、框架、接口、部署、实现来源和安全说明。
-- 删除迁移流水账、旧技术选型讨论、重复 UI 计划和已经删除的文件引用。
-- `docs/PLAN.md` 分成“已完成代码状态”“当前剩余代码工作”“以后实机阶段”，避免再次把两者混在一起。
-
-### 阶段 5：全量本地验收
-
-- 运行 Python 全部测试、前端类型检查和 Vite 构建。
-- 重新构建单容器镜像，验证登录、只读 API、403 写闸门、404 旧入口、无 Node 运行时和重启持久化。
-- 执行变更、质量、安全和凭据扫描；修复所有新增 Critical / High 问题。
-- 从 v2 启动本地预览，检查影院大厅、顶部导航、媒体队列和全部工作页。
-
-### 阶段 6：v2 代码交付
-
-- 更新最终计划，记录删除清单、保留的动态依赖、测试结果和已知限制。
-- 提交 v2 全新代码基线，使 v2 成为后续唯一开发目录。
-- 原目录只保留为只读归档，不再继续修改。
-
-## 9. 以后再进行的实机阶段
-
-以下工作等待用户明确进入实机窗口后再做，不计入当前 v2 代码收口：
-
-1. 把 v2 单容器镜像部署到 fnOS，先只读运行。
-2. 配置持久目录和 Emby、qB、Torra、Symedia 连接，保持三个写开关关闭。
-3. 备份持久目录后只开启订阅写入，创建一条测试订阅。
-4. 核对分类、保存路径、Torra 查重与下载器 ID，再开启单条 Torra 推送。
+1. 在 fnOS 只读部署 v2 单容器。
+2. 配置持久目录和 Emby、qB、Torra、Symedia 连接，保持写开关关闭。
+3. 备份持久目录后，只创建一条测试订阅。
+4. 核对分类、保存路径、Torra 查重和下载器 ID。
 5. 验证 PT / Torra → qB → 115 → Symedia → Emby 完整链路。
 6. 主链稳定后最后开启订阅调度；自动云盘兜底继续关闭。
 
-## 10. 非目标
+## 9. 非目标
 
 - 本轮不改变 UI 视觉设计。
-- 不升级为 `/api/v2`，继续保持现有 v1 浏览器契约。
-- 不迁移或合并外部 NasEmby 台账。
-- 不删除原 `D:\Projects\媒体控制中心` 归档目录。
+- 不升级为 `/api/v2`。
+- 不导入或合并外部 NasEmby 台账。
+- 不执行真实外部写入。
+- 不删除原归档目录。
 - 不执行关机。

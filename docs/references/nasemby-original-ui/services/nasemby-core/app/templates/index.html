@@ -1,0 +1,845 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>NasEmby</title>
+    <link rel="icon" type="image/png" href="/static/nasemby-logo-mark.png">
+    <script>
+        try {
+            const theme = localStorage.getItem('nasemby-theme');
+            if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+        } catch (error) {}
+    </script>
+    <link rel="stylesheet" href="/static/styles.css?v=202606301720">
+</head>
+<body>
+    <aside class="sidebar">
+        <div class="brand">
+            <img class="brand-logo" src="/static/nasemby-logo-mark.png" alt="NasEmby">
+            <strong>NasEmby</strong>
+            <span>Emby + 115 媒体自动化</span>
+        </div>
+        <nav>
+            <button class="nav-item active" data-view="dashboard">数据总览</button>
+            <button class="nav-item" data-view="discover">发现资源</button>
+            <button class="nav-item" data-view="subscription">订阅规则</button>
+            <button class="nav-item" data-view="my-subscription">我的订阅</button>
+            <button class="nav-item" data-view="activity-log">系统日志</button>
+            <button class="nav-item" data-view="settings">系统设置</button>
+        </nav>
+        <div class="sidebar-version" title="当前界面版本">V1.0.0</div>
+    </aside>
+
+    <main class="main">
+        <header class="topbar">
+            <div class="topbar-copy">
+                <h1 id="page-title">早安，Admin</h1>
+                <p id="page-subtitle">查看项目状态、数据概览和媒体库信息。</p>
+            </div>
+            <div class="topbar-actions">
+                <button class="ghost theme-toggle" id="theme-toggle" type="button" aria-label="切换浅色背景" title="切换浅色背景"></button>
+                <label class="global-search" aria-label="全局搜索" title="搜索电影、剧集或演员">
+                    <span aria-hidden="true"></span>
+                    <input id="global-search-input" type="search" placeholder="搜索电影、剧集或演员...">
+                </label>
+                <button class="ghost" id="status-btn">状态</button>
+            </div>
+        </header>
+
+        <section class="view active" id="view-dashboard">
+            <div class="dashboard-page">
+                <div class="dashboard-grid" id="dashboard-summary">
+                    <div class="dashboard-card"><span>服务状态</span><strong>检测中</strong></div>
+                    <div class="dashboard-card"><span>今日播出</span><strong>-</strong></div>
+                    <div class="dashboard-card"><span>今日入库</span><strong>-</strong></div>
+                    <div class="dashboard-card"><span>待补集数</span><strong>-</strong></div>
+                </div>
+                <section class="dashboard-section dashboard-system-section">
+                    <div class="dashboard-section-head">
+                        <div>
+                            <h3>设备性能</h3>
+                            <p id="dashboard-system-subtitle">正在读取 CPU、内存、硬盘和网速...</p>
+                        </div>
+                    </div>
+                    <div class="dashboard-system-grid" id="dashboard-system-grid">
+                        <div class="dashboard-system-card"><span>CPU</span><strong>-</strong></div>
+                        <div class="dashboard-system-card"><span>内存</span><strong>-</strong></div>
+                        <div class="dashboard-system-card"><span>硬盘</span><strong>-</strong></div>
+                        <div class="dashboard-system-card"><span>网速</span><strong>-</strong></div>
+                    </div>
+                </section>
+                <section class="dashboard-section">
+                    <div class="dashboard-section-head">
+                        <div>
+                            <h3>今日播出</h3>
+                            <p id="dashboard-airing-subtitle">正在加载今日更新剧集...</p>
+                        </div>
+                        <div class="dashboard-pager">
+                            <button type="button" data-dashboard-page="airing-prev">‹</button>
+                            <span id="dashboard-airing-page">1 / 1</span>
+                            <button type="button" data-dashboard-page="airing-next">›</button>
+                        </div>
+                    </div>
+                    <div class="dashboard-airing-list" id="dashboard-airing-list"></div>
+                </section>
+                <section class="dashboard-section">
+                    <div class="dashboard-section-head">
+                        <div>
+                            <h3>今日入库</h3>
+                            <p id="dashboard-library-subtitle">正在加载今日入库进度...</p>
+                        </div>
+                        <div class="dashboard-pager">
+                            <button type="button" data-dashboard-page="library-prev">‹</button>
+                            <span id="dashboard-library-page">1 / 1</span>
+                            <button type="button" data-dashboard-page="library-next">›</button>
+                        </div>
+                    </div>
+                    <div class="dashboard-poster-grid" id="dashboard-library-list"></div>
+                </section>
+                <section class="dashboard-section dashboard-emby-section">
+                    <div class="dashboard-section-head">
+                        <div>
+                            <h3>Emby 媒体库</h3>
+                            <p id="dashboard-emby-subtitle">正在加载媒体库海报...</p>
+                        </div>
+                    </div>
+                    <div class="dashboard-emby-poster-grid" id="dashboard-emby-library-list"></div>
+                </section>
+            </div>
+        </section>
+
+        <section class="view" id="view-discover">
+            <div class="discover-page">
+                <div class="discover-search-panel">
+                    <input class="discover-search-input" id="discover-search-input" type="search" placeholder="搜索影片">
+                    <select class="discover-search-select" id="discover-search-type">
+                        <option value="">自动</option>
+                        <option value="movie">电影</option>
+                        <option value="tv">电视剧</option>
+                    </select>
+                    <button class="discover-search-button" id="discover-search-button" type="button">搜索</button>
+                </div>
+                <div class="discover-source-tabs" id="discover-source-tabs"></div>
+                <div class="discover-filter-panel" id="discover-filter-panel"></div>
+                <div class="discover-status" id="discover-status" hidden></div>
+                <div class="discover-poster-grid" id="discover-poster-grid"></div>
+                <div class="discover-pagination" id="discover-pagination" hidden></div>
+                <div class="discover-resource-panel" id="discover-resource-panel" hidden></div>
+            </div>
+        </section>
+
+        <section class="view" id="view-subscription">
+            <div class="subscription-page">
+                <div class="subscription-card">
+                    <div class="subscription-card-head">
+                        <div>
+                            <h2>订阅管理</h2>
+                            <p>配置自动订阅来源，手动执行后会刷新“我的订阅”。</p>
+                        </div>
+                        <span class="subscription-state" id="subscription-state">未启用</span>
+                    </div>
+
+                    <div class="subscription-board-panel">
+                        <div class="subscription-board-head">
+                            <h3>榜单来源</h3>
+                            <p>先选择要抓取的榜单来源。这里只有数据源本身，避免和开关、多选过滤条件混排。</p>
+                        </div>
+                        <fieldset class="subscription-board-field">
+                            <legend>榜单来源</legend>
+                            <div class="subscription-source-grid" id="subscription-source-list"></div>
+                        </fieldset>
+                        <p class="subscription-board-hint">可一次选择多个榜单；执行时会按已选榜单刷新“我的订阅”。</p>
+                        <div class="subscription-settings-grid">
+                            <label class="subscription-switch-row">
+                                <input id="subscription-enabled" type="checkbox">
+                                <span class="subscription-switch-ui"></span>
+                                <strong>启用榜单订阅</strong>
+                                <em>关闭后定时和手动执行都会停止。</em>
+                            </label>
+                            <label class="subscription-switch-row">
+                                <input id="subscription-task-enabled" type="checkbox">
+                                <span class="subscription-switch-ui"></span>
+                                <strong>启用订阅定时</strong>
+                                <em>每天按下面时间自动执行一次。</em>
+                            </label>
+                            <label class="subscription-switch-row">
+                                <input id="subscription-movie-enabled" type="checkbox">
+                                <span class="subscription-switch-ui"></span>
+                                <strong>订阅电影</strong>
+                                <em>受电影年份限制。</em>
+                            </label>
+                            <label class="subscription-switch-row">
+                                <input id="subscription-tv-enabled" type="checkbox">
+                                <span class="subscription-switch-ui"></span>
+                                <strong>订阅剧集</strong>
+                                <em>受最低评分限制。</em>
+                            </label>
+                            <label class="subscription-field">
+                                <span>定时执行</span>
+                                <input id="subscription-task-time" type="time" value="08:30">
+                            </label>
+                            <label class="subscription-field">
+                                <span>电影年份</span>
+                                <input id="subscription-movie-years" type="text" placeholder="2026,2025,2024">
+                            </label>
+                            <label class="subscription-field">
+                                <span>最低评分</span>
+                                <input id="subscription-tv-min-rating" type="number" min="0" max="10" step="0.1" placeholder="0">
+                            </label>
+                            <label class="subscription-field subscription-exclude-field">
+                                <span>排除订阅</span>
+                                <textarea id="subscription-exclude-titles" rows="3" placeholder="一行一个名称，命中标题就跳过"></textarea>
+                            </label>
+                        </div>
+                        <div class="subscription-mode-panel">
+                            <div class="subscription-mode-head">
+                                <div>
+                                    <h3>订阅模式</h3>
+                                    <p>订阅保存后由后台按所选模式处理。</p>
+                                </div>
+                                <span id="subscription-mode-active">模式3 资源转存</span>
+                            </div>
+                            <div class="subscription-mode-grid">
+                                <label class="subscription-mode-card">
+                                    <input type="radio" name="subscription-mode" value="moviepilot">
+                                    <span class="subscription-mode-index">1</span>
+                                    <strong>MoviePilot</strong>
+                                    <em>直接推送到 MoviePilot 订阅</em>
+                                </label>
+                                <label class="subscription-mode-card">
+                                    <input type="radio" name="subscription-mode" value="torra">
+                                    <span class="subscription-mode-index">2</span>
+                                    <strong>Torra</strong>
+                                    <em>直接推送到 Torra 订阅</em>
+                                </label>
+                                <label class="subscription-mode-card">
+                                    <input type="radio" name="subscription-mode" value="resource" checked>
+                                    <span class="subscription-mode-index">3</span>
+                                    <strong>频道+影巢转存</strong>
+                                    <em>搜索资源并按规则转存</em>
+                                </label>
+                                <label class="subscription-mode-card">
+                                    <input type="radio" name="subscription-mode" value="resource_then_pt">
+                                    <span class="subscription-mode-index">4</span>
+                                    <strong>资源优先，PT兜底</strong>
+                                    <em>有资源转存，无资源转推 PT</em>
+                                </label>
+                                <label class="subscription-mode-card">
+                                    <input type="radio" name="subscription-mode" value="symedia">
+                                    <span class="subscription-mode-index">5</span>
+                                    <strong>Symedia</strong>
+                                    <em>推送到 Symedia 并触发搜索</em>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="subscription-resource-rule-panel">
+                            <div class="subscription-resource-rule-head">
+                                <div>
+                                    <h3>资源规则</h3>
+                                    <p>按格式精准命中后自动转存。</p>
+                                </div>
+                                <label class="subscription-rule-toggle">
+                                    <input id="subscription-resource-rules-enabled" type="checkbox">
+                                    <span class="subscription-switch-ui"></span>
+                                    <strong>精准转存</strong>
+                                </label>
+                                <label class="subscription-rule-limit">
+                                    <span>每次最多</span>
+                                    <input id="subscription-resource-rules-limit" type="number" min="1" max="50" value="8">
+                                </label>
+                            </div>
+                            <div class="subscription-resource-rule-board" id="subscription-resource-rules"></div>
+                        </div>
+                        <div class="subscription-summary-grid" id="subscription-summary"></div>
+                        <div class="subscription-actions subscription-actions-end">
+                            <button class="subscription-ghost-btn" id="subscription-latest-preset" type="button">使用最新规则</button>
+                            <button class="subscription-ghost-btn" id="subscription-daily-airing-sync" type="button">同步全球日播</button>
+                            <button id="subscription-save" type="button">保存配置</button>
+                            <button class="subscription-run-btn" id="subscription-run" type="button">执行订阅</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="view" id="view-my-subscription">
+            <div class="my-subscription-page">
+                <div class="my-subscription-shell">
+                    <div class="my-subscription-tabs" id="my-subscription-tabs">
+                        <button class="my-sub-tab" type="button" data-subscription-tab="movie">电影订阅</button>
+                        <button class="my-sub-tab active" type="button" data-subscription-tab="tv">电视剧订阅</button>
+                        <button class="my-sub-tab" type="button" data-subscription-tab="calendar">订阅日历</button>
+                        <button class="my-sub-tab" type="button" data-subscription-tab="blocked">被屏蔽订阅</button>
+                    </div>
+
+                    <div class="my-subscription-panel active" data-subscription-panel="list">
+                        <div class="my-subscription-filters">
+                            <div class="my-sub-filter-row">
+                                <span>状态</span>
+                                <button class="active" type="button" data-sub-filter="status" data-value="all">全部</button>
+                                <button type="button" data-sub-filter="status" data-value="pending">未完成</button>
+                                <button type="button" data-sub-filter="status" data-value="done">已完成</button>
+                            </div>
+                            <div class="my-sub-filter-row">
+                                <span>更新</span>
+                                <button class="active" type="button" data-sub-filter="update" data-value="all">全部</button>
+                                <button type="button" data-sub-filter="update" data-value="today">今日更新</button>
+                                <button type="button" data-sub-filter="update" data-value="3">三日更新</button>
+                                <button type="button" data-sub-filter="update" data-value="7">七日更新</button>
+                            </div>
+                            <div class="my-sub-search-row">
+                                <label class="my-sub-search"><span>⌕</span><input id="my-subscription-search" type="search" placeholder="搜索标题..."></label>
+                            </div>
+                        </div>
+                        <div class="my-subscription-detail-view" id="my-subscription-detail" hidden></div>
+                        <div class="discover-resource-panel" id="my-subscription-resource-panel" hidden></div>
+                        <div class="my-subscription-poster-grid" id="my-subscription-list"></div>
+
+                    </div>
+
+                    <div class="my-subscription-panel" data-subscription-panel="calendar">
+                        <div class="my-sub-calendar-head">
+                            <div>
+                                <span>订阅日历</span>
+                                <h2 id="my-sub-calendar-title">2026年6月</h2>
+                                <p id="my-sub-calendar-summary">本月订阅更新概览</p>
+                            </div>
+                            <div class="my-sub-calendar-actions">
+                                <button id="my-sub-calendar-today" type="button">本月</button>
+                                <button id="my-sub-calendar-prev" type="button">‹</button>
+                                <button id="my-sub-calendar-next" type="button">›</button>
+                            </div>
+                        </div>
+                        <div class="my-sub-calendar-filters">
+                            <div class="my-sub-filter-row">
+                                <span>视图</span>
+                                <button class="active" type="button" data-calendar-view="month">按月</button>
+                                <button type="button" data-calendar-view="single">单日更新</button>
+                            </div>
+                            <div class="my-sub-filter-row">
+                                <span>类型</span>
+                                <button class="active" type="button" data-calendar-type="all">全部</button>
+                                <button type="button" data-calendar-type="tv">电视剧</button>
+                                <button type="button" data-calendar-type="movie">电影</button>
+                            </div>
+                            <div class="my-sub-calendar-legend">
+                                <span><i class="in"></i>已入库</span>
+                                <span><i class="wait"></i>待入</span>
+                                <span><i class="missing"></i>未入库</span>
+                                <span><i class="today"></i>今天</span>
+                                <span><i class="upcoming"></i>将更</span>
+                            </div>
+                        </div>
+                        <div class="my-sub-calendar-grid" id="my-subscription-calendar"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+
+        <section class="view" id="view-activity-log">
+            <div class="activity-log-page">
+                <div class="activity-log-card activity-log-main-card">
+                    <div class="activity-log-head">
+                        <div>
+                            <h2>实时日志</h2>
+                            <p>页面功能、订阅、推送、转存和后台轮询都会写入这里。</p>
+                        </div>
+                        <button class="activity-log-close" type="button" data-view-jump="dashboard" aria-label="返回">×</button>
+                    </div>
+                    <div class="activity-log-toolbar">
+                        <div class="activity-log-level-tabs" role="tablist" aria-label="日志级别">
+                            <button class="active" type="button" data-activity-level="all">ALL</button>
+                            <button type="button" data-activity-level="info">INFO</button>
+                            <button type="button" data-activity-level="debug">DEBUG</button>
+                            <button type="button" data-activity-level="error">ERROR</button>
+                            <button type="button" data-activity-level="warning">WARNING</button>
+                        </div>
+                        <label class="activity-log-type">
+                            <span>日志类型</span>
+                            <select id="activity-log-category">
+                                <option value="all">全局日志</option>
+                                <option value="operation">页面操作</option>
+                                <option value="subscription">订阅</option>
+                                <option value="push">推送</option>
+                                <option value="transfer">转存</option>
+                                <option value="system">系统</option>
+                            </select>
+                        </label>
+                        <button class="activity-log-clear" type="button">清空日志</button>
+                        <button class="activity-log-refresh" type="button">查看全部</button>
+                    </div>
+                    <div class="activity-log-list">
+                        <div class="activity-log-empty">暂无日志</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="view" id="view-settings">
+            <div class="settings-page settings-console">
+                <div class="settings-console-head">
+                    <h2>系统设置</h2>
+                    <div class="settings-console-actions">
+                        <button class="settings-reset-btn" id="settings-reset-active" type="button">重置</button>
+                        <button class="settings-save-all-btn" id="settings-save-all" type="button">保存所有更改</button>
+                    </div>
+                </div>
+                <div class="settings-nav" aria-label="系统设置分类">
+                    <button class="settings-tab active" type="button" data-settings-target="hdhive">影巢授权</button>
+                    <button class="settings-tab" type="button" data-settings-target="account115">115 存储</button>
+                    <button class="settings-tab" type="button" data-settings-target="proxy">代理与网络</button>
+                    <button class="settings-tab" type="button" data-settings-target="telegram">Telegram 通知</button>
+                    <button class="settings-tab" type="button" data-settings-target="library">媒体库同步</button>
+                    <button class="settings-tab" type="button" data-settings-target="moviepilot">订阅推送</button>
+                </div>
+
+                <div class="settings-console-body">
+                <div class="settings-panel-stack">
+                <section class="settings-panel active" data-settings-panel="hdhive">
+                    <div class="settings-card hdhive-config-card">
+                        <div class="hdhive-config-head">
+                            <div>
+                                <h2>影巢授权</h2>
+                                <p>影巢账号 <span class="badge ok" id="hdhive-account-count">检测中</span></p>
+                            </div>
+                            <div class="hdhive-head-actions">
+                                <button class="ghost" id="hdhive-status" type="button">刷新</button>
+                                <button id="hdhive-authorize" type="button">授权新账号</button>
+                            </div>
+                        </div>
+
+                        <div class="hdhive-switch-grid">
+                            <label class="hdhive-switch-card">
+                                <span><strong>启用定时签到</strong><em id="hdhive-checkin-account-text">0 个账号</em></span>
+                                <input id="ENV_HDHIVE_CHECKIN_ENABLED" type="checkbox" data-config-checkbox>
+                                <span class="settings-switch-ui"></span>
+                            </label>
+                            <label class="hdhive-switch-card">
+                                <span><strong>签到通知</strong><em>全局</em></span>
+                                <input id="ENV_HDHIVE_CHECKIN_NOTIFY" type="checkbox" data-config-checkbox>
+                                <span class="settings-switch-ui"></span>
+                            </label>
+                            <div class="hdhive-next-card">
+                                <span class="hdhive-clock">◷</span>
+                                <span><em>下一次随机签到</em><strong id="hdhive-next-checkin">未启用</strong></span>
+                            </div>
+                        </div>
+
+                        <div class="hdhive-tabs">
+                            <button class="hdhive-tab active" type="button" data-hdhive-tab="accounts">账号</button>
+                            <button class="hdhive-tab" type="button" data-hdhive-tab="checkin">签到</button>
+                        </div>
+
+                        <div class="hdhive-tab-panel active" data-hdhive-panel="accounts">
+                            <div class="hdhive-account-grid" id="hdhive-account-list"></div>
+                        </div>
+                        <div class="hdhive-tab-panel" data-hdhive-panel="checkin">
+                            <div class="hdhive-checkin-panel">
+                                <div>
+                                    <h3>签到状态</h3>
+                                    <p id="hdhive-checkin-message">暂无签到记录</p>
+                                </div>
+                                <button id="hdhive-run-checkin" type="button">立即签到</button>
+                            </div>
+                        </div>
+
+                        <div class="hdhive-settings-section">
+                            <h3>解锁与筛选</h3>
+                            <p>资源请求、搜索和解锁使用当前唯一资源请求账号。</p>
+                            <div class="settings-grid two">
+                                <label>解锁积分上限<input id="ENV_HDHIVE_UNLOCK_POINTS_LIMIT" inputmode="numeric" placeholder="100"></label>
+                                <label>解锁速率限制（次/分钟）<input id="ENV_HDHIVE_UNLOCK_RATE_LIMIT" inputmode="numeric" placeholder="3"></label>
+                            </div>
+                        </div>
+
+                        <div class="hdhive-settings-section">
+                            <h3>到期提醒</h3>
+                            <p>授权有效期剩余 3 天内会按账号推送提醒。</p>
+                            <div class="hdhive-reminder-row">
+                                <label class="settings-switch inline">
+                                    <input id="ENV_HDHIVE_EXPIRY_REMINDER" type="checkbox" data-config-checkbox>
+                                    <span class="settings-switch-ui"></span>
+                                    <strong>启用到期提醒</strong>
+                                </label>
+                                <label>提醒间隔<input id="ENV_HDHIVE_REMINDER_INTERVAL_HOURS" inputmode="numeric" placeholder="6"> 小时</label>
+                            </div>
+                        </div>
+
+                        <div class="actions">
+                            <button id="hdhive-save-config" type="button">保存影巢配置</button>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="settings-panel" data-settings-panel="account115">
+                    <div class="settings-card">
+                        <div class="settings-card-head">
+                            <span class="settings-icon">5</span>
+                            <div>
+                                <h2>115 存储账号</h2>
+                                <p>保存 Cookie 和统一转存整理目录，供 115 转存、监控、整理链路使用。</p>
+                            </div>
+                        </div>
+                        <label>身份 Cookie<textarea id="ENV_115_COOKIES" rows="4" placeholder="粘贴 115 Cookie"></textarea></label>
+                        <div class="settings-grid">
+                            <label>转存整理目录 ID<input id="ENV_UPLOAD_PID" placeholder="0"></label>
+                        </div>
+                        <button class="settings-save" id="save-account-config" type="button">保存 115 账号设置</button>
+                        <button class="ghost settings-secondary-action" id="check-account" type="button">检查账号</button>
+                    </div>
+                </section>
+
+                <section class="settings-panel" data-settings-panel="proxy">
+                    <div class="settings-card">
+                        <div class="settings-card-head">
+                            <span class="settings-icon blue">P</span>
+                            <div>
+                                <h2>代理设置</h2>
+                                <p>一个代理地址供 TMDB/发现、影巢 OAuth、Telegram 等外部请求共用；留空表示直连。</p>
+                            </div>
+                        </div>
+                        <div class="settings-grid">
+                            <label>全局代理<input id="ENV_PROXY" placeholder="http://127.0.0.1:7890"></label>
+                        </div>
+                        <button class="settings-save" id="save-proxy-config" type="button">保存代理设置</button>
+                    </div>
+                </section>
+
+                <section class="settings-panel" data-settings-panel="telegram">
+                    <div class="telegram-auth-strip" id="telegram-auth-strip">
+                        <div class="telegram-phone-shell">
+                            <fieldset class="telegram-phone-field">
+                                <legend>手机号</legend>
+                                <input id="ENV_TG_PHONE" class="telegram-phone-input" placeholder="+8618000000000 请关闭两步验证">
+                                <div class="telegram-login-state">
+                                    <span class="telegram-login-pill" id="telegram-login-pill" hidden>已登录: <strong id="telegram-current-user">-</strong></span>
+                                    <span class="telegram-ok-dot" aria-hidden="true">✓</span>
+                                </div>
+                            </fieldset>
+                        </div>
+                        <button class="telegram-appid-button" id="telegram-appid-open" type="button"><span aria-hidden="true">⚙</span>APPID</button>
+                        <div class="telegram-code-panel" id="telegram-code-panel">
+                            <input id="telegram-code" placeholder="输入收到的验证码">
+                        </div>
+                        <button class="telegram-auth-button" id="telegram-auth-action" type="button">获取验证码</button>
+                        <div class="telegram-interval-field">
+                            <span>频道轮询:</span>
+                            <input id="ENV_CHECK_INTERVAL" inputmode="numeric" aria-label="频道轮询分钟数" placeholder="5">
+                            <span>分钟</span>
+                            <span>订阅刷新:</span>
+                            <input id="ENV_SUBSCRIPTION_SEARCH_INTERVAL" inputmode="numeric" aria-label="订阅刷新搜索分钟数" placeholder="5">
+                            <span>分钟</span>
+                        </div>
+                        <button class="telegram-logout-button" id="telegram-logout" type="button" hidden><span aria-hidden="true">↪</span>退出登录</button>
+                    </div>
+
+                    <div class="telegram-dark-board" id="telegram-dark-board" hidden></div>
+
+                    <div class="telegram-login-actions" id="telegram-login-form-legacy-top" hidden>
+                        <button id="telegram-send-code-legacy-top" type="button">发送验证码</button>
+                        <label class="telegram-code-field">验证码<input id="telegram-code-legacy-top" placeholder="输入 Telegram 验证码"></label>
+                        <button class="ghost" id="telegram-login-legacy-top" type="button">登录</button>
+                    </div>
+                    <div class="settings-card">
+                        <div class="settings-card-head">
+                            <span class="settings-icon blue">T</span>
+                            <div>
+                                <h2>Telegram 登录</h2>
+                                <p>填写手机号、App api_id 和 App api_hash 发送验证码，登录后这里会显示 Telegram 用户名。</p>
+                            </div>
+                            <span class="badge" id="telegram-auth-badge">未登录</span>
+                        </div>
+                        <div class="telegram-login-grid" id="telegram-login-form-legacy">
+                            <label>手机号<input id="ENV_TG_PHONE_LEGACY" placeholder="+8618000000000"></label>
+                            <label>App api_id<input id="ENV_TG_API_ID_LEGACY" inputmode="numeric" placeholder="123456"></label>
+                            <label>App api_hash<input id="ENV_TG_API_HASH_LEGACY" type="password" placeholder="Telegram app api_hash"></label>
+                            <button id="telegram-send-code-legacy" type="button">发送验证码</button>
+                            <label class="telegram-code-field">验证码<input id="telegram-code-legacy" placeholder="输入 Telegram 验证码"></label>
+                            <button class="ghost" id="telegram-login-legacy" type="button">登录</button>
+                        </div>
+                        <div class="telegram-session" id="telegram-session" hidden>
+                            <div>
+                                <span>Telegram 用户名</span>
+                                <strong id="telegram-current-user-legacy">-</strong>
+                            </div>
+                            <button class="ghost danger" id="telegram-logout-legacy" type="button">退出登录</button>
+                        </div>
+                    </div>
+
+                    <div class="settings-card">
+                        <div class="settings-card-head compact">
+                            <span class="settings-icon blue">#</span>
+                            <div>
+                                <h2>频道管理</h2>
+                                <p>输入频道用户名、链接或 ID，每行一个；保存后显示频道名称，并按输入顺序保留排序。</p>
+                            </div>
+                        </div>
+                        <label>频道列表<textarea id="telegram-channel-input" rows="6" placeholder="@channel_name&#10;https://t.me/channel_name&#10;-1001234567890"></textarea></label>
+                        <div class="actions">
+                            <button id="telegram-save-channels" type="button">保存频道</button>
+                            <button class="ghost" id="telegram-refresh" type="button">刷新状态</button>
+                        </div>
+                        <div class="telegram-channel-list" id="telegram-channel-list"></div>
+                    </div>
+
+                    <div class="settings-card telegram-notify-card">
+                        <div class="settings-card-head compact">
+                            <span class="settings-icon blue">N</span>
+                            <div>
+                                <h2>TG 通知</h2>
+                                <p>配置转存完成后的 Bot 推送目标、黑白名单和通知模板；目标为空时回退到管理员 TG ID。</p>
+                            </div>
+                        </div>
+                        <div class="settings-grid two">
+                            <label>Bot Token<input id="ENV_TG_BOT_TOKEN" type="password" autocomplete="off" placeholder="123456:ABC..."></label>
+                            <label>管理员 TG ID<input id="ENV_TG_ADMIN_USER_ID" inputmode="numeric" placeholder="用于默认通知和签到提醒"></label>
+                            <label>通知 TG ID<input id="ENV_TG_TRANSFER_NOTIFY_CHAT_IDS" placeholder="多个 ID 用逗号或换行分隔"></label>
+                            <label class="settings-switch card-switch">
+                                <input id="ENV_TG_TRANSFER_NOTIFY_ENABLED" type="checkbox">
+                                <span class="settings-switch-ui"></span>
+                                <strong>转存完成后推送 TG 通知</strong>
+                            </label>
+                            <label class="settings-switch card-switch">
+                                <input id="ENV_TG_SUBSCRIPTION_NOTIFY_ENABLED" type="checkbox">
+                                <span class="settings-switch-ui"></span>
+                                <strong>订阅成功后推送 TG 通知</strong>
+                            </label>
+                        </div>
+                        <div class="settings-grid two tg-notify-lists">
+                            <label>白名单关键词<textarea id="ENV_TG_TRANSFER_NOTIFY_WHITELIST" rows="4" placeholder="留空表示全部允许；填写后只推送命中的标题/链接/频道"></textarea></label>
+                            <label>黑名单关键词<textarea id="ENV_TG_TRANSFER_NOTIFY_BLACKLIST" rows="4" placeholder="命中这些关键词时不推送"></textarea></label>
+                        </div>
+                        <textarea id="ENV_TG_TRANSFER_NOTIFY_TEMPLATE" class="hidden-config-field" aria-hidden="true"></textarea>
+                        <textarea id="ENV_TG_SUBSCRIPTION_NOTIFY_TEMPLATE" class="hidden-config-field" aria-hidden="true"></textarea>
+                        <div class="tg-template-shell">
+                            <div class="tg-template-card">
+                                <div class="tg-template-head">
+                                    <h3>NextBOT 转存模板配置</h3>
+                                    <span>转存通知</span>
+                                </div>
+                                <div class="tg-template-list" id="tg-transfer-template-builder"></div>
+                            </div>
+                            <div class="tg-template-card">
+                                <div class="tg-template-head">
+                                    <h3>订阅模板配置</h3>
+                                    <span>订阅通知</span>
+                                </div>
+                                <div class="tg-template-list" id="tg-subscription-template-builder"></div>
+                            </div>
+                        </div>
+                        <button class="settings-save" id="save-telegram-config" type="button">保存 Telegram 通知设置</button>
+                    </div>
+                </section>
+
+                <section class="settings-panel" data-settings-panel="library">
+                    <div class="settings-card">
+                        <div class="settings-card-head">
+                            <span class="settings-icon blue">M</span>
+                            <div>
+                                <h2>选择同步的媒体库</h2>
+                                <p>分类勾选会写入配置，便于后续同步任务按媒体库过滤。</p>
+                            </div>
+                        </div>
+                        <div class="settings-grid two">
+                            <label>Emby 服务器地址<input id="ENV_EMBY_SERVER_URL" placeholder="http://127.0.0.1:8096"></label>
+                            <label>API Key<input id="ENV_EMBY_API_KEY" type="password" placeholder="Emby API Key"></label>
+                            <label>管理员账户<input id="ENV_MEDIA_LIBRARY_ADMIN" placeholder="管理员账户"></label>
+                            <label>管理员密码<input id="ENV_MEDIA_LIBRARY_PASSWORD" type="password" placeholder="管理员密码"></label>
+                        </div>
+                        <input id="ENV_MEDIA_SYNC_CATEGORIES" type="hidden">
+                        <div class="media-category-picker">
+                            <button class="media-category-trigger" id="media-category-trigger" type="button" aria-expanded="false">
+                                <span id="media-category-summary">请选择媒体库</span>
+                                <span class="media-category-caret">⌄</span>
+                            </button>
+                            <div class="media-category-list" id="media-category-list" hidden>
+                                <label><span>动画电影</span><input type="checkbox" value="anime_movie" data-media-category></label>
+                                <label><span>港台电影</span><input type="checkbox" value="hk_movie" data-media-category></label>
+                                <label><span>港台剧集</span><input type="checkbox" value="hk_tv" data-media-category></label>
+                                <label><span>国产电影</span><input type="checkbox" value="cn_movie" data-media-category></label>
+                                <label><span>国产剧集</span><input type="checkbox" value="cn_tv" data-media-category></label>
+                                <label><span>国漫</span><input type="checkbox" value="anime" data-media-category></label>
+                                <label><span>纪录影片</span><input type="checkbox" value="documentary" data-media-category></label>
+                                <label><span>美漫</span><input type="checkbox" value="western_animation" data-media-category></label>
+                                <label><span>综艺</span><input type="checkbox" value="variety" data-media-category></label>
+                            </div>
+                        </div>
+                        <div class="actions">
+                            <button id="load-emby-libraries" type="button">获取媒体库</button>
+                            <button class="settings-save compact-save" id="save-library-config" type="button">保存媒体库设置</button>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="settings-panel" data-settings-panel="moviepilot">
+                    <div class="settings-card">
+                        <div class="settings-card-head">
+                            <span class="settings-icon blue">MP</span>
+                            <div>
+                                <h2>MoviePilot 接入</h2>
+                                <p>订阅详情搜索不到资源时，可自动推送到 MoviePilot 订阅，由 MoviePilot 继续搜索下载。</p>
+                            </div>
+                            <span class="badge warn" id="moviepilot-status-badge">未检测</span>
+                        </div>
+                        <div class="settings-grid two">
+                            <label>MoviePilot 地址<input id="ENV_MOVIEPILOT_URL" placeholder="http://moviepilot.example:3000"></label>
+                            <label>API Token<input id="ENV_MOVIEPILOT_API_TOKEN" type="password" placeholder="MoviePilot 系统设置里的 API_TOKEN"></label>
+                            <label>请求用户名<input id="ENV_MOVIEPILOT_USERNAME" placeholder="NasEmby"></label>
+                            <label class="settings-switch card-switch">
+                                <input id="ENV_MOVIEPILOT_AUTO_SUBSCRIBE" type="checkbox" data-config-checkbox>
+                                <span class="settings-switch-ui"></span>
+                                <strong>搜索为空时自动推送</strong>
+                            </label>
+                        </div>
+                        <div class="actions">
+                            <button class="settings-save" id="save-moviepilot-config" type="button">保存 MoviePilot 设置</button>
+                            <button class="ghost" id="moviepilot-check" type="button">测试连接</button>
+                        </div>
+                    </div>
+
+                    <div class="settings-card">
+                        <div class="settings-card-head">
+                            <span class="settings-icon blue">TR</span>
+                            <div>
+                                <h2>Torra 接入</h2>
+                                <p>推送为 Torra 订阅记录，由 Torra 自己按 RSS / 定时搜索和下载器配置处理。</p>
+                            </div>
+                            <span class="badge warn" id="torra-status-badge">未检测</span>
+                        </div>
+                        <div class="settings-grid two">
+                            <label>Torra 地址<input id="ENV_TORRA_URL" placeholder="http://torra.example:9029"></label>
+                            <label>登录 Token<input id="ENV_TORRA_TOKEN" type="password" placeholder="Torra 登录后的 Bearer Token"></label>
+                            <label class="settings-switch card-switch">
+                                <input id="ENV_TORRA_AUTO_SUBSCRIBE" type="checkbox" data-config-checkbox>
+                                <span class="settings-switch-ui"></span>
+                                <strong>搜索为空时自动推送 Torra</strong>
+                            </label>
+                        </div>
+                        <div class="actions">
+                            <button class="settings-save" id="save-torra-config" type="button">保存 Torra 设置</button>
+                            <button class="ghost" id="torra-check" type="button">测试连接</button>
+                        </div>
+                    </div>
+
+                    <div class="settings-card">
+                        <div class="settings-card-head">
+                            <span class="settings-icon blue">SM</span>
+                            <div>
+                                <h2>Symedia 接入</h2>
+                                <p>推送为 Symedia Telegram 订阅任务；已有任务会直接触发 manual-search。</p>
+                            </div>
+                            <span class="badge warn" id="symedia-status-badge">未检测</span>
+                        </div>
+                        <div class="settings-grid two">
+                            <label>Symedia 地址<input id="ENV_SYMEDIA_URL" placeholder="http://symedia.example:8095"></label>
+                            <label>登录 Token<input id="ENV_SYMEDIA_TOKEN" type="password" autocomplete="off" placeholder="Symedia localStorage auth.token / Bearer Token"></label>
+                            <label>登录账号<input id="ENV_SYMEDIA_USERNAME" autocomplete="off" placeholder="未填 Token 时使用"></label>
+                            <label>登录密码<input id="ENV_SYMEDIA_PASSWORD" type="password" autocomplete="off" placeholder="未填 Token 时使用"></label>
+                            <label>网盘类型
+                                <select id="ENV_SYMEDIA_CHANNEL_TYPE">
+                                    <option value="channel_115">115 网盘</option>
+                                    <option value="channel_189">天翼云盘</option>
+                                    <option value="channel_123">123 网盘</option>
+                                    <option value="channel_alipan">阿里云盘</option>
+                                    <option value="channel_quark">夸克网盘</option>
+                                </select>
+                            </label>
+                            <label>频道 ID<input id="ENV_SYMEDIA_CHANNEL_IDS" placeholder="多个用逗号分隔；留空使用第一个频道"></label>
+                            <label>转存目录 ID<input id="ENV_SYMEDIA_PARENT_ID" placeholder="留空使用该网盘第一个转存目录"></label>
+                            <label>订阅规则 ID<input id="ENV_SYMEDIA_RULE_ID" placeholder="可选；留空不指定规则"></label>
+                            <label class="settings-switch card-switch">
+                                <input id="ENV_SYMEDIA_AUTO_SUBSCRIBE" type="checkbox" data-config-checkbox>
+                                <span class="settings-switch-ui"></span>
+                                <strong>搜索为空时自动推送 Symedia</strong>
+                            </label>
+                        </div>
+                        <div class="actions">
+                            <button class="settings-save" id="save-symedia-config" type="button">保存 Symedia 设置</button>
+                            <button class="ghost" id="symedia-check" type="button">测试连接</button>
+                        </div>
+                    </div>
+                </section>
+                </div>
+
+                <aside class="settings-status-card" aria-label="快速状态监控">
+                    <h3>快速状态监控</h3>
+                    <div class="settings-status-list">
+                        <div class="settings-status-row">
+                            <span class="settings-status-icon">⌁</span>
+                            <strong>核心服务</strong>
+                            <em class="ok" id="settings-monitor-core">运行中</em>
+                        </div>
+                        <div class="settings-status-row">
+                            <span class="settings-status-icon">▣</span>
+                            <strong>115 连通性</strong>
+                            <em id="settings-monitor-115">待检测</em>
+                        </div>
+                        <div class="settings-status-row">
+                            <span class="settings-status-icon">▱</span>
+                            <strong>TG 机器人</strong>
+                            <em id="settings-monitor-tg">检测中</em>
+                        </div>
+                        <div class="settings-status-row">
+                            <span class="settings-status-icon">▤</span>
+                            <strong>订阅推送</strong>
+                            <em id="settings-monitor-push">待检测</em>
+                        </div>
+                        <div class="settings-status-row">
+                            <span class="settings-status-icon">◷</span>
+                            <strong>下次自动订阅</strong>
+                            <em id="settings-monitor-next">--:--</em>
+                        </div>
+                    </div>
+                </aside>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <div class="resource-preview-modal" id="resource-preview-modal" hidden>
+        <div class="resource-preview-backdrop" data-resource-preview-close></div>
+        <div class="resource-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="resource-preview-title">
+            <button class="resource-preview-close" type="button" data-resource-preview-close aria-label="关闭">×</button>
+            <div class="resource-preview-modal-head">
+                <div>
+                    <span>资源预览</span>
+                    <h2 id="resource-preview-title">预览内容</h2>
+                    <p id="resource-preview-source">预览当前资源信息</p>
+                </div>
+                <div class="resource-preview-modal-actions">
+                    <button type="button" data-resource-preview-copy="content">复制内容</button>
+                    <button type="button" data-resource-preview-transfer>转存</button>
+                </div>
+            </div>
+            <div class="resource-preview-status" id="resource-preview-status" hidden></div>
+            <div class="resource-preview-body" id="resource-preview-body"></div>
+            <div class="resource-preview-links" id="resource-preview-links"></div>
+        </div>
+    </div>
+
+    <div class="tg-api-modal" id="tg-api-modal" hidden>
+        <div class="tg-api-backdrop" data-tg-api-close></div>
+        <div class="tg-api-dialog" role="dialog" aria-modal="true" aria-labelledby="tg-api-title">
+            <button class="tg-api-close" type="button" data-tg-api-close aria-label="关闭">×</button>
+            <div class="tg-api-title">
+                <span aria-hidden="true">⚙</span>
+                <h2 id="tg-api-title">TG API 设置</h2>
+            </div>
+            <label class="tg-api-field"><span>App api_id:</span>
+                <input id="ENV_TG_API_ID" inputmode="numeric" placeholder="输入您的 app_id (可留空)">
+            </label>
+            <label class="tg-api-field"><span>App api_hash:</span>
+                <input id="ENV_TG_API_HASH" type="password" autocomplete="off" spellcheck="false" placeholder="输入您的 api_hash (可留空)">
+            </label>
+            <a class="tg-api-register" href="https://my.telegram.org/apps" target="_blank" rel="noreferrer">注册专属TGAPPID</a>
+            <button class="tg-api-confirm" id="telegram-appid-confirm" type="button">确认</button>
+        </div>
+    </div>
+
+    <div id="toast" class="toast" hidden></div>
+    <script src="/static/app.js?v=202606301720"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+node_modules/
+dist/
+dist-server/
+preview/
+data/
+runtime/
+临时/
+参考/
+.agents/
+.env
+.env.local
+.codex-dev*.log
+.codex-ui-review*.log
+.superpowers/
+npm-debug.log*
+Dockerfile.local

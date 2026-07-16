@@ -1,0 +1,91 @@
+
+<base href="/mineradio/">
+<script>
+document.documentElement.classList.add('mcc-mineradio-embed-root');
+try { localStorage.setItem('mineradio-diy-player-mode-v1', '1'); } catch (e) {}
+(function installMediaCenterFetchGuard(){
+  var nativeFetch = window.fetch ? window.fetch.bind(window) : null;
+  if (!nativeFetch) return;
+  window.fetch = function(input, init) {
+    var url = typeof input === 'string' ? input : (input && input.url) || '';
+    var path = '';
+    try { path = new URL(url, window.location.href).pathname; } catch (e) { path = String(url || ''); }
+    var blockedApiPattern = new RegExp(
+      '^/api/(' +
+        'login|qq|playlist|song|search|personalized|recommend|like|comment|' +
+        'artist|album|lyric|user|podcast|dj|check|update|desktop' +
+      ')'
+    );
+    if (blockedApiPattern.test(path)) {
+      var emptyPayload = { ok: true, code: 200, result: [], data: [], loggedIn: false };
+      return Promise.resolve(new Response(JSON.stringify(emptyPayload), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      }));
+    }
+    return nativeFetch(input, init);
+  };
+})();
+(function installMediaCenterCanvasHelpers(){
+  window.mccDrawShelfCoverContain = function(ctx, img, x, y, width, height) {
+    var iw = img && (img.naturalWidth || img.width);
+    var ih = img && (img.naturalHeight || img.height);
+    if (!iw || !ih) {
+      ctx.drawImage(img, x, y, width, height);
+      return;
+    }
+    var coverScale = Math.max(width / iw, height / ih);
+    var coverW = iw * coverScale;
+    var coverH = ih * coverScale;
+    ctx.save();
+    ctx.globalAlpha = 0.72;
+    ctx.filter = 'blur(18px) saturate(1.08) brightness(0.52)';
+    ctx.drawImage(img, x + (width - coverW) / 2, y + (height - coverH) / 2, coverW, coverH);
+    ctx.restore();
+
+    var fitScale = Math.min(width / iw, height / ih);
+    var fitW = iw * fitScale;
+    var fitH = ih * fitScale;
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.34)';
+    ctx.shadowBlur = 12;
+    ctx.drawImage(img, x + (width - fitW) / 2, y + (height - fitH) / 2, fitW, fitH);
+    ctx.restore();
+  };
+})();
+</script>
+<style>
+html.mcc-mineradio-embed-root,
+html.mcc-mineradio-embed-root body {
+  background: #010304 !important;
+}
+html.mcc-mineradio-embed-root #splash,
+html.mcc-mineradio-embed-root #search-area,
+html.mcc-mineradio-embed-root #top-right,
+html.mcc-mineradio-embed-root #bottom-handle,
+html.mcc-mineradio-embed-root #bottom-bar,
+html.mcc-mineradio-embed-root #playlist-panel,
+html.mcc-mineradio-embed-root #trial-banner,
+html.mcc-mineradio-embed-root #login-guide-canvas,
+html.mcc-mineradio-embed-root #login-modal,
+html.mcc-mineradio-embed-root #user-modal,
+html.mcc-mineradio-embed-root #drop-overlay,
+html.mcc-mineradio-embed-root #loading-overlay,
+html.mcc-mineradio-embed-root #gesture-hud,
+html.mcc-mineradio-embed-root #hand-canvas,
+html.mcc-mineradio-embed-root #thumb-wrap,
+html.mcc-mineradio-embed-root #free-camera-hint,
+html.mcc-mineradio-embed-root #desktop-titlebar,
+html.mcc-mineradio-embed-root #fullscreen-diy-zone,
+html.mcc-mineradio-embed-root #empty-home {
+  display: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+html.mcc-mineradio-embed-root #fx-panel {
+  bottom: 92px;
+}
+html.mcc-mineradio-embed-root #canvas-container {
+  inset: 0 !important;
+}
+</style>
