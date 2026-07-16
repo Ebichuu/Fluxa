@@ -119,6 +119,7 @@ def map_subscription_item(value):
         "mediaType": kind,
         "tmdbId": first_text(row, "tmdb_id"),
         "mediaCategory": first_text(row, "media_category") or None,
+        "allowCloudFallback": source_boolean(row.get("allow_cloud_fallback")),
         "posterUrl": first_text(row, "poster_url", "poster"),
         "backdropUrl": first_text(row, "backdrop_url"),
         "progressText": progress,

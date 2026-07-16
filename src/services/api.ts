@@ -4,6 +4,7 @@ import type { QbittorrentAction, QbittorrentActionResult, QbittorrentSummary } f
 import type { SymediaSummary } from '../types/symedia';
 import type { TorraSummary } from '../types/torra';
 import type { TaskChainResponse } from '../types/taskChain';
+import type { CloudCandidateResponse, CloudTransferResult, IntegrationSummary, TelegramChannel } from '../types/integrations';
 import type {
   DiscoverBrowseParams,
   DiscoverResourceResponse,
@@ -31,11 +32,9 @@ async function readJson<T>(path: string): Promise<T> {
     }
   });
 
-  if (!response.ok) {
-    throw new Error(`请求失败：${response.status}`);
-  }
-
-  return response.json() as Promise<T>;
+  const body = await response.json().catch(() => ({})) as T & { error?: string };
+  if (!response.ok) throw new Error(body.error || `请求失败：${response.status}`);
+  return body;
 }
 
 export function getHomeMedia(libraryId?: string): Promise<HomeMediaResponse> {
@@ -45,6 +44,16 @@ export function getHomeMedia(libraryId?: string): Promise<HomeMediaResponse> {
 
 export function getHealth(): Promise<HealthResponse> {
   return readJson<HealthResponse>('/api/health');
+}
+
+export function getIntegrationSummary(probe = false): Promise<IntegrationSummary> {
+  return readJson<IntegrationSummary>(`/api/v2/integrations${probe ? '?probe=1' : ''}`);
+}
+
+export function getCloudCandidates(subscriptionId: string): Promise<CloudCandidateResponse> {
+  return readJson<CloudCandidateResponse>(
+    `/api/v2/acquisition/cloud/candidates?id=${encodeURIComponent(subscriptionId)}`
+  );
 }
 
 export function getAuthSession(): Promise<AuthSessionResponse> {
@@ -179,11 +188,9 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body)
   });
 
-  if (!response.ok) {
-    throw new Error(`请求失败：${response.status}`);
-  }
-
-  return response.json() as Promise<T>;
+  const payload = await response.json().catch(() => ({})) as T & { error?: string };
+  if (!response.ok) throw new Error(payload.error || `请求失败：${response.status}`);
+  return payload;
 }
 
 async function patchJson<T>(path: string, body: unknown): Promise<T> {
@@ -196,11 +203,59 @@ async function patchJson<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body)
   });
 
-  if (!response.ok) {
-    throw new Error(`请求失败：${response.status}`);
-  }
+  const payload = await response.json().catch(() => ({})) as T & { error?: string };
+  if (!response.ok) throw new Error(payload.error || `请求失败：${response.status}`);
+  return payload;
+}
 
-  return response.json() as Promise<T>;
+async function putJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: 'PUT',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const payload = await response.json().catch(() => ({})) as T & { error?: string };
+  if (!response.ok) throw new Error(payload.error || `请求失败：${response.status}`);
+  return payload;
+}
+
+async function deleteJson<T>(path: string): Promise<T> {
+  const response = await fetch(path, { method: 'DELETE', headers: { Accept: 'application/json' } });
+  const payload = await response.json().catch(() => ({})) as T & { error?: string };
+  if (!response.ok) throw new Error(payload.error || `请求失败：${response.status}`);
+  return payload;
+}
+
+export function probeCloud115(): Promise<{ ok: boolean; service: IntegrationSummary['services'][number] }> {
+  return postJson('/api/v2/integrations/cloud115/probes', {});
+}
+
+export function getTelegramChannels(): Promise<{ ok: boolean; channels: TelegramChannel[] }> {
+  return readJson('/api/v2/integrations/telegram/channels');
+}
+
+export function sendTelegramLoginCode(input: { phone: string; api_id: string; api_hash: string }): Promise<{ ok: boolean; message: string }> {
+  return postJson('/api/v2/integrations/telegram/login-codes', input);
+}
+
+export function signInTelegram(code: string): Promise<{ ok: boolean; authorized: boolean }> {
+  return postJson('/api/v2/integrations/telegram/session', { code });
+}
+
+export function logoutTelegram(): Promise<{ ok: boolean; authorized: boolean }> {
+  return deleteJson('/api/v2/integrations/telegram/session');
+}
+
+export function saveTelegramChannels(channels: Array<{ input: string }>): Promise<{ ok: boolean; channelCount: number }> {
+  return putJson('/api/v2/integrations/telegram/channels', { channels, resolve: true });
+}
+
+export function getHdhiveAuthorization(): Promise<{ ok: boolean; authorizationUrl: string }> {
+  return readJson('/api/v2/integrations/hdhive/authorization');
+}
+
+export function runHdhiveCheckin(): Promise<{ ok: boolean; message: string }> {
+  return postJson('/api/v2/integrations/hdhive/check-ins', {});
 }
 
 export function saveSubscription(input: {
@@ -258,6 +313,20 @@ export function setSubscriptionCategory(
   category: MediaCategory | null
 ): Promise<{ success: boolean }> {
   return patchJson(`/api/subscriptions/${encodeURIComponent(id)}/category`, { category });
+}
+
+export function setSubscriptionCloudPolicy(
+  id: string,
+  allowCloudFallback: boolean
+): Promise<{ success: boolean; item: import('../types/subscriptions').SubscriptionItem }> {
+  return patchJson(`/api/v2/subscriptions/${encodeURIComponent(id)}/cloud-policy`, { allowCloudFallback });
+}
+
+export function runCloudTransfer(input: {
+  candidateId: string;
+  idempotencyKey: string;
+}): Promise<CloudTransferResult> {
+  return postJson('/api/v2/acquisition/cloud/transfers', { ...input, confirm: true });
 }
 
 export function getSubscriptionPushPreview(id: string): Promise<{ success: boolean; preview: SubscriptionPushPreview }> {

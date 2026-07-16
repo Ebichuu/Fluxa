@@ -591,6 +591,10 @@ class SourceContractTest(unittest.TestCase):
                 "symedia": True,
                 "subscriptions": True,
                 "nasemby-core": True,
+                "cloud115": False,
+                "telegram": False,
+                "hdhive": False,
+                "moviepilot": False,
             },
         )
         serialized = response.get_data(as_text=True)

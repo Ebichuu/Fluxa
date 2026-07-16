@@ -1,0 +1,21 @@
+{
+  "contractVersion": 2,
+  "frozenAt": "2026-07-17",
+  "pathVersioning": "url-v2",
+  "routeCount": 13,
+  "routes": [
+    { "method": "GET", "path": "/api/v2/integrations", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "integrations", "client": true },
+    { "method": "POST", "path": "/api/v2/integrations/cloud115/probes", "audience": "browser", "auth": "session", "effect": "external-read", "response": "json", "success": [200], "migrationGroup": "integrations", "client": true },
+    { "method": "GET", "path": "/api/v2/integrations/telegram/channels", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "integrations", "client": true },
+    { "method": "POST", "path": "/api/v2/integrations/telegram/login-codes", "audience": "browser", "auth": "session", "effect": "external-write", "response": "json", "success": [200], "migrationGroup": "integrations", "client": true },
+    { "method": "POST", "path": "/api/v2/integrations/telegram/session", "audience": "browser", "auth": "session", "effect": "session-write", "response": "json", "success": [200], "migrationGroup": "integrations", "client": true },
+    { "method": "DELETE", "path": "/api/v2/integrations/telegram/session", "audience": "browser", "auth": "session", "effect": "session-write", "response": "json", "success": [200], "migrationGroup": "integrations", "client": true },
+    { "method": "PUT", "path": "/api/v2/integrations/telegram/channels", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "integrations", "client": true },
+    { "method": "GET", "path": "/api/v2/integrations/hdhive/authorization", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "integrations", "client": true },
+    { "method": "PATCH", "path": "/api/v2/integrations/hdhive/config", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "integrations", "client": false },
+    { "method": "POST", "path": "/api/v2/integrations/hdhive/check-ins", "audience": "browser", "auth": "session", "effect": "external-write", "response": "json", "success": [200], "migrationGroup": "integrations", "client": true },
+    { "method": "GET", "path": "/api/v2/acquisition/cloud/candidates", "audience": "browser", "auth": "session", "effect": "external-read", "response": "json", "success": [200], "migrationGroup": "cloud-acquisition", "client": true },
+    { "method": "POST", "path": "/api/v2/acquisition/cloud/transfers", "audience": "browser", "auth": "session", "effect": "external-write", "response": "json", "success": [200, 202], "migrationGroup": "cloud-acquisition", "client": true },
+    { "method": "PATCH", "path": "/api/v2/subscriptions/:id/cloud-policy", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": true }
+  ]
+}

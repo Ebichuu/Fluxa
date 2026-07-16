@@ -44,6 +44,7 @@ export interface SubscriptionItem {
   mediaType: string;
   tmdbId?: string;
   mediaCategory?: MediaCategory;
+  allowCloudFallback?: boolean;
   posterUrl: string;
   backdropUrl?: string;
   progressText: string;
@@ -196,6 +197,15 @@ export interface SubscriptionListResponse {
 
 export interface SubscriptionHubConfig {
   mode: string;
+  cloud_acquisition?: {
+    enabled: boolean;
+    auto_fallback_enabled: boolean;
+    manual_actions_enabled: boolean;
+    wait_minutes: number;
+    sources: Array<'telegram' | 'hdhive' | 'pansou'>;
+    auto_select: boolean;
+    policy_version?: number;
+  };
   resource_rules?: {
     enabled: boolean;
     auto_transfer: boolean;

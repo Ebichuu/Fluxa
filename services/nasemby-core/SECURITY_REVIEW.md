@@ -119,6 +119,17 @@
 - 阶段 6 自动测试全部使用固定样本、临时状态文件和模拟 qB/Emby 客户端，没有连接真实 qB、Emby、Symedia，也没有调用 Torra、115、Telegram 或 HDHive 写动作。React、影院大厅、顶部导航、媒体队列和原 Mineradio 资源未修改。
 - 阶段 6 变更范围安全扫描新增命中为 0；Core 全目录仍是既有 `2 Critical / 68 High / 2 Medium / 1 Low` 基线。质量关卡为 0 错误、35 条复杂度/长度警告和 18 条行长提示，关卡通过；这些提示作为后续拆分候选记录，不在契约迁移阶段混入行为重构。
 
+## 2026-07-17 v2 网盘与集成安全复核
+
+- 13 条 `/api/v2` 路由全部受整站会话保护，危险方法逐条验证错误 Origin 返回 403。
+- 原 `MCC_PRESERVED_CORE_API_ENABLED` 总开关继续关闭；新入口分别使用集成探测、集成管理、Telegram、HDHive、网盘搜索和网盘转存细分闸门。
+- 候选响应只包含随机短期 ID、标题、来源、质量和大小，不返回完整分享链接、提取密码、115 Cookie 或上游原始对象。
+- 单条转存执行前重新读取任务链；Torra 订阅、qB 任务、Symedia 记录或 Emby 索引任一存在都会阻止重复获取。
+- 幂等状态写入 `data/cloud_transfer_actions.json`；相同幂等键不会重复调用上游，未知结果只返回 `unknown`，不盲目重试。
+- Telegram 登录码 60 秒冷却，HDHive 签到一小时冷却；服务端已保存的敏感字段不回填 React。
+- 新增测试仅使用临时目录和模拟函数，没有连接或写入真实 115、Telegram、HDHive、Torra、qB、Symedia 或 Emby。
+- 本轮扫描：生产 Python 0 Critical / 0 High，React 0 告警，npm 0 漏洞。2 Medium / 1 Low 仍是提醒随机数、文件校验 MD5 和短显示 ID SHA1，均不用于认证、签名或密钥。
+
 ## 交付闸门
 
 - 8787 只允许受信局域网或 HTTPS 反向代理访问，公网不得直接暴露源站端口。

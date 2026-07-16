@@ -7,11 +7,11 @@
 - 最新代码统一保存在 `D:\Projects\媒体控制中心v2`。
 - Python 是唯一生产后端；Node.js 只用于 React / Vite 构建。
 - NasEmby Python 源码负责订阅、发现、日历、资源规则和调度，只使用一份订阅台账。
-- PT / Torra 是默认获取主通道，自动云盘兜底关闭。
-- 网盘订阅能力必须保留；115、Telegram、HDHive / pansou、Symedia 等业务模块仍在。统一设置、订阅开关、安全 API 和兜底状态机尚未完成，见网盘计划。
+- PT / Torra 是默认获取主通道；旧的“资源优先”默认配置会安全迁移到 Torra，自动云盘兜底保持关闭。
+- 网盘订阅能力已经进入统一页面和 `/api/v2`：包含全局/订阅级开关、115、Telegram、HDHive / pansou 状态与管理入口、脱敏候选预览、单条转存复查、幂等、冷却和任务中心支线状态。
 - 原 NasEmby 核心接口和调用关系已经恢复；生产默认禁用，但源码、模拟测试入口和原页面参考快照全部保留。
 - 影院大厅、顶部导航、媒体队列和 Mineradio 原视觉保持不变。
-- fnOS 与真实订阅测试暂缓，当前只进行代码、Docker 和本地预览验收。
+- fnOS 与真实订阅测试暂缓；网盘搜索、转存、登录、签到和自动兜底均由默认关闭的细分闸门保护。
 
 ## 架构
 
@@ -23,7 +23,7 @@
       ├─ React 静态页面
       ├─ Mineradio 原始视觉与数据桥接
       ├─ NasEmby 订阅、发现、日历和资源规则
-      └─ Emby / qB / Torra / Symedia / 任务链
+      └─ Emby / qB / Torra / Symedia / 115 / Telegram / HDHive / 任务链
 
 Node.js / Vite
   → 仅在开发和镜像构建时生成前端 dist
@@ -57,7 +57,7 @@ Vite 会把 `/api` 和 `/mineradio` 代理到 Python。
 ## 本地检查
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -v
+python -m unittest discover -s services/nasemby-core/tests -v  # 当前 83 项
 npm test
 npm run build
 docker compose config --services
@@ -89,6 +89,10 @@ MCC_SUBSCRIPTION_SCHEDULER_ENABLED=false
 NASEMBY_CORE_WRITE_ENABLED=false
 MCC_PRESERVED_CORE_API_ENABLED=false
 TORRA_PUSH_ENABLED=false
+MCC_INTEGRATION_PROBE_ENABLED=false
+MCC_INTEGRATION_MANAGEMENT_ENABLED=false
+MCC_CLOUD_SEARCH_ENABLED=false
+MCC_CLOUD_TRANSFER_ENABLED=false
 ```
 
 因此默认只能读取当前页面、订阅快照和服务状态，不会创建真实订阅、运行调度、整体开放原核心接口或推送 Torra。
@@ -112,6 +116,7 @@ TORRA_PUSH_ENABLED=false
 - [当前计划](docs/PLAN.md)
 - [系统框架](docs/FRAMEWORK.md)
 - [API 契约](docs/API_CONTRACT.md)
+- [HTTP v2 机器契约](docs/contracts/http-api-contract-v2.json)
 - [核心接口能力矩阵](docs/CORE_API_CAPABILITY_MATRIX.md)
 - [部署与回滚](docs/DEPLOYMENT.md)
 - [实现来源](docs/IMPLEMENTATION_SOURCES.md)

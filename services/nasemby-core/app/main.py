@@ -25,6 +25,8 @@ from app.qbittorrent_action_runtime import register_qbittorrent_actions
 from app.torra_read_runtime import register_torra_read
 from app.symedia_read_runtime import register_symedia_read
 from app.task_chain_runtime import register_task_chain
+from app.integration_runtime import register_integrations
+from app.cloud_acquisition_runtime import register_cloud_acquisition
 from app.hdhive_auth import (
     hdhive_auth_url,
     hdhive_checkin_now,
@@ -489,6 +491,38 @@ def api_health():
                 "name": "NasEmby Core",
                 "type": "subscription-core",
                 "configured": True,
+            },
+            {
+                "id": "cloud115",
+                "name": "115",
+                "type": "cloud-storage",
+                "configured": bool(runtime_config.get("ENV_115_COOKIES")),
+            },
+            {
+                "id": "telegram",
+                "name": "Telegram",
+                "type": "resource-source",
+                "configured": bool(
+                    runtime_config.get("ENV_TG_API_ID") and runtime_config.get("ENV_TG_API_HASH")
+                ),
+            },
+            {
+                "id": "hdhive",
+                "name": "HDHive / pansou",
+                "type": "resource-source",
+                "configured": _environment_flag_enabled(
+                    "ENV_HDHIVE_CHECKIN_ENABLED",
+                    environment=runtime_config,
+                ),
+            },
+            {
+                "id": "moviepilot",
+                "name": "MoviePilot",
+                "type": "pt-compatibility",
+                "configured": bool(
+                    runtime_config.get("ENV_MOVIEPILOT_URL")
+                    and runtime_config.get("ENV_MOVIEPILOT_API_TOKEN")
+                ),
             },
         ],
     })
@@ -1136,6 +1170,10 @@ def create_app(
     torra_clock=None,
     symedia_client_factory=None,
     symedia_clock=None,
+    integration_functions=None,
+    cloud_functions=None,
+    cloud_state_path=None,
+    cloud_clock=None,
 ):
     environment = os.environ if access_environment is None else access_environment
     application = Flask(__name__, static_folder=None)
@@ -1181,6 +1219,18 @@ def create_app(
     )
     register_emby_refresh(application)
     register_task_chain(application)
+    register_integrations(
+        application,
+        environment=environment,
+        functions=integration_functions,
+    )
+    register_cloud_acquisition(
+        application,
+        environment=environment,
+        functions=cloud_functions,
+        state_path=cloud_state_path,
+        clock=cloud_clock,
+    )
     register_discover_compat(application)
     register_subscription_compat(application, environment=environment)
     register_frontend(

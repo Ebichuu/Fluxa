@@ -40,6 +40,13 @@ Compose 固定：
 MCC_SUBSCRIPTION_SCHEDULER_ENABLED=false
 NASEMBY_CORE_WRITE_ENABLED=false
 TORRA_PUSH_ENABLED=false
+MCC_PRESERVED_CORE_API_ENABLED=false
+MCC_INTEGRATION_PROBE_ENABLED=false
+MCC_INTEGRATION_MANAGEMENT_ENABLED=false
+MCC_TELEGRAM_MANAGEMENT_ENABLED=false
+MCC_HDHIVE_MANAGEMENT_ENABLED=false
+MCC_CLOUD_SEARCH_ENABLED=false
+MCC_CLOUD_TRANSFER_ENABLED=false
 ```
 
 代码收口和首次部署阶段不要开启这些值。
@@ -104,4 +111,6 @@ upload/
 4. 核对分类、保存路径、Torra 查重和下载器 ID。
 5. 再开启 `TORRA_PUSH_ENABLED`，只验证单条 PT / Torra 主链。
 6. 完整链路稳定后最后开启订阅调度。
-7. 自动云盘兜底继续关闭。
+7. 如需检查 115、Telegram、HDHive 等连接，只开启 `MCC_INTEGRATION_PROBE_ENABLED`，不同时开启管理和转存。
+8. 用户指定单条网盘测试后，先开启 `MCC_CLOUD_SEARCH_ENABLED` 验证脱敏候选，再单独开启 `MCC_CLOUD_TRANSFER_ENABLED` 执行一次转存。
+9. 自动云盘兜底和后台执行器继续关闭。

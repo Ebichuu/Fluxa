@@ -1,21 +1,29 @@
 import { useEffect, useState } from 'react';
-import { CloudOff, Database, KeyRound, LogOut, RotateCcw, Save, Settings2, ShieldCheck } from 'lucide-react';
+import { Cloud, CloudOff, Database, KeyRound, LogOut, RefreshCcw, RotateCcw, Save, Settings2, ShieldCheck, Timer } from 'lucide-react';
 import {
   clearSubscriptions,
+  getHdhiveAuthorization,
   getAuthSession,
+  getIntegrationSummary,
   getSubscriptionConfig,
+  getTelegramChannels,
   logoutAuthSession,
+  logoutTelegram,
+  probeCloud115,
+  runHdhiveCheckin,
   saveSubscriptionConfig,
+  saveTelegramChannels,
+  sendTelegramLoginCode,
+  signInTelegram,
   type AuthSessionResponse
 } from '../../services/api';
 import type { SubscriptionHubConfig } from '../../types/subscriptions';
+import type { IntegrationSummary } from '../../types/integrations';
 
 const subscriptionModes = [
-  { key: 'moviepilot', label: '模式 1 · MoviePilot', note: '直接推送到 MoviePilot 订阅' },
-  { key: 'torra', label: '模式 2 · Torra', note: 'PT 优先，直接推送到 Torra 订阅' },
-  { key: 'resource', label: '模式 3 · 资源转存', note: '搜索频道与影巢资源并按规则转存' },
-  { key: 'resource_then_pt', label: '模式 4 · 资源优先，PT 兜底', note: '有资源则转存，无资源再转推 PT' },
-  { key: 'symedia', label: '模式 5 · Symedia', note: '推送到 Symedia 并触发搜索' }
+  { key: 'torra', label: 'PT / Torra 主通道', note: '默认策略：先由 Torra 搜索，再交给 qB 下载' },
+  { key: 'moviepilot', label: 'MoviePilot 兼容通道', note: '保留 NasEmby 原 MoviePilot 推送能力' },
+  { key: 'symedia', label: 'Symedia 兼容通道', note: '保留 NasEmby 原 Symedia 推送能力' }
 ] as const;
 
 const subscriptionSourceGroups = [
@@ -78,6 +86,25 @@ const connectionGroups: Array<{
     fields: [
       ['TMDB_API_KEY', 'TMDB API Key']
     ]
+  },
+  {
+    title: '115 与资源来源',
+    note: '115 · Telegram · HDHive / pansou',
+    fields: [
+      ['ENV_115_COOKIES', '115 Cookie'],
+      ['ENV_UPLOAD_PID', '115 目标目录'],
+      ['ENV_TG_API_ID', 'Telegram API ID'],
+      ['ENV_TG_API_HASH', 'Telegram API Hash'],
+      ['ENV_HDHIVE_CHECKIN_ENABLED', 'HDHive 自动签到']
+    ]
+  },
+  {
+    title: 'PT 兼容能力',
+    note: 'MoviePilot 作为可选兼容通道，不改变 Torra 默认优先级',
+    fields: [
+      ['ENV_MOVIEPILOT_URL', 'MoviePilot 地址'],
+      ['ENV_MOVIEPILOT_API_TOKEN', 'MoviePilot Token']
+    ]
   }
 ];
 
@@ -118,6 +145,15 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
 
   const douban = config.douban;
   const currentModeLabel = subscriptionModes.find((mode) => mode.key === config.mode)?.label ?? config.mode;
+  const cloud = config.cloud_acquisition ?? {
+    enabled: false,
+    auto_fallback_enabled: false,
+    manual_actions_enabled: false,
+    wait_minutes: 360,
+    sources: ['telegram', 'hdhive'] as Array<'telegram' | 'hdhive' | 'pansou'>,
+    auto_select: false,
+    policy_version: 1
+  };
   const rules = config.resource_rules ?? {
     enabled: false,
     auto_transfer: true,
@@ -144,6 +180,23 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
   };
   const patchRules = (changes: Partial<typeof rules>) => {
     setConfig({ ...config, resource_rules: { ...rules, ...changes } });
+  };
+  const patchCloud = (changes: Partial<typeof cloud>) => {
+    const next = { ...cloud, ...changes };
+    if (!next.enabled) {
+      next.auto_fallback_enabled = false;
+      next.manual_actions_enabled = false;
+      next.auto_select = false;
+    }
+    if (!next.auto_fallback_enabled) next.auto_select = false;
+    setConfig({ ...config, cloud_acquisition: next });
+  };
+  const toggleCloudSource = (source: 'telegram' | 'hdhive' | 'pansou') => {
+    patchCloud({
+      sources: cloud.sources.includes(source)
+        ? cloud.sources.filter((item) => item !== source)
+        : [...cloud.sources, source]
+    });
   };
   const cycleRule = (groupKey: string, value: string) => {
     const group = rules.groups[groupKey] ?? { require: [], reject: [] };
@@ -277,7 +330,7 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
       </div>
 
       <div className="sub-config__row">
-        <span>订阅模式（来自 NasEmby 源码）</span>
+        <span>PT 主通道（NasEmby 原 provider 仍保留为兼容能力）</span>
         <div className="sub-config__modes">
           {subscriptionModes.map((mode) => (
             <label className={config.mode === mode.key ? 'is-active' : undefined} key={mode.key}>
@@ -298,12 +351,73 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
         </div>
       </div>
 
+      <div className="sub-config__row sub-config__cloud">
+        <div className="sub-config__rule-head">
+          <label>
+            <input checked={cloud.enabled} type="checkbox" onChange={(event) => patchCloud({ enabled: event.target.checked })} />
+            <Cloud size={14} />允许网盘第二通道
+          </label>
+          <strong>{cloud.enabled ? '已允许' : '默认关闭'}</strong>
+        </div>
+        <small>PT / Torra 始终先运行；只有满足等待、失败和重复检查条件后，网盘才可能接手。</small>
+        <div className="sub-config__toggles">
+          <label>
+            <input
+              checked={cloud.manual_actions_enabled}
+              disabled={!cloud.enabled}
+              type="checkbox"
+              onChange={(event) => patchCloud({ manual_actions_enabled: event.target.checked })}
+            />
+            人工候选与单条转存
+          </label>
+          <label>
+            <input
+              checked={cloud.auto_fallback_enabled}
+              disabled={!cloud.enabled}
+              type="checkbox"
+              onChange={(event) => patchCloud({ auto_fallback_enabled: event.target.checked })}
+            />
+            自动兜底
+          </label>
+          <label>
+            <input
+              checked={cloud.auto_select}
+              disabled={!cloud.enabled || !cloud.auto_fallback_enabled}
+              type="checkbox"
+              onChange={(event) => patchCloud({ auto_select: event.target.checked })}
+            />
+            自动选择候选
+          </label>
+          <label className="sub-config__time">
+            <Timer size={13} />PT 等待
+            <input
+              disabled={!cloud.enabled}
+              max={10080}
+              min={30}
+              step={30}
+              type="number"
+              value={cloud.wait_minutes}
+              onChange={(event) => patchCloud({ wait_minutes: Number(event.target.value) })}
+            />
+            分钟
+          </label>
+        </div>
+        <div className="sub-config__sources" aria-label="网盘候选来源">
+          {([['telegram', 'Telegram'], ['hdhive', 'HDHive'], ['pansou', 'pansou']] as const).map(([key, label]) => (
+            <label key={key}>
+              <input checked={cloud.sources.includes(key)} disabled={!cloud.enabled} type="checkbox" onChange={() => toggleCloudSource(key)} />
+              {label}
+            </label>
+          ))}
+        </div>
+      </div>
+
       <div className="sub-config__row sub-config__rules">
         <div className="sub-config__rule-head">
           <label><input checked={rules.enabled} type="checkbox" onChange={(event) => patchRules({ enabled: event.target.checked })} />精准转存</label>
           <label>每次最多<input max={50} min={1} type="number" value={rules.max_per_run} onChange={(event) => patchRules({ max_per_run: Number(event.target.value) })} /></label>
         </div>
-        <small>资源规则只在模式 3/4 使用；PT / Torra 模式不会调用云盘转存。</small>
+        <small>资源规则只用于网盘候选选择；关闭网盘通道时不会执行搜索或转存。</small>
         <div className="sub-config__rule-groups">
           {resourceRuleGroups.map((group) => (
             <fieldset key={group.key}>
@@ -377,6 +491,13 @@ export function SettingsPage() {
   const [accessSession, setAccessSession] = useState<AuthSessionResponse | null>(null);
   const [accessError, setAccessError] = useState('');
   const [loggingOut, setLoggingOut] = useState(false);
+  const [integrations, setIntegrations] = useState<IntegrationSummary | null>(null);
+  const [integrationError, setIntegrationError] = useState('');
+  const [probingIntegrations, setProbingIntegrations] = useState(false);
+  const [integrationAction, setIntegrationAction] = useState('');
+  const [integrationMessage, setIntegrationMessage] = useState('');
+  const [telegramLogin, setTelegramLogin] = useState({ phone: '', api_id: '', api_hash: '', code: '' });
+  const [telegramChannels, setTelegramChannels] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -391,6 +512,35 @@ export function SettingsPage() {
       cancelled = true;
     };
   }, []);
+
+  const loadIntegrations = (probe = false) => {
+    setProbingIntegrations(probe);
+    setIntegrationError('');
+    getIntegrationSummary(probe)
+      .then(setIntegrations)
+      .catch((error: unknown) => setIntegrationError(error instanceof Error ? error.message : '集成状态读取失败'))
+      .finally(() => setProbingIntegrations(false));
+  };
+
+  useEffect(() => {
+    loadIntegrations(false);
+    getTelegramChannels()
+      .then((payload) => setTelegramChannels(payload.channels.map((channel) => channel.input).filter(Boolean).join('\n')))
+      .catch(() => undefined);
+  }, []);
+
+  const runIntegrationAction = async (key: string, action: () => Promise<string>) => {
+    setIntegrationAction(key);
+    setIntegrationMessage('');
+    try {
+      setIntegrationMessage(await action());
+      loadIntegrations(false);
+    } catch (error) {
+      setIntegrationMessage(error instanceof Error ? error.message : '操作失败');
+    } finally {
+      setIntegrationAction('');
+    }
+  };
 
   const logout = () => {
     setLoggingOut(true);
@@ -408,13 +558,13 @@ export function SettingsPage() {
       <section className="ops-hero ops-hero--settings">
         <div>
           <p className="ops-eyebrow">SETTINGS / CONTROL POLICY</p>
-          <h1>设置只管理策略与显示，不把敏感凭据存进浏览器。</h1>
+          <h1>在一个页面管理服务连接，但不在浏览器持久保存敏感凭据。</h1>
           <p className="ops-deck">PT 是默认获取通道；自动云盘兜底保持关闭，人工补资源不受影响。</p>
         </div>
         <div className="ops-settings-guard">
           <span><KeyRound size={15} />凭据策略</span>
-          <strong>环境变量只读</strong>
-          <small>账号、密码与 Token 不在前端保存</small>
+          <strong>服务端安全保存</strong>
+          <small>已保存的账号、密码与 Token 不回填前端</small>
         </div>
       </section>
 
@@ -428,10 +578,126 @@ export function SettingsPage() {
             <b>始终优先</b>
           </div>
           <div className="ops-policy-row">
-            <div><CloudOff size={16} /><span><strong>自动云盘兜底</strong><small>后端开关与证据链尚未接入</small></span></div>
+            <div><CloudOff size={16} /><span><strong>自动云盘兜底</strong><small>独立开关、证据链与单条动作闸门已接入</small></span></div>
             <b>关闭</b>
           </div>
           <p className="ops-settings-note">关闭自动兜底不会影响人工资源搜索、确认转存或手动补资源。</p>
+        </article>
+
+        <article className="ops-settings-card ops-settings-card--wide">
+          <header className="ops-settings-card__head">
+            <div><span><Cloud size={16} /></span><div><small>NASEMBY INTEGRATIONS</small><h2>网盘与兼容服务</h2></div></div>
+            <button className="tool-link" disabled={probingIntegrations || !integrations?.probeEnabled} type="button" onClick={() => loadIntegrations(true)}>
+              <RefreshCcw aria-hidden="true" size={14} />
+              {probingIntegrations ? '检查中' : '检查连接'}
+            </button>
+          </header>
+          <div className="ops-connection-grid">
+            {(integrations?.services ?? []).map((service) => (
+              <section className="ops-connection-group" key={service.id}>
+                <div className="ops-connection-group__head">
+                  <h3>{service.name}</h3>
+                  <p>{service.role}</p>
+                </div>
+                <div className="ops-policy-row">
+                  <span><strong>{service.configured ? '已配置' : '未配置'}</strong><small>{service.detail}</small></span>
+                  <b>{service.connected === true ? '在线' : service.connected === false ? '不可用' : '未检查'}</b>
+                </div>
+              </section>
+            ))}
+          </div>
+          {!integrations && !integrationError && <p className="ops-settings-note">正在读取 NasEmby 集成状态…</p>}
+          {integrationError && <p className="ops-access-error" role="alert">{integrationError}</p>}
+          {integrations && !integrations.probeEnabled && <p className="ops-settings-note">连接检查默认关闭；fnOS 配置 MCC_INTEGRATION_PROBE_ENABLED 后可人工检查。</p>}
+          <div className="sub-config__row sub-config__row--pair ops-integration-actions">
+            <section>
+              <h3>115 账号</h3>
+              <p>只读取账号状态，不把 Cookie 返回浏览器。</p>
+              <button
+                className="tool-link"
+                disabled={Boolean(integrationAction) || !integrations?.probeEnabled}
+                type="button"
+                onClick={() => runIntegrationAction('115', async () => (await probeCloud115()).ok ? '115 账号检查通过' : '115 账号不可用')}
+              >
+                <RefreshCcw size={14} />{integrationAction === '115' ? '检查中' : '检查 115 账号'}
+              </button>
+            </section>
+            <section>
+              <h3>HDHive / pansou</h3>
+              <p>授权与签到分别受管理开关和一小时冷却保护。</p>
+              <div className="sub-config__foot">
+                <button
+                  className="tool-link"
+                  disabled={Boolean(integrationAction)}
+                  type="button"
+                  onClick={() => runIntegrationAction('hdhive-auth', async () => {
+                    const payload = await getHdhiveAuthorization();
+                    window.open(payload.authorizationUrl, '_blank', 'noopener,noreferrer');
+                    return '已打开 HDHive 授权页';
+                  })}
+                >
+                  <KeyRound size={14} />获取授权
+                </button>
+                <button
+                  className="tool-link"
+                  disabled={Boolean(integrationAction) || !integrations?.managementEnabled}
+                  type="button"
+                  onClick={() => runIntegrationAction('hdhive-checkin', async () => (await runHdhiveCheckin()).message)}
+                >
+                  <RefreshCcw size={14} />{integrationAction === 'hdhive-checkin' ? '执行中' : '立即签到'}
+                </button>
+              </div>
+            </section>
+          </div>
+          <div className="sub-config__row ops-integration-telegram">
+            <div className="sub-config__rule-head"><strong>Telegram 登录与频道</strong><small>输入只发送到当前同源 Python 后端，不写入浏览器存储。</small></div>
+            <div className="sub-config__row sub-config__row--pair">
+              <label>手机号<input autoComplete="tel" placeholder="+8618000000000" type="tel" value={telegramLogin.phone} onChange={(event) => setTelegramLogin({ ...telegramLogin, phone: event.target.value })} /></label>
+              <label>API ID<input inputMode="numeric" type="text" value={telegramLogin.api_id} onChange={(event) => setTelegramLogin({ ...telegramLogin, api_id: event.target.value })} /></label>
+              <label>API Hash<input autoComplete="off" type="password" value={telegramLogin.api_hash} onChange={(event) => setTelegramLogin({ ...telegramLogin, api_hash: event.target.value })} /></label>
+              <label>验证码<input autoComplete="one-time-code" inputMode="numeric" type="text" value={telegramLogin.code} onChange={(event) => setTelegramLogin({ ...telegramLogin, code: event.target.value })} /></label>
+            </div>
+            <label>
+              资源频道（每行一个用户名、链接或频道 ID）
+              <textarea rows={3} value={telegramChannels} onChange={(event) => setTelegramChannels(event.target.value)} />
+            </label>
+            <div className="sub-config__foot">
+              <button
+                className="tool-link"
+                disabled={Boolean(integrationAction) || !integrations?.managementEnabled}
+                type="button"
+                onClick={() => runIntegrationAction('telegram-code', async () => {
+                  const payload = await sendTelegramLoginCode(telegramLogin);
+                  setTelegramLogin({ ...telegramLogin, api_hash: '' });
+                  return payload.message;
+                })}
+              >发送验证码</button>
+              <button
+                className="tool-link"
+                disabled={Boolean(integrationAction) || !integrations?.managementEnabled}
+                type="button"
+                onClick={() => runIntegrationAction('telegram-login', async () => (await signInTelegram(telegramLogin.code)).authorized ? 'Telegram 登录成功' : 'Telegram 登录未完成')}
+              >完成登录</button>
+              <button
+                className="tool-link"
+                disabled={Boolean(integrationAction) || !integrations?.managementEnabled}
+                type="button"
+                onClick={() => runIntegrationAction('telegram-channels', async () => {
+                  const rows = telegramChannels.split(/\r?\n/).map((input) => input.trim()).filter(Boolean).map((input) => ({ input }));
+                  const payload = await saveTelegramChannels(rows);
+                  return `已保存 ${payload.channelCount} 个 Telegram 频道`;
+                })}
+              >保存频道</button>
+              <button
+                className="tool-link"
+                disabled={Boolean(integrationAction) || !integrations?.managementEnabled}
+                type="button"
+                onClick={() => runIntegrationAction('telegram-logout', async () => { await logoutTelegram(); return 'Telegram 已退出'; })}
+              >退出 Telegram</button>
+            </div>
+          </div>
+          {integrationMessage && <p className="ops-settings-note" role="status">{integrationMessage}</p>}
+          {integrations && !integrations.managementEnabled && <p className="ops-settings-note">敏感管理动作默认禁用；fnOS 需同时开启总管理开关和对应服务细分开关。</p>}
         </article>
 
         <article className="ops-settings-card ops-settings-card--wide">

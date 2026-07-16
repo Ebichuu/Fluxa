@@ -357,7 +357,40 @@ def _emby_has(index, media_type: str, tmdb_id: str) -> bool:
     return tmdb_id in index["movies" if media_type == "movie" else "series"]
 
 
-def _build_subscription_item(subscription, torra_rows, qb_tasks, symedia_rows, emby_index, urls, source, now):
+def _acquisition_state(subscription, torra, qb_tasks, symedia_rows, indexed, policy, now):
+    enabled = bool(policy.get("enabled"))
+    subscription_enabled = bool(subscription.get("allowCloudFallback"))
+    if indexed or symedia_rows:
+        state, detail = "completed", "已经进入入库链路"
+    elif torra or qb_tasks:
+        state, detail = "blocked_by_pt", "PT 主链已有证据，不启动网盘"
+    elif not enabled:
+        state, detail = "disabled", "全局网盘通道关闭"
+    elif not subscription_enabled:
+        state, detail = "subscription_disabled", "当前订阅未允许网盘兜底"
+    elif not policy.get("auto_fallback_enabled"):
+        state = "manual_only" if policy.get("manual_actions_enabled") else "disabled"
+        detail = "只允许人工预览" if state == "manual_only" else "网盘人工与自动动作均关闭"
+    else:
+        created_at = _parse_timestamp(subscription.get("createdAt") or "")
+        waited_minutes = max(0, (now - created_at).total_seconds() / 60) if created_at else 0
+        wait_minutes = max(30, int(_number(policy.get("wait_minutes")) or 360))
+        if waited_minutes >= wait_minutes:
+            state, detail = "cloud_allowed", "PT 等待达到阈值，允许进入网盘候选"
+        else:
+            state, detail = "pt_waiting", f"继续等待 PT，阈值 {wait_minutes} 分钟"
+    return {
+        "primary": "pt",
+        "cloudState": state,
+        "cloudDetail": detail,
+        "cloudEnabled": enabled,
+        "subscriptionCloudEnabled": subscription_enabled,
+        "autoFallbackEnabled": bool(policy.get("auto_fallback_enabled")),
+        "manualActionsEnabled": bool(policy.get("manual_actions_enabled")),
+    }
+
+
+def _build_subscription_item(subscription, torra_rows, qb_tasks, symedia_rows, emby_index, urls, source, now, cloud_policy):
     torra = _match_torra(subscription, torra_rows)
     matched_symedia = _match_symedia(subscription, symedia_rows)
     matched_qb, qb_confidence = _match_qb(subscription, torra, qb_tasks)
@@ -400,6 +433,15 @@ def _build_subscription_item(subscription, torra_rows, qb_tasks, symedia_rows, e
             "symediaIds": [_string(row.get("id") or f"{row.get('date')}:{row.get('src')}") for row in matched_symedia],
         },
         "updatedAt": _newest([subscription["updatedAt"], *(step["timestamp"] for step in steps)]),
+        "acquisition": _acquisition_state(
+            subscription,
+            torra,
+            matched_qb,
+            matched_symedia,
+            indexed,
+            cloud_policy,
+            now,
+        ),
     }
     return item, matched_qb, matched_symedia
 
@@ -473,6 +515,7 @@ def build_task_chain(input_data: dict) -> dict:
             input_data["urls"],
             input_data.get("subscriptionSource") or "中控",
             now,
+            input_data.get("cloudPolicy") or {},
         )
         subscription_items.append(item)
         used_qb.update(_string(task.get("hash")) for task in qb_tasks)
@@ -565,6 +608,7 @@ def map_task_subscriptions(payload: dict) -> list[dict]:
             "seasonNumber": _subscription_season(row),
             "createdAt": _first_text(row, ("created_at",)),
             "updatedAt": _first_text(row, ("updated_at",)),
+            "allowCloudFallback": bool(row.get("allow_cloud_fallback")),
         }
         if item["id"] and item["title"] and media_type in {"movie", "tv"}:
             result.append(item)
@@ -643,6 +687,9 @@ class TaskChainService:
                 "symedia": symedia_error,
                 "emby": emby_error,
             },
+            "cloudPolicy": discover_runtime.normalize_cloud_acquisition(
+                discover_runtime.load_subscription_config().get("cloud_acquisition")
+            ),
             "now": self.clock(),
         })
 

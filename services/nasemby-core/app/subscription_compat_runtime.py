@@ -111,6 +111,7 @@ def _core_item(body):
         "source": "manual",
         "source_label": "手动订阅",
         "origin": "manual",
+        "allow_cloud_fallback": bool(body.get("allowCloudFallback", False)),
     }
 
 
@@ -330,6 +331,23 @@ def register_subscription_compat(app: Flask, environment=None):
                 item.pop("media_category", None)
             else:
                 item["media_category"] = category
+
+        item = _update_item(key, update)
+        if not item:
+            return _error("SUBSCRIPTION_NOT_FOUND", "订阅不存在", 404)
+        return jsonify({"success": True, "item": map_subscription_item(item)})
+
+    @app.patch("/api/v2/subscriptions/<key>/cloud-policy", endpoint="mcc_v2_subscriptions_cloud_policy")
+    def subscriptions_cloud_policy(key):
+        denied = _write_guard(environment)
+        if denied:
+            return denied
+        body = request.get_json(silent=True) or {}
+        if not isinstance(body.get("allowCloudFallback"), bool):
+            return _error("CLOUD_POLICY_INVALID", "allowCloudFallback 必须是布尔值", 400)
+
+        def update(item):
+            item["allow_cloud_fallback"] = body["allowCloudFallback"]
 
         item = _update_item(key, update)
         if not item:

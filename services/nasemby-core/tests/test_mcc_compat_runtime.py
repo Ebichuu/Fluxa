@@ -13,6 +13,7 @@ from app.main import create_app
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 CONTRACT_PATH = REPOSITORY_ROOT / "docs" / "contracts" / "http-api-contract-v1.json"
+CONTRACT_V2_PATH = REPOSITORY_ROOT / "docs" / "contracts" / "http-api-contract-v2.json"
 
 
 class FakeTorraClient:
@@ -90,15 +91,53 @@ class MccCompatibilityContractTests(unittest.TestCase):
 
     def test_react_api_references_are_present_in_client_contract(self):
         contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+        contract_v2 = json.loads(CONTRACT_V2_PATH.read_text(encoding="utf-8"))
         source = (REPOSITORY_ROOT / "src" / "services" / "api.ts").read_text(encoding="utf-8")
         references = re.findall(r"['\"`](/(?:api|auth)/[^'\"`?$\s]*)", source)
-        client_paths = [route["path"] for route in contract["routes"] if route["client"]]
+        client_paths = [
+            route["path"]
+            for item in (contract, contract_v2)
+            for route in item["routes"]
+            if route["client"]
+        ]
         self.assertTrue(references)
         for reference in references:
             self.assertTrue(
                 any(path == reference or path.startswith(reference) for path in client_paths),
                 f"React API 路径未进入 client 契约：{reference}",
             )
+
+    def test_v2_routes_exist_and_require_session(self):
+        contract = json.loads(CONTRACT_V2_PATH.read_text(encoding="utf-8"))
+        app = create_app(access_environment={
+            "MCC_ACCESS_KEY": "contract-access-key-1234567890",
+            "MCC_COOKIE_SECURE": "false",
+        })
+        rules = list(app.url_map.iter_rules())
+        self.assertEqual(contract["routeCount"], len(contract["routes"]))
+        client = app.test_client()
+        for route in contract["routes"]:
+            matches = [rule for rule in rules if route["method"] in (rule.methods or ()) and contract_path_matches(rule.rule, route["path"])]
+            self.assertTrue(matches, f"missing {route['method']} {route['path']}")
+            response = client.open(
+                concrete_path(route["path"]),
+                method=route["method"],
+                json={} if route["method"] in {"POST", "PATCH", "PUT", "DELETE"} else None,
+            )
+            self.assertEqual(response.status_code, 401, route["path"])
+            self.assertEqual(response.get_json().get("code"), "AUTH_REQUIRED", route["path"])
+        client.post("/auth/login", data={"access_key": "contract-access-key-1234567890"})
+        for route in contract["routes"]:
+            if route["method"] not in {"POST", "PATCH", "PUT", "DELETE"}:
+                continue
+            response = client.open(
+                concrete_path(route["path"]),
+                method=route["method"],
+                json={},
+                headers={"Origin": "https://evil.example.test"},
+            )
+            self.assertEqual(response.status_code, 403, route["path"])
+            self.assertEqual(response.get_json().get("code"), "ORIGIN_FORBIDDEN", route["path"])
 
     def test_all_protected_contract_routes_require_session_before_business_logic(self):
         contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))

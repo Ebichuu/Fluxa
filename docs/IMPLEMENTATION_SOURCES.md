@@ -79,7 +79,7 @@
 
 `legacy/`、`hdhive/` 和 `telegram_runtime.py` 不是公开旧页面。当前 NasEmby 发现、资源搜索、网盘获取、可选 provider 或通知函数仍可能动态调用它们，因此保留源码与依赖。
 
-原核心管理路由和调用关系已经恢复，默认由 `MCC_PRESERVED_CORE_API_ENABLED=false` 隔离；原静态管理页不作为第二套生产页面注册，其源码作为迁移参考保留。网盘订阅尚未完成，后续在当前 React 页面和统一 Python 安全边界内提供配置状态、候选预览和受控转存接口，计划见 `docs/CLOUD_ACQUISITION_PLAN.md`，逐接口说明见 `docs/CORE_API_CAPABILITY_MATRIX.md`。
+原核心管理路由和调用关系已经恢复，默认由 `MCC_PRESERVED_CORE_API_ENABLED=false` 隔离；原静态管理页不作为第二套生产页面注册，其源码作为迁移参考保留。当前 React 页面和统一 Python 安全边界已经提供配置状态、候选预览和受控单条转存接口；剩余自动执行器和实机验证见 `docs/CLOUD_ACQUISITION_PLAN.md`，逐接口映射见 `docs/CORE_API_CAPABILITY_MATRIX.md`。
 
 ## 5. 数据归属
 

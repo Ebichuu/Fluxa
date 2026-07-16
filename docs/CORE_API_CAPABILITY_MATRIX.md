@@ -1,6 +1,6 @@
 # NasEmby 核心接口能力矩阵
 
-状态：源码已恢复，统一页面接入进行中
+状态：源码已恢复；常用能力已映射到 v2，旧高风险入口继续保留关闭
 
 日期：2026-07-17
 
@@ -41,6 +41,14 @@
 
 ## HDHive / pansou
 
+当前统一映射：
+
+- `GET /api/v2/integrations`：脱敏状态。
+- `GET /api/v2/integrations/hdhive/authorization`：生成授权地址。
+- `PATCH /api/v2/integrations/hdhive/config`：白名单配置。
+- `POST /api/v2/integrations/hdhive/check-ins`：一小时冷却签到。
+- `/api/v2/acquisition/cloud/candidates` 与 `/transfers`：候选和单条转存。
+
 | 方法与路径 | Python 调用 | 用途 | 副作用 | 状态与后续 |
 | --- | --- | --- | --- | --- |
 | `GET /api/hdhive/authorize` | `api_hdhive_authorize → hdhive_auth_url` | 生成 HDHive 授权地址并跳转 | 进入外部授权流程 | 保留关闭；待统一授权页 |
@@ -53,6 +61,8 @@
 | `POST /api/yingchao/transfer` | `api_yingchao_transfer → transfer_yingchao_item` | 转存选中的网盘候选 | 外部写入 115 | 保留关闭；需查重、确认、幂等和冷却 |
 
 ## Telegram
+
+当前统一映射：`/api/v2/integrations/telegram/*`，覆盖登录码、登录、退出和频道读取/保存。敏感管理需要总开关与 Telegram 细分开关同时开启。
 
 | 方法与路径 | Python 调用 | 用途 | 副作用 | 状态与后续 |
 | --- | --- | --- | --- | --- |
@@ -67,6 +77,8 @@
 | `POST /api/telegram/channels/reorder` | `api_telegram_reorder_channels → telegram_reorder_channels` | 调整频道优先级 | 写配置 | 保留关闭 |
 
 ## 115
+
+当前统一映射：`POST /api/v2/integrations/cloud115/probes`、候选预览和单条转存。浏览器不接收 Cookie、完整分享链接或提取密码。原监控、清理和助力继续保留关闭。
 
 | 方法与路径 | Python 调用 | 用途 | 副作用 | 状态与后续 |
 | --- | --- | --- | --- | --- |
@@ -116,9 +128,9 @@
 2. 默认隔离：确认保留接口返回 `503 PRESERVED_CORE_API_DISABLED`，而不是 404。
 3. 模拟启用：测试中开启 `MCC_PRESERVED_CORE_API_ENABLED=true`，替换外部函数为 mock。
 4. 输入输出契约：记录每条接口的必填字段、成功响应、错误响应和脱敏要求。
-5. 副作用闸门：为 115、Torra、Symedia、Telegram、HDHive 分别建立独立开关。
-6. 新旧映射：React 新接口和保留接口调用同一个业务函数，避免行为分叉。
-7. 只有完成以上六项，才进入用户批准的实机单条链路测试。
+5. 副作用闸门：115、Telegram、HDHive 和网盘搜索/转存已经使用独立开关。
+6. 新旧映射：v2 接口与保留接口调用同一业务函数，模拟测试已经覆盖关键行为。
+7. 以上代码验证已完成；下一步才是用户批准的 fnOS 实机单条链路测试。
 
 ## 删除禁令
 

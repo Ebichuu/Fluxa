@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Clapperboard, Download, ExternalLink, HeartPulse, RefreshCcw, Rss, Wrench } from 'lucide-react';
-import { getEmbyOverview, getEmbyRefreshStatus, getQbittorrentSummary, getSymediaSummary, getTorraSummary, triggerEmbyRefresh } from '../../services/api';
+import { Clapperboard, Cloud, Download, ExternalLink, HeartPulse, RefreshCcw, Rss, Wrench } from 'lucide-react';
+import { getEmbyOverview, getEmbyRefreshStatus, getIntegrationSummary, getQbittorrentSummary, getSymediaSummary, getTorraSummary, triggerEmbyRefresh } from '../../services/api';
 import type { EmbyOverview, EmbyRefreshStatus } from '../../types/emby';
 import type { QbittorrentSummary } from '../../types/qbittorrent';
 import type { SymediaSummary } from '../../types/symedia';
 import type { TorraSummary } from '../../types/torra';
+import type { IntegrationSummary } from '../../types/integrations';
 import { formatSpeed, formatTimeAgo } from '../../utils/formatters';
 
 type ServiceState = 'ok' | 'warn' | 'down' | 'idle';
@@ -36,6 +37,7 @@ export function ControlRoom() {
   const [emby, setEmby] = useState<EmbyOverview | null>(null);
   const [torra, setTorra] = useState<TorraSummary | null>(null);
   const [symedia, setSymedia] = useState<SymediaSummary | null>(null);
+  const [integrations, setIntegrations] = useState<IntegrationSummary | null>(null);
   const [speedHistory, setSpeedHistory] = useState<number[]>(Array.from({ length: 20 }, () => 0));
   const [embyRefresh, setEmbyRefresh] = useState<EmbyRefreshStatus | null>(null);
   const [embyRefreshBusy, setEmbyRefreshBusy] = useState(false);
@@ -56,12 +58,14 @@ export function ControlRoom() {
   const loadEmby = () => getEmbyOverview().then(setEmby).catch(() => setEmby(null));
   const loadTorra = () => getTorraSummary().then(setTorra).catch(() => setTorra(null));
   const loadSymedia = () => getSymediaSummary().then(setSymedia).catch(() => setSymedia(null));
+  const loadIntegrations = () => getIntegrationSummary(false).then(setIntegrations).catch(() => setIntegrations(null));
   const loadEmbyRefresh = () => getEmbyRefreshStatus().then(setEmbyRefresh).catch(() => setEmbyRefresh(null));
   const refreshAll = () => {
     loadTorra();
     loadQb();
     loadSymedia();
     loadEmby();
+    loadIntegrations();
   };
 
   useEffect(() => {
@@ -145,6 +149,7 @@ export function ControlRoom() {
   const selected = services.find((service) => service.id === focusedService) ?? services[0];
   const onlineCount = services.filter((service) => service.state === 'ok' || service.state === 'warn').length;
   const warningCount = services.filter((service) => service.state === 'warn' || service.state === 'down').length;
+  const configuredCount = services.filter((service) => service.state !== 'idle').length;
   const points = sparkPoints(speedHistory);
 
   return (
@@ -157,9 +162,31 @@ export function ControlRoom() {
         </div>
         <div className="ops-hero-actions">
           <div className={warningCount ? 'ops-system-score ops-system-score--warn' : 'ops-system-score'}>
-            <small>核心服务</small><strong>{onlineCount} / 4 在线</strong><span>{warningCount ? `${warningCount} 项需检查` : '链路状态正常'}</span>
+            <small>核心服务</small><strong>{onlineCount} / 4 在线</strong><span>{warningCount ? `${warningCount} 项需检查` : configuredCount ? '已配置服务状态正常' : '等待配置核心服务'}</span>
           </div>
           <button className="ops-icon-button" aria-label="刷新全部服务" type="button" onClick={refreshAll}><RefreshCcw size={18} /></button>
+        </div>
+      </section>
+
+      <section className="ops-panel ops-control-integrations">
+        <header className="ops-task-toolbar">
+          <div><small>NASEMBY / SECONDARY CHANNEL</small><h2>网盘与兼容能力</h2></div>
+          <span>不参与 4 个核心服务在线评分</span>
+        </header>
+        <div className="ops-connection-grid">
+          {(integrations?.services ?? []).map((service) => (
+            <article className="ops-connection-group" key={service.id}>
+              <div className="ops-connection-group__head">
+                <h3><Cloud aria-hidden="true" size={15} />{service.name}</h3>
+                <p>{service.role}</p>
+              </div>
+              <div className="ops-policy-row">
+                <span><strong>{service.configured ? '已配置' : '未配置'}</strong><small>{service.detail}</small></span>
+                <b>{service.connected === true ? '在线' : service.connected === false ? '不可用' : '未检查'}</b>
+              </div>
+            </article>
+          ))}
+          {!integrations && <div className="ops-empty">正在读取 NasEmby 集成状态…</div>}
         </div>
       </section>
 
@@ -236,7 +263,7 @@ export function ControlRoom() {
       <section className="ops-control-foot">
         <span>内置订阅中枢</span>
         <strong>PT-only 默认策略</strong>
-        <p>自动云盘兜底保持关闭；115、Resource Gateway 与 Refind 在辅助通道接入后单独展示。</p>
+        <p>自动云盘兜底保持关闭；115、Telegram、HDHive / pansou 与 MoviePilot 已作为辅助能力单独展示。</p>
       </section>
 
       {embyRefreshConfirm && (

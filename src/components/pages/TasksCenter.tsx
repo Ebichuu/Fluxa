@@ -94,6 +94,7 @@ export function TasksCenter() {
   }), [items]);
 
   const completed115 = items.filter((item) => item.steps.find((step) => step.key === 'cloud115')?.status === 'done').length;
+  const cloudAllowed = items.filter((item) => item.acquisition?.cloudState === 'cloud_allowed' || item.acquisition?.cloudState === 'manual_only').length;
   const openTool = (url: string) => {
     if (url) window.open(url, '_blank', 'noopener,noreferrer');
   };
@@ -145,7 +146,7 @@ export function TasksCenter() {
       <section className="ops-task-summary" aria-label="任务状态摘要">
         <div><Rss size={16} /><span>中控订阅</span><strong>{items.filter((item) => item.origin === 'subscription').length} 条主干</strong></div>
         <div><Download size={16} /><span>Torra / qB</span><strong>{chain ? `${chain.services.torra.total} 订阅 · ${chain.services.qb.active} 活跃` : '读取中'}</strong></div>
-        <div><HardDrive size={16} /><span>进入 115</span><strong>{completed115} 条有下游证据</strong></div>
+        <div><HardDrive size={16} /><span>进入 115</span><strong>{completed115} 条有证据 · {cloudAllowed} 条可候选</strong></div>
         <div><Server size={16} /><span>Symedia / Emby</span><strong>{chain ? `${chain.counts.completed} 已入库` : '读取中'}</strong></div>
       </section>
 
@@ -196,6 +197,14 @@ export function TasksCenter() {
               </div>
 
               {item.state === 'blocked' && <div className="ops-task-alert"><AlertTriangle size={15} />{currentDetail(item)}</div>}
+
+              {item.acquisition && (
+                <div className={`ops-task-cloud-state ops-task-cloud-state--${item.acquisition.cloudState}`}>
+                  <HardDrive aria-hidden="true" size={14} />
+                  <strong>网盘支线</strong>
+                  <span>{item.acquisition.cloudDetail}</span>
+                </div>
+              )}
 
               <div className="ops-task-chain" aria-label="任务证据链">
                 {item.steps.map((step, index) => (

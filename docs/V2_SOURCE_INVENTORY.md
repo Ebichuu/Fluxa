@@ -19,6 +19,8 @@
 - 原提交中的 Python 业务模块没有缺失。
 - `services/nasemby-core/app/main.py` 已恢复原核心接口和调用关系，并叠加默认隔离开关。
 - React、Mineradio、测试、根 Dockerfile 和 Compose 继续位于当前运行路径。
+- v2 在保留源码上新增 `integration_runtime.py` 和 `cloud_acquisition_runtime.py`，只作为原 115、Telegram、HDHive / pansou 业务函数的统一安全入口，不复制业务实现。
+- 新增 HTTP v2 机器契约和模拟测试；原 47 条 v1 契约保持不变。
 - 原静态管理页面只保留为参考，不注册生产路由，也不进入 Docker 镜像。
 - 旧设计与计划只保留为参考；当前决策以根 README 和 `docs/` 活动文档为准。
 

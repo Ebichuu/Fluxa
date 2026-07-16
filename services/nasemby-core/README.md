@@ -8,6 +8,8 @@
 - React `dist`、SPA 回退、Mineradio 原始资源和桥接页。
 - NasEmby 原发现、JustWatch 海外流媒体、订阅、日历、资源规则和调度源码。
 - 115、Telegram、HDHive / pansou、provider 等原核心能力与接口调用关系。
+- 115、Telegram、HDHive / pansou 和 MoviePilot 的 v2 脱敏状态与细分管理接口。
+- PT 优先的网盘第二通道：全局/订阅级开关、候选预览、单条转存、重复复查、幂等、冷却和审计。
 - Emby、qBittorrent、Torra、Symedia 的服务端适配和凭据隔离。
 - 统一任务链、qB 暂停/恢复和证据驱动的 Emby 刷新。
 - 单一 `data/`、`db/`、`upload/` 持久边界。
@@ -48,6 +50,12 @@ MCC_SUBSCRIPTION_SCHEDULER_ENABLED=false
 NASEMBY_CORE_WRITE_ENABLED=false
 MCC_PRESERVED_CORE_API_ENABLED=false
 TORRA_PUSH_ENABLED=false
+MCC_INTEGRATION_PROBE_ENABLED=false
+MCC_INTEGRATION_MANAGEMENT_ENABLED=false
+MCC_TELEGRAM_MANAGEMENT_ENABLED=false
+MCC_HDHIVE_MANAGEMENT_ENABLED=false
+MCC_CLOUD_SEARCH_ENABLED=false
+MCC_CLOUD_TRANSFER_ENABLED=false
 ```
 
 - 写闸门关闭时，订阅保存、分类、改季、配置、执行、删除和推送均被服务端拒绝。
@@ -65,9 +73,12 @@ TORRA_PUSH_ENABLED=false
 - `/api/qbittorrent/*`、`/api/torra/summary`、`/api/symedia/summary`。
 - `/api/tasks/chain`：订阅到入库的统一证据链。
 - `/api/internal/nasemby-core/*`：已认证的只读诊断兼容路由。
+- `/api/v2/integrations/*`：115、Telegram、HDHive / pansou 和 MoviePilot 的脱敏状态与细分管理。
+- `/api/v2/acquisition/cloud/*`：脱敏候选预览和受保护单条转存。
+- `/api/v2/subscriptions/:id/cloud-policy`：订阅级网盘兜底开关。
 - `/mineradio/embed`、`/mineradio/*`。
 
-47 条冻结契约见项目根 `docs/contracts/http-api-contract-v1.json`。浏览器公开响应经过白名单映射；内部诊断路由保留 NasEmby 原始字段，仍受整站认证保护。
+47 条冻结 v1 契约见项目根 `docs/contracts/http-api-contract-v1.json`；13 条新增能力见 `http-api-contract-v2.json`。浏览器公开响应经过白名单映射；内部诊断路由保留 NasEmby 原始字段，仍受整站认证保护。
 
 ## 唯一订阅台账
 
@@ -85,6 +96,8 @@ python -m unittest discover -s tests -v
 ```
 
 测试使用临时台账和模拟客户端，不连接真实服务执行写操作。保留接口只在模拟测试中显式开启；Mineradio 注入片段继续使用冻结的 SHA-256 快照保护视觉桥接基线。
+
+当前共 83 项回归测试。网盘测试使用临时候选、临时幂等状态和模拟 115 / HDHive 函数，确认默认闸门拒绝动作、候选不泄漏分享链接/密码、相同幂等键只执行一次。
 
 ## 持久目录
 

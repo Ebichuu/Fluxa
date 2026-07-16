@@ -3722,6 +3722,86 @@ button {
   }
 }
 
+.sub-config__cloud {
+  border-color: rgba(120, 156, 181, 0.26);
+  background: rgba(86, 119, 143, 0.08);
+}
+
+.sub-config__cloud .sub-config__rule-head label,
+.sub-config__cloud .sub-config__time {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ops-control-integrations {
+  margin-bottom: 18px;
+}
+
+.ops-control-integrations .ops-connection-group__head h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ops-integration-actions > section,
+.ops-integration-telegram {
+  padding: 14px;
+  border: 1px solid rgba(136, 154, 167, 0.16);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.016);
+}
+
+.ops-integration-actions h3,
+.ops-integration-telegram strong {
+  margin: 0 0 5px;
+  color: var(--ops-text);
+  font-size: 13px;
+}
+
+.ops-integration-actions p {
+  margin: 0 0 12px;
+  color: var(--ops-muted);
+  font-size: 12px;
+}
+
+.ops-integration-telegram {
+  margin-top: 14px;
+}
+
+.ops-task-cloud-state {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 9px 12px;
+  border: 1px solid rgba(136, 154, 167, 0.18);
+  border-radius: 12px;
+  color: var(--ops-muted);
+  background: rgba(255, 255, 255, 0.018);
+  font-size: 12px;
+}
+
+.ops-task-cloud-state strong {
+  color: var(--ops-text);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ops-task-cloud-state--cloud_allowed,
+.ops-task-cloud-state--manual_only {
+  border-color: rgba(116, 164, 187, 0.38);
+  color: #b6d7e4;
+  background: rgba(74, 126, 151, 0.1);
+}
+
+.ops-task-cloud-state--blocked_by_pt,
+.ops-task-cloud-state--completed {
+  border-color: rgba(98, 158, 127, 0.3);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ops-page *,
   .ops-page *::before,

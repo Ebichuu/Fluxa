@@ -1,15 +1,18 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
-import { Ban, Check, ChevronLeft, ChevronRight, CloudOff, Database, ExternalLink, FileSearch, Plus, RefreshCcw, RotateCcw, Search, SlidersHorizontal, Trash2, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { Ban, Check, ChevronLeft, ChevronRight, Cloud, CloudDownload, CloudOff, Database, ExternalLink, FileSearch, Plus, RefreshCcw, RotateCcw, Search, SlidersHorizontal, Trash2, X } from 'lucide-react';
 import {
   blockSubscription,
   browseDiscover,
   deleteSubscription,
+  getCloudCandidates,
   getSubscriptionDetail,
   getSubscriptionItems,
   runSubscriptionSweep,
+  runCloudTransfer,
   saveSubscription,
   searchDiscover,
   searchDiscoverResources,
+  setSubscriptionCloudPolicy,
   setSubscriptionSeason,
   unblockSubscription
 } from '../../services/api';
@@ -22,6 +25,7 @@ import type {
   SubscriptionItem
 } from '../../types/subscriptions';
 import type { PageId } from '../layout/AppTopNav';
+import type { CloudCandidate, CloudCandidateResponse } from '../../types/integrations';
 
 interface DiscoverPageProps {
   onNavigate: (page: PageId) => void;
@@ -327,6 +331,10 @@ export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
   const [resourceError, setResourceError] = useState('');
   const [resourceSource, setResourceSource] = useState('all');
   const [resourcePreview, setResourcePreview] = useState<DiscoverResourceItem | null>(null);
+  const [cloudCandidates, setCloudCandidates] = useState<CloudCandidateResponse | null>(null);
+  const [cloudCandidateError, setCloudCandidateError] = useState('');
+  const [cloudCandidateBusy, setCloudCandidateBusy] = useState('');
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadSubs = useCallback(() => {
     setSubsLoading(true);
@@ -345,6 +353,12 @@ export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
   useEffect(() => {
     loadSubs();
   }, [loadSubs]);
+
+  useEffect(() => {
+    const focusSearch = () => searchInputRef.current?.focus();
+    window.addEventListener('mcc:focus-discover-search', focusSearch);
+    return () => window.removeEventListener('mcc:focus-discover-search', focusSearch);
+  }, []);
 
   const applyPayload = useCallback((payload: Awaited<ReturnType<typeof browseDiscover>>) => {
     setConfigured(payload.configured);
@@ -545,6 +559,48 @@ export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
       .finally(() => setSubscriptionAction(''));
   };
 
+  const toggleCloudFallback = (item: SubscriptionItem) => {
+    if (!item.id) return;
+    const next = !item.allowCloudFallback;
+    setSubscriptionAction(`cloud:${item.id}`);
+    setSweepMessage('');
+    setSubscriptionCloudPolicy(item.id, next)
+      .then(() => {
+        setSweepMessage(`${item.title}：网盘兜底已${next ? '允许' : '关闭'}`);
+        loadSubs();
+      })
+      .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '网盘策略更新失败'))
+      .finally(() => setSubscriptionAction(''));
+  };
+
+  const previewCloudCandidates = (item: SubscriptionItem) => {
+    if (!item.id) return;
+    setCloudCandidateBusy(`preview:${item.id}`);
+    setCloudCandidateError('');
+    setCloudCandidates(null);
+    getCloudCandidates(item.id)
+      .then(setCloudCandidates)
+      .catch((error: unknown) => setCloudCandidateError(error instanceof Error ? error.message : '网盘候选读取失败'))
+      .finally(() => setCloudCandidateBusy(''));
+  };
+
+  const transferCloudCandidate = (candidate: CloudCandidate) => {
+    if (!cloudCandidates) return;
+    if (!window.confirm(`确认单条转存《${candidate.title}》？\n服务端会重新检查 Torra、qB、Symedia 和 Emby，发现重复时会阻止。`)) return;
+    setCloudCandidateBusy(`transfer:${candidate.id}`);
+    setCloudCandidateError('');
+    runCloudTransfer({
+      candidateId: candidate.id,
+      idempotencyKey: window.crypto.randomUUID()
+    })
+      .then((result) => {
+        setSweepMessage(result.ok ? `已完成单条网盘转存：${candidate.title}` : `转存状态：${result.status}`);
+        setCloudCandidates(null);
+      })
+      .catch((error: unknown) => setCloudCandidateError(error instanceof Error ? error.message : '网盘转存失败'))
+      .finally(() => setCloudCandidateBusy(''));
+  };
+
   const closeDetail = () => {
     setDetailId(null);
     setDetail(null);
@@ -667,6 +723,7 @@ export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
               <input
                 aria-label="搜索影视"
                 placeholder="搜索片名，回车确认"
+                ref={searchInputRef}
                 type="search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
@@ -889,6 +946,37 @@ export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
           </section>
         )}
 
+        {(cloudCandidates || cloudCandidateError) && (
+          <section className="discover-resource-panel" aria-label="网盘候选预览">
+            <header className="discover-resource-panel__head">
+              <div>
+                <span>CLOUD CANDIDATES / SAFE PREVIEW</span>
+                <h2>{cloudCandidates?.subscription.title || '网盘候选'}</h2>
+                <p>{cloudCandidates ? `${cloudCandidates.candidates.length} 条候选 · 15 分钟内有效` : '候选读取失败'}</p>
+              </div>
+              <button aria-label="关闭网盘候选" className="tool-link" type="button" onClick={() => { setCloudCandidates(null); setCloudCandidateError(''); }}><X size={15} /></button>
+            </header>
+            {cloudCandidateError && <div className="discover-resource-empty">{cloudCandidateError}</div>}
+            <div className="discover-resource-list">
+              {(cloudCandidates?.candidates ?? []).map((candidate) => (
+                <article className="discover-resource-row" key={candidate.id}>
+                  <div>
+                    <strong>{candidate.title}</strong>
+                    <small>{[candidate.sourceLabel, candidate.quality, candidate.size, candidate.season].filter(Boolean).join(' · ') || '候选信息未完整'}</small>
+                  </div>
+                  <div className="discover-resource-row__actions">
+                    <button className="tool-link" disabled={Boolean(cloudCandidateBusy)} type="button" onClick={() => transferCloudCandidate(candidate)}>
+                      <CloudDownload size={14} />
+                      {cloudCandidateBusy === `transfer:${candidate.id}` ? '正在复查' : candidate.requiresUnlock ? '解锁并转存' : '检查并转存'}
+                    </button>
+                  </div>
+                </article>
+              ))}
+              {cloudCandidates?.candidates.length === 0 && <div className="discover-resource-empty">没有找到允许来源的网盘候选。</div>}
+            </div>
+          </section>
+        )}
+
         {configured && !loading && results.length > 0 && (
           <nav className="discover-pagination" aria-label="发现页分页">
             <button className="tool-link" disabled={!canPrev} type="button" onClick={() => goPage(pageInfo.page - 1)}>
@@ -1038,6 +1126,26 @@ export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
                   onClick={() => searchSubscriptionResources(item)}
                 >
                   <FileSearch aria-hidden="true" size={14} />
+                </button>
+                <button
+                  aria-label={`${item.allowCloudFallback ? '关闭' : '允许'} ${item.title} 的网盘兜底`}
+                  className="tool-link"
+                  disabled={subscriptionAction === `cloud:${item.id}`}
+                  title={item.allowCloudFallback ? '当前订阅允许网盘兜底，点击关闭' : '当前订阅只走 PT，点击允许网盘兜底'}
+                  type="button"
+                  onClick={() => toggleCloudFallback(item)}
+                >
+                  {item.allowCloudFallback ? <Cloud aria-hidden="true" size={14} /> : <CloudOff aria-hidden="true" size={14} />}
+                </button>
+                <button
+                  aria-label={`预览 ${item.title} 的网盘候选`}
+                  className="tool-link"
+                  disabled={Boolean(cloudCandidateBusy)}
+                  title="先读取脱敏候选，不会执行转存"
+                  type="button"
+                  onClick={() => previewCloudCandidates(item)}
+                >
+                  <CloudDownload aria-hidden="true" size={14} />
                 </button>
                 <button
                   aria-label={`屏蔽订阅 ${item.title}`}

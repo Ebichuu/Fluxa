@@ -24,7 +24,7 @@ interface AppTopNavProps {
 
 export function AppTopNav({ activePage, health, onNavigate }: AppTopNavProps) {
   const configuredCount = health?.services.filter((service) => service.configured).length ?? 0;
-  const serviceCount = health?.services.length ?? 4;
+  const serviceCount = health?.services.length ?? 10;
 
   return (
     <header className="app-top-nav">
@@ -59,11 +59,18 @@ export function AppTopNav({ activePage, health, onNavigate }: AppTopNavProps) {
       </div>
 
       <div className="nav-actions">
-        <button className="nav-pill" type="button">
+        <button
+          className="nav-pill"
+          type="button"
+          onClick={() => {
+            onNavigate('discover');
+            window.setTimeout(() => window.dispatchEvent(new Event('mcc:focus-discover-search')), 0);
+          }}
+        >
           <Search aria-hidden="true" size={15} strokeWidth={1.8} />
           <span>搜索媒体</span>
         </button>
-        <button className="nav-pill nav-pill--health" type="button">
+        <button className="nav-pill nav-pill--health" type="button" onClick={() => onNavigate('control')}>
           <Activity aria-hidden="true" size={15} strokeWidth={1.8} />
           <span>
             {configuredCount}/{serviceCount} 已配置

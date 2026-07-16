@@ -162,7 +162,7 @@ DEFAULT_SUBSCRIPTION_SOURCES = [
 ]
 
 DEFAULT_SUBSCRIPTION_CONFIG = {
-    "mode": "resource",
+    "mode": "torra",
     "douban": {
         "enabled": True,
         "movie_enabled": True,
@@ -177,6 +177,16 @@ DEFAULT_SUBSCRIPTION_CONFIG = {
         "updated_at": "",
         "last_run_at": "",
     },
+}
+
+DEFAULT_CLOUD_ACQUISITION = {
+    "enabled": False,
+    "auto_fallback_enabled": False,
+    "manual_actions_enabled": False,
+    "wait_minutes": 360,
+    "sources": ["telegram", "hdhive"],
+    "auto_select": False,
+    "policy_version": 1,
 }
 
 RESOURCE_RULE_GROUPS = {
@@ -419,15 +429,48 @@ def normalize_subscription_mode(value):
     key = str(value or "").strip().lower()
     key = re.sub(r"[\s\-]+", "_", key)
     key = re.sub(r"[^a-z0-9_]+", "", key)
-    return SUBSCRIPTION_MODE_ALIASES.get(key, "resource")
+    return SUBSCRIPTION_MODE_ALIASES.get(key, "torra")
 
 
 def subscription_mode_label(mode):
-    return SUBSCRIPTION_MODE_LABELS.get(normalize_subscription_mode(mode), SUBSCRIPTION_MODE_LABELS["resource"])
+    return SUBSCRIPTION_MODE_LABELS.get(normalize_subscription_mode(mode), SUBSCRIPTION_MODE_LABELS["torra"])
 
 
 def subscription_mode_task_label(mode):
-    return SUBSCRIPTION_MODE_TASK_LABELS.get(normalize_subscription_mode(mode), SUBSCRIPTION_MODE_TASK_LABELS["resource"])
+    return SUBSCRIPTION_MODE_TASK_LABELS.get(normalize_subscription_mode(mode), SUBSCRIPTION_MODE_TASK_LABELS["torra"])
+
+
+def normalize_cloud_acquisition(payload=None):
+    source = payload if isinstance(payload, dict) else {}
+    result = deepcopy(DEFAULT_CLOUD_ACQUISITION)
+    result["enabled"] = bool(source.get("enabled", result["enabled"]))
+    result["auto_fallback_enabled"] = bool(
+        source.get("auto_fallback_enabled", result["auto_fallback_enabled"])
+    )
+    result["manual_actions_enabled"] = bool(
+        source.get("manual_actions_enabled", result["manual_actions_enabled"])
+    )
+    try:
+        wait_minutes = int(float(str(source.get("wait_minutes", result["wait_minutes"])).strip()))
+    except (TypeError, ValueError):
+        wait_minutes = result["wait_minutes"]
+    result["wait_minutes"] = max(30, min(10080, wait_minutes))
+    allowed_sources = {"telegram", "hdhive", "pansou"}
+    sources = source.get("sources") if isinstance(source.get("sources"), list) else result["sources"]
+    result["sources"] = list(dict.fromkeys(
+        str(item or "").strip().lower()
+        for item in sources
+        if str(item or "").strip().lower() in allowed_sources
+    ))
+    result["auto_select"] = bool(source.get("auto_select", result["auto_select"]))
+    result["policy_version"] = 1
+    if not result["enabled"]:
+        result["auto_fallback_enabled"] = False
+        result["manual_actions_enabled"] = False
+        result["auto_select"] = False
+    if not result["auto_fallback_enabled"]:
+        result["auto_select"] = False
+    return result
 
 
 def parse_subscription_exclude_titles(value):
@@ -452,12 +495,14 @@ def parse_subscription_exclude_titles(value):
 def load_subscription_config():
     config = json.loads(json.dumps(DEFAULT_SUBSCRIPTION_CONFIG, ensure_ascii=False))
     saved_has_mode = False
+    saved_has_cloud_policy = False
     if os.path.exists(SUBSCRIPTION_CONFIG_PATH):
         try:
             with open(SUBSCRIPTION_CONFIG_PATH, "r", encoding="utf-8") as fp:
                 saved = json.load(fp)
             if isinstance(saved, dict):
                 saved_has_mode = "mode" in saved or "subscription_mode" in saved
+                saved_has_cloud_policy = isinstance(saved.get("cloud_acquisition"), dict)
                 for key, value in saved.items():
                     if isinstance(value, dict) and isinstance(config.get(key), dict):
                         config[key].update(value)
@@ -476,7 +521,11 @@ def load_subscription_config():
             mode_source = "resource_then_pt"
         elif legacy_mode in {"resource_only", "resource"}:
             mode_source = "resource"
-    config["mode"] = normalize_subscription_mode(mode_source)
+    normalized_mode = normalize_subscription_mode(mode_source)
+    if not saved_has_cloud_policy and normalized_mode in {"resource", "resource_then_pt"}:
+        normalized_mode = "torra"
+    config["mode"] = normalized_mode
+    config["cloud_acquisition"] = normalize_cloud_acquisition(config.get("cloud_acquisition"))
     config["resource_rules"] = normalize_resource_rules(config.get("resource_rules"))
     douban = config.get("douban") if isinstance(config.get("douban"), dict) else {}
     douban["exclude_titles"] = parse_subscription_exclude_titles(douban.get("exclude_titles"))
@@ -557,6 +606,12 @@ def save_subscription_config(payload):
             payload.get("subscription_mode") if isinstance(payload, dict) and "subscription_mode" in payload else config.get("mode")
         )
     )
+    next_cloud = (
+        payload.get("cloud_acquisition")
+        if isinstance(payload, dict) and "cloud_acquisition" in payload
+        else config.get("cloud_acquisition")
+    )
+    config["cloud_acquisition"] = normalize_cloud_acquisition(next_cloud)
     next_rules = payload.get("resource_rules") if isinstance(payload, dict) and "resource_rules" in payload else config.get("resource_rules")
     config["resource_rules"] = normalize_resource_rules(next_rules)
     config = write_subscription_config_data(config)

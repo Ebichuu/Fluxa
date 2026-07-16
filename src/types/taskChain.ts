@@ -41,6 +41,15 @@ export interface TaskChainItem {
     qbHashes: string[];
     symediaIds: string[];
   };
+  acquisition?: {
+    primary: 'pt';
+    cloudState: 'disabled' | 'subscription_disabled' | 'manual_only' | 'pt_waiting' | 'cloud_allowed' | 'blocked_by_pt' | 'completed';
+    cloudDetail: string;
+    cloudEnabled: boolean;
+    subscriptionCloudEnabled: boolean;
+    autoFallbackEnabled: boolean;
+    manualActionsEnabled: boolean;
+  };
   updatedAt: string;
 }
 
