@@ -90,7 +90,9 @@ export function App() {
       {page === 'control' && <ControlRoom />}
       {page === 'tasks' && <TasksCenter />}
       {page === 'calendar' && <CalendarPage onNavigate={setPage} />}
-      {page === 'discover' && <DiscoverPage onNavigate={setPage} />}
+      {(page === 'discover' || page === 'subscriptions') && (
+        <DiscoverPage onNavigate={setPage} view={page === 'subscriptions' ? 'subscriptions' : 'discover'} />
+      )}
       {page === 'subscription-settings' && <SubscriptionSettingsPage onNavigate={setPage} />}
       {page === 'settings' && <SettingsPage />}
     </div>

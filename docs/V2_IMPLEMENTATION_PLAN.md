@@ -1,5 +1,7 @@
 # 媒体控制中心 v2 实施计划
 
+> v2 迁移基线计划。当前 PT 主线收口由 `docs/superpowers/plans/2026-07-17-pt-primary-control-center-implementation-plan.md` 继续执行。
+
 状态：v2 基线和常用核心接口迁移完成，等待实机验证
 日期：2026-07-17
 

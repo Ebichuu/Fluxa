@@ -1,18 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Ban, Check, ChevronLeft, ChevronRight, Cloud, CloudDownload, CloudOff, Database, ExternalLink, FileSearch, Plus, RefreshCcw, RotateCcw, Search, SlidersHorizontal, Trash2, X } from 'lucide-react';
+import { Ban, Check, ChevronLeft, ChevronRight, Database, ExternalLink, FileSearch, Plus, RefreshCcw, RotateCcw, Search, Send, SlidersHorizontal, Trash2, X } from 'lucide-react';
 import {
   blockSubscription,
   browseDiscover,
   deleteSubscription,
-  getCloudCandidates,
   getSubscriptionDetail,
   getSubscriptionItems,
+  getTorraPushPreview,
+  pushSubscriptionToTorra,
   runSubscriptionSweep,
-  runCloudTransfer,
   saveSubscription,
   searchDiscover,
   searchDiscoverResources,
-  setSubscriptionCloudPolicy,
   setSubscriptionSeason,
   unblockSubscription
 } from '../../services/api';
@@ -22,13 +21,14 @@ import type {
   DiscoverResourceResponse,
   DiscoverResult,
   SubscriptionDetailResponse,
-  SubscriptionItem
+  SubscriptionItem,
+  TorraPushPreviewResponse
 } from '../../types/subscriptions';
 import type { PageId } from '../layout/AppTopNav';
-import type { CloudCandidate, CloudCandidateResponse } from '../../types/integrations';
 
 interface DiscoverPageProps {
   onNavigate: (page: PageId) => void;
+  view?: 'discover' | 'subscriptions';
 }
 
 type DiscoverSource = DiscoverBrowseParams['source'];
@@ -296,7 +296,8 @@ function subscriptionUpdateLabel(value: string) {
   return `${days} 天前更新`;
 }
 
-export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
+export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProps) {
+  const subscriptionsOnly = view === 'subscriptions';
   const [filters, setFilters] = useState<DiscoverBrowseParams>(defaultFilters);
   const [query, setQuery] = useState('');
   const [activeSearch, setActiveSearch] = useState('');
@@ -331,9 +332,9 @@ export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
   const [resourceError, setResourceError] = useState('');
   const [resourceSource, setResourceSource] = useState('all');
   const [resourcePreview, setResourcePreview] = useState<DiscoverResourceItem | null>(null);
-  const [cloudCandidates, setCloudCandidates] = useState<CloudCandidateResponse | null>(null);
-  const [cloudCandidateError, setCloudCandidateError] = useState('');
-  const [cloudCandidateBusy, setCloudCandidateBusy] = useState('');
+  const [torraPushPreview, setTorraPushPreview] = useState<TorraPushPreviewResponse | null>(null);
+  const [torraPushMessage, setTorraPushMessage] = useState('');
+  const [torraPushBusy, setTorraPushBusy] = useState('');
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadSubs = useCallback(() => {
@@ -372,6 +373,10 @@ export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
   }, []);
 
   useEffect(() => {
+    if (subscriptionsOnly) {
+      setLoading(false);
+      return;
+    }
     if (activeSearch) return;
     let cancelled = false;
     setLoading(true);
@@ -392,9 +397,10 @@ export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
     return () => {
       cancelled = true;
     };
-  }, [activeSearch, applyPayload, filters]);
+  }, [activeSearch, applyPayload, filters, subscriptionsOnly]);
 
   useEffect(() => {
+    if (subscriptionsOnly) return;
     if (!activeSearch) return;
     let cancelled = false;
     setLoading(true);
@@ -413,7 +419,7 @@ export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
     return () => {
       cancelled = true;
     };
-  }, [activeSearch, applyPayload, searchPage]);
+  }, [activeSearch, applyPayload, searchPage, subscriptionsOnly]);
 
   const subscribedKeys = useMemo(() => new Set(subs.map((item) => `${item.mediaType}:${item.tmdbId}`)), [subs]);
   const subscriptionYears = useMemo(() => [
@@ -559,52 +565,38 @@ export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
       .finally(() => setSubscriptionAction(''));
   };
 
-  const toggleCloudFallback = (item: SubscriptionItem) => {
+  const previewTorraPush = (item: SubscriptionItem) => {
     if (!item.id) return;
-    const next = !item.allowCloudFallback;
-    setSubscriptionAction(`cloud:${item.id}`);
-    setSweepMessage('');
-    setSubscriptionCloudPolicy(item.id, next)
-      .then(() => {
-        setSweepMessage(`${item.title}：网盘兜底已${next ? '允许' : '关闭'}`);
+    setTorraPushBusy(`preview:${item.id}`);
+    setTorraPushMessage('');
+    setTorraPushPreview(null);
+    getTorraPushPreview(item.id)
+      .then(setTorraPushPreview)
+      .catch((error: unknown) => setTorraPushMessage(error instanceof Error ? error.message : 'Torra 推送预检失败'))
+      .finally(() => setTorraPushBusy(''));
+  };
+
+  const confirmTorraPush = (item: SubscriptionItem) => {
+    if (!item.id || !torraPushPreview?.preview.ready) return;
+    setTorraPushBusy(`push:${item.id}`);
+    setTorraPushMessage('');
+    pushSubscriptionToTorra(item.id, window.crypto.randomUUID())
+      .then((result) => {
+        setTorraPushMessage(result.message);
+        setSweepMessage(`${item.title}：${result.message}`);
         loadSubs();
       })
-      .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '网盘策略更新失败'))
-      .finally(() => setSubscriptionAction(''));
-  };
-
-  const previewCloudCandidates = (item: SubscriptionItem) => {
-    if (!item.id) return;
-    setCloudCandidateBusy(`preview:${item.id}`);
-    setCloudCandidateError('');
-    setCloudCandidates(null);
-    getCloudCandidates(item.id)
-      .then(setCloudCandidates)
-      .catch((error: unknown) => setCloudCandidateError(error instanceof Error ? error.message : '网盘候选读取失败'))
-      .finally(() => setCloudCandidateBusy(''));
-  };
-
-  const transferCloudCandidate = (candidate: CloudCandidate) => {
-    if (!cloudCandidates) return;
-    if (!window.confirm(`确认单条转存《${candidate.title}》？\n服务端会重新检查 Torra、qB、Symedia 和 Emby，发现重复时会阻止。`)) return;
-    setCloudCandidateBusy(`transfer:${candidate.id}`);
-    setCloudCandidateError('');
-    runCloudTransfer({
-      candidateId: candidate.id,
-      idempotencyKey: window.crypto.randomUUID()
-    })
-      .then((result) => {
-        setSweepMessage(result.ok ? `已完成单条网盘转存：${candidate.title}` : `转存状态：${result.status}`);
-        setCloudCandidates(null);
-      })
-      .catch((error: unknown) => setCloudCandidateError(error instanceof Error ? error.message : '网盘转存失败'))
-      .finally(() => setCloudCandidateBusy(''));
+      .catch((error: unknown) => setTorraPushMessage(error instanceof Error ? error.message : 'Torra 推送失败'))
+      .finally(() => setTorraPushBusy(''));
   };
 
   const closeDetail = () => {
     setDetailId(null);
     setDetail(null);
     setDetailSeason(null);
+    setTorraPushPreview(null);
+    setTorraPushMessage('');
+    setTorraPushBusy('');
   };
 
   const openDetail = (item: SubscriptionItem) => {
@@ -619,6 +611,8 @@ export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
     setDetail(null);
     setDetailSeason(null);
     setDetailLoading(true);
+    setTorraPushPreview(null);
+    setTorraPushMessage('');
     getSubscriptionDetail(item.id)
       .then((payload) => {
         setDetail(payload);
@@ -685,22 +679,22 @@ export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
   }, [resourceData, resourceSource]);
 
   return (
-    <main className="work-page ops-page ops-page--discover">
+    <main className={subscriptionsOnly ? 'work-page ops-page ops-page--discover ops-page--subscriptions' : 'work-page ops-page ops-page--discover'}>
       <section className="ops-hero ops-hero--discover">
         <div>
-          <p className="ops-eyebrow">DISCOVER / SUBSCRIPTION HUB</p>
-          <h1>从内容发现开始，但所有自动获取最终都回到 PT 主链。</h1>
-          <p className="ops-deck">榜单、筛选和搜索负责选片；订阅中枢负责去重、分类和等待 Torra 获取。云盘只保留人工补资源入口。</p>
+          <p className="ops-eyebrow">{subscriptionsOnly ? 'SUBSCRIPTIONS / PT CONTROL' : 'DISCOVER / CONTENT SOURCES'}</p>
+          <h1>{subscriptionsOnly ? '订阅只维护一份台账，也只交给 Torra。' : '从内容发现开始，但所有自动获取最终都回到 PT 主链。'}</h1>
+          <p className="ops-deck">{subscriptionsOnly ? '在这里查看、分类、改季并预检 Torra 推送；Symedia 只负责后续整理入库。' : '榜单、筛选和搜索负责选片；订阅中枢负责去重、分类并把任务交给 Torra。'}</p>
         </div>
         <div className="ops-discover-policy">
           <span><Database size={15} />默认通道</span>
           <strong>PT / Torra</strong>
-          <small><CloudOff size={13} />自动云盘兜底关闭</small>
+          <small><Send size={13} />Torra 统一接收订阅</small>
         </div>
       </section>
 
-      <div className="ops-discover-layout">
-      <div>
+      <div className={subscriptionsOnly ? 'ops-discover-layout ops-discover-layout--subscriptions' : 'ops-discover-layout'}>
+      {!subscriptionsOnly && <div>
         <section className="ops-panel discover-source-panel" aria-label="发现来源">
           {sources.map((source) => (
             <button
@@ -946,37 +940,6 @@ export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
           </section>
         )}
 
-        {(cloudCandidates || cloudCandidateError) && (
-          <section className="discover-resource-panel" aria-label="网盘候选预览">
-            <header className="discover-resource-panel__head">
-              <div>
-                <span>CLOUD CANDIDATES / SAFE PREVIEW</span>
-                <h2>{cloudCandidates?.subscription.title || '网盘候选'}</h2>
-                <p>{cloudCandidates ? `${cloudCandidates.candidates.length} 条候选 · 15 分钟内有效` : '候选读取失败'}</p>
-              </div>
-              <button aria-label="关闭网盘候选" className="tool-link" type="button" onClick={() => { setCloudCandidates(null); setCloudCandidateError(''); }}><X size={15} /></button>
-            </header>
-            {cloudCandidateError && <div className="discover-resource-empty">{cloudCandidateError}</div>}
-            <div className="discover-resource-list">
-              {(cloudCandidates?.candidates ?? []).map((candidate) => (
-                <article className="discover-resource-row" key={candidate.id}>
-                  <div>
-                    <strong>{candidate.title}</strong>
-                    <small>{[candidate.sourceLabel, candidate.quality, candidate.size, candidate.season].filter(Boolean).join(' · ') || '候选信息未完整'}</small>
-                  </div>
-                  <div className="discover-resource-row__actions">
-                    <button className="tool-link" disabled={Boolean(cloudCandidateBusy)} type="button" onClick={() => transferCloudCandidate(candidate)}>
-                      <CloudDownload size={14} />
-                      {cloudCandidateBusy === `transfer:${candidate.id}` ? '正在复查' : candidate.requiresUnlock ? '解锁并转存' : '检查并转存'}
-                    </button>
-                  </div>
-                </article>
-              ))}
-              {cloudCandidates?.candidates.length === 0 && <div className="discover-resource-empty">没有找到允许来源的网盘候选。</div>}
-            </div>
-          </section>
-        )}
-
         {configured && !loading && results.length > 0 && (
           <nav className="discover-pagination" aria-label="发现页分页">
             <button className="tool-link" disabled={!canPrev} type="button" onClick={() => goPage(pageInfo.page - 1)}>
@@ -990,9 +953,9 @@ export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
             </button>
           </nav>
         )}
-      </div>
+      </div>}
 
-      <aside className="ops-inspector ops-subscription-console discover-subs" aria-label="订阅中枢">
+      <aside className={subscriptionsOnly ? 'ops-inspector ops-subscription-console discover-subs discover-subs--full' : 'ops-inspector ops-subscription-console discover-subs'} aria-label="订阅中枢">
         <div className="activity-panel__head">
           <div><small>SUBSCRIPTION HUB</small><h2>我的订阅</h2></div>
           <span className="queue-count">{subs.length} 条</span>
@@ -1128,24 +1091,17 @@ export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
                   <FileSearch aria-hidden="true" size={14} />
                 </button>
                 <button
-                  aria-label={`${item.allowCloudFallback ? '关闭' : '允许'} ${item.title} 的网盘兜底`}
+                  aria-label={`检查并推送 ${item.title} 到 Torra`}
                   className="tool-link"
-                  disabled={subscriptionAction === `cloud:${item.id}`}
-                  title={item.allowCloudFallback ? '当前订阅允许网盘兜底，点击关闭' : '当前订阅只走 PT，点击允许网盘兜底'}
+                  disabled={Boolean(torraPushBusy)}
+                  title="先读取分类、保存路径和 Torra 查重结果"
                   type="button"
-                  onClick={() => toggleCloudFallback(item)}
+                  onClick={() => {
+                    if (detailId !== item.id) openDetail(item);
+                    previewTorraPush(item);
+                  }}
                 >
-                  {item.allowCloudFallback ? <Cloud aria-hidden="true" size={14} /> : <CloudOff aria-hidden="true" size={14} />}
-                </button>
-                <button
-                  aria-label={`预览 ${item.title} 的网盘候选`}
-                  className="tool-link"
-                  disabled={Boolean(cloudCandidateBusy)}
-                  title="先读取脱敏候选，不会执行转存"
-                  type="button"
-                  onClick={() => previewCloudCandidates(item)}
-                >
-                  <CloudDownload aria-hidden="true" size={14} />
+                  <Send aria-hidden="true" size={14} />
                 </button>
                 <button
                   aria-label={`屏蔽订阅 ${item.title}`}
@@ -1262,9 +1218,41 @@ export function DiscoverPage({ onNavigate }: DiscoverPageProps) {
                             <Check aria-hidden="true" size={14} />
                             改为订阅第 {activeSeasonNumber} 季
                           </button>
-                        )}
+                      )}
                     </>
                   )}
+                  {torraPushBusy === `preview:${item.id}` && (
+                    <small className="sub-detail__hint">正在读取 Torra 分类、路径和在线查重结果…</small>
+                  )}
+                  {torraPushPreview?.subscription.id === item.id && (
+                    <section className={torraPushPreview.preview.ready ? 'torra-push-panel is-ready' : 'torra-push-panel is-blocked'}>
+                      <header>
+                        <span>TORRA / PRE-FLIGHT</span>
+                        <strong>{torraPushPreview.preview.ready ? '可以推送' : '当前不可推送'}</strong>
+                      </header>
+                      <dl>
+                        <div><dt>媒体身份</dt><dd>{item.mediaType === 'tv' ? `剧集${item.seasonNumber ? ` · S${String(item.seasonNumber).padStart(2, '0')}` : ''}` : '电影'} · TMDB {item.tmdbId || '-'}</dd></div>
+                        <div><dt>统一分类</dt><dd>{torraPushPreview.preview.category?.label || '待人工分类'}</dd></div>
+                        <div><dt>保存路径</dt><dd><code>{torraPushPreview.preview.savePath || '尚未生成'}</code></dd></div>
+                        <div><dt>在线查重</dt><dd>{torraPushPreview.preview.duplicate?.found ? `已存在：${torraPushPreview.preview.duplicate.name || torraPushPreview.preview.duplicate.subscriptionId}` : torraPushPreview.preview.duplicate?.checked ? '未发现重复订阅' : '尚未完成'}</dd></div>
+                      </dl>
+                      {torraPushPreview.preview.blockers.length > 0 && (
+                        <ul>{torraPushPreview.preview.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>
+                      )}
+                      {torraPushPreview.preview.warnings.length > 0 && (
+                        <p>{torraPushPreview.preview.warnings.join('；')}</p>
+                      )}
+                      <div>
+                        <button className="tool-link" disabled={Boolean(torraPushBusy)} type="button" onClick={() => setTorraPushPreview(null)}>关闭预览</button>
+                        {torraPushPreview.preview.ready && (
+                          <button className="ops-action-button ops-action-button--primary" disabled={Boolean(torraPushBusy)} type="button" onClick={() => confirmTorraPush(item)}>
+                            <Send size={14} />{torraPushBusy === `push:${item.id}` ? '正在推送' : '确认推送到 Torra'}
+                          </button>
+                        )}
+                      </div>
+                    </section>
+                  )}
+                  {torraPushMessage && <p className="console-panel__hint" role="status">{torraPushMessage}</p>}
                 </div>
               )}
             </div>

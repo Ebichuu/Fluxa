@@ -7,11 +7,12 @@
 - 最新代码统一保存在 `D:\Projects\媒体控制中心v2`。
 - Python 是唯一生产后端；Node.js 只用于 React / Vite 构建。
 - NasEmby Python 源码负责订阅、发现、日历、资源规则和调度，只使用一份订阅台账。
-- PT / Torra 是默认获取主通道；旧的“资源优先”默认配置会安全迁移到 Torra，自动云盘兜底保持关闭。
-- 网盘订阅能力已经进入统一页面和 `/api/v2`：包含全局/订阅级开关、115、Telegram、HDHive / pansou 状态与管理入口、脱敏候选预览、单条转存复查、幂等、冷却和任务中心支线状态。
+- PT 主线固定为媒体控制中心订阅 → Torra → qB → Torra 秒传 115 → Symedia → Emby。
+- 订阅详情提供 Torra 安全预览与人工推送；Symedia 不接收重复订阅推送。
+- Telegram、HDHive / pansou、影巢和 115 分享转存已从当前 React 页面隐藏，底层源码、v2 接口和模拟测试完整保留，等待以后版本。
 - 原 NasEmby 核心接口和调用关系已经恢复；生产默认禁用，但源码、模拟测试入口和原页面参考快照全部保留。
-- 影院大厅、顶部导航、媒体队列和 Mineradio 原视觉保持不变。
-- fnOS 与真实订阅测试暂缓；网盘搜索、转存、登录、签到和自动兜底均由默认关闭的细分闸门保护。
+- Mineradio 影院大厅主体视觉保持不变；导航增加订阅入口，媒体抽屉改为准确的“媒体库 / 本库内容”语义并支持移动端明确开合。
+- fnOS 与真实订阅测试暂缓；Torra 推送及所有外部写动作均由默认关闭的细分闸门保护。
 
 ## 架构
 
@@ -57,14 +58,14 @@ Vite 会把 `/api` 和 `/mineradio` 代理到 Python。
 ## 本地检查
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -v  # 当前 83 项
+python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 85 项
 npm test
 npm run build
 docker compose config --services
 docker build -t media-control-center:v2 .
 ```
 
-自动测试使用临时目录和模拟客户端，不连接真实服务执行写操作。
+自动测试使用临时目录和模拟客户端，不连接真实服务执行写操作，也不会向真实活动日志追加模拟记录。
 
 ## Docker / fnOS
 
@@ -126,3 +127,5 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - [v2 实施计划](docs/V2_IMPLEMENTATION_PLAN.md)
 - [未完成能力路线图](docs/ROADMAP.md)
 - [网盘订阅与获取计划](docs/CLOUD_ACQUISITION_PLAN.md)
+- [PT 主链收口设计](docs/superpowers/specs/2026-07-17-pt-primary-control-center-design.md)
+- [PT 主链实施计划](docs/superpowers/plans/2026-07-17-pt-primary-control-center-implementation-plan.md)

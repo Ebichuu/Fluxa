@@ -14,13 +14,13 @@ export function SubscriptionSettingsPage({ onNavigate }: SubscriptionSettingsPag
     <main className="work-page ops-page ops-page--subscription-settings">
       <section className="ops-hero ops-hero--subscription-settings">
         <div>
-          <button className="ops-back-link" type="button" onClick={() => onNavigate('discover')}>
+          <button className="ops-back-link" type="button" onClick={() => onNavigate('subscriptions')}>
             <ArrowLeft aria-hidden="true" size={14} />
-            返回内容发现
+            返回我的订阅
           </button>
           <p className="ops-eyebrow">SUBSCRIPTION / POLICY</p>
           <h1>决定订阅如何运行，不混入系统连接与凭据设置。</h1>
-          <p className="ops-deck">来源负责发现内容，PT / Torra 是默认主通道；网盘开关、等待阈值和资源规则在这里单独管理。</p>
+          <p className="ops-deck">来源负责发现内容；订阅统一交给 Torra，下载、秒传和入库继续走同一条 PT 主线。</p>
         </div>
         <div className="ops-subscription-settings-guard">
           <span><Database size={15} />当前 PT 通道</span>

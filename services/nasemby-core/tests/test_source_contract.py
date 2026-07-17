@@ -8,12 +8,13 @@ from unittest.mock import Mock, patch
 
 from app.config import DEFAULT_CONFIG
 from app import discover_runtime
+from tests.activity_log_test_support import IsolatedActivityLogMixin
 
 
 MODULE_ROOT = Path(__file__).resolve().parents[1]
 
 
-class SourceContractTest(unittest.TestCase):
+class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
     def test_external_automatic_actions_default_to_disabled(self):
         keys = (
             "ENV_115_TGMONITOR_SWITCH",

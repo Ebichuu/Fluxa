@@ -193,6 +193,11 @@ button {
   color: rgba(122, 215, 194, 0.9);
 }
 
+.nav-pill--active {
+  color: #fff;
+  background: rgba(122, 215, 194, 0.11);
+}
+
 .settings-button {
   display: inline-grid;
   width: 48px;
@@ -326,6 +331,12 @@ button {
   justify-content: space-between;
   gap: 12px;
   padding: 16px 16px 12px;
+}
+
+.media-queue-panel__head-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
 }
 
 .media-queue-panel__title-block {
@@ -1525,7 +1536,7 @@ button {
 }
 
 .discover-sub .activity-row {
-  grid-template-columns: 34px minmax(0, 1fr) repeat(3, 26px);
+  grid-template-columns: 34px minmax(0, 1fr) repeat(4, 26px);
   align-items: center;
   gap: 6px;
   padding: 10px;
@@ -2240,6 +2251,13 @@ button {
     display: none;
   }
 
+  .nav-pill.nav-pill--health {
+    display: inline-flex;
+    width: 42px;
+    height: 42px;
+    padding: 0;
+  }
+
   .settings-button {
     width: 42px;
     height: 42px;
@@ -2318,6 +2336,86 @@ button {
   padding: 0 6px;
   color: rgba(255, 255, 255, 0.5);
   font-size: 11px;
+}
+
+.torra-push-panel {
+  display: grid;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid rgba(255, 130, 163, 0.2);
+  border-radius: 10px;
+  background: linear-gradient(115deg, rgba(255, 91, 133, 0.055), rgba(0, 0, 0, 0.12));
+}
+
+.torra-push-panel.is-ready {
+  border-color: rgba(122, 215, 194, 0.24);
+  background: linear-gradient(115deg, rgba(122, 215, 194, 0.055), rgba(0, 0, 0, 0.12));
+}
+
+.torra-push-panel > header,
+.torra-push-panel > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.torra-push-panel > header span {
+  color: rgba(157, 184, 207, 0.48);
+  font-size: 7px;
+  letter-spacing: 0.16em;
+}
+
+.torra-push-panel > header strong {
+  color: rgba(255, 130, 163, 0.82);
+  font-size: 10px;
+}
+
+.torra-push-panel.is-ready > header strong {
+  color: rgba(122, 215, 194, 0.9);
+}
+
+.torra-push-panel dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin: 0;
+}
+
+.torra-push-panel dl div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.torra-push-panel dt {
+  color: rgba(157, 184, 207, 0.42);
+  font-size: 7px;
+}
+
+.torra-push-panel dd {
+  margin: 0;
+  color: rgba(232, 236, 239, 0.68);
+  font-size: 8.5px;
+  overflow-wrap: anywhere;
+}
+
+.torra-push-panel code {
+  color: rgba(196, 215, 230, 0.68);
+  font-size: 7.5px;
+  white-space: normal;
+}
+
+.torra-push-panel ul,
+.torra-push-panel > p {
+  margin: 0;
+  color: rgba(255, 145, 172, 0.76);
+  font-size: 8px;
+  line-height: 1.55;
+}
+
+.torra-push-panel > p {
+  color: rgba(232, 236, 239, 0.38);
 }
 
 .sub-config__source-groups .sub-config__sources {
@@ -3124,6 +3222,47 @@ button {
   white-space: nowrap;
 }
 
+.ops-system-metrics .ops-panel__head > small {
+  color: var(--ops-muted);
+  font-size: 8px;
+}
+
+.ops-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.ops-metrics-grid > div {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px 8px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.ops-metrics-grid svg {
+  grid-row: 1 / span 2;
+  color: var(--ops-steel);
+}
+
+.ops-metrics-grid span {
+  color: var(--ops-muted);
+  font-size: 7.5px;
+}
+
+.ops-metrics-grid strong {
+  overflow: hidden;
+  color: rgba(232, 236, 239, 0.72);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ops-next-air {
   display: grid;
   width: 100%;
@@ -3622,6 +3761,18 @@ button {
     grid-template-columns: 1fr;
   }
 
+  .discover-subs--full .activity-panel__head {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .discover-subs--full .activity-panel__head .ops-action-button {
+    grid-column: 1 / -1;
+  }
+
+  .torra-push-panel dl {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .ops-stack {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -3990,6 +4141,95 @@ button {
   padding: 5px 14px 16px;
   color: var(--ops-muted);
   font-size: 9px;
+}
+
+.ops-activity-log {
+  padding: 0;
+  overflow: hidden;
+}
+
+.ops-activity-log .ops-task-toolbar > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.ops-activity-log .ops-task-toolbar small,
+.ops-activity-log .ops-task-toolbar > span {
+  color: var(--ops-muted);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+}
+
+.ops-activity-log .ops-task-toolbar h2 {
+  margin: 0;
+  color: var(--ops-ink-strong);
+  font-size: 14px;
+}
+
+.ops-activity-filters {
+  display: flex;
+  gap: 4px;
+  padding: 10px 12px 0;
+  overflow-x: auto;
+}
+
+.ops-activity-list {
+  display: grid;
+  max-height: 340px;
+  gap: 6px;
+  padding: 10px 12px 12px;
+  overflow-y: auto;
+}
+
+.ops-activity-item {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 48px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.016);
+}
+
+.ops-activity-item > span {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(157, 184, 207, 0.08);
+  color: var(--ops-steel);
+}
+
+.ops-activity-item.is-error > span {
+  background: rgba(255, 91, 133, 0.09);
+  color: var(--ops-rose);
+}
+
+.ops-activity-item > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.ops-activity-item strong {
+  overflow: hidden;
+  color: rgba(232, 236, 239, 0.72);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ops-activity-item small,
+.ops-activity-item time {
+  color: var(--ops-muted);
+  font-size: 7.5px;
+}
+
+.ops-activity-item time {
+  white-space: nowrap;
 }
 
 .ops-task-card {
@@ -4517,6 +4757,10 @@ button {
   align-items: start;
 }
 
+.ops-discover-layout--subscriptions {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .ops-discover-layout > div {
   display: grid;
   gap: 12px;
@@ -4612,6 +4856,19 @@ button {
   max-height: calc(100vh - 132px);
   padding: 14px;
   overflow: auto;
+}
+
+.discover-subs--full {
+  width: 100%;
+  max-height: none;
+}
+
+.discover-subs--full .activity-panel__head {
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+}
+
+.discover-subs--full .activity-panel__head .ops-action-button {
+  grid-column: auto;
 }
 
 .ops-subscription-console .activity-panel__head {

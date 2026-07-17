@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowRight, Clapperboard, Download, Rss, Server, ShieldCheck, TriangleAlert } from 'lucide-react';
+import { ArrowRight, Clapperboard, Cpu, Download, HardDrive, MemoryStick, Network, Rss, Server, ShieldCheck, TriangleAlert } from 'lucide-react';
 import {
   getEmbyOverview,
   getQbittorrentSummary,
   getSubscriptionCalendar,
   getSubscriptionItems,
   getSymediaSummary,
+  getSystemMetrics,
   getTorraSummary
 } from '../../services/api';
 import type { EmbyOverview, EmbyRecentItem } from '../../types/emby';
 import type { QbittorrentSummary, QbittorrentTask } from '../../types/qbittorrent';
 import type { SymediaSummary } from '../../types/symedia';
 import type { TorraSummary } from '../../types/torra';
+import type { SystemMetricsResponse } from '../../types/operations';
 import type { MediaCategory, SubscriptionItem } from '../../types/subscriptions';
 import { localDateKey, monthsInDateRange } from '../../utils/dateRanges';
 import { formatEta, formatPercent, formatSpeed, formatTimeAgo } from '../../utils/formatters';
@@ -53,6 +55,13 @@ function recentAddedDetail(item: EmbyRecentItem) {
   return date ? `${label} · ${date}` : label;
 }
 
+function formatCapacity(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  return `${(bytes / 1024 ** index).toFixed(index > 2 ? 1 : 0)} ${units[index]}`;
+}
+
 export function Overview({ onNavigate }: OverviewProps) {
   const [subs, setSubs] = useState<SubscriptionItem[]>([]);
   const [upcomingCount, setUpcomingCount] = useState<number | null>(null);
@@ -60,6 +69,7 @@ export function Overview({ onNavigate }: OverviewProps) {
   const [emby, setEmby] = useState<EmbyOverview | null>(null);
   const [torra, setTorra] = useState<TorraSummary | null>(null);
   const [symedia, setSymedia] = useState<SymediaSummary | null>(null);
+  const [metrics, setMetrics] = useState<SystemMetricsResponse | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -95,6 +105,21 @@ export function Overview({ onNavigate }: OverviewProps) {
       })
       .catch(() => !cancelled && setUpcomingCount(null));
 
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadMetrics = () => {
+      getSystemMetrics()
+        .then((value) => !cancelled && setMetrics(value))
+        .catch(() => !cancelled && setMetrics(null));
+    };
+    loadMetrics();
+    const timer = window.setInterval(loadMetrics, 60000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -150,7 +175,7 @@ export function Overview({ onNavigate }: OverviewProps) {
         <div>
           <p className="ops-eyebrow">MEDIA CONTROL / PT PRIMARY</p>
           <h1>媒体从订阅到入库，应该只看一条链。</h1>
-          <p className="ops-deck">PT 是默认获取通道；云盘只在人工补资源或明确兜底时出现。</p>
+          <p className="ops-deck">Torra 负责搜索、qB 下载和秒传 115；Symedia 接管整理后交给 Emby。</p>
         </div>
         <button className={healthy ? 'ops-command ops-command--ok' : 'ops-command ops-command--warn'} type="button" onClick={() => onNavigate('tasks')}>
           {healthy ? <ShieldCheck aria-hidden="true" size={18} /> : <TriangleAlert aria-hidden="true" size={18} />}
@@ -213,6 +238,19 @@ export function Overview({ onNavigate }: OverviewProps) {
             </dl>
           </article>
 
+          <article className="ops-panel ops-system-metrics">
+            <header className="ops-panel__head ops-panel__head--compact">
+              <div><span className="ops-panel__icon"><Cpu aria-hidden="true" size={16} /></span><h2>NAS 运行负载</h2></div>
+              <small>{metrics ? formatTimeAgo(metrics.checkedAt) : '指标暂不可用'}</small>
+            </header>
+            <div className="ops-metrics-grid">
+              <div><Cpu size={14} /><span>CPU</span><strong>{metrics ? `${metrics.cpu.percent}%` : '—'}</strong></div>
+              <div><MemoryStick size={14} /><span>内存</span><strong>{metrics ? `${metrics.memory.percent}%` : '—'}</strong></div>
+              <div><HardDrive size={14} /><span>磁盘</span><strong>{metrics ? `${metrics.disk.percent}% · ${formatCapacity(metrics.disk.free)} 可用` : '—'}</strong></div>
+              <div><Network size={14} /><span>网络</span><strong>{metrics ? `↓ ${formatSpeed(metrics.network.downBps)} · ↑ ${formatSpeed(metrics.network.upBps)}` : '—'}</strong></div>
+            </div>
+          </article>
+
           <button className="ops-panel ops-next-air" type="button" onClick={() => onNavigate('calendar')}>
             <Rss aria-hidden="true" size={18} />
             <span><small>NEXT 72 HOURS</small><strong>{upcomingCount === null ? '播出统计待连接' : `${upcomingCount} 集即将播出`}</strong></span>
@@ -238,7 +276,7 @@ export function Overview({ onNavigate }: OverviewProps) {
         <article className="ops-panel">
           <header className="ops-panel__head">
             <div><span className="ops-panel__icon"><Rss aria-hidden="true" size={17} /></span><div><small>SUBSCRIPTIONS</small><h2>最近订阅</h2></div></div>
-            <button className="ops-link" type="button" onClick={() => onNavigate('discover')}>管理订阅 <ArrowRight size={14} /></button>
+            <button className="ops-link" type="button" onClick={() => onNavigate('subscriptions')}>管理订阅 <ArrowRight size={14} /></button>
           </header>
           <div className="ops-compact-list">
             {recentSubs.length === 0 && <div className="ops-empty">还没有真实订阅记录。</div>}

@@ -1,7 +1,7 @@
-import { Activity, CalendarDays, Compass, Film, Gauge, Home, ListChecks, Search, Settings } from 'lucide-react';
+import { Activity, Bookmark, CalendarDays, Compass, Film, Home, ListChecks, Search, Settings } from 'lucide-react';
 import type { HealthResponse } from '../../types/media';
 
-export type PageId = 'overview' | 'hall' | 'control' | 'tasks' | 'calendar' | 'discover' | 'subscription-settings' | 'settings';
+export type PageId = 'overview' | 'hall' | 'control' | 'tasks' | 'calendar' | 'discover' | 'subscriptions' | 'subscription-settings' | 'settings';
 
 const navItems: Array<{
   id: PageId;
@@ -10,10 +10,10 @@ const navItems: Array<{
 }> = [
   { id: 'overview', label: '总览', icon: Home },
   { id: 'hall', label: '影院大厅', icon: Film },
-  { id: 'control', label: '控制室', icon: Gauge },
+  { id: 'discover', label: '发现', icon: Compass },
+  { id: 'subscriptions', label: '订阅', icon: Bookmark },
   { id: 'tasks', label: '任务中心', icon: ListChecks },
-  { id: 'calendar', label: '日历', icon: CalendarDays },
-  { id: 'discover', label: '发现', icon: Compass }
+  { id: 'calendar', label: '日历', icon: CalendarDays }
 ];
 
 interface AppTopNavProps {
@@ -40,7 +40,7 @@ export function AppTopNav({ activePage, health, onNavigate }: AppTopNavProps) {
         <nav className="primary-nav" aria-label="主导航">
           {navItems.map((item) => {
             const Icon = item.icon;
-            const isActive = activePage === item.id || (item.id === 'discover' && activePage === 'subscription-settings');
+            const isActive = activePage === item.id || (item.id === 'subscriptions' && activePage === 'subscription-settings');
 
             return (
               <button
@@ -70,7 +70,7 @@ export function AppTopNav({ activePage, health, onNavigate }: AppTopNavProps) {
           <Search aria-hidden="true" size={15} strokeWidth={1.8} />
           <span>搜索媒体</span>
         </button>
-        <button className="nav-pill nav-pill--health" type="button" onClick={() => onNavigate('control')}>
+        <button className={activePage === 'control' ? 'nav-pill nav-pill--health nav-pill--active' : 'nav-pill nav-pill--health'} type="button" onClick={() => onNavigate('control')}>
           <Activity aria-hidden="true" size={15} strokeWidth={1.8} />
           <span>
             {configuredCount}/{serviceCount} 已配置

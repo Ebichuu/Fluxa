@@ -4,7 +4,7 @@
 路由数量：47  
 运行实现：Python / Flask
 
-新增能力使用真正的 URL 版本契约：`docs/contracts/http-api-contract-v2.json`，共 13 条。v1 的 47 条冻结路径和历史状态码不变。
+新增能力使用真正的 URL 版本契约：`docs/contracts/http-api-contract-v2.json`，共 16 条。v1 的 47 条冻结路径和历史状态码不变。
 
 ## 1. 版本规则
 
@@ -63,6 +63,9 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `PATCH /api/subscriptions/:id/category` | 八分类 key 或 `null` |
 | `GET /api/subscriptions/detail` | 必填 `id`，可选 `season` |
 | `GET /api/subscriptions/calendar` | `year`、`month`、`type` |
+| `GET /api/v2/subscriptions/:id/torra-push-preview` | 路径中的订阅 ID，只读预检 |
+| `POST /api/v2/subscriptions/:id/torra-pushes` | `confirm=true`、12–128 字符幂等键 |
+| `GET /api/v2/system/metrics` | 无参数，30 秒服务端缓存 |
 | `GET /api/discover/browse` | 来源、类型、排序、语言、年份、风格、provider 和分页 |
 | `GET /api/discover/search` | `query`、可选 `page` |
 | `GET /api/discover/resources/search` | 标题，可选类型、年份、TMDB ID 和来源 |
@@ -114,17 +117,18 @@ NasEmby 原静态页面源码作为迁移参考保留，但不注册为第二套
 - 所有 GET 只能读取，不改变订阅、下载器或外部服务状态。
 - 保留核心接口默认返回 503，旧静态页仍保持 404。
 
-## 9. 已新增的网盘与集成 v2 契约
+## 9. HTTP v2 契约
 
-当前 47 条 v1 契约不承担新增网盘语义。13 条 `/api/v2` 接口负责：
+当前 47 条 v1 契约不承担新增语义。16 条 `/api/v2` 接口包括：
 
-- 115、Telegram、HDHive / pansou 和 MoviePilot 脱敏状态。
-- 115 账号检查、Telegram 登录/退出/频道、HDHive 授权/配置/签到。
-- 订阅级网盘开关。
-- 脱敏候选预览。
-- 单条转存、任务链重复复查、幂等、冷却和审计。
+- 当前 React 使用：集成脱敏摘要、Torra 单条预览/推送、缓存系统指标。
+- 延期保留：115 检查、Telegram 登录/频道、HDHive 授权/配置/签到、订阅级网盘开关、候选预览和单条转存。
 
-所有 v2 接口继续使用整站会话认证；危险方法执行 Origin 校验。候选预览不返回完整分享链接、提取密码或凭据。写动作还需要独立环境闸门；默认部署全部关闭。
+Torra 推送目标固定，浏览器不能选择 Symedia 或 MoviePilot。服务端从唯一台账重新读取订阅，要求确认、幂等键、60 秒冷却、分类、保存路径、下载器 ID 和在线查重。
+
+系统指标调用原 NasEmby 采样函数，响应只保留 CPU、内存、磁盘和网络白名单字段，不返回内部路径或 Emby 库列表。
+
+所有 v2 接口继续使用整站会话认证；危险方法执行 Origin 校验。延期的网盘路由继续存在但当前 `client=false` 且环境闸门关闭，等待以后版本，不能据此整体开启原核心 API。
 
 ## 10. v2 状态码和兼容性
 

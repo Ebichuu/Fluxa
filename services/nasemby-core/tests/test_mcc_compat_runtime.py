@@ -9,6 +9,7 @@ from app import discover_runtime
 from app import activity_log
 from app.contract_mapping import map_calendar_payload, map_subscription_detail, sanitize_resource_payload
 from app.main import create_app
+from tests.activity_log_test_support import IsolatedActivityLogMixin
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -77,7 +78,7 @@ def concrete_path(path):
     return path
 
 
-class MccCompatibilityContractTests(unittest.TestCase):
+class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase):
     def test_all_47_frozen_routes_exist_on_python_and_compat_routes_win(self):
         contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
         app = create_app(access_environment={})
@@ -364,6 +365,56 @@ class MccCompatibilityContractTests(unittest.TestCase):
                 self.assertEqual(pushed.status_code, 200)
                 self.assertTrue(pushed.get_json()["pushed"])
                 self.assertEqual(app.extensions["mcc_torra_client"].pushes[0]["save_path"], "/downloads/torra/00-日漫")
+
+                v2_preview = client.get(f"/api/v2/subscriptions/{key}/torra-push-preview")
+                self.assertEqual(v2_preview.status_code, 200)
+                self.assertTrue(v2_preview.get_json()["preview"]["ready"])
+                action = {
+                    "confirm": True,
+                    "idempotencyKey": "torra-test-action-202",
+                }
+                with patch("app.subscription_compat_runtime.time.monotonic", return_value=1.0):
+                    first_push = client.post(f"/api/v2/subscriptions/{key}/torra-pushes", json=action)
+                    replayed_push = client.post(f"/api/v2/subscriptions/{key}/torra-pushes", json=action)
+                    cooldown_push = client.post(f"/api/v2/subscriptions/{key}/torra-pushes", json={
+                        "confirm": True,
+                        "idempotencyKey": "torra-test-action-203",
+                    })
+                self.assertEqual(first_push.status_code, 200)
+                self.assertFalse(first_push.get_json()["replayed"])
+                self.assertEqual(replayed_push.status_code, 200)
+                self.assertTrue(replayed_push.get_json()["replayed"])
+                self.assertEqual(cooldown_push.status_code, 409)
+                self.assertEqual(cooldown_push.get_json()["code"], "TORRA_PUSH_COOLDOWN")
+                self.assertEqual(len(app.extensions["mcc_torra_client"].pushes), 2)
+
+                with patch("app.subscription_compat_runtime.time.monotonic", return_value=62.0), patch.object(
+                    app.extensions["mcc_torra_client"],
+                    "push_subscription",
+                    return_value={"success": False, "message": "secret upstream response"},
+                ):
+                    rejected_push = client.post(f"/api/v2/subscriptions/{key}/torra-pushes", json={
+                        "confirm": True,
+                        "idempotencyKey": "torra-test-action-204",
+                    })
+                self.assertEqual(rejected_push.status_code, 502)
+                self.assertEqual(rejected_push.get_json()["code"], "TORRA_PUSH_REJECTED")
+                self.assertEqual(rejected_push.get_json()["error"], "Torra 推送未完成")
+                self.assertNotIn("secret upstream response", rejected_push.get_data(as_text=True))
+
+                with patch("app.subscription_compat_runtime.time.monotonic", return_value=123.0), patch.object(
+                    app.extensions["mcc_torra_client"],
+                    "push_subscription",
+                    side_effect=RuntimeError("secret exception"),
+                ):
+                    failed_push = client.post(f"/api/v2/subscriptions/{key}/torra-pushes", json={
+                        "confirm": True,
+                        "idempotencyKey": "torra-test-action-205",
+                    })
+                self.assertEqual(failed_push.status_code, 502)
+                self.assertEqual(failed_push.get_json()["code"], "TORRA_PUSH_FAILED")
+                self.assertEqual(failed_push.get_json()["error"], "Torra 推送失败")
+                self.assertNotIn("secret exception", failed_push.get_data(as_text=True))
 
                 stored = json.loads(items_path.read_text(encoding="utf-8"))["items"]
                 self.assertEqual(len(stored), 1)

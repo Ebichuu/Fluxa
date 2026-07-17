@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Check, Layers3, ListMusic, Pin, PinOff } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Check, Layers3, ListMusic, Pin, PinOff, X } from 'lucide-react';
 import type { MediaItem, MediaLibrary } from '../../types/media';
 
 type QueuePanelTab = 'libraries' | 'queue';
@@ -39,14 +39,21 @@ export function MediaQueuePanel({
   onSelectLibrary
 }: MediaQueuePanelProps) {
   const [peeking, setPeeking] = useState(false);
+  const activeRowRef = useRef<HTMLButtonElement | null>(null);
   const activeLibrary = libraries.find((library) => library.id === activeLibraryId);
   const activeItem = items[activeIndex];
   const panelOpen = pinned || peeking;
 
+  useEffect(() => {
+    if (panelOpen && tab === 'queue') {
+      activeRowRef.current?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [activeIndex, panelOpen, tab]);
+
   return (
     <aside
       className={`media-queue-panel${panelOpen ? ' media-queue-panel--open' : ''}${pinned ? ' media-queue-panel--pinned' : ''}`}
-      aria-label="媒体库和当前队列"
+      aria-label="媒体库和本库内容"
       onMouseEnter={() => setPeeking(true)}
       onMouseLeave={() => setPeeking(false)}
       onWheel={(event) => event.stopPropagation()}
@@ -54,32 +61,48 @@ export function MediaQueuePanel({
       <button
         className="media-queue-panel__handle"
         type="button"
-        aria-label="展开左侧媒体库和队列"
-        title="媒体库 / 队列"
-        onClick={() => setPeeking(true)}
+        aria-expanded={panelOpen}
+        aria-label={panelOpen ? '收起媒体库浏览面板' : '展开媒体库浏览面板'}
+        title="媒体库浏览"
+        onClick={() => setPeeking((current) => !current)}
       >
         <ListMusic size={18} strokeWidth={1.8} />
       </button>
 
       <div className="media-queue-panel__head">
         <div className="media-queue-panel__title-block">
-          <div className="media-queue-panel__title">媒体库 / 队列</div>
+          <div className="media-queue-panel__title">媒体库浏览</div>
           <div className="media-queue-panel__sub">
             {activeLibrary ? activeLibrary.name : 'Media Center'} · {items.length} 项
           </div>
         </div>
-        <button
-          className={`media-queue-panel__icon-button${pinned ? ' media-queue-panel__icon-button--active' : ''}`}
-          type="button"
-          aria-label={pinned ? '取消常开左侧面板' : '常开左侧面板'}
-          title={pinned ? '取消常开' : '常开面板'}
-          onClick={() => onPinnedChange(!pinned)}
-        >
-          {pinned ? <PinOff size={15} strokeWidth={1.9} /> : <Pin size={15} strokeWidth={1.9} />}
-        </button>
+        <div className="media-queue-panel__head-actions">
+          <button
+            className={`media-queue-panel__icon-button${pinned ? ' media-queue-panel__icon-button--active' : ''}`}
+            type="button"
+            aria-label={pinned ? '取消常开左侧面板' : '常开左侧面板'}
+            title={pinned ? '取消常开' : '常开面板'}
+            onClick={() => onPinnedChange(!pinned)}
+          >
+            {pinned ? <PinOff size={15} strokeWidth={1.9} /> : <Pin size={15} strokeWidth={1.9} />}
+          </button>
+          <button
+            className="media-queue-panel__icon-button media-queue-panel__close"
+            type="button"
+            aria-label="关闭媒体库浏览面板"
+            title="关闭"
+            onClick={(event) => {
+              event.currentTarget.blur();
+              onPinnedChange(false);
+              setPeeking(false);
+            }}
+          >
+            <X size={15} strokeWidth={1.9} />
+          </button>
+        </div>
       </div>
 
-      <div className="media-queue-panel__tabs" role="tablist" aria-label="媒体浏览模式">
+      <div className="media-queue-panel__tabs" role="tablist" aria-label="媒体浏览方式">
         <button
           className={`media-queue-panel__tab${tab === 'libraries' ? ' media-queue-panel__tab--active' : ''}`}
           type="button"
@@ -98,7 +121,7 @@ export function MediaQueuePanel({
           onClick={() => onTabChange('queue')}
         >
           <ListMusic size={14} strokeWidth={1.8} />
-          <span>当前队列</span>
+          <span>本库内容</span>
         </button>
       </div>
 
@@ -137,6 +160,7 @@ export function MediaQueuePanel({
                   className={`media-queue-panel__row${selected ? ' media-queue-panel__row--active' : ''}`}
                   type="button"
                   key={item.id}
+                  ref={selected ? activeRowRef : undefined}
                   onClick={() => onSelectItem(index)}
                 >
                   <img src={item.posterUrl || item.backdropUrl} alt="" loading="lazy" decoding="async" />
@@ -149,7 +173,7 @@ export function MediaQueuePanel({
               );
             })
           ) : (
-            <div className="media-queue-panel__empty">当前媒体库还没有可展示项目</div>
+            <div className="media-queue-panel__empty">本库还没有可展示内容</div>
           )}
         </div>
       )}

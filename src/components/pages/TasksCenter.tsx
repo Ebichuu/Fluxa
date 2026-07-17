@@ -1,13 +1,22 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Download, ExternalLink, HardDrive, Pause, Play, RefreshCcw, Rss, Server } from 'lucide-react';
-import { getTaskChain, runQbittorrentAction } from '../../services/api';
+import { Activity, AlertTriangle, Download, ExternalLink, HardDrive, Pause, Play, RefreshCcw, Rss, Server } from 'lucide-react';
+import { getActivityLogs, getTaskChain, runQbittorrentAction } from '../../services/api';
 import type { QbittorrentAction } from '../../types/qbittorrent';
 import type { TaskChainItem, TaskChainResponse, TaskChainState, TaskChainStep } from '../../types/taskChain';
+import type { ActivityLogItem } from '../../types/operations';
 import { formatSpeed, formatTimeAgo } from '../../utils/formatters';
 
 type FilterName = '全部' | '进行中' | '等待中' | '卡住' | '已入库' | '未关联';
 
 const filters: FilterName[] = ['全部', '进行中', '等待中', '卡住', '已入库', '未关联'];
+
+const activityFilters = [
+  { key: '', label: '全部' },
+  { key: 'subscription', label: '订阅' },
+  { key: 'push', label: 'Torra 推送' },
+  { key: 'qbittorrent', label: 'qB' },
+  { key: 'system', label: '系统' }
+] as const;
 
 const stateLabel: Record<TaskChainState, string> = {
   active: '进行中',
@@ -58,6 +67,9 @@ export function TasksCenter() {
   const [pendingAction, setPendingAction] = useState<{ item: TaskChainItem; action: QbittorrentAction } | null>(null);
   const [actionBusy, setActionBusy] = useState('');
   const [actionFeedback, setActionFeedback] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
+  const [activityCategory, setActivityCategory] = useState('');
+  const [activities, setActivities] = useState<ActivityLogItem[]>([]);
+  const [activityError, setActivityError] = useState('');
 
   const loadChain = () => {
     setLoading(true);
@@ -78,6 +90,31 @@ export function TasksCenter() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    const loadActivities = () => {
+      getActivityLogs(activityCategory)
+        .then((payload) => {
+          if (!cancelled) {
+            setActivities(payload.logs);
+            setActivityError('');
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setActivities([]);
+            setActivityError('活动日志暂不可用');
+          }
+        });
+    };
+    loadActivities();
+    const timer = window.setInterval(loadActivities, 30000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activityCategory]);
+
+  useEffect(() => {
     setVisibleLimit(12);
   }, [filter]);
 
@@ -94,7 +131,6 @@ export function TasksCenter() {
   }), [items]);
 
   const completed115 = items.filter((item) => item.steps.find((step) => step.key === 'cloud115')?.status === 'done').length;
-  const cloudAllowed = items.filter((item) => item.acquisition?.cloudState === 'cloud_allowed' || item.acquisition?.cloudState === 'manual_only').length;
   const openTool = (url: string) => {
     if (url) window.open(url, '_blank', 'noopener,noreferrer');
   };
@@ -133,7 +169,7 @@ export function TasksCenter() {
       <section className="ops-hero ops-hero--tasks">
         <div>
           <p className="ops-eyebrow">TASK CENTER / UNIFIED EVIDENCE</p>
-          <h1>一条媒体任务，把五个系统的证据放在同一行。</h1>
+          <h1>一条媒体任务，把整条 PT 路线的证据放在同一行。</h1>
           <p className="ops-deck">中控订阅、Torra、qB、Symedia 与 Emby 使用强键关联；115 没有直接 API 时只做明确标注的相邻证据推断。</p>
         </div>
         <div className="ops-task-hero-status">
@@ -146,7 +182,7 @@ export function TasksCenter() {
       <section className="ops-task-summary" aria-label="任务状态摘要">
         <div><Rss size={16} /><span>中控订阅</span><strong>{items.filter((item) => item.origin === 'subscription').length} 条主干</strong></div>
         <div><Download size={16} /><span>Torra / qB</span><strong>{chain ? `${chain.services.torra.total} 订阅 · ${chain.services.qb.active} 活跃` : '读取中'}</strong></div>
-        <div><HardDrive size={16} /><span>进入 115</span><strong>{completed115} 条有证据 · {cloudAllowed} 条可候选</strong></div>
+        <div><HardDrive size={16} /><span>进入 115</span><strong>{completed115} 条有秒传或接管证据</strong></div>
         <div><Server size={16} /><span>Symedia / Emby</span><strong>{chain ? `${chain.counts.completed} 已入库` : '读取中'}</strong></div>
       </section>
 
@@ -198,14 +234,6 @@ export function TasksCenter() {
 
               {item.state === 'blocked' && <div className="ops-task-alert"><AlertTriangle size={15} />{currentDetail(item)}</div>}
 
-              {item.acquisition && (
-                <div className={`ops-task-cloud-state ops-task-cloud-state--${item.acquisition.cloudState}`}>
-                  <HardDrive aria-hidden="true" size={14} />
-                  <strong>网盘支线</strong>
-                  <span>{item.acquisition.cloudDetail}</span>
-                </div>
-              )}
-
               <div className="ops-task-chain" aria-label="任务证据链">
                 {item.steps.map((step, index) => (
                   <div className={stepClass(step)} key={step.key}>
@@ -252,6 +280,38 @@ export function TasksCenter() {
             <button className="ops-action-button" type="button" onClick={() => setVisibleLimit((value) => value + 12)}>显示更多</button>
           </div>
         )}
+      </section>
+
+      <section className="ops-panel ops-activity-log">
+        <header className="ops-task-toolbar">
+          <div><small>ACTIVITY / AUDIT</small><h2>最近活动</h2></div>
+          <span>只读 · 最近 100 条</span>
+        </header>
+        <div className="ops-activity-filters" role="tablist" aria-label="活动类型">
+          {activityFilters.map((item) => (
+            <button
+              aria-selected={activityCategory === item.key}
+              className={activityCategory === item.key ? 'ops-task-tab ops-task-tab--active' : 'ops-task-tab'}
+              key={item.key || 'all'}
+              role="tab"
+              type="button"
+              onClick={() => setActivityCategory(item.key)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        {activityError && <div className="ops-empty">{activityError}</div>}
+        {!activityError && activities.length === 0 && <div className="ops-empty">当前分类还没有活动记录。</div>}
+        <div className="ops-activity-list">
+          {activities.map((item, index) => (
+            <article className={`ops-activity-item is-${item.status}`} key={`${item.ts}-${item.action}-${index}`}>
+              <span><Activity size={13} /></span>
+              <div><strong>{item.message || item.action}</strong><small>{item.category} · {item.action}</small></div>
+              <time>{item.time}</time>
+            </article>
+          ))}
+        </div>
       </section>
 
       {pendingAction && (

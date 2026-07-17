@@ -90,6 +90,27 @@ export interface SubscriptionPushPreview {
   } | null;
 }
 
+export interface TorraPushPreviewResponse {
+  ok: boolean;
+  subscription: {
+    id: string;
+    title: string;
+  };
+  preview: SubscriptionPushPreview;
+}
+
+export interface TorraPushResult {
+  ok: boolean;
+  success: boolean;
+  pushed: boolean;
+  alreadyExists: boolean;
+  searchTriggered: boolean;
+  subscriptionId: string;
+  message: string;
+  requestId: string;
+  replayed: boolean;
+}
+
 export interface DiscoverResult {
   id: number;
   mediaType: 'movie' | 'tv';

@@ -17,6 +17,7 @@ from flask import Flask
 from app import discover_runtime
 from app.cloud_acquisition_runtime import register_cloud_acquisition
 from app.integration_runtime import register_integrations
+from tests.activity_log_test_support import IsolatedActivityLogMixin
 
 
 def subscription_config(**cloud_overrides):
@@ -49,7 +50,7 @@ def subscription_config(**cloud_overrides):
     }
 
 
-class CloudIntegrationRuntimeTests(unittest.TestCase):
+class CloudIntegrationRuntimeTests(IsolatedActivityLogMixin, unittest.TestCase):
     def test_old_resource_default_migrates_to_torra_and_cloud_stays_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "subscriptions.json"

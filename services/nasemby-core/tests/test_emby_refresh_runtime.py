@@ -12,6 +12,8 @@ MODULE_ROOT = Path(__file__).resolve().parents[1]
 if str(MODULE_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE_ROOT))
 
+from tests.activity_log_test_support import IsolatedActivityLogMixin
+
 
 NOW = datetime(2026, 7, 14, 8, 5, tzinfo=timezone.utc)
 
@@ -48,7 +50,7 @@ class FakeSymedia:
         return {"rows": rows, "total": len(rows)}
 
 
-class EmbyRefreshRuntimeContractTests(unittest.TestCase):
+class EmbyRefreshRuntimeContractTests(IsolatedActivityLogMixin, unittest.TestCase):
     def test_timestamp_parser_treats_symedia_naive_time_as_beijing(self):
         from app.emby_refresh_runtime import parse_service_timestamp
 

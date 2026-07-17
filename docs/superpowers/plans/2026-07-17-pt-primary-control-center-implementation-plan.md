@@ -1,6 +1,6 @@
 # 媒体控制中心 PT 主链收口实施计划
 
-状态：执行中
+状态：代码、自动化和本地页面验收完成；最终镜像复构建待 Docker 环境
 
 日期：2026-07-17
 
@@ -29,7 +29,7 @@ NasEmby 订阅 → Torra → qB → Torra 秒传 115 → Symedia → Emby
 执行：
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -v
+python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v
 npm run typecheck
 npm run build
 git status --short
@@ -291,3 +291,22 @@ docker build -t media-control-center:v2-pt-final .
 - Git 工作区只包含本轮可解释改动。
 - 没有连接真实外部服务执行写动作。
 - `docs/PLAN.md` 明确下一步是 fnOS 只读部署和单条 Torra 实机验证，而不是 Telegram 网盘开发。
+
+## 10. 2026-07-17 执行结果
+
+已完成：
+
+- Torra v2 预览与固定目标推送，包含确认、幂等回放、60 秒冷却、服务端复查和脱敏审计。
+- 修复服务启动不足 60 秒时首次 Torra 推送被误判为冷却的问题，并用低单调时钟回归覆盖。
+- 导航、订阅入口、PT 任务中心、活动日志、缓存 NAS 指标和媒体抽屉收口。
+- 自动测试活动日志改用临时路径，完整回归不再污染真实活动台账。
+- Python 85 项、TypeScript 类型检查、Vite 生产构建和 `npm audit --omit=dev` 全部通过。
+- API 契约审查通过：v1 路径、方法和历史状态码未破坏；v2 共 16 条，Torra 目标不可由浏览器选择。
+- 质量扫描 0 错误；安全扫描 0 Critical / 0 High；新增 diff 未发现硬编码凭据。
+- 1440×900、1024×768、390×844 页面验收通过；移动端媒体抽屉可明确展开和关闭；Mineradio iframe 与桥接正常。
+
+尚未完成：
+
+- Docker Desktop 当前未运行，因此本轮最终镜像没有重新构建；v2 基线镜像的单容器验收记录仍有效。
+- fnOS 部署、真实 Torra/qB/115/Symedia/Emby 链路和订阅调度继续等待实机窗口。
+- Telegram 网盘、HDHive / pansou、影巢、115 分享转存、自动兜底和 MoviePilot 补齐仍按路线图延期。

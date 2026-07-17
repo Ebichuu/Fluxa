@@ -49,7 +49,7 @@
     { "method": "GET", "path": "/api/discover/trending", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "discover", "client": true },
     { "method": "GET", "path": "/api/discover/search", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "discover", "client": true },
     { "method": "GET", "path": "/api/discover/resources/search", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "discover", "client": true },
-    { "method": "GET", "path": "/api/activity/logs", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "activity", "client": false },
+    { "method": "GET", "path": "/api/activity/logs", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "activity", "client": true },
 
     { "method": "GET", "path": "/api/internal/nasemby-core/status", "audience": "internal", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "nasemby-internal", "client": false },
     { "method": "GET", "path": "/api/internal/nasemby-core/subscriptions", "audience": "internal", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "nasemby-internal", "client": false },

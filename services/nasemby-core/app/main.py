@@ -27,6 +27,7 @@ from app.symedia_read_runtime import register_symedia_read
 from app.task_chain_runtime import register_task_chain
 from app.integration_runtime import register_integrations
 from app.cloud_acquisition_runtime import register_cloud_acquisition
+from app.system_metrics_runtime import register_system_metrics
 from app.hdhive_auth import (
     hdhive_auth_url,
     hdhive_checkin_now,
@@ -1174,6 +1175,8 @@ def create_app(
     cloud_functions=None,
     cloud_state_path=None,
     cloud_clock=None,
+    system_metrics_sampler=None,
+    system_metrics_clock=None,
 ):
     environment = os.environ if access_environment is None else access_environment
     application = Flask(__name__, static_folder=None)
@@ -1230,6 +1233,11 @@ def create_app(
         functions=cloud_functions,
         state_path=cloud_state_path,
         clock=cloud_clock,
+    )
+    register_system_metrics(
+        application,
+        sampler=system_metrics_sampler,
+        clock=system_metrics_clock,
     )
     register_discover_compat(application)
     register_subscription_compat(application, environment=environment)

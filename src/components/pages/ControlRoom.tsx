@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Clapperboard, Cloud, Download, ExternalLink, HeartPulse, RefreshCcw, Rss, Wrench } from 'lucide-react';
+import { Clapperboard, Download, ExternalLink, HeartPulse, RefreshCcw, Rss, Wrench } from 'lucide-react';
 import { getEmbyOverview, getEmbyRefreshStatus, getIntegrationSummary, getQbittorrentSummary, getSymediaSummary, getTorraSummary, triggerEmbyRefresh } from '../../services/api';
 import type { EmbyOverview, EmbyRefreshStatus } from '../../types/emby';
 import type { QbittorrentSummary } from '../../types/qbittorrent';
@@ -170,15 +170,15 @@ export function ControlRoom() {
 
       <section className="ops-panel ops-control-integrations">
         <header className="ops-task-toolbar">
-          <div><small>NASEMBY / SECONDARY CHANNEL</small><h2>网盘与兼容能力</h2></div>
-          <span>不参与 4 个核心服务在线评分</span>
+          <div><small>FUTURE PT FALLBACK</small><h2>MoviePilot 补齐预留</h2></div>
+          <span>当前不自动参与 Torra 主线</span>
         </header>
         <div className="ops-connection-grid">
-          {(integrations?.services ?? []).map((service) => (
+          {(integrations?.services ?? []).filter((service) => service.id === 'moviepilot').map((service) => (
             <article className="ops-connection-group" key={service.id}>
               <div className="ops-connection-group__head">
-                <h3><Cloud aria-hidden="true" size={15} />{service.name}</h3>
-                <p>{service.role}</p>
+                <h3><Rss aria-hidden="true" size={15} />{service.name}</h3>
+                <p>Torra 无结果后的其他 PT 站点补齐，后续单独开发</p>
               </div>
               <div className="ops-policy-row">
                 <span><strong>{service.configured ? '已配置' : '未配置'}</strong><small>{service.detail}</small></span>
@@ -186,7 +186,7 @@ export function ControlRoom() {
               </div>
             </article>
           ))}
-          {!integrations && <div className="ops-empty">正在读取 NasEmby 集成状态…</div>}
+          {!integrations && <div className="ops-empty">正在读取 MoviePilot 兼容状态…</div>}
         </div>
       </section>
 
@@ -262,8 +262,8 @@ export function ControlRoom() {
 
       <section className="ops-control-foot">
         <span>内置订阅中枢</span>
-        <strong>PT-only 默认策略</strong>
-        <p>自动云盘兜底保持关闭；115、Telegram、HDHive / pansou 与 MoviePilot 已作为辅助能力单独展示。</p>
+        <strong>Torra 单一主通道</strong>
+        <p>Torra 负责 PT、qB 与 115 秒传；MoviePilot 只保留为以后其他 PT 站点补齐能力。</p>
       </section>
 
       {embyRefreshConfirm && (

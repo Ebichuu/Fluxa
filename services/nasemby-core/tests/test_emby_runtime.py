@@ -13,6 +13,8 @@ PROJECT_ROOT = MODULE_ROOT.parents[1]
 if str(MODULE_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE_ROOT))
 
+from tests.activity_log_test_support import IsolatedActivityLogMixin
+
 
 class FakeEmbyClient:
     def __init__(self, *, configured=True, fail=False):
@@ -110,7 +112,7 @@ class FakeSession:
         return self.responses.pop(0)
 
 
-class EmbyRuntimeContractTests(unittest.TestCase):
+class EmbyRuntimeContractTests(IsolatedActivityLogMixin, unittest.TestCase):
     def test_unconfigured_home_keeps_existing_sample_contract(self):
         from app import main
         from app.fallback_media import FALLBACK_MEDIA

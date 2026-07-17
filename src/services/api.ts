@@ -4,7 +4,8 @@ import type { QbittorrentAction, QbittorrentActionResult, QbittorrentSummary } f
 import type { SymediaSummary } from '../types/symedia';
 import type { TorraSummary } from '../types/torra';
 import type { TaskChainResponse } from '../types/taskChain';
-import type { CloudCandidateResponse, CloudTransferResult, IntegrationSummary, TelegramChannel } from '../types/integrations';
+import type { IntegrationSummary } from '../types/integrations';
+import type { ActivityLogResponse, SystemMetricsResponse } from '../types/operations';
 import type {
   DiscoverBrowseParams,
   DiscoverResourceResponse,
@@ -16,6 +17,8 @@ import type {
   SubscriptionHubConfig,
   SubscriptionListResponse,
   SubscriptionPushPreview,
+  TorraPushPreviewResponse,
+  TorraPushResult,
   MediaCategory
 } from '../types/subscriptions';
 
@@ -48,12 +51,6 @@ export function getHealth(): Promise<HealthResponse> {
 
 export function getIntegrationSummary(probe = false): Promise<IntegrationSummary> {
   return readJson<IntegrationSummary>(`/api/v2/integrations${probe ? '?probe=1' : ''}`);
-}
-
-export function getCloudCandidates(subscriptionId: string): Promise<CloudCandidateResponse> {
-  return readJson<CloudCandidateResponse>(
-    `/api/v2/acquisition/cloud/candidates?id=${encodeURIComponent(subscriptionId)}`
-  );
 }
 
 export function getAuthSession(): Promise<AuthSessionResponse> {
@@ -123,6 +120,16 @@ export async function triggerEmbyRefresh(): Promise<EmbyRefreshResult> {
 
 export function getTaskChain(): Promise<TaskChainResponse> {
   return readJson<TaskChainResponse>('/api/tasks/chain');
+}
+
+export function getSystemMetrics(): Promise<SystemMetricsResponse> {
+  return readJson<SystemMetricsResponse>('/api/v2/system/metrics');
+}
+
+export function getActivityLogs(category = ''): Promise<ActivityLogResponse> {
+  const query = new URLSearchParams({ limit: '100' });
+  if (category) query.set('category', category);
+  return readJson<ActivityLogResponse>(`/api/activity/logs?${query.toString()}`);
 }
 
 export function getSubscriptionCalendar(
@@ -208,56 +215,6 @@ async function patchJson<T>(path: string, body: unknown): Promise<T> {
   return payload;
 }
 
-async function putJson<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(path, {
-    method: 'PUT',
-    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  const payload = await response.json().catch(() => ({})) as T & { error?: string };
-  if (!response.ok) throw new Error(payload.error || `请求失败：${response.status}`);
-  return payload;
-}
-
-async function deleteJson<T>(path: string): Promise<T> {
-  const response = await fetch(path, { method: 'DELETE', headers: { Accept: 'application/json' } });
-  const payload = await response.json().catch(() => ({})) as T & { error?: string };
-  if (!response.ok) throw new Error(payload.error || `请求失败：${response.status}`);
-  return payload;
-}
-
-export function probeCloud115(): Promise<{ ok: boolean; service: IntegrationSummary['services'][number] }> {
-  return postJson('/api/v2/integrations/cloud115/probes', {});
-}
-
-export function getTelegramChannels(): Promise<{ ok: boolean; channels: TelegramChannel[] }> {
-  return readJson('/api/v2/integrations/telegram/channels');
-}
-
-export function sendTelegramLoginCode(input: { phone: string; api_id: string; api_hash: string }): Promise<{ ok: boolean; message: string }> {
-  return postJson('/api/v2/integrations/telegram/login-codes', input);
-}
-
-export function signInTelegram(code: string): Promise<{ ok: boolean; authorized: boolean }> {
-  return postJson('/api/v2/integrations/telegram/session', { code });
-}
-
-export function logoutTelegram(): Promise<{ ok: boolean; authorized: boolean }> {
-  return deleteJson('/api/v2/integrations/telegram/session');
-}
-
-export function saveTelegramChannels(channels: Array<{ input: string }>): Promise<{ ok: boolean; channelCount: number }> {
-  return putJson('/api/v2/integrations/telegram/channels', { channels, resolve: true });
-}
-
-export function getHdhiveAuthorization(): Promise<{ ok: boolean; authorizationUrl: string }> {
-  return readJson('/api/v2/integrations/hdhive/authorization');
-}
-
-export function runHdhiveCheckin(): Promise<{ ok: boolean; message: string }> {
-  return postJson('/api/v2/integrations/hdhive/check-ins', {});
-}
-
 export function saveSubscription(input: {
   title: string;
   mediaType: 'movie' | 'tv';
@@ -315,22 +272,24 @@ export function setSubscriptionCategory(
   return patchJson(`/api/subscriptions/${encodeURIComponent(id)}/category`, { category });
 }
 
-export function setSubscriptionCloudPolicy(
-  id: string,
-  allowCloudFallback: boolean
-): Promise<{ success: boolean; item: import('../types/subscriptions').SubscriptionItem }> {
-  return patchJson(`/api/v2/subscriptions/${encodeURIComponent(id)}/cloud-policy`, { allowCloudFallback });
-}
-
-export function runCloudTransfer(input: {
-  candidateId: string;
-  idempotencyKey: string;
-}): Promise<CloudTransferResult> {
-  return postJson('/api/v2/acquisition/cloud/transfers', { ...input, confirm: true });
-}
-
 export function getSubscriptionPushPreview(id: string): Promise<{ success: boolean; preview: SubscriptionPushPreview }> {
   return readJson<{ success: boolean; preview: SubscriptionPushPreview }>(
     `/api/subscriptions/push-preview?id=${encodeURIComponent(id)}`
+  );
+}
+
+export function getTorraPushPreview(id: string): Promise<TorraPushPreviewResponse> {
+  return readJson<TorraPushPreviewResponse>(
+    `/api/v2/subscriptions/${encodeURIComponent(id)}/torra-push-preview`
+  );
+}
+
+export function pushSubscriptionToTorra(
+  id: string,
+  idempotencyKey: string
+): Promise<TorraPushResult> {
+  return postJson<TorraPushResult>(
+    `/api/v2/subscriptions/${encodeURIComponent(id)}/torra-pushes`,
+    { confirm: true, idempotencyKey }
   );
 }

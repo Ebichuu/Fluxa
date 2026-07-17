@@ -1,6 +1,6 @@
 # NasEmby 核心接口能力矩阵
 
-状态：源码已恢复；常用能力已映射到 v2，旧高风险入口继续保留关闭
+状态：源码已恢复；PT 主线使用细分接口，Telegram 网盘能力延期且旧高风险入口继续关闭
 
 日期：2026-07-17
 
@@ -32,7 +32,7 @@
 | --- | --- | --- | --- | --- |
 | `GET /api/status` | `api_status → project_status` | 返回项目和功能状态 | 无 | 当前 |
 | `GET /api/health` | `api_health → read_config` | 汇总 Emby、qB、Torra、Symedia 和订阅配置状态 | 无，不返回凭据 | 当前 |
-| `GET /api/dashboard/system` | `api_dashboard_system → dashboard_system_metrics` | 读取 NAS CPU、内存、磁盘等摘要 | 无 | 保留关闭；总览接入待确认 |
+| `GET /api/dashboard/system` | `api_dashboard_system → dashboard_system_metrics` | 读取 NAS CPU、内存、磁盘等摘要 | 无 | 原入口保留关闭；当前由 `GET /api/v2/system/metrics` 白名单映射并缓存 |
 | `GET /api/config` | `api_get_config → read_config` | 读取 NasEmby 原配置 | 读取可能含敏感配置 | 保留关闭；需拆成脱敏分组接口 |
 | `POST /api/config` | `api_save_config → write_config` | 保存 NasEmby 原配置分组 | 写配置文件，可能改变后台行为 | 保留关闭；待拆分开关和字段白名单 |
 | `GET /api/activity/logs` | `api_activity_logs → read_activities` | 读取原操作日志 | 无 | 当前契约已有同路径，原实现作为兼容基线 |
@@ -41,13 +41,13 @@
 
 ## HDHive / pansou
 
-当前统一映射：
+延期保留映射：
 
 - `GET /api/v2/integrations`：脱敏状态。
 - `GET /api/v2/integrations/hdhive/authorization`：生成授权地址。
 - `PATCH /api/v2/integrations/hdhive/config`：白名单配置。
 - `POST /api/v2/integrations/hdhive/check-ins`：一小时冷却签到。
-- `/api/v2/acquisition/cloud/candidates` 与 `/transfers`：候选和单条转存。
+- `/api/v2/acquisition/cloud/candidates` 与 `/transfers`：候选和单条转存。当前 React 不调用，环境闸门保持关闭。
 
 | 方法与路径 | Python 调用 | 用途 | 副作用 | 状态与后续 |
 | --- | --- | --- | --- | --- |
@@ -62,7 +62,7 @@
 
 ## Telegram
 
-当前统一映射：`/api/v2/integrations/telegram/*`，覆盖登录码、登录、退出和频道读取/保存。敏感管理需要总开关与 Telegram 细分开关同时开启。
+延期保留映射：`/api/v2/integrations/telegram/*` 覆盖登录码、登录、退出和频道读取/保存。当前 React 不调用；未来启用仍需要总开关与 Telegram 细分开关同时开启。
 
 | 方法与路径 | Python 调用 | 用途 | 副作用 | 状态与后续 |
 | --- | --- | --- | --- | --- |
@@ -78,7 +78,7 @@
 
 ## 115
 
-当前统一映射：`POST /api/v2/integrations/cloud115/probes`、候选预览和单条转存。浏览器不接收 Cookie、完整分享链接或提取密码。原监控、清理和助力继续保留关闭。
+延期保留映射：`POST /api/v2/integrations/cloud115/probes`、候选预览和单条转存。当前 React 不调用；浏览器响应仍不包含 Cookie、完整分享链接或提取密码。原监控、清理和助力继续保留关闭。
 
 | 方法与路径 | Python 调用 | 用途 | 副作用 | 状态与后续 |
 | --- | --- | --- | --- | --- |
@@ -96,9 +96,9 @@
 | `GET /api/moviepilot/status` | `api_moviepilot_status → moviepilot_status` | 检查 MoviePilot 连接 | 外部只读 | 保留关闭；兼容能力 |
 | `POST /api/moviepilot/subscribe` | `api_moviepilot_subscribe → moviepilot_subscribe` | 向 MoviePilot 创建订阅 | 外部写入 | 保留关闭；PT 主链备用兼容 |
 | `GET /api/torra/status` | `api_torra_status → torra_status` | 检查 Torra 原连接状态 | 外部只读 | 保留关闭；当前由 `GET /api/torra/summary` 提供控制室摘要 |
-| `POST /api/torra/subscribe` | `api_torra_subscribe → torra_subscribe` | 向 Torra 创建或更新订阅并搜索 | 外部写入 | 保留关闭；计划映射到受保护订阅推送 |
+| `POST /api/torra/subscribe` | `api_torra_subscribe → torra_subscribe` | 向 Torra 创建或更新订阅并搜索 | 外部写入 | 原入口保留关闭；当前由 v2 Torra 预览/推送路由调用统一安全逻辑 |
 | `GET /api/symedia/status` | `api_symedia_status → symedia_status` | 检查 Symedia 原连接状态 | 外部只读 | 保留关闭；当前由 `GET /api/symedia/summary` 提供摘要 |
-| `POST /api/symedia/subscribe` | `api_symedia_subscribe → symedia_subscribe` | 向 Symedia 推送原订阅动作 | 外部写入 | 保留关闭；需确认它在 PT 与网盘链路中的准确职责 |
+| `POST /api/symedia/subscribe` | `api_symedia_subscribe → symedia_subscribe` | 向 Symedia 推送原订阅动作 | 外部写入 | 保留关闭；当前不向 Symedia 推送订阅，Symedia 只负责 115 后整理入库 |
 
 ## Emby 原接口
 
@@ -128,7 +128,7 @@
 2. 默认隔离：确认保留接口返回 `503 PRESERVED_CORE_API_DISABLED`，而不是 404。
 3. 模拟启用：测试中开启 `MCC_PRESERVED_CORE_API_ENABLED=true`，替换外部函数为 mock。
 4. 输入输出契约：记录每条接口的必填字段、成功响应、错误响应和脱敏要求。
-5. 副作用闸门：115、Telegram、HDHive 和网盘搜索/转存已经使用独立开关。
+5. 副作用闸门：Torra v2 推送使用确认、幂等、冷却和独立开关；115、Telegram、HDHive 和网盘搜索/转存继续保留独立开关但当前无 React 入口。
 6. 新旧映射：v2 接口与保留接口调用同一业务函数，模拟测试已经覆盖关键行为。
 7. 以上代码验证已完成；下一步才是用户批准的 fnOS 实机单条链路测试。
 

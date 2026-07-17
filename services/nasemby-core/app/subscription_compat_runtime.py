@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
+import time
 from datetime import datetime, timezone
 
 from flask import Flask, jsonify, request
 
 from app import discover_runtime
-from app.activity_log import read_activities
+from app.activity_log import read_activities, write_activity
 from app.contract_mapping import (
     first_text,
     integer,
@@ -43,6 +45,7 @@ WESTERN_CODES = {
 WESTERN_LANGUAGES = {"en", "fr", "de", "es", "it", "nl", "pt"}
 SOUTH_ASIA_LANGUAGES = {"hi", "bn", "ta", "te", "ur", "si", "ne"}
 _ledger_lock = threading.Lock()
+TORRA_PUSH_COOLDOWN_SECONDS = 60
 
 
 def _truthy(value):
@@ -54,7 +57,7 @@ def _iso_now():
 
 
 def _error(code, message, status):
-    return jsonify({"code": code, "error": message}), status
+    return jsonify({"ok": False, "success": False, "code": code, "error": message}), status
 
 
 def _write_guard(environment):
@@ -257,6 +260,37 @@ def _push_preview(item, environment, torra_client):
     }
 
 
+def _safe_torra_push_result(result, request_id, replayed=False):
+    source = result if isinstance(result, dict) else {}
+    success = bool(source.get("success"))
+    pushed = bool(source.get("pushed"))
+    already_exists = bool(source.get("alreadyExists"))
+    search_triggered = bool(source.get("searchTriggered"))
+    if success and pushed:
+        message = "已创建 Torra 订阅并触发搜索"
+    elif success and already_exists:
+        message = "Torra 已有订阅，未重复创建；已触发搜索"
+    elif success:
+        message = "Torra 已接受订阅动作"
+    else:
+        message = "Torra 推送未完成"
+    response = {
+        "ok": success,
+        "success": success,
+        "pushed": pushed,
+        "alreadyExists": already_exists,
+        "searchTriggered": search_triggered,
+        "subscriptionId": str(source.get("subscriptionId") or "")[:200],
+        "message": message,
+        "requestId": request_id,
+        "replayed": bool(replayed),
+    }
+    if not success:
+        response["code"] = "TORRA_PUSH_REJECTED"
+        response["error"] = message
+    return response
+
+
 def _update_item(key, updater):
     with _ledger_lock:
         data = discover_runtime.load_subscription_items(remove_completed=False)
@@ -278,6 +312,9 @@ def _update_item(key, updater):
 
 def register_subscription_compat(app: Flask, environment=None):
     environment = os.environ if environment is None else environment
+    torra_push_lock = threading.Lock()
+    torra_push_actions = {}
+    torra_push_last_at = {}
 
     @app.get("/api/subscriptions/items", endpoint="mcc_compat_subscriptions_items")
     def subscriptions_items():
@@ -315,6 +352,24 @@ def register_subscription_compat(app: Flask, environment=None):
         if not item:
             return _error("SUBSCRIPTION_NOT_FOUND", "订阅不存在", 404)
         return jsonify({"success": True, "preview": _push_preview(item, environment, app.extensions["mcc_torra_client"])})
+
+    @app.get(
+        "/api/v2/subscriptions/<key>/torra-push-preview",
+        endpoint="mcc_v2_subscriptions_torra_push_preview",
+    )
+    def subscriptions_torra_push_preview(key):
+        item = _find_item(key)
+        if not item:
+            return _error("SUBSCRIPTION_NOT_FOUND", "订阅不存在", 404)
+        plan = _push_preview(item, environment, app.extensions["mcc_torra_client"])
+        return jsonify({
+            "ok": True,
+            "subscription": {
+                "id": key,
+                "title": str(item.get("title") or item.get("name") or "")[:240],
+            },
+            "preview": plan,
+        })
 
     @app.patch("/api/subscriptions/<key>/category", endpoint="mcc_compat_subscriptions_category")
     def subscriptions_category(key):
@@ -372,6 +427,95 @@ def register_subscription_compat(app: Flask, environment=None):
             return jsonify(app.extensions["mcc_torra_client"].push_subscription(plan["payload"]))
         except Exception:
             return _error("TORRA_PUSH_FAILED", "Torra 推送失败", 502)
+
+    @app.post(
+        "/api/v2/subscriptions/<key>/torra-pushes",
+        endpoint="mcc_v2_subscriptions_torra_push",
+    )
+    def subscriptions_torra_push(key):
+        denied = _write_guard(environment)
+        if denied:
+            return denied
+        body = request.get_json(silent=True) or {}
+        if body.get("confirm") is not True:
+            return _error("TORRA_PUSH_CONFIRMATION_REQUIRED", "需要明确确认 Torra 推送", 400)
+        idempotency_key = str(body.get("idempotencyKey") or "").strip()
+        if not 12 <= len(idempotency_key) <= 128:
+            return _error("TORRA_PUSH_IDEMPOTENCY_INVALID", "幂等键长度必须为 12 到 128 个字符", 400)
+        if not _truthy(environment.get("TORRA_PUSH_ENABLED")):
+            return _error("TORRA_PUSH_DISABLED", "Torra 安全推送开关未启用，请先核对预览", 403)
+        item = _find_item(key)
+        if not item:
+            return _error("SUBSCRIPTION_NOT_FOUND", "订阅不存在", 404)
+        plan = _push_preview(item, environment, app.extensions["mcc_torra_client"])
+        if not plan["ready"]:
+            return jsonify({
+                "ok": False,
+                "code": "TORRA_PUSH_BLOCKED",
+                "error": "；".join(plan["blockers"]),
+                "preview": plan,
+            }), 409
+
+        now = time.monotonic()
+        request_id = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:16]
+        with torra_push_lock:
+            existing = torra_push_actions.get(idempotency_key)
+            if existing:
+                if existing["subscriptionId"] != key:
+                    return _error("TORRA_PUSH_IDEMPOTENCY_CONFLICT", "幂等键已用于其他订阅", 409)
+                if existing["status"] == "pending":
+                    return _error("TORRA_PUSH_IN_PROGRESS", "相同 Torra 推送正在执行", 409)
+                replayed = dict(existing["response"])
+                replayed["replayed"] = True
+                return jsonify(replayed), int(existing["httpStatus"])
+            last_at = torra_push_last_at.get(key)
+            if last_at is not None:
+                remaining = TORRA_PUSH_COOLDOWN_SECONDS - int(now - last_at)
+                if remaining > 0:
+                    return _error("TORRA_PUSH_COOLDOWN", f"该订阅刚执行过 Torra 推送，请在 {remaining} 秒后重试", 409)
+            torra_push_last_at[key] = now
+            torra_push_actions[idempotency_key] = {
+                "subscriptionId": key,
+                "status": "pending",
+            }
+
+        try:
+            result = app.extensions["mcc_torra_client"].push_subscription(plan["payload"])
+            response = _safe_torra_push_result(result, request_id)
+            http_status = 200 if response["success"] else 502
+        except Exception:
+            response = {
+                "ok": False,
+                "success": False,
+                "code": "TORRA_PUSH_FAILED",
+                "pushed": False,
+                "alreadyExists": False,
+                "searchTriggered": False,
+                "subscriptionId": "",
+                "message": "Torra 推送失败",
+                "error": "Torra 推送失败",
+                "requestId": request_id,
+                "replayed": False,
+            }
+            http_status = 502
+
+        with torra_push_lock:
+            torra_push_actions[idempotency_key] = {
+                "subscriptionId": key,
+                "status": "completed",
+                "response": response,
+                "httpStatus": http_status,
+            }
+        write_activity(
+            "push",
+            "torra_push_v2",
+            "success" if response["success"] else "error",
+            response["message"],
+            subscription_id=key,
+            request_id=request_id,
+            already_exists=response["alreadyExists"],
+        )
+        return jsonify(response), http_status
 
     @app.get("/api/subscriptions/config", endpoint="mcc_compat_subscriptions_config")
     def subscriptions_config():
