@@ -4,8 +4,7 @@ import { getActivityLogs, getTaskChain, runQbittorrentAction } from '../../servi
 import type { QbittorrentAction } from '../../types/qbittorrent';
 import type { TaskChainItem, TaskChainResponse, TaskChainState, TaskChainStep } from '../../types/taskChain';
 import type { ActivityLogItem } from '../../types/operations';
-import { formatTimeAgo } from '../../utils/formatters';
-import { PageStatusHeader } from '../layout/PageStatusHeader';
+import { formatSpeed, formatTimeAgo } from '../../utils/formatters';
 
 type FilterName = '全部' | '进行中' | '等待中' | '卡住' | '已入库' | '尚未接到链路';
 
@@ -173,18 +172,18 @@ export function TasksCenter() {
 
   return (
     <main className="work-page ops-page ops-page--tasks">
-      <PageStatusHeader
-        actions={(
-          <button className="ops-action-button ops-action-button--primary" type="button" onClick={loadChain}>
-            <RefreshCcw aria-hidden="true" size={15} />刷新任务
-          </button>
-        )}
-        context="处理进度"
-        detail={chain ? `${chain.counts.waiting} 个等待 · ${formatTimeAgo(chain.generatedAt)}` : error || '正在汇总下载、整理和入库状态'}
-        status={loading && !chain ? '正在读取任务状态' : error && !chain ? '任务状态读取失败' : `${chain?.counts.active ?? 0} 个进行中 · ${chain?.counts.blocked ?? 0} 个卡住`}
-        title="任务中心"
-        tone={error || (chain?.counts.blocked ?? 0) > 0 ? 'warn' : chain ? 'ok' : 'neutral'}
-      />
+      <section className="ops-hero ops-hero--tasks">
+        <div>
+          <p className="ops-eyebrow">任务中心 · 处理进度</p>
+          <h1>媒体任务，现在进行到哪一步。</h1>
+          <p className="ops-deck">订阅、下载、进入 115 和整理入库集中显示；匹配依据和原工具入口放在任务详情中。</p>
+        </div>
+        <div className="ops-task-hero-status">
+          <span>{chain?.services.qb.connected ? 'PT 主链在线' : '部分服务未连接'}</span>
+          <strong>{chain?.services.qb.connected ? formatSpeed(chain.services.qb.downloadSpeed) : '待连接'}</strong>
+          <small>{chain ? `${chain.counts.active} 进行中 · ${chain.counts.blocked} 卡住` : '正在汇总任务证据'}</small>
+        </div>
+      </section>
 
       <section className="ops-task-summary" aria-label="任务状态摘要">
         <div><Rss size={16} /><span>已保存订阅</span><strong>{items.filter((item) => item.origin === 'subscription').length} 条主干</strong></div>
@@ -211,6 +210,7 @@ export function TasksCenter() {
           </div>
           <div className="ops-task-toolbar__actions">
             <span>{chain ? `${filtered.length} / ${items.length} 条 · ${formatTimeAgo(chain.generatedAt)}` : '正在读取统一任务链'}</span>
+            <button className="ops-icon-button" aria-label="刷新任务链" type="button" onClick={loadChain}><RefreshCcw size={16} /></button>
           </div>
         </header>
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowRight, Clapperboard, Cpu, Download, HardDrive, MemoryStick, Network, Rss, Server } from 'lucide-react';
+import { ArrowRight, Clapperboard, Cpu, Download, HardDrive, MemoryStick, Network, Rss, Server, ShieldCheck, TriangleAlert } from 'lucide-react';
 import {
   getEmbyOverview,
   getQbittorrentSummary,
@@ -18,7 +18,6 @@ import type { MediaCategory, SubscriptionItem } from '../../types/subscriptions'
 import { localDateKey, monthsInDateRange } from '../../utils/dateRanges';
 import { formatEta, formatPercent, formatSpeed, formatTimeAgo } from '../../utils/formatters';
 import type { PageId } from '../layout/AppTopNav';
-import { PageStatusHeader } from '../layout/PageStatusHeader';
 
 interface OverviewProps {
   onNavigate: (page: PageId) => void;
@@ -172,18 +171,21 @@ export function Overview({ onNavigate }: OverviewProps) {
 
   return (
     <main className="work-page ops-page ops-page--overview">
-      <PageStatusHeader
-        actions={(
-          <button className="ops-action-button ops-action-button--primary" type="button" onClick={() => onNavigate('tasks')}>
-            查看任务中心 <ArrowRight aria-hidden="true" size={15} />
-          </button>
-        )}
-        context="PT 主链"
-        detail={`${subs.length} 条订阅 · ${qb?.connected ? `${qb.counts.active} 个活跃下载` : '下载器待连接'} · ${symedia?.connected ? `今日入库 ${symedia.totals.today} 条` : '入库服务待连接'}`}
-        status={healthy ? 'PT 主链正常' : `${warnings.length} 项需要检查`}
-        title="总览"
-        tone={healthy ? 'ok' : 'warn'}
-      />
+      <section className="ops-hero">
+        <div>
+          <p className="ops-eyebrow">总览 · PT 主链</p>
+          <h1>从订阅到入库，一眼看清进度。</h1>
+          <p className="ops-deck">这里汇总正在下载、等待整理和已经入库的内容；需要处理时再进入任务中心。</p>
+        </div>
+        <button className={healthy ? 'ops-command ops-command--ok' : 'ops-command ops-command--warn'} type="button" onClick={() => onNavigate('tasks')}>
+          {healthy ? <ShieldCheck aria-hidden="true" size={18} /> : <TriangleAlert aria-hidden="true" size={18} />}
+          <span>
+            <small>当前状态</small>
+            <strong>{healthy ? 'PT 主链运行中' : `${warnings.length} 项需要检查`}</strong>
+          </span>
+          <ArrowRight aria-hidden="true" size={16} />
+        </button>
+      </section>
 
       <section className="pipeline-rail" aria-label="媒体处理链路">
         {pipeline.map((step, index) => (

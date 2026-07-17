@@ -94,7 +94,7 @@ export function App() {
         <DiscoverPage onNavigate={setPage} view={page === 'subscriptions' ? 'subscriptions' : 'discover'} />
       )}
       {page === 'subscription-settings' && <SubscriptionSettingsPage onNavigate={setPage} />}
-      {page === 'settings' && <SettingsPage health={health} />}
+      {page === 'settings' && <SettingsPage />}
     </div>
   );
 }

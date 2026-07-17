@@ -7,7 +7,6 @@ import type { SymediaSummary } from '../../types/symedia';
 import type { TorraSummary } from '../../types/torra';
 import type { IntegrationSummary } from '../../types/integrations';
 import { formatSpeed, formatTimeAgo } from '../../utils/formatters';
-import { PageStatusHeader } from '../layout/PageStatusHeader';
 
 type ServiceState = 'ok' | 'warn' | 'down' | 'idle';
 
@@ -155,18 +154,19 @@ export function ControlRoom() {
 
   return (
     <main className="work-page ops-page ops-page--control">
-      <PageStatusHeader
-        actions={(
-          <button className="ops-action-button ops-action-button--primary" type="button" onClick={refreshAll}>
-            <RefreshCcw aria-hidden="true" size={15} />刷新服务
-          </button>
-        )}
-        context="服务状态"
-        detail={warningCount ? `${warningCount} 项需要检查` : configuredCount ? '已配置服务状态正常' : '等待配置核心服务'}
-        status={`${onlineCount} / 4 核心服务在线`}
-        title="控制室"
-        tone={warningCount ? 'warn' : configuredCount ? 'ok' : 'neutral'}
-      />
+      <section className="ops-hero ops-hero--control">
+        <div>
+          <p className="ops-eyebrow">控制室 · 服务状态</p>
+          <h1>查看各项服务是否正常。</h1>
+          <p className="ops-deck">遇到下载或入库问题时，先在这里找到需要处理的服务，再进入原工具查看详情。</p>
+        </div>
+        <div className="ops-hero-actions">
+          <div className={warningCount ? 'ops-system-score ops-system-score--warn' : 'ops-system-score'}>
+            <small>核心服务</small><strong>{onlineCount} / 4 在线</strong><span>{warningCount ? `${warningCount} 项需检查` : configuredCount ? '已配置服务状态正常' : '等待配置核心服务'}</span>
+          </div>
+          <button className="ops-icon-button" aria-label="刷新全部服务" type="button" onClick={refreshAll}><RefreshCcw size={18} /></button>
+        </div>
+      </section>
 
       <section className="ops-panel ops-control-integrations">
         <header className="ops-task-toolbar">

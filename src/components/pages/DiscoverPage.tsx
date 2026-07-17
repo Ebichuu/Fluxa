@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Ban, Check, ChevronLeft, ChevronRight, ExternalLink, FileSearch, Plus, RefreshCcw, RotateCcw, Search, Send, SlidersHorizontal, Trash2, X } from 'lucide-react';
+import { Ban, Check, ChevronLeft, ChevronRight, Database, ExternalLink, FileSearch, Plus, RefreshCcw, RotateCcw, Search, Send, SlidersHorizontal, Trash2, X } from 'lucide-react';
 import {
   blockSubscription,
   browseDiscover,
@@ -25,7 +25,6 @@ import type {
   TorraPushPreviewResponse
 } from '../../types/subscriptions';
 import type { PageId } from '../layout/AppTopNav';
-import { PageStatusHeader } from '../layout/PageStatusHeader';
 
 interface DiscoverPageProps {
   onNavigate: (page: PageId) => void;
@@ -678,29 +677,21 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
       ? rows
       : rows.filter((item) => (item.source_key || item.source) === resourceSource);
   }, [resourceData, resourceSource]);
-  const pendingSubscriptionCount = useMemo(
-    () => subs.filter((item) => resolvedSubscriptionStatus(item) === 'pending').length,
-    [subs]
-  );
 
   return (
     <main className={subscriptionsOnly ? 'work-page ops-page ops-page--discover ops-page--subscriptions' : 'work-page ops-page ops-page--discover'}>
-      <PageStatusHeader
-        actions={subscriptionsOnly ? (
-          <button className="ops-action-button ops-action-button--primary" type="button" onClick={() => onNavigate('subscription-settings')}>
-            <SlidersHorizontal aria-hidden="true" size={14} />订阅设置
-          </button>
-        ) : (
-          <button className="ops-action-button ops-action-button--primary" type="button" onClick={() => searchInputRef.current?.focus()}>
-            <Search aria-hidden="true" size={14} />搜索影视
-          </button>
-        )}
-        context={subscriptionsOnly ? '自动获取' : '找片'}
-        detail={subscriptionsOnly ? 'PT 优先 · 外部写入受安全开关控制' : activeSearch ? `搜索：${activeSearch} · ${filterCount} 个筛选` : `${filterCount} 个筛选 · 第 ${pageInfo.page} 页`}
-        status={subscriptionsOnly ? (subsLoading ? '正在读取订阅' : subsError ? '订阅状态读取失败' : `${subs.length} 条订阅 · ${pendingSubscriptionCount} 条未完成`) : loading ? `正在读取${pageInfo.sourceLabel}` : `${pageInfo.sourceLabel} · ${formatCount(pageInfo.totalResults)} 条结果`}
-        title={subscriptionsOnly ? '我的订阅' : '发现'}
-        tone={subscriptionsOnly && subsError ? 'warn' : 'neutral'}
-      />
+      <section className="ops-hero ops-hero--discover">
+        <div>
+          <p className="ops-eyebrow">{subscriptionsOnly ? '订阅 · 自动获取' : '发现 · 找片'}</p>
+          <h1>{subscriptionsOnly ? '管理正在追的电影和剧集。' : '找到想看的内容，加入订阅即可。'}</h1>
+          <p className="ops-deck">{subscriptionsOnly ? '在这里查看进度、调整季数或重新交给 Torra；后续下载和入库会自动回到任务中心。' : '可以浏览榜单、国内平台和海外流媒体；加入订阅后由 PT 主线继续处理。'}</p>
+        </div>
+        <div className="ops-discover-policy">
+          <span><Database size={15} />默认获取方式</span>
+          <strong>PT / Torra</strong>
+          <small><Send size={13} />订阅后自动交给 Torra</small>
+        </div>
+      </section>
 
       <div className={subscriptionsOnly ? 'ops-discover-layout ops-discover-layout--subscriptions' : 'ops-discover-layout'}>
       {!subscriptionsOnly && <div>
@@ -968,12 +959,10 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
         <div className="activity-panel__head">
           <div><small>自动获取</small><h2>我的订阅</h2></div>
           <span className="queue-count">{subs.length} 条</span>
-          {!subscriptionsOnly && (
-            <button className="ops-action-button" type="button" onClick={() => onNavigate('subscription-settings')}>
-              <SlidersHorizontal aria-hidden="true" size={14} />
-              订阅设置
-            </button>
-          )}
+          <button className="ops-action-button" type="button" onClick={() => onNavigate('subscription-settings')}>
+            <SlidersHorizontal aria-hidden="true" size={14} />
+            订阅设置
+          </button>
           <button className="ops-action-button" disabled={subscriptionAction === 'run'} title="由自动订阅服务执行" type="button" onClick={runSweep}>
             <RefreshCcw aria-hidden="true" size={14} />
             {subscriptionAction === 'run' ? '执行中' : '执行一轮'}
