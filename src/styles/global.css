@@ -39,7 +39,6 @@ body {
     radial-gradient(circle at 88% 24%, rgba(244, 210, 138, 0.09), transparent 25rem),
     #010304;
   overflow-x: hidden;
-  user-select: none;
 }
 
 button,
@@ -49,6 +48,12 @@ input {
 
 button {
   color: inherit;
+  user-select: none;
+}
+
+.app-top-nav,
+[role="button"] {
+  user-select: none;
 }
 
 .app-shell {

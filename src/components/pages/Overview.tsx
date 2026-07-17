@@ -146,23 +146,23 @@ export function Overview({ onNavigate }: OverviewProps) {
     {
       label: '订阅',
       value: `${subs.length} 条`,
-      detail: '中控订阅台账',
+      detail: '我的订阅',
       state: subs.length > 0 ? 'ok' : 'idle'
     },
     {
-      label: '获取 / 下载',
+      label: '正在下载',
       value: torra?.connected && qb?.connected ? `${torra.counts.active} / ${qb.counts.active}` : '待连接',
       detail: 'Torra 活跃订阅 / qB 活跃任务',
       state: torra?.connected && qb?.connected ? ((qb.counts.stalled ?? 0) > 0 ? 'warn' : 'ok') : 'idle'
     },
     {
       label: '进入 115',
-      value: '待接入证据',
-      detail: '秒传任务明细尚未接入中控',
+      value: '等待任务记录',
+      detail: '秒传明细尚未接入控制中心',
       state: 'idle'
     },
     {
-      label: '入库',
+      label: '整理与入库',
       value: symedia?.connected ? `${symedia.totals.today} 条` : '待连接',
       detail: emby?.connected ? `Emby 最近 ${recentAdds.length} 条` : '等待 Symedia / Emby',
       state: symedia?.connected && emby?.connected ? ((symedia.totals.failedRecent ?? 0) > 0 ? 'warn' : 'done') : 'idle'
@@ -173,9 +173,9 @@ export function Overview({ onNavigate }: OverviewProps) {
     <main className="work-page ops-page ops-page--overview">
       <section className="ops-hero">
         <div>
-          <p className="ops-eyebrow">MEDIA CONTROL / PT PRIMARY</p>
-          <h1>媒体从订阅到入库，应该只看一条链。</h1>
-          <p className="ops-deck">Torra 负责搜索、qB 下载和秒传 115；Symedia 接管整理后交给 Emby。</p>
+          <p className="ops-eyebrow">总览 · PT 主链</p>
+          <h1>从订阅到入库，一眼看清进度。</h1>
+          <p className="ops-deck">这里汇总正在下载、等待整理和已经入库的内容；需要处理时再进入任务中心。</p>
         </div>
         <button className={healthy ? 'ops-command ops-command--ok' : 'ops-command ops-command--warn'} type="button" onClick={() => onNavigate('tasks')}>
           {healthy ? <ShieldCheck aria-hidden="true" size={18} /> : <TriangleAlert aria-hidden="true" size={18} />}
@@ -205,7 +205,7 @@ export function Overview({ onNavigate }: OverviewProps) {
           <header className="ops-panel__head">
             <div>
               <span className="ops-panel__icon"><Download aria-hidden="true" size={17} /></span>
-              <div><small>ACQUISITION</small><h2>正在获取</h2></div>
+              <div><small>下载任务</small><h2>正在下载</h2></div>
             </div>
             <button className="ops-link" type="button" onClick={() => onNavigate('tasks')}>查看任务中心 <ArrowRight size={14} /></button>
           </header>
@@ -253,7 +253,7 @@ export function Overview({ onNavigate }: OverviewProps) {
 
           <button className="ops-panel ops-next-air" type="button" onClick={() => onNavigate('calendar')}>
             <Rss aria-hidden="true" size={18} />
-            <span><small>NEXT 72 HOURS</small><strong>{upcomingCount === null ? '播出统计待连接' : `${upcomingCount} 集即将播出`}</strong></span>
+            <span><small>未来 72 小时</small><strong>{upcomingCount === null ? '播出统计待连接' : `${upcomingCount} 集即将播出`}</strong></span>
             <ArrowRight aria-hidden="true" size={16} />
           </button>
         </div>
@@ -262,7 +262,7 @@ export function Overview({ onNavigate }: OverviewProps) {
       <section className="ops-lower-grid">
         <article className="ops-panel">
           <header className="ops-panel__head">
-            <div><span className="ops-panel__icon ops-panel__icon--library"><Clapperboard aria-hidden="true" size={17} /></span><div><small>LIBRARY</small><h2>最近入库</h2></div></div>
+            <div><span className="ops-panel__icon ops-panel__icon--library"><Clapperboard aria-hidden="true" size={17} /></span><div><small>媒体库</small><h2>最近入库</h2></div></div>
             <button className="ops-link" type="button" onClick={() => onNavigate('hall')}>进入影院大厅 <ArrowRight size={14} /></button>
           </header>
           <div className="ops-compact-list">
@@ -275,7 +275,7 @@ export function Overview({ onNavigate }: OverviewProps) {
 
         <article className="ops-panel">
           <header className="ops-panel__head">
-            <div><span className="ops-panel__icon"><Rss aria-hidden="true" size={17} /></span><div><small>SUBSCRIPTIONS</small><h2>最近订阅</h2></div></div>
+            <div><span className="ops-panel__icon"><Rss aria-hidden="true" size={17} /></span><div><small>订阅</small><h2>最近订阅</h2></div></div>
             <button className="ops-link" type="button" onClick={() => onNavigate('subscriptions')}>管理订阅 <ArrowRight size={14} /></button>
           </header>
           <div className="ops-compact-list">

@@ -18,14 +18,14 @@ export function SubscriptionSettingsPage({ onNavigate }: SubscriptionSettingsPag
             <ArrowLeft aria-hidden="true" size={14} />
             返回我的订阅
           </button>
-          <p className="ops-eyebrow">SUBSCRIPTION / POLICY</p>
-          <h1>决定订阅如何运行，不混入系统连接与凭据设置。</h1>
-          <p className="ops-deck">来源负责发现内容；订阅统一交给 Torra，下载、秒传和入库继续走同一条 PT 主线。</p>
+          <p className="ops-eyebrow">订阅设置 · 来源与时间</p>
+          <h1>设置系统自动发现哪些内容。</h1>
+          <p className="ops-deck">选择内容来源、执行时间和订阅规则；保存后由 PT 主线统一获取。</p>
         </div>
         <div className="ops-subscription-settings-guard">
           <span><Database size={15} />当前 PT 通道</span>
           <strong>{modeLabel}</strong>
-          <small><ShieldCheck size={13} />真实外部写入仍受服务端闸门控制</small>
+          <small><ShieldCheck size={13} />真实外部写入仍受安全开关控制</small>
         </div>
       </section>
 

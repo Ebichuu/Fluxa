@@ -507,7 +507,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
       genreIds: result.genreIds,
       originCountry: result.originCountry
     };
-    if (!window.confirm(`确认订阅《${payload.title}》？\n将保存到 NasEmby 订阅中枢，获取通道仍按 PT 优先策略执行。`)) return;
+    if (!window.confirm(`确认订阅《${payload.title}》？\n保存后会按 PT 优先策略自动获取。`)) return;
     setSubscriptionAction(`save:${payload.mediaType}:${payload.tmdbId}`);
     saveSubscription(payload)
       .then(() => {
@@ -519,7 +519,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
   };
 
   const runSweep = () => {
-    if (!window.confirm('确认让 NasEmby 订阅中枢立即执行一轮？')) return;
+    if (!window.confirm('确认立即检查一轮自动订阅？')) return;
     setSubscriptionAction('run');
     runSubscriptionSweep()
       .then(() => {
@@ -682,14 +682,14 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
     <main className={subscriptionsOnly ? 'work-page ops-page ops-page--discover ops-page--subscriptions' : 'work-page ops-page ops-page--discover'}>
       <section className="ops-hero ops-hero--discover">
         <div>
-          <p className="ops-eyebrow">{subscriptionsOnly ? 'SUBSCRIPTIONS / PT CONTROL' : 'DISCOVER / CONTENT SOURCES'}</p>
-          <h1>{subscriptionsOnly ? '订阅只维护一份台账，也只交给 Torra。' : '从内容发现开始，但所有自动获取最终都回到 PT 主链。'}</h1>
-          <p className="ops-deck">{subscriptionsOnly ? '在这里查看、分类、改季并预检 Torra 推送；Symedia 只负责后续整理入库。' : '榜单、筛选和搜索负责选片；订阅中枢负责去重、分类并把任务交给 Torra。'}</p>
+          <p className="ops-eyebrow">{subscriptionsOnly ? '订阅 · 自动获取' : '发现 · 找片'}</p>
+          <h1>{subscriptionsOnly ? '管理正在追的电影和剧集。' : '找到想看的内容，加入订阅即可。'}</h1>
+          <p className="ops-deck">{subscriptionsOnly ? '在这里查看进度、调整季数或重新交给 Torra；后续下载和入库会自动回到任务中心。' : '可以浏览榜单、国内平台和海外流媒体；加入订阅后由 PT 主线继续处理。'}</p>
         </div>
         <div className="ops-discover-policy">
-          <span><Database size={15} />默认通道</span>
+          <span><Database size={15} />默认获取方式</span>
           <strong>PT / Torra</strong>
-          <small><Send size={13} />Torra 统一接收订阅</small>
+          <small><Send size={13} />订阅后自动交给 Torra</small>
         </div>
       </section>
 
@@ -824,7 +824,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                     <button
                       className={subscribed ? 'tool-link discover-card__action discover-card__action--done' : 'tool-link discover-card__action'}
                       disabled={subscribed || !canSubscribe}
-                      title={canSubscribe ? '保存到 NasEmby 订阅中枢' : '未匹配到 TMDB，暂不能订阅'}
+                      title={canSubscribe ? '保存到我的订阅' : '未匹配到 TMDB，暂不能订阅'}
                       type="button"
                       onClick={() => subscribe(result)}
                     >
@@ -842,7 +842,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
           <section className="discover-resource-panel" aria-label={`${resourceTarget.title} 资源搜索结果`}>
             <header className="discover-resource-panel__head">
               <div>
-                <small>RESOURCE SEARCH</small>
+                <small>资源搜索</small>
                 <h2>{resourceTarget.title}</h2>
                 <p>{resourceLoading ? '正在读取资源…' : `${visibleResources.length} 条资源`}</p>
               </div>
@@ -955,15 +955,15 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
         )}
       </div>}
 
-      <aside className={subscriptionsOnly ? 'ops-inspector ops-subscription-console discover-subs discover-subs--full' : 'ops-inspector ops-subscription-console discover-subs'} aria-label="订阅中枢">
+      <aside className={subscriptionsOnly ? 'ops-inspector ops-subscription-console discover-subs discover-subs--full' : 'ops-inspector ops-subscription-console discover-subs'} aria-label="我的订阅">
         <div className="activity-panel__head">
-          <div><small>SUBSCRIPTION HUB</small><h2>我的订阅</h2></div>
+          <div><small>自动获取</small><h2>我的订阅</h2></div>
           <span className="queue-count">{subs.length} 条</span>
           <button className="ops-action-button" type="button" onClick={() => onNavigate('subscription-settings')}>
             <SlidersHorizontal aria-hidden="true" size={14} />
             订阅设置
           </button>
-          <button className="ops-action-button" disabled={subscriptionAction === 'run'} title="由 NasEmby Core 执行" type="button" onClick={runSweep}>
+          <button className="ops-action-button" disabled={subscriptionAction === 'run'} title="由自动订阅服务执行" type="button" onClick={runSweep}>
             <RefreshCcw aria-hidden="true" size={14} />
             {subscriptionAction === 'run' ? '执行中' : '执行一轮'}
           </button>
@@ -1227,7 +1227,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                   {torraPushPreview?.subscription.id === item.id && (
                     <section className={torraPushPreview.preview.ready ? 'torra-push-panel is-ready' : 'torra-push-panel is-blocked'}>
                       <header>
-                        <span>TORRA / PRE-FLIGHT</span>
+                        <span>推送前检查</span>
                         <strong>{torraPushPreview.preview.ready ? '可以推送' : '当前不可推送'}</strong>
                       </header>
                       <dl>

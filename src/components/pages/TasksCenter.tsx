@@ -6,9 +6,9 @@ import type { TaskChainItem, TaskChainResponse, TaskChainState, TaskChainStep } 
 import type { ActivityLogItem } from '../../types/operations';
 import { formatSpeed, formatTimeAgo } from '../../utils/formatters';
 
-type FilterName = '全部' | '进行中' | '等待中' | '卡住' | '已入库' | '未关联';
+type FilterName = '全部' | '进行中' | '等待中' | '卡住' | '已入库' | '尚未接到链路';
 
-const filters: FilterName[] = ['全部', '进行中', '等待中', '卡住', '已入库', '未关联'];
+const filters: FilterName[] = ['全部', '进行中', '等待中', '卡住', '已入库', '尚未接到链路'];
 
 const activityFilters = [
   { key: '', label: '全部' },
@@ -43,6 +43,12 @@ function evidenceLabel(step: TaskChainStep) {
   if (step.evidence === 'verified') return step.source || '已验证';
   if (step.evidence === 'inferred') return '推断';
   return '证据不足';
+}
+
+function stepDisplayLabel(step: TaskChainStep) {
+  if (step.key === 'download') return '正在下载';
+  if (step.key === 'library') return '整理与入库';
+  return step.label;
 }
 
 function currentDetail(item: TaskChainItem) {
@@ -127,7 +133,7 @@ export function TasksCenter() {
     等待中: items.filter((item) => item.state === 'waiting').length,
     卡住: items.filter((item) => item.state === 'blocked').length,
     已入库: items.filter((item) => item.state === 'completed').length,
-    未关联: items.filter((item) => item.confidence === 'unlinked').length
+    尚未接到链路: items.filter((item) => item.confidence === 'unlinked').length
   }), [items]);
 
   const completed115 = items.filter((item) => item.steps.find((step) => step.key === 'cloud115')?.status === 'done').length;
@@ -168,22 +174,22 @@ export function TasksCenter() {
     <main className="work-page ops-page ops-page--tasks">
       <section className="ops-hero ops-hero--tasks">
         <div>
-          <p className="ops-eyebrow">TASK CENTER / UNIFIED EVIDENCE</p>
-          <h1>一条媒体任务，把整条 PT 路线的证据放在同一行。</h1>
-          <p className="ops-deck">中控订阅、Torra、qB、Symedia 与 Emby 使用强键关联；115 没有直接 API 时只做明确标注的相邻证据推断。</p>
+          <p className="ops-eyebrow">任务中心 · 处理进度</p>
+          <h1>媒体任务，现在进行到哪一步。</h1>
+          <p className="ops-deck">订阅、下载、进入 115 和整理入库集中显示；匹配依据和原工具入口放在任务详情中。</p>
         </div>
         <div className="ops-task-hero-status">
-          <span>{chain?.services.qb.connected ? 'PT CHAIN ONLINE' : 'PT CHAIN PARTIAL'}</span>
+          <span>{chain?.services.qb.connected ? 'PT 主链在线' : '部分服务未连接'}</span>
           <strong>{chain?.services.qb.connected ? formatSpeed(chain.services.qb.downloadSpeed) : '待连接'}</strong>
           <small>{chain ? `${chain.counts.active} 进行中 · ${chain.counts.blocked} 卡住` : '正在汇总任务证据'}</small>
         </div>
       </section>
 
       <section className="ops-task-summary" aria-label="任务状态摘要">
-        <div><Rss size={16} /><span>中控订阅</span><strong>{items.filter((item) => item.origin === 'subscription').length} 条主干</strong></div>
-        <div><Download size={16} /><span>Torra / qB</span><strong>{chain ? `${chain.services.torra.total} 订阅 · ${chain.services.qb.active} 活跃` : '读取中'}</strong></div>
-        <div><HardDrive size={16} /><span>进入 115</span><strong>{completed115} 条有秒传或接管证据</strong></div>
-        <div><Server size={16} /><span>Symedia / Emby</span><strong>{chain ? `${chain.counts.completed} 已入库` : '读取中'}</strong></div>
+        <div><Rss size={16} /><span>已保存订阅</span><strong>{items.filter((item) => item.origin === 'subscription').length} 条主干</strong></div>
+        <div><Download size={16} /><span>正在下载</span><strong>{chain ? `${chain.services.torra.total} 个订阅 · ${chain.services.qb.active} 个活跃下载` : '读取中'}</strong></div>
+        <div><HardDrive size={16} /><span>已进入 115</span><strong>{completed115} 条有秒传或接管记录</strong></div>
+        <div><Server size={16} /><span>整理与入库</span><strong>{chain ? `${chain.counts.completed} 个已完成` : '读取中'}</strong></div>
       </section>
 
       <section className="ops-panel ops-task-workbench">
@@ -208,7 +214,7 @@ export function TasksCenter() {
           </div>
         </header>
 
-        {loading && !chain && <div className="ops-empty ops-task-empty">正在并发读取 Torra、qB、Symedia 与 Emby…</div>}
+        {loading && !chain && <div className="ops-empty ops-task-empty">正在汇总下载、整理和入库状态…</div>}
         {!loading && error && <div className="ops-empty ops-task-empty">{error}</div>}
         {!loading && chain && visible.length === 0 && <div className="ops-empty ops-task-empty">这个筛选下暂时没有任务。</div>}
         {actionFeedback && (
@@ -226,7 +232,7 @@ export function TasksCenter() {
                   <h2>{item.title}</h2>
                   <p>
                     PT · {item.mediaType === 'movie' ? '电影' : item.mediaType === 'tv' ? `剧集${item.seasonNumber ? ` S${String(item.seasonNumber).padStart(2, '0')}` : ''}` : '未识别媒体'}
-                    {' · '}{item.confidence === 'strong' ? '强关联' : item.confidence === 'fallback' ? '标题兜底关联' : '未关联'}
+                    {' · '}{item.confidence === 'strong' ? '已精确匹配' : item.confidence === 'fallback' ? '按标题推测' : '尚未接到链路'}
                   </p>
                 </div>
                 <strong>{item.progress}%</strong>
@@ -238,7 +244,7 @@ export function TasksCenter() {
                 {item.steps.map((step, index) => (
                   <div className={stepClass(step)} key={step.key}>
                     <span>0{index + 1} · {evidenceLabel(step)}</span>
-                    <strong>{step.label}</strong>
+                    <strong>{stepDisplayLabel(step)}</strong>
                     <small>{step.detail}</small>
                   </div>
                 ))}
@@ -284,7 +290,7 @@ export function TasksCenter() {
 
       <section className="ops-panel ops-activity-log">
         <header className="ops-task-toolbar">
-          <div><small>ACTIVITY / AUDIT</small><h2>最近活动</h2></div>
+          <div><small>操作记录</small><h2>最近活动</h2></div>
           <span>只读 · 最近 100 条</span>
         </header>
         <div className="ops-activity-filters" role="tablist" aria-label="活动类型">
@@ -319,7 +325,7 @@ export function TasksCenter() {
           if (event.target === event.currentTarget && !actionBusy) setPendingAction(null);
         }}>
           <section aria-labelledby="qb-action-title" aria-modal="true" className="ops-confirm-dialog" role="dialog">
-            <span className="ops-confirm-dialog__signal">QB / {pendingAction.action === 'pause' ? 'PAUSE' : 'RESUME'}</span>
+            <span className="ops-confirm-dialog__signal">下载任务 · {pendingAction.action === 'pause' ? '暂停' : '恢复'}</span>
             <h2 id="qb-action-title">
               {pendingAction.action === 'pause' ? '暂停' : '恢复'} {pendingAction.item.qbControl.total} 个关联下载？
             </h2>

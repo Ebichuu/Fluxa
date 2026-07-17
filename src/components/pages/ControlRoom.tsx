@@ -156,9 +156,9 @@ export function ControlRoom() {
     <main className="work-page ops-page ops-page--control">
       <section className="ops-hero ops-hero--control">
         <div>
-          <p className="ops-eyebrow">CONTROL ROOM / CORE SERVICES</p>
-          <h1>中控做判断，四个核心服务负责执行。</h1>
-          <p className="ops-deck">先看 PT 主链是否完整，再进入原工具处理具体任务。</p>
+          <p className="ops-eyebrow">控制室 · 服务状态</p>
+          <h1>查看各项服务是否正常。</h1>
+          <p className="ops-deck">遇到下载或入库问题时，先在这里找到需要处理的服务，再进入原工具查看详情。</p>
         </div>
         <div className="ops-hero-actions">
           <div className={warningCount ? 'ops-system-score ops-system-score--warn' : 'ops-system-score'}>
@@ -170,7 +170,7 @@ export function ControlRoom() {
 
       <section className="ops-panel ops-control-integrations">
         <header className="ops-task-toolbar">
-          <div><small>FUTURE PT FALLBACK</small><h2>MoviePilot 补齐预留</h2></div>
+          <div><small>后续 PT 补齐</small><h2>MoviePilot 补齐预留</h2></div>
           <span>当前不自动参与 Torra 主线</span>
         </header>
         <div className="ops-connection-grid">
@@ -215,7 +215,7 @@ export function ControlRoom() {
 
         <aside className="ops-inspector">
           <header>
-            <span>{selected.order} / CORE NODE</span>
+            <span>{selected.order} · 核心服务</span>
             <i className={`ops-inspector__signal ops-inspector__signal--${selected.state}`} />
           </header>
           <div className="ops-inspector__title"><span>{selected.icon}</span><div><small>{selected.role}</small><h2>{selected.name}</h2></div></div>
@@ -227,7 +227,7 @@ export function ControlRoom() {
           </dl>
           {selected.id === 'emby' && (
             <div className={`ops-emby-refresh-evidence ops-emby-refresh-evidence--${embyRefresh?.state || 'loading'}`}>
-              <header><span>SYMEDIA → EMBY</span><strong>{embyRefresh?.reason || '正在读取索引证据'}</strong></header>
+              <header><span>整理 → 媒体库</span><strong>{embyRefresh?.reason || '正在读取索引记录'}</strong></header>
               <div><small>Symedia 最新入库</small><span>{embyRefresh?.latestSymediaAt ? formatTimeAgo(embyRefresh.latestSymediaAt) : '证据不足'}</span></div>
               <div><small>Emby 最新索引</small><span>{embyRefresh?.latestEmbyAt ? formatTimeAgo(embyRefresh.latestEmbyAt) : '证据不足'}</span></div>
             </div>
@@ -261,7 +261,7 @@ export function ControlRoom() {
       </section>
 
       <section className="ops-control-foot">
-        <span>内置订阅中枢</span>
+        <span>自动订阅已启用</span>
         <strong>Torra 单一主通道</strong>
         <p>Torra 负责 PT、qB 与 115 秒传；MoviePilot 只保留为以后其他 PT 站点补齐能力。</p>
       </section>
@@ -271,7 +271,7 @@ export function ControlRoom() {
           if (event.target === event.currentTarget && !embyRefreshBusy) setEmbyRefreshConfirm(false);
         }}>
           <section aria-labelledby="emby-refresh-title" aria-modal="true" className="ops-confirm-dialog" role="dialog">
-            <span className="ops-confirm-dialog__signal">EMBY / LIBRARY REFRESH</span>
+            <span className="ops-confirm-dialog__signal">媒体库 · 刷新索引</span>
             <h2 id="emby-refresh-title">触发 Emby 全库扫描？</h2>
             <p>Symedia 出现了比 Emby 索引更晚的成功入库记录。确认后只提交后台扫描请求，页面不会等待扫描完成。</p>
             <div className="ops-confirm-dialog__meta">

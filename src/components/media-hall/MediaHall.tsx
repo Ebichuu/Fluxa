@@ -124,7 +124,7 @@ export function MediaHall({ visualFx, onVisualFxChange }: MediaHallProps) {
         onSelectLibrary={handleSelectLibrary}
       />
       <div className="mineradio-embed-status" aria-live="polite">
-        <span>{response?.source === 'emby' ? 'Emby Live Library' : 'Sample Library'}</span>
+        <span>{response?.source === 'emby' ? 'Emby 实时媒体库' : '示例媒体库'}</span>
         {currentLibrary && <span>{currentLibrary.name}</span>}
         {activeItem && <span>{activeItem.title}</span>}
         {!activeItem && <span>{error || '正在连接媒体库'}</span>}

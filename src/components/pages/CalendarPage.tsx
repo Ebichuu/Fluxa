@@ -129,9 +129,9 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     <main className="work-page work-page--fill ops-page ops-page--calendar">
       <section className="ops-hero ops-hero--calendar">
         <div>
-          <p className="ops-eyebrow">SUBSCRIPTION CALENDAR / AIR DATES</p>
-          <h1>先知道什么时候播，再判断哪一集没有按时入库。</h1>
-          <p className="ops-deck">日历直接读取 NasEmby 订阅中枢与 TMDB 播出日期；逾期未入库条目会直接进入任务中心排查。</p>
+          <p className="ops-eyebrow">日历 · 播出与入库</p>
+          <h1>什么时候播，哪些还没入库。</h1>
+          <p className="ops-deck">这里汇总订阅内容的播出日期和入库进度；逾期内容可以直接进入任务中心排查。</p>
         </div>
         <div className="ops-calendar-stats" aria-label="本月订阅统计">
           <div><Radio size={15} /><span>待播出</span><strong>{upcomingCount}</strong></div>
@@ -144,7 +144,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         <header className="calendar-board__head">
           <div className="ops-calendar-title">
             <span><CalendarDays size={17} /></span>
-            <div><small>MONTH VIEW</small><h2>{year} 年 {month} 月</h2></div>
+            <div><small>月历</small><h2>{year} 年 {month} 月</h2></div>
           </div>
           <div className="ops-calendar-controls">
           <div className="ops-calendar-type" role="tablist" aria-label="日历媒体类型">
@@ -174,7 +174,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
           </div>
         </header>
         {calendarErrors.length > 0 && <p className="ops-calendar-error">{calendarErrors[0]}</p>}
-        {mode === 'error' && <p className="ops-calendar-error">NasEmby Core 当前不可用，没有回退到旧订阅台账或示例数据。</p>}
+        {mode === 'error' && <p className="ops-calendar-error">订阅服务当前不可用，没有显示旧记录或示例数据。</p>}
         <div className="ops-calendar-scroll">
         <div aria-label={`${year} 年 ${month} 月订阅日历`} className="calendar-grid" role="grid">
           {weekdays.map((day) => (

@@ -1,6 +1,6 @@
 # 媒体控制中心 v2 当前计划
 
-状态：PT 主链代码、本地页面和最终镜像只读验收完成，等待 fnOS 实机窗口
+状态：PT 主链代码、本地页面和全站用户文案已完成，等待 fnOS 实机窗口
 更新时间：2026-07-17
 
 ## 1. 最终目标
@@ -54,6 +54,8 @@
 - [x] 保留全局/订阅级网盘策略、脱敏候选、单条转存、幂等和模拟测试；当前已移出 React 页面并延期启用。
 - [x] 完成 1440×900、1024×768 和 390×844 页面验收；修复移动端媒体抽屉关闭后仍被焦点保持展开的问题。
 - [x] 重建 `media-control-center:v2-pt-final`，完成独立只读容器冒烟并确认运行层无 Node/npm。
+- [x] 建立“中文业务表层 + 次级技术信息”文案规则，统一工作页标题、任务状态、大厅状态和卡片小标。
+- [x] 默认开放正文、任务名、错误和路径复制，只在导航与按钮上禁用文字选择。
 
 详细执行清单见 `docs/V2_IMPLEMENTATION_PLAN.md`。
 
@@ -87,6 +89,8 @@
 - 我的订阅：顶部独立入口，管理唯一 NasEmby 台账并提供 Torra 推送预览。
 - 订阅设置：NasEmby 自动订阅来源、时间和 Torra 单一主通道。
 - 系统设置：PT 主线服务连接、MoviePilot 后续配置和系统级安全状态。
+
+页面文案以家人或偶尔使用者能直接理解为第一层；Torra、qB、Symedia、Emby、TMDB 和关联依据继续保留在服务卡、详情与检查信息中。完整规则见 `docs/UI_STANDARD.md`，本轮设计与实施记录见 `docs/superpowers/specs/2026-07-17-friendly-interface-copy-design.md` 和 `docs/superpowers/plans/2026-07-17-friendly-interface-copy-implementation-plan.md`。
 
 ## 6. 当前安全边界
 

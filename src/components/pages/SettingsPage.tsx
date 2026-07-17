@@ -61,7 +61,7 @@ const connectionGroups: Array<{
     ]
   },
   {
-    title: '订阅中枢（内置）',
+    title: '自动订阅（内置）',
     note: '追剧日历与自动订阅 · TMDB 数据源',
     fields: [
       ['TMDB_API_KEY', 'TMDB API Key']
@@ -170,7 +170,7 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
   return (
     <div className="ops-settings-card ops-settings-card--wide sub-config">
       <header className="ops-settings-card__head">
-        <div><span><Database size={16} /></span><div><small>SUBSCRIPTION DEFAULTS</small><h2>订阅扫描与来源</h2></div></div>
+        <div><span><Database size={16} /></span><div><small>自动订阅</small><h2>订阅扫描与来源</h2></div></div>
         <strong>当前配置：{currentModeLabel}</strong>
       </header>
       <div className="sub-config__toggles">
@@ -246,7 +246,7 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
       </div>
 
       <div className="sub-config__row">
-        <span>PT 主通道（NasEmby 原 provider 仍保留为兼容能力）</span>
+        <span>PT 主通道（旧资源获取方式仅保留兼容）</span>
         <div className="sub-config__modes">
           {subscriptionModes.map((mode) => (
             <label className={config.mode === mode.key ? 'is-active' : undefined} key={mode.key}>
@@ -334,21 +334,21 @@ export function SettingsPage() {
     <main className="work-page ops-page ops-page--settings">
       <section className="ops-hero ops-hero--settings">
         <div>
-          <p className="ops-eyebrow">SETTINGS / CONTROL POLICY</p>
-          <h1>在一个页面管理服务连接，但不在浏览器持久保存敏感凭据。</h1>
-          <p className="ops-deck">Torra 负责 PT 搜索、qB 下载编排和秒传到 115；中控只管理连接与安全边界。</p>
+          <p className="ops-eyebrow">设置 · 连接与安全</p>
+          <h1>管理服务连接与访问保护。</h1>
+          <p className="ops-deck">这里仅管理系统连接和安全边界；账号、密码与访问令牌由服务端保存。</p>
         </div>
         <div className="ops-settings-guard">
           <span><KeyRound size={15} />凭据策略</span>
           <strong>服务端安全保存</strong>
-          <small>已保存的账号、密码与 Token 不回填前端</small>
+          <small>已保存的账号、密码与访问令牌不回填前端</small>
         </div>
       </section>
 
       <section className="ops-settings-grid">
         <article className="ops-settings-card ops-settings-policy">
           <header className="ops-settings-card__head">
-            <div><span><Settings2 size={16} /></span><div><small>ACQUISITION POLICY</small><h2>获取通道</h2></div></div>
+            <div><span><Settings2 size={16} /></span><div><small>获取路线</small><h2>获取通道</h2></div></div>
           </header>
           <div className="ops-policy-row ops-policy-row--primary">
             <div><Database size={16} /><span><strong>PT / Torra</strong><small>订阅的默认自动获取通道</small></span></div>
@@ -363,7 +363,7 @@ export function SettingsPage() {
 
         <article className="ops-settings-card ops-settings-card--wide">
           <header className="ops-settings-card__head">
-            <div><span><KeyRound size={16} /></span><div><small>READ-ONLY CONNECTIONS</small><h2>服务连接</h2></div></div>
+            <div><span><KeyRound size={16} /></span><div><small>只读配置</small><h2>服务连接</h2></div></div>
             <strong>由服务端环境变量提供</strong>
           </header>
           <div className="ops-connection-grid">
@@ -389,7 +389,7 @@ export function SettingsPage() {
 
         <article className="ops-settings-card ops-settings-card--wide ops-access-card">
           <header className="ops-settings-card__head">
-            <div><span><ShieldCheck size={16} /></span><div><small>PRIVATE ACCESS</small><h2>访问保护</h2></div></div>
+            <div><span><ShieldCheck size={16} /></span><div><small>私人访问</small><h2>访问保护</h2></div></div>
             <strong>
               {accessSession
                 ? accessSession.enabled ? accessSession.authenticated ? '已登录' : '需要登录' : '本地未启用'
