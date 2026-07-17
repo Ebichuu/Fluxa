@@ -8,7 +8,7 @@
 .ops-next-air small,
 .ops-inspector header span {
   color: rgba(157, 184, 207, 0.72);
-  font-family: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  font-family: var(--font-ui);
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.16em;
@@ -80,7 +80,7 @@
   border-radius: 50%;
   background: var(--ops-hair-strong);
   color: rgba(255, 255, 255, 0.76);
-  font-family: "JetBrains Mono", Consolas, monospace;
+  font-family: var(--font-ui);
   font-size: 9px;
   font-weight: 700;
 }
@@ -99,7 +99,7 @@
 .pipeline-node strong {
   overflow: hidden;
   color: var(--ops-ink-strong);
-  font-family: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  font-family: var(--font-ui);
   font-size: 15px;
   font-weight: 600;
   text-overflow: ellipsis;
@@ -109,7 +109,7 @@
 .pipeline-node p {
   overflow: hidden;
   margin: 0;
-  color: rgba(232, 236, 239, 0.38);
+  color: var(--ops-faint);
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -170,7 +170,7 @@
 
 .ops-list-row__copy small,
 .ops-compact-list small {
-  color: rgba(232, 236, 239, 0.4);
+  color: var(--ops-faint);
   font-size: 10px;
 }
 

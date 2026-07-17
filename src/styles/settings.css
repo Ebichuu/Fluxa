@@ -47,7 +47,7 @@
 
 .fx-preset small {
   overflow: hidden;
-  color: rgba(255, 255, 255, 0.42);
+  color: var(--ops-faint);
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -80,7 +80,7 @@
 
 .settings-section p {
   margin: 0;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--ops-faint);
   font-size: 12px;
 }
 
@@ -192,7 +192,7 @@
 }
 
 .sub-config__foot small {
-  color: rgba(255, 255, 255, 0.42);
+  color: var(--ops-faint);
   font-size: 11px;
 }
 
@@ -262,7 +262,7 @@
 
 .sub-config__modes label small,
 .sub-config__rules > small {
-  color: rgba(255, 255, 255, 0.42);
+  color: var(--ops-faint);
 }
 
 .sub-config__rule-head {
@@ -310,7 +310,7 @@
   border-radius: 999px;
   padding: 6px 9px;
   background: rgba(255, 255, 255, 0.025);
-  color: rgba(255, 255, 255, 0.48);
+  color: var(--ops-faint);
   font: inherit;
   font-size: 11px;
   cursor: pointer;
@@ -399,7 +399,7 @@
 }
 
 .ops-settings-card__head > strong {
-  color: rgba(232, 236, 239, 0.4);
+  color: var(--ops-faint);
   font-size: 8.5px;
   font-weight: 600;
   text-align: right;
@@ -532,7 +532,7 @@
 
 .ops-settings-note {
   margin: 10px 2px 0;
-  color: rgba(232, 236, 239, 0.32);
+  color: var(--ops-faint);
   font-size: 8.5px;
   line-height: 1.55;
 }
@@ -586,8 +586,8 @@
 }
 
 .ops-env-row code {
-  color: rgba(157, 184, 207, 0.52);
-  font-family: "JetBrains Mono", Consolas, monospace;
+  color: var(--ops-muted);
+  font-family: var(--font-code);
   font-size: 7.5px;
 }
 

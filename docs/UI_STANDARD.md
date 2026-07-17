@@ -17,6 +17,11 @@
 | `--rose` | `#ff5367` | 异常：离线、卡住、失败 |
 | `--panel` | `rgba(11,14,17,.58)` | 普通玻璃面板底 |
 | `--console` | `rgba(2,5,8,.78)` | 控制中心深色面板底 |
+| `--ops-muted` | `#aeb7c0` | 工作页次级文字，三种工作页背景均满足 WCAG AA |
+| `--ops-faint` | `#929ca6` | 工作页弱化文字，不用于大厅 |
+| `--ops-focus` | `#b7d6ff` | 工作页键盘焦点 |
+
+根级 `--muted` 与 `--faint` 继续服务影院大厅和既有外壳，本轮不修改。工作页文字只使用 `.ops-page` 范围内的实体颜色令牌，避免半透明文字因底色变化失去对比度。
 
 语义约定（三页 + 首页统一）：
 - **青 = 活的**（在线、下载中、进行中、当前项）
@@ -76,7 +81,10 @@
 
 ## 6. 字体与文案
 
-- 字体栈：`"Segoe UI", "Microsoft YaHei UI", "Noto Sans SC"`，不引入网络字体。
+- 正文字体：`--font-ui`，值为 `"Segoe UI", "Microsoft YaHei UI", "Noto Sans SC", sans-serif`，不引入网络字体。
+- 代码字体：`--font-code`，优先使用本地 JetBrains Mono / Cascadia Mono / Consolas，只覆盖 Latin 字符；中文通过 `unicode-range` 回退 `--font-ui`。
+- 仅代码、路径、环境变量、API 和 ID 使用 `--font-code`；速度、数量和状态数字使用 UI 字体与 `tabular-nums`。
+- 以上字体规则限定工作页；影院大厅、媒体队列和大厅状态条保持原样。
 - 页面大标题 38px / font-weight 300；卡片标题 17~20px / 400；正文 14~15px；标注 11~12px。
 - 工作页统一使用代码中的 `.ops-eyebrow`，内容是“页面名 · 当前用途”的中文短标，例如“任务中心 · 处理进度”；不再使用未落地的 `.page-kicker` 命名或英文研发标语。
 - 文案分两层：标题、状态和按钮先写中文业务语；工具名、匹配依据、接口字段和原工具入口放在次级文字或详情中。

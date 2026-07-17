@@ -61,7 +61,7 @@
   border-radius: 999px;
   padding: 8px 16px;
   background: rgba(255, 255, 255, 0.04);
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--ops-faint);
   transition: border-color 0.2s;
 }
 
@@ -84,7 +84,7 @@
 }
 
 .discover-search input::placeholder {
-  color: rgba(255, 255, 255, 0.35);
+  color: var(--ops-faint);
 }
 
 .discover-reset {
@@ -96,7 +96,7 @@
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  color: rgba(255, 255, 255, 0.46);
+  color: var(--ops-faint);
   font-size: 11px;
 }
 
@@ -124,7 +124,7 @@
 
 .discover-filter-note {
   padding-top: 6px;
-  color: rgba(255, 255, 255, 0.42);
+  color: var(--ops-faint);
   font-size: 12px;
 }
 
@@ -205,7 +205,7 @@
 }
 
 .discover-card__body small {
-  color: rgba(255, 255, 255, 0.42);
+  color: var(--ops-faint);
   font-size: 11px;
 }
 
@@ -216,7 +216,7 @@
   margin: 2px 0 0;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
-  color: rgba(255, 255, 255, 0.46);
+  color: var(--ops-faint);
   font-size: 11px;
   line-height: 1.35;
 }
@@ -262,7 +262,7 @@
   border: 1px solid rgba(255, 255, 255, 0.065);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.025);
-  color: rgba(232, 236, 239, 0.48);
+  color: var(--ops-faint);
   font: inherit;
   font-size: 9px;
   cursor: pointer;
@@ -317,7 +317,7 @@
 
 .discover-sub-filter-row > span {
   width: 32px;
-  color: rgba(232, 236, 239, 0.34);
+  color: var(--ops-faint);
   font-size: 8px;
   letter-spacing: 0.08em;
 }
@@ -328,7 +328,7 @@
   border: 1px solid transparent;
   border-radius: 999px;
   background: transparent;
-  color: rgba(232, 236, 239, 0.45);
+  color: var(--ops-faint);
   font: inherit;
   font-size: 8.5px;
   cursor: pointer;
@@ -384,7 +384,7 @@
 }
 
 .discover-sub-blocked small {
-  color: rgba(232, 236, 239, 0.35);
+  color: var(--ops-faint);
   font-size: 8px;
 }
 
@@ -457,7 +457,7 @@
 }
 
 .sub-detail__hint {
-  color: rgba(255, 255, 255, 0.42);
+  color: var(--ops-faint);
   font-size: 11px;
 }
 
@@ -495,7 +495,7 @@
 }
 
 .sub-detail__summary > small {
-  color: rgba(232, 236, 239, 0.42);
+  color: var(--ops-faint);
   font-size: 9px;
 }
 
@@ -597,7 +597,7 @@
 }
 
 .sub-detail__cast small {
-  color: rgba(232, 236, 239, 0.32);
+  color: var(--ops-faint);
   font-size: 7px;
 }
 
@@ -651,7 +651,7 @@
 
 .sub-detail__episode small {
   flex: 0 0 auto;
-  color: rgba(255, 255, 255, 0.42);
+  color: var(--ops-faint);
   font-size: 11px;
 }
 
@@ -762,7 +762,7 @@
 }
 
 .torra-push-panel > p {
-  color: rgba(232, 236, 239, 0.38);
+  color: var(--ops-faint);
 }
 
 .sub-detail__episode code {
@@ -826,7 +826,7 @@
 
 .discover-resource-tab span {
   margin-left: 4px;
-  color: rgba(232, 236, 239, 0.35);
+  color: var(--ops-faint);
 }
 
 .discover-resource-tab--active {
@@ -937,7 +937,7 @@
   overflow: auto;
   margin: 0;
   color: var(--ops-ink);
-  font: inherit;
+  font-family: var(--font-code);
   font-size: 10px;
   line-height: 1.6;
   white-space: pre-wrap;
@@ -952,6 +952,7 @@
 .discover-resource-preview a {
   overflow-wrap: anywhere;
   color: var(--ops-signal);
+  font-family: var(--font-code);
   font-size: 10px;
 }
 
@@ -1009,7 +1010,7 @@
   border: 1px solid transparent;
   border-radius: 999px;
   background: transparent;
-  color: rgba(232, 236, 239, 0.42);
+  color: var(--ops-faint);
 }
 
 .ops-page--discover .discover-source--active,
@@ -1038,7 +1039,7 @@
 .ops-page--discover .discover-filter-chip {
   border-color: rgba(255, 255, 255, 0.065);
   background: rgba(255, 255, 255, 0.02);
-  color: rgba(232, 236, 239, 0.4);
+  color: var(--ops-faint);
 }
 
 .ops-page--discover .discover-filter-chip:hover,

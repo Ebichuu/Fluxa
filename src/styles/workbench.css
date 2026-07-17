@@ -325,7 +325,7 @@
 }
 
 .activity-row__text small {
-  color: rgba(255, 255, 255, 0.42);
+  color: var(--ops-faint);
   font-size: 11px;
 }
 
@@ -343,7 +343,7 @@
 
 .console-panel__hint {
   margin: 14px 0 0;
-  color: rgba(255, 255, 255, 0.38);
+  color: var(--ops-faint);
   font-size: 12px;
   line-height: 1.6;
   text-align: center;
@@ -368,7 +368,7 @@
 }
 
 .round-actions figcaption {
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--ops-faint);
   font-size: 11px;
 }
 
@@ -383,7 +383,7 @@
 }
 
 .queue-count {
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--ops-faint);
   font-size: 12px;
 }
 
@@ -418,7 +418,7 @@
   align-items: center;
   gap: 6px;
   margin-top: 14px;
-  color: rgba(255, 255, 255, 0.34);
+  color: var(--ops-faint);
   font-size: 11px;
   flex-wrap: wrap;
 }
@@ -447,7 +447,7 @@
 
 .queue-empty {
   padding: 44px 20px;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--ops-faint);
   font-size: 13px;
   text-align: center;
 }
@@ -543,7 +543,7 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  color: rgba(255, 255, 255, 0.42);
+  color: var(--ops-faint);
   font-size: 11px;
 }
 
@@ -561,13 +561,18 @@
   --ops-paper: #0e1014;
   --ops-ink: #e8ecef;
   --ops-ink-strong: #f8f4ee;
-  --ops-muted: #8a9099;
+  --ops-text: #e8ecef;
+  --ops-muted: #aeb7c0;
+  --ops-faint: #929ca6;
+  --ops-focus: #b7d6ff;
   --ops-hair: #1a1d22;
   --ops-hair-strong: #262a31;
   --ops-blue: #2442ff;
   --ops-blue-soft: rgba(36, 66, 255, 0.18);
   --ops-steel: #9db8cf;
+  --ops-signal: #9db8cf;
   --ops-rose: #ff5367;
+  --ops-magenta: #ff5367;
   position: relative;
   display: grid;
   gap: 18px;
@@ -578,7 +583,17 @@
     repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 52px),
     linear-gradient(180deg, #08090b, #050609 72%, #020304);
   color: var(--ops-ink);
-  font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", Inter, system-ui, sans-serif;
+  font-family: var(--font-ui);
+}
+
+.ops-page code,
+.ops-page pre,
+.ops-page .monospace-text {
+  font-family: var(--font-code);
+}
+
+.ops-page :is(strong, b, dd, time, .ops-data) {
+  font-variant-numeric: tabular-nums;
 }
 
 .ops-page::before {
@@ -755,7 +770,7 @@
 
 .ops-data {
   color: var(--ops-steel);
-  font-family: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  font-family: var(--font-ui);
   font-size: 11px;
 }
 
@@ -898,7 +913,7 @@
 
 .ops-inspector__metric strong {
   color: var(--ops-ink-strong);
-  font-family: "JetBrains Mono", Consolas, monospace;
+  font-family: var(--font-ui);
   font-size: 30px;
   font-weight: 600;
   letter-spacing: -0.05em;
@@ -969,7 +984,7 @@
 
 .ops-inspector__note {
   margin: 0;
-  color: rgba(232, 236, 239, 0.32);
+  color: var(--ops-faint);
   font-size: 9.5px;
   line-height: 1.6;
 }
@@ -1075,7 +1090,7 @@
   display: block;
   margin-top: 8px;
   color: var(--ops-ink-strong);
-  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-family: var(--font-ui);
   font-size: 21px;
 }
 
@@ -1086,7 +1101,7 @@
   align-items: center;
   gap: 6px;
   margin-top: 6px;
-  color: rgba(232, 236, 239, 0.4);
+  color: var(--ops-faint);
   font-size: 9.5px;
   line-height: 1.45;
 }
@@ -1121,7 +1136,7 @@
 
 .ops-confirm-dialog__signal {
   color: var(--ops-steel);
-  font-family: "JetBrains Mono", Consolas, monospace;
+  font-family: var(--font-ui);
   font-size: 9px;
   letter-spacing: 0.16em;
 }

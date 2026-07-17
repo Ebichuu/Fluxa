@@ -22,7 +22,7 @@
 }
 
 .calendar-board__head span {
-  color: rgba(255, 255, 255, 0.38);
+  color: var(--ops-faint);
   font-size: 11px;
 }
 
@@ -39,7 +39,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--ops-faint);
   font-size: 11px;
   letter-spacing: 0.2em;
 }
@@ -67,7 +67,7 @@
 }
 
 .calendar-cell__date {
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--ops-faint);
   font-size: 11px;
 }
 
@@ -122,7 +122,7 @@
 }
 
 .calendar-entry small {
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--ops-faint);
   font-size: 10px;
 }
 
@@ -195,7 +195,7 @@
 
 .ops-calendar-stats strong {
   color: var(--ops-ink-strong);
-  font-family: "JetBrains Mono", Consolas, monospace;
+  font-family: var(--font-ui);
   font-size: 18px;
 }
 
@@ -312,7 +312,7 @@
   min-height: 34px;
   border: 0;
   background: #0b0c10;
-  color: rgba(232, 236, 239, 0.34);
+  color: var(--ops-faint);
   font-size: 8.5px;
 }
 
@@ -336,8 +336,8 @@
 }
 
 .ops-page--calendar .calendar-cell__date {
-  color: rgba(232, 236, 239, 0.42);
-  font-family: "JetBrains Mono", Consolas, monospace;
+  color: var(--ops-faint);
+  font-family: var(--font-ui);
 }
 
 .ops-page--calendar .calendar-entry {

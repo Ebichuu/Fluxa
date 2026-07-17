@@ -144,7 +144,7 @@
   border: 0;
   border-radius: 999px;
   background: transparent;
-  color: rgba(232, 236, 239, 0.46);
+  color: var(--ops-faint);
   cursor: pointer;
   font-family: inherit;
   font-size: 10px;
@@ -154,7 +154,7 @@
 .ops-task-tab span {
   margin-left: 6px;
   color: rgba(157, 184, 207, 0.68);
-  font-family: "JetBrains Mono", Consolas, monospace;
+  font-family: var(--font-ui);
 }
 
 .ops-task-tab span.is-alert {
@@ -323,7 +323,7 @@
 
 .ops-task-card__head > strong {
   color: var(--ops-steel);
-  font-family: "JetBrains Mono", Consolas, monospace;
+  font-family: var(--font-ui);
   font-size: 20px;
 }
 
@@ -386,7 +386,7 @@
 
 .ops-task-chain__step span {
   color: rgba(232, 236, 239, 0.24);
-  font-family: "JetBrains Mono", Consolas, monospace;
+  font-family: var(--font-ui);
   font-size: 8px;
 }
 
@@ -403,7 +403,7 @@
 
 .ops-task-chain__step small {
   margin-top: 5px;
-  color: rgba(232, 236, 239, 0.3);
+  color: var(--ops-faint);
   font-size: 8.5px;
   line-height: 1.4;
 }
@@ -457,7 +457,7 @@
 
 .ops-task-card__foot > span {
   overflow: hidden;
-  color: rgba(232, 236, 239, 0.34);
+  color: var(--ops-faint);
   font-size: 8.5px;
   text-overflow: ellipsis;
   white-space: nowrap;

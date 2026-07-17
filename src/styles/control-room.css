@@ -66,7 +66,7 @@
 }
 
 .service-card__metric small {
-  color: rgba(255, 255, 255, 0.42);
+  color: var(--ops-faint);
   font-size: 12px;
 }
 
@@ -89,7 +89,7 @@
 
 .service-card__checked {
   margin-top: 10px;
-  color: rgba(255, 255, 255, 0.34);
+  color: var(--ops-faint);
   font-size: 11px;
 }
 
@@ -97,7 +97,7 @@
   display: flex;
   gap: 14px;
   margin-top: 12px;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--ops-faint);
   font-size: 12px;
 }
 
@@ -150,7 +150,7 @@
 
 .ops-system-score strong {
   color: var(--ops-ink-strong);
-  font-family: "JetBrains Mono", Consolas, monospace;
+  font-family: var(--font-ui);
   font-size: 14px;
 }
 
@@ -214,7 +214,7 @@
 
 .ops-service-card__order {
   color: rgba(157, 184, 207, 0.55);
-  font-family: "JetBrains Mono", Consolas, monospace;
+  font-family: var(--font-ui);
   font-size: 9px;
 }
 
@@ -270,7 +270,7 @@
 }
 
 .ops-service-card__copy small {
-  color: rgba(232, 236, 239, 0.42);
+  color: var(--ops-faint);
   font-size: 10px;
 }
 
@@ -285,7 +285,7 @@
 
 .ops-service-card__metric strong {
   color: var(--ops-ink-strong);
-  font-family: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  font-family: var(--font-ui);
   font-size: clamp(22px, 2.4vw, 34px);
   font-weight: 600;
   letter-spacing: -0.05em;
@@ -332,7 +332,7 @@
 
 .ops-emby-refresh-evidence header span {
   color: var(--ops-steel);
-  font-family: "JetBrains Mono", Consolas, monospace;
+  font-family: var(--font-ui);
   font-size: 8px;
   letter-spacing: 0.12em;
 }
@@ -385,7 +385,7 @@
 
 .ops-control-foot p {
   margin: 0;
-  color: rgba(232, 236, 239, 0.38);
+  color: var(--ops-faint);
   font-size: 10px;
 }
 

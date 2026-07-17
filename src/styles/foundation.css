@@ -1,5 +1,17 @@
+@font-face {
+  font-family: "MCC Latin Mono";
+  src:
+    local("JetBrains Mono"),
+    local("Cascadia Mono"),
+    local("Consolas");
+  font-display: swap;
+  unicode-range: U+0020-007E, U+00A0-024F;
+}
+
 :root {
   color-scheme: dark;
+  --font-ui: "Segoe UI", "Microsoft YaHei UI", "Noto Sans SC", sans-serif;
+  --font-code: "MCC Latin Mono", var(--font-ui);
   --ink: #f8f8f2;
   --muted: rgba(255, 255, 255, 0.62);
   --faint: rgba(255, 255, 255, 0.34);
