@@ -5,6 +5,8 @@ import type { QbittorrentAction } from '../../types/qbittorrent';
 import type { TaskChainItem, TaskChainResponse, TaskChainState, TaskChainStep } from '../../types/taskChain';
 import type { ActivityLogItem } from '../../types/operations';
 import { formatSpeed, formatTimeAgo } from '../../utils/formatters';
+import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
+import { ConfirmDialog } from '../layout/ConfirmDialog';
 
 type FilterName = '全部' | '进行中' | '等待中' | '卡住' | '已入库' | '尚未接到链路';
 
@@ -201,8 +203,10 @@ export function TasksCenter() {
                 className={filter === name ? 'ops-task-tab ops-task-tab--active' : 'ops-task-tab'}
                 key={name}
                 role="tab"
+                tabIndex={filter === name ? 0 : -1}
                 type="button"
                 onClick={() => setFilter(name)}
+                onKeyDown={handleHorizontalTabKeyDown}
               >
                 {name}<span className={name === '卡住' && counts[name] > 0 ? 'is-alert' : undefined}>{counts[name]}</span>
               </button>
@@ -300,8 +304,10 @@ export function TasksCenter() {
               className={activityCategory === item.key ? 'ops-task-tab ops-task-tab--active' : 'ops-task-tab'}
               key={item.key || 'all'}
               role="tab"
+              tabIndex={activityCategory === item.key ? 0 : -1}
               type="button"
               onClick={() => setActivityCategory(item.key)}
+              onKeyDown={handleHorizontalTabKeyDown}
             >
               {item.label}
             </button>
@@ -321,15 +327,17 @@ export function TasksCenter() {
       </section>
 
       {pendingAction && (
-        <div className="ops-confirm-backdrop" role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget && !actionBusy) setPendingAction(null);
-        }}>
-          <section aria-labelledby="qb-action-title" aria-modal="true" className="ops-confirm-dialog" role="dialog">
+        <ConfirmDialog
+          busy={Boolean(actionBusy)}
+          describedBy="qb-action-description"
+          labelledBy="qb-action-title"
+          onClose={() => setPendingAction(null)}
+        >
             <span className="ops-confirm-dialog__signal">下载任务 · {pendingAction.action === 'pause' ? '暂停' : '恢复'}</span>
             <h2 id="qb-action-title">
               {pendingAction.action === 'pause' ? '暂停' : '恢复'} {pendingAction.item.qbControl.total} 个关联下载？
             </h2>
-            <p>
+            <p id="qb-action-description">
               这会{pendingAction.action === 'pause' ? '暂停' : '恢复'}《{pendingAction.item.title}》关联的全部 qBittorrent 下载。
               操作完成后会重新读取真实状态并写入活动日志。
             </p>
@@ -339,13 +347,12 @@ export function TasksCenter() {
             </div>
             <div className="ops-confirm-dialog__actions">
               <button className="ops-action-button" disabled={Boolean(actionBusy)} type="button" onClick={() => setPendingAction(null)}>取消</button>
-              <button className="ops-action-button ops-action-button--primary" disabled={Boolean(actionBusy)} type="button" onClick={confirmQbAction} autoFocus>
+              <button className="ops-action-button ops-action-button--primary" data-dialog-initial-focus disabled={Boolean(actionBusy)} type="button" onClick={confirmQbAction}>
                 {pendingAction.action === 'pause' ? <Pause size={14} /> : <Play size={14} />}
                 {actionBusy ? '正在提交' : `确认${pendingAction.action === 'pause' ? '暂停' : '恢复'}`}
               </button>
             </div>
-          </section>
-        </div>
+        </ConfirmDialog>
       )}
     </main>
   );

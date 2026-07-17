@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { CalendarDays, Check, ChevronLeft, ChevronRight, Clock3, Library, Radio } from 'lucide-react';
 import { getSubscriptionCalendar } from '../../services/api';
 import type { SubscriptionCalendarEntry } from '../../types/subscriptions';
+import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
 import type { PageId } from '../layout/AppTopNav';
 
 interface CalendarPageProps {
@@ -154,8 +155,10 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                 className={mediaType === value ? 'is-active' : undefined}
                 key={value}
                 role="tab"
+                tabIndex={mediaType === value ? 0 : -1}
                 type="button"
                 onClick={() => setMediaType(value)}
+                onKeyDown={handleHorizontalTabKeyDown}
               >{label}</button>
             ))}
           </div>

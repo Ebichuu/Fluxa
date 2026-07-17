@@ -282,6 +282,12 @@
   color: var(--ops-ink-strong);
 }
 
+.ops-calendar-type button:focus-visible,
+.calendar-entry--stuck:focus-visible {
+  outline: 2px solid var(--ops-focus);
+  outline-offset: 2px;
+}
+
 .ops-calendar-mode {
   margin-left: 5px;
   color: var(--ops-muted) !important;

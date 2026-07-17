@@ -278,6 +278,11 @@
   color: rgba(232, 236, 239, 0.9);
 }
 
+.discover-sub-tab:focus-visible {
+  outline: 2px solid var(--ops-focus);
+  outline-offset: 2px;
+}
+
 .discover-sub-filters {
   display: grid;
   gap: 7px;
@@ -835,6 +840,12 @@
   color: var(--ops-ink-strong);
 }
 
+.discover-resource-tab:focus-visible,
+.sub-detail__seasons .discover-filter-chip:focus-visible {
+  outline: 2px solid var(--ops-focus);
+  outline-offset: 2px;
+}
+
 .discover-resource-seasons {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -1019,7 +1030,11 @@
   border-color: rgba(157, 184, 207, 0.14);
   background: rgba(157, 184, 207, 0.08);
   color: var(--ops-ink-strong);
-  outline: none;
+}
+
+.ops-page--discover .discover-source:focus-visible {
+  outline: 2px solid var(--ops-focus);
+  outline-offset: 2px;
 }
 
 .ops-page--discover .discover-filter-panel {

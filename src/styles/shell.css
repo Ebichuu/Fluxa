@@ -131,6 +131,14 @@
   color: rgba(255, 255, 255, 0.96);
 }
 
+.brand-lockup:focus-visible,
+.nav-item:focus-visible,
+.nav-pill:focus-visible,
+.settings-button:focus-visible {
+  outline: 2px solid #b7d6ff;
+  outline-offset: 3px;
+}
+
 .nav-actions {
   gap: 8px;
 }

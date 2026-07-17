@@ -24,6 +24,7 @@ import type {
   SubscriptionItem,
   TorraPushPreviewResponse
 } from '../../types/subscriptions';
+import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
 import type { PageId } from '../layout/AppTopNav';
 
 interface DiscoverPageProps {
@@ -863,11 +864,13 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                         className={resourceSource === source.key ? 'discover-resource-tab discover-resource-tab--active' : 'discover-resource-tab'}
                         key={source.key}
                         role="tab"
+                        tabIndex={resourceSource === source.key ? 0 : -1}
                         type="button"
                         onClick={() => {
                           setResourceSource(source.key);
                           setResourcePreview(null);
                         }}
+                        onKeyDown={handleHorizontalTabKeyDown}
                       >
                         {source.label} <span>{source.count}</span>
                       </button>
@@ -981,11 +984,13 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
               className={subscriptionTab === key ? 'discover-sub-tab discover-sub-tab--active' : 'discover-sub-tab'}
               key={key}
               role="tab"
+              tabIndex={subscriptionTab === key ? 0 : -1}
               type="button"
               onClick={() => {
                 setSubscriptionTab(key);
                 closeDetail();
               }}
+              onKeyDown={handleHorizontalTabKeyDown}
             >
               {label}<span>{count}</span>
             </button>
@@ -1175,8 +1180,10 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                                 className={activeSeasonNumber === seasonNumber ? 'discover-filter-chip discover-filter-chip--active' : 'discover-filter-chip'}
                                 key={seasonNumber}
                                 role="tab"
+                                tabIndex={activeSeasonNumber === seasonNumber ? 0 : -1}
                                 type="button"
                                 onClick={() => setDetailSeason(seasonNumber)}
+                                onKeyDown={handleHorizontalTabKeyDown}
                               >
                                 {seasonNumber === 0 ? '特别篇' : `S${String(seasonNumber).padStart(2, '0')}`}
                               </button>

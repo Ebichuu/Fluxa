@@ -268,7 +268,8 @@
 .ops-next-air:focus-visible {
   border-color: rgba(36, 66, 255, 0.3);
   background: linear-gradient(142deg, rgba(36, 66, 255, 0.12), rgba(8, 9, 13, 0.82));
-  outline: none;
+  outline: 2px solid var(--ops-focus);
+  outline-offset: 2px;
   transform: translateY(-2px);
 }
 

@@ -7,6 +7,7 @@ import type { SymediaSummary } from '../../types/symedia';
 import type { TorraSummary } from '../../types/torra';
 import type { IntegrationSummary } from '../../types/integrations';
 import { formatSpeed, formatTimeAgo } from '../../utils/formatters';
+import { ConfirmDialog } from '../layout/ConfirmDialog';
 
 type ServiceState = 'ok' | 'warn' | 'down' | 'idle';
 
@@ -267,25 +268,26 @@ export function ControlRoom() {
       </section>
 
       {embyRefreshConfirm && (
-        <div className="ops-confirm-backdrop" role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget && !embyRefreshBusy) setEmbyRefreshConfirm(false);
-        }}>
-          <section aria-labelledby="emby-refresh-title" aria-modal="true" className="ops-confirm-dialog" role="dialog">
+        <ConfirmDialog
+          busy={embyRefreshBusy}
+          describedBy="emby-refresh-description"
+          labelledBy="emby-refresh-title"
+          onClose={() => setEmbyRefreshConfirm(false)}
+        >
             <span className="ops-confirm-dialog__signal">媒体库 · 刷新索引</span>
             <h2 id="emby-refresh-title">触发 Emby 全库扫描？</h2>
-            <p>Symedia 出现了比 Emby 索引更晚的成功入库记录。确认后只提交后台扫描请求，页面不会等待扫描完成。</p>
+            <p id="emby-refresh-description">Symedia 出现了比 Emby 索引更晚的成功入库记录。确认后只提交后台扫描请求，页面不会等待扫描完成。</p>
             <div className="ops-confirm-dialog__meta">
               <span>Symedia 证据</span><strong>{embyRefresh?.latestSymediaAt ? formatTimeAgo(embyRefresh.latestSymediaAt) : '未知'}</strong>
               <span>保护规则</span><strong>手动确认 · 10 分钟冷却</strong>
             </div>
             <div className="ops-confirm-dialog__actions">
               <button className="ops-action-button" disabled={embyRefreshBusy} type="button" onClick={() => setEmbyRefreshConfirm(false)}>取消</button>
-              <button className="ops-action-button ops-action-button--primary" disabled={embyRefreshBusy || embyRefresh?.state !== 'ready' || !embyRefresh.canRefresh} type="button" onClick={confirmEmbyRefresh} autoFocus>
+              <button className="ops-action-button ops-action-button--primary" data-dialog-initial-focus disabled={embyRefreshBusy || embyRefresh?.state !== 'ready' || !embyRefresh.canRefresh} type="button" onClick={confirmEmbyRefresh}>
                 <RefreshCcw size={14} />{embyRefreshBusy ? '正在提交' : '确认刷新'}
               </button>
             </div>
-          </section>
-        </div>
+        </ConfirmDialog>
       )}
     </main>
   );

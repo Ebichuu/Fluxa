@@ -70,7 +70,12 @@ export function AppTopNav({ activePage, health, onNavigate }: AppTopNavProps) {
           <Search aria-hidden="true" size={15} strokeWidth={1.8} />
           <span>搜索媒体</span>
         </button>
-        <button className={activePage === 'control' ? 'nav-pill nav-pill--health nav-pill--active' : 'nav-pill nav-pill--health'} type="button" onClick={() => onNavigate('control')}>
+        <button
+          aria-label={`${configuredCount}/${serviceCount} 项服务已配置，打开控制室`}
+          className={activePage === 'control' ? 'nav-pill nav-pill--health nav-pill--active' : 'nav-pill nav-pill--health'}
+          type="button"
+          onClick={() => onNavigate('control')}
+        >
           <Activity aria-hidden="true" size={15} strokeWidth={1.8} />
           <span>
             {configuredCount}/{serviceCount} 已配置

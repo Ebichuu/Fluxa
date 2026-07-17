@@ -424,7 +424,11 @@
   border-color: rgba(36, 66, 255, 0.24);
   background: rgba(36, 66, 255, 0.08);
   color: var(--ops-ink-strong);
-  outline: none;
+}
+
+.ops-page--settings .fx-preset:focus-visible {
+  outline: 2px solid var(--ops-focus);
+  outline-offset: 2px;
 }
 
 .ops-policy-row {

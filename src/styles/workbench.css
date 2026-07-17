@@ -977,6 +977,15 @@
   transform: translateY(-1px);
 }
 
+.ops-back-link:focus-visible,
+.ops-command:focus-visible,
+.ops-link:focus-visible,
+.ops-icon-button:focus-visible,
+.ops-action-button:focus-visible:not(:disabled) {
+  outline: 2px solid var(--ops-focus);
+  outline-offset: 2px;
+}
+
 .ops-action-button:disabled {
   cursor: not-allowed;
   opacity: 0.34;
@@ -1132,6 +1141,11 @@
     radial-gradient(circle at 85% 0%, rgba(36, 66, 255, 0.16), transparent 42%),
     linear-gradient(145deg, rgba(20, 23, 29, 0.98), rgba(8, 9, 13, 0.98));
   box-shadow: 0 34px 90px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.ops-confirm-dialog:focus-visible {
+  outline: 2px solid var(--ops-focus);
+  outline-offset: 3px;
 }
 
 .ops-confirm-dialog__signal {
