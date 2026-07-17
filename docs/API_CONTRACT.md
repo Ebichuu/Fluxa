@@ -141,3 +141,21 @@ Torra 推送目标固定，浏览器不能选择 Symedia 或 MoviePilot。服务
 - `502`：脱敏后的上游失败。
 
 v2 新增响应字段允许向后兼容扩展；删除字段、改变类型或放宽安全边界必须新增下一版本。
+
+## 11. 计划中的 SQLite / Torra 自动洗版检查接口
+
+以下接口来自 2026-07-18 设计，尚未实现，也不计入当前 v1/v2 机器契约数量：
+
+- `GET /api/v2/subscription-automation/settings`
+- `PATCH /api/v2/subscription-automation/settings`
+- `GET /api/v2/subscriptions/:id/quality-watch`
+- `POST /api/v2/subscriptions/:id/torra-rewash-analyses`
+- `POST /api/v2/subscriptions/:id/torra-rewashes`
+- `PATCH /api/v2/subscriptions/:id/quality-watch`
+- `GET /api/v2/automation-actions/:actionId`
+- `POST /api/v2/subscriptions/:id/moviepilot-previews`
+- `POST /api/v2/subscriptions/:id/moviepilot-pushes`
+
+洗版分析会触发 PT 站点搜索，因此不是无副作用 GET，必须使用独立分析闸门、冷却和幂等。分析和候选下载都创建异步动作，返回 `202 Accepted`、动作 ID 和 `Location` 轮询地址；不能用 200 表示 Torra 已经完成。候选下载还必须满足会话、Origin、下载闸门、确认和服务端复查。
+
+动作查询需要同时表达媒体控制中心本地状态和 Torra 外部 job 状态。服务重启后如果动作已经保存 Torra job ID，只能继续轮询原 job，不能重复提交。计划状态码为：读取和 PATCH 成功 `200`、异步动作已创建 `202`、并发或幂等冲突 `409`、语义不合法 `422`、限频 `429`、上游失败 `502`、功能闸门关闭 `503`；错误不能包装在 `200` 中。实施时先完成 API 契约评审，再加入 `docs/contracts/http-api-contract-v2.json`。
