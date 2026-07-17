@@ -129,3 +129,7 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - [网盘订阅与获取计划](docs/CLOUD_ACQUISITION_PLAN.md)
 - [PT 主链收口设计](docs/superpowers/specs/2026-07-17-pt-primary-control-center-design.md)
 - [PT 主链实施计划](docs/superpowers/plans/2026-07-17-pt-primary-control-center-implementation-plan.md)
+- [SQLite 与 Torra 追更洗版设计](docs/superpowers/specs/2026-07-18-sqlite-torra-quality-upgrade-design.md)
+- [私人 PT RSS 种子库设计](docs/superpowers/specs/2026-07-18-private-pt-rss-seed-library-design.md)
+- [SQLite 与 RSS 种子库实施计划](docs/superpowers/plans/2026-07-18-sqlite-private-rss-seed-library-implementation-plan.md)
+- [Torra 追更洗版实施计划](docs/superpowers/plans/2026-07-18-torra-follow-up-rewash-implementation-plan.md)

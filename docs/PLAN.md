@@ -1,6 +1,6 @@
 # 媒体控制中心 v2 当前计划
 
-状态：PT 主链基线已完成；进入 fnOS 前先实施 SQLite 单台账、私人 RSS 种子库与 Torra 追更洗版
+状态：PT 主链基线已完成；SQLite、私人 RSS 种子库与 Torra 追更洗版设计及实施计划已确认，业务代码尚未开始
 更新时间：2026-07-18
 
 ## 1. 最终目标
@@ -61,13 +61,20 @@
 - [x] 保留原工作页 Hero 布局，不把“0 条订阅 · 0 条未完成”等实时数字放在页面标题旁。
 - [x] 工作页标签支持左右键、Home、End 和单一 Tab 停靠点；qB 与 Emby 确认框共用焦点约束、Escape 和焦点返回。
 - [x] 基于提交 `bde3eba` 构建只读候选镜像 `media-control-center:v2-pt-rc-bde3eba`，完成登录、静态资源、写闸门、保留接口、无 Node 运行层和重启验收。
-- [x] 完成 SQLite 单台账、Torra 追更洗版和 MoviePilot 备用边界设计；实现尚未开始。
+- [x] 完成 SQLite 单台账、私人 PT RSS 种子库、Torra 追更洗版和 MoviePilot 备用边界设计，并写出两份分阶段实施计划；实现尚未开始。
 
 详细执行清单见 `docs/V2_IMPLEMENTATION_PLAN.md`。
 
 ## 4. 未完成主线
 
 ### 当前下一步：实机前代码阶段
+
+执行顺序固定为：
+
+1. 先执行 SQLite 单台账与私人 RSS 种子库基础计划。
+2. 完成 JSON → SQLite 差异报告、接口脱敏、候选镜像和停点复核。
+3. 复核通过后，再执行 Torra 追更洗版与 RSS 唤醒计划。
+4. 两份计划都完成模拟验收后才进入 fnOS 实机窗口。
 
 - 用 `db/media_control_center.sqlite3` 替换两个 JSON 生产台账文件。
 - 提供备份、校验、差异报告和失败停止的一次性迁移。
@@ -80,7 +87,15 @@
 - MoviePilot 使用 NasEmby 原源码，保留独立开关和人工备用入口，默认关闭。
 - 完成模拟测试、接口契约评审和新候选镜像后，才进入 fnOS 实机窗口。
 
-正式设计见 `docs/superpowers/specs/2026-07-18-sqlite-torra-quality-upgrade-design.md` 和 `docs/superpowers/specs/2026-07-18-private-pt-rss-seed-library-design.md`。
+正式设计：
+
+- `docs/superpowers/specs/2026-07-18-sqlite-torra-quality-upgrade-design.md`
+- `docs/superpowers/specs/2026-07-18-private-pt-rss-seed-library-design.md`
+
+当前代码阶段执行依据：
+
+- `docs/superpowers/plans/2026-07-18-sqlite-private-rss-seed-library-implementation-plan.md`
+- `docs/superpowers/plans/2026-07-18-torra-follow-up-rewash-implementation-plan.md`
 
 ### 后续：PT 实机证据
 
