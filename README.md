@@ -7,6 +7,9 @@
 - 最新代码统一保存在 `D:\Projects\媒体控制中心v2`。
 - Python 是唯一生产后端；Node.js 只用于 React / Vite 构建。
 - NasEmby Python 源码负责订阅、发现、日历、资源规则和调度，只使用一份订阅台账。
+- 订阅配置和条目已经切换到 `db/media_control_center.sqlite3`；旧 JSON 只作为一次性迁移和回滚输入，不再双写。
+- “种子库”第一版已经落地：支持私人 PT RSS 来源配置、本地 FTS5 搜索、保留期清理和脱敏展示；真实收集默认关闭。
+- SQLite/RSS 第一版候选镜像已完成登录、WAL/FTS5、无 Node 运行层和容器重启持久化验收。
 - PT 主线固定为媒体控制中心订阅 → Torra → qB → Torra 秒传 115 → Symedia → Emby。
 - 订阅详情提供 Torra 安全预览与人工推送；Symedia 不接收重复订阅推送。
 - Telegram、HDHive / pansou、影巢和 115 分享转存已从当前 React 页面隐藏，底层源码、v2 接口和模拟测试完整保留，等待以后版本。
@@ -58,7 +61,7 @@ Vite 会把 `/api` 和 `/mineradio` 代理到 Python。
 ## 本地检查
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 85 项
+python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 98 项
 npm test
 npm run build
 docker compose config --services
@@ -88,6 +91,7 @@ Compose 固定关闭：
 ```env
 MCC_SUBSCRIPTION_SCHEDULER_ENABLED=false
 NASEMBY_CORE_WRITE_ENABLED=false
+MCC_PRIVATE_RSS_ENABLED=false
 MCC_PRESERVED_CORE_API_ENABLED=false
 TORRA_PUSH_ENABLED=false
 MCC_INTEGRATION_PROBE_ENABLED=false
@@ -103,10 +107,10 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 `MCC_DATA_ROOT` 下包含：
 
 - `data/`：受保护配置、活动日志和动作冷却状态。
-- `db/`：NasEmby 订阅台账、订阅配置和发现缓存。
+- `db/`：SQLite 唯一订阅台账、私人 RSS 索引、迁移报告和发现缓存。
 - `upload/`：运行时上传与临时文件。
 
-升级或回滚前备份整个 `MCC_DATA_ROOT`，不要手工拼接订阅 JSON。
+升级或回滚前备份整个 `MCC_DATA_ROOT`，不要手工修改 SQLite 或拼接旧订阅 JSON。
 
 ## 凭据
 

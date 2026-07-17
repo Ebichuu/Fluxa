@@ -290,10 +290,11 @@ SQLite FTS5 虚拟表，索引：
 
 ## 15. 计划 API
 
-以下接口均为待实施 v2 设计，当前不可用：
+以下接口是本设计的目标契约。来源、种子、匹配读取和统一动作读取已经在第一版实现；匹配后触发 Torra 分析仍待下一阶段：
 
 - `GET /api/v2/rss-sources`
 - `POST /api/v2/rss-sources`
+- `GET /api/v2/rss-sources/:id`
 - `PATCH /api/v2/rss-sources/:id`
 - `DELETE /api/v2/rss-sources/:id`
 - `POST /api/v2/rss-sources/:id/tests`

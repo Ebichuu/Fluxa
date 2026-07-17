@@ -39,6 +39,7 @@ Compose 固定：
 ```env
 MCC_SUBSCRIPTION_SCHEDULER_ENABLED=false
 NASEMBY_CORE_WRITE_ENABLED=false
+MCC_PRIVATE_RSS_ENABLED=false
 TORRA_PUSH_ENABLED=false
 MCC_PRESERVED_CORE_API_ENABLED=false
 MCC_INTEGRATION_PROBE_ENABLED=false
@@ -132,7 +133,7 @@ upload/
 
 ## 10. SQLite 与 Torra 追更洗版实施前置条件
 
-当前候选镜像 `media-control-center:v2-pt-rc-bde3eba` 仍使用 JSON 订阅台账，不是 SQLite/Torra 追更洗版版本。进入 fnOS 实机窗口前必须完成以下代码与本地演练：
+旧候选镜像 `media-control-center:v2-pt-rc-bde3eba` 使用 JSON 订阅台账。2026-07-18 已构建新的 SQLite/RSS 第一版候选镜像 `media-control-center:sqlite-rss-preview`；进入 fnOS 实机窗口前仍需完成以下硬化与本地演练：
 
 1. 备份 `discover_subscription_items.json` 和 `discover_subscriptions.json`。
 2. 在临时 SQLite 中导入并校验配置、条目数量、订阅 key、TMDB ID、媒体类型和季号。
@@ -141,8 +142,19 @@ upload/
 5. Torra 追更洗版、订阅调度和全部外部写闸门继续默认关闭。
 6. 私人 RSS 收集器使用独立 `MCC_PRIVATE_RSS_ENABLED=false` 闸门；本地测试只使用脱敏 RSS 夹具，不连接真实 Passkey 地址。
 7. 本地模拟验证 RSS 去重、7 天保留、FTS5 搜索、季集匹配、每条订阅 24/48 小时窗口、RSS 即时唤醒、12/24 或 12/24/48 兜底、到期停止、下一集重开、不补扫历史订阅、幂等、冷却和崩溃续查。
-8. 构建新的候选镜像并重复登录、静态资源、只读 API、写闸门、无 Node 运行层和重启验收。
+8. 收集器硬化和原子迁移演练完成后重新构建正式候选镜像，再重复登录、静态资源、只读 API、写闸门、无 Node 运行层和重启验收。
 
 fnOS 首次部署新镜像时只执行迁移预检和只读状态检查。真实 Torra 追更洗版分析/候选下载必须在用户明确进入实机窗口后，先人工验证一次与 Torra“选中分数更高”操作等价的单条动作，再开放自动追更洗版。
 
 私人 RSS 地址、下载 URL、SQLite、WAL 和备份按用户选择包含明文 Passkey。fnOS 持久目录和备份必须视为敏感数据，只允许管理员和容器运行用户读取。
+
+### SQLite/RSS 第一版候选验收记录
+
+- 镜像：`media-control-center:sqlite-rss-preview`。
+- 本地镜像 ID：`sha256:51844ad12598e1453fae47fb65bfcd3c88665ee347e3669df797e21dd1b92157`。
+- 镜像大小：78,228,632 字节。
+- 98 项 Python 回归、前端生产构建、npm 高危审计和 Compose 配置通过。
+- 临时容器完成登录、RSS 来源本地写入、API 脱敏读取和重启持久化。
+- 容器内 SQLite 为 WAL 模式且 FTS5 可用；运行层只有 Python / Gunicorn，没有 Node/npm。
+- `MCC_PRIVATE_RSS_ENABLED=false`，没有连接真实 RSS、Torra、qB、MoviePilot、115、Symedia 或 Emby 写接口。
+- 临时容器和验收目录已清理，只保留候选镜像。

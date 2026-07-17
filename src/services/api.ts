@@ -7,6 +7,13 @@ import type { TaskChainResponse } from '../types/taskChain';
 import type { IntegrationSummary } from '../types/integrations';
 import type { ActivityLogResponse, SystemMetricsResponse } from '../types/operations';
 import type {
+  AutomationAction,
+  RssSeedListResponse,
+  RssSource,
+  RssSourceInput,
+  RssSourceListResponse
+} from '../types/rssSeedLibrary';
+import type {
   DiscoverBrowseParams,
   DiscoverResourceResponse,
   DiscoverResult,
@@ -213,6 +220,50 @@ async function patchJson<T>(path: string, body: unknown): Promise<T> {
   const payload = await response.json().catch(() => ({})) as T & { error?: string };
   if (!response.ok) throw new Error(payload.error || `请求失败：${response.status}`);
   return payload;
+}
+
+async function deleteRequest(path: string): Promise<void> {
+  const response = await fetch(path, {
+    method: 'DELETE',
+    headers: { Accept: 'application/json' }
+  });
+  if (response.status === 204) return;
+  const payload = await response.json().catch(() => ({})) as { error?: string };
+  if (!response.ok) throw new Error(payload.error || `请求失败：${response.status}`);
+}
+
+export function getRssSources(): Promise<RssSourceListResponse> {
+  return readJson<RssSourceListResponse>('/api/v2/rss-sources');
+}
+
+export function saveRssSource(input: RssSourceInput, id?: string): Promise<RssSource> {
+  return id
+    ? patchJson<RssSource>(`/api/v2/rss-sources/${encodeURIComponent(id)}`, input)
+    : postJson<RssSource>('/api/v2/rss-sources', input);
+}
+
+export function deleteRssSource(id: string): Promise<void> {
+  return deleteRequest(`/api/v2/rss-sources/${encodeURIComponent(id)}`);
+}
+
+export function testRssSource(id: string): Promise<AutomationAction> {
+  return postJson<AutomationAction>(`/api/v2/rss-sources/${encodeURIComponent(id)}/tests`, {});
+}
+
+export function getRssSeedItems(input: {
+  query?: string;
+  sourceId?: string;
+  window?: '' | '1h' | '24h' | '7d';
+  limit?: number;
+  offset?: number;
+} = {}): Promise<RssSeedListResponse> {
+  const query = new URLSearchParams();
+  if (input.query) query.set('query', input.query);
+  if (input.sourceId) query.set('sourceId', input.sourceId);
+  if (input.window) query.set('window', input.window);
+  query.set('limit', String(input.limit ?? 50));
+  query.set('offset', String(input.offset ?? 0));
+  return readJson<RssSeedListResponse>(`/api/v2/rss-items?${query.toString()}`);
 }
 
 export function saveSubscription(input: {

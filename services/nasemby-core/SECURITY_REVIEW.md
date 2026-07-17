@@ -135,6 +135,16 @@
 - 8787 只允许受信局域网或 HTTPS 反向代理访问，公网不得直接暴露源站端口。
 - 阶段 9 的真实订阅闭环开始前，保持订阅写入、订阅调度和 Torra 推送关闭。
 
+## 2026-07-18 SQLite 与私人 PT RSS 第一版安全复核
+
+- SQLite 所有业务值使用参数化 SQL；动态查询片段只来自固定的筛选分支，不拼接用户字段。订阅写入使用 WAL、外键、5 秒 busy timeout 和短 `BEGIN IMMEDIATE` 事务。
+- 私人 RSS 的 `feed_url`、详情地址和下载地址按用户确认明文保存；这是已接受风险。公共 DTO、错误响应和页面不返回完整地址，前端类型也不存在可读取的下载 URL 字段。
+- 收集器默认由 `MCC_PRIVATE_RSS_ENABLED=false` 关闭。关闭时不启动线程、不读取 `feed_url`、不进行 DNS 解析或网络访问；来源 CRUD 只写本地 SQLite。
+- 真实抓取前校验协议、用户名密码、端口和全部 DNS 结果，拒绝回环、私网、链路本地、保留和组播地址；每次重定向重新校验，最多三次，响应体限制 2 MiB。
+- RSS 测试和后台错误只记录固定状态或异常类型，不返回 `requests` 原始异常；Passkey 不进入活动日志和 API 错误。
+- 自动测试使用临时 SQLite、测试 Passkey、固定 RSS XML 和假的 HTTP 会话，没有连接真实 PT 站、Torra、qB、MoviePilot、115、Symedia 或 Emby。
+- 生产 Python 定向扫描为 0 Critical / 0 High，React 为 0 告警。既有 1 Medium / 1 Low 位于延期兼容代码，不属于本轮新增模块。
+
 ## 2026-07-17 PT 主链收口安全复核
 
 - v2 契约已扩展为 16 条；新增 Torra 预览/推送和系统指标继续受整站会话保护，Torra 写动作同时要求正确 Origin、订阅写闸门和独立推送闸门。

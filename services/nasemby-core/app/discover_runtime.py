@@ -16,6 +16,9 @@ from importlib.machinery import SourcelessFileLoader
 from pathlib import Path
 
 from app.activity_log import write_activity
+from app.sqlite_runtime import resolve_database_path
+from app.subscription_migration import migrate_legacy_subscription_files
+from app.subscription_repository import SubscriptionRepository
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -131,6 +134,8 @@ DISCOVER_PERMANENT_CACHE_SECONDS = 20 * 365 * 24 * 60 * 60
 DISCOVER_PRELOAD_PAGES = 3
 EMBY_LIBRARY_INDEX_TTL_SECONDS = 5 * 60
 EMBY_LIBRARY_INDEX_CACHE = {"time": 0, "data": None}
+_SUBSCRIPTION_REPOSITORIES = {}
+_SUBSCRIPTION_REPOSITORIES_LOCK = threading.Lock()
 PLATFORM_YEAR_OVERRIDES = {
     "昆仑神宫": "2022",
 }
@@ -151,6 +156,38 @@ IMAGE_PROXY_HOSTS = (
     "ykimg.com",
     "alicdn.com",
 )
+
+
+def subscription_database_path():
+    config_path = Path(SUBSCRIPTION_CONFIG_PATH)
+    items_path = Path(SUBSCRIPTION_ITEMS_PATH)
+    default_parent = Path(PROJECT_ROOT) / "db"
+    if config_path.parent == items_path.parent:
+        legacy_path = config_path
+    elif config_path.parent != default_parent:
+        legacy_path = config_path
+    elif items_path.parent != default_parent:
+        legacy_path = items_path
+    else:
+        legacy_path = config_path
+    return resolve_database_path(PROJECT_ROOT, legacy_path=legacy_path)
+
+
+def subscription_repository():
+    database_path = subscription_database_path().resolve()
+    key = str(database_path)
+    with _SUBSCRIPTION_REPOSITORIES_LOCK:
+        repository = _SUBSCRIPTION_REPOSITORIES.get(key)
+        if repository is None:
+            repository = SubscriptionRepository(database_path)
+            migrate_legacy_subscription_files(
+                repository,
+                SUBSCRIPTION_CONFIG_PATH,
+                SUBSCRIPTION_ITEMS_PATH,
+                get_subscription_item_key,
+            )
+            _SUBSCRIPTION_REPOSITORIES[key] = repository
+    return repository
 
 LEGACY_DEFAULT_SUBSCRIPTION_SOURCES = [
     "hot_movie", "movie_realtime", "hot_tv", "tv_realtime", "global_tv",
@@ -496,20 +533,15 @@ def load_subscription_config():
     config = json.loads(json.dumps(DEFAULT_SUBSCRIPTION_CONFIG, ensure_ascii=False))
     saved_has_mode = False
     saved_has_cloud_policy = False
-    if os.path.exists(SUBSCRIPTION_CONFIG_PATH):
-        try:
-            with open(SUBSCRIPTION_CONFIG_PATH, "r", encoding="utf-8") as fp:
-                saved = json.load(fp)
-            if isinstance(saved, dict):
-                saved_has_mode = "mode" in saved or "subscription_mode" in saved
-                saved_has_cloud_policy = isinstance(saved.get("cloud_acquisition"), dict)
-                for key, value in saved.items():
-                    if isinstance(value, dict) and isinstance(config.get(key), dict):
-                        config[key].update(value)
-                    else:
-                        config[key] = value
-        except Exception:
-            pass
+    saved = subscription_repository().load_config()
+    if isinstance(saved, dict):
+        saved_has_mode = "mode" in saved or "subscription_mode" in saved
+        saved_has_cloud_policy = isinstance(saved.get("cloud_acquisition"), dict)
+        for key, value in saved.items():
+            if isinstance(value, dict) and isinstance(config.get(key), dict):
+                config[key].update(value)
+            else:
+                config[key] = value
     mode_source = config.get("mode") or config.get("subscription_mode")
     if not saved_has_mode:
         douban = config.get("douban") if isinstance(config.get("douban"), dict) else {}
@@ -535,9 +567,7 @@ def load_subscription_config():
 
 def write_subscription_config_data(config):
     payload = config if isinstance(config, dict) else load_subscription_config()
-    os.makedirs(os.path.dirname(SUBSCRIPTION_CONFIG_PATH), exist_ok=True)
-    with open(SUBSCRIPTION_CONFIG_PATH, "w", encoding="utf-8") as fp:
-        json.dump(payload, fp, ensure_ascii=False, indent=2)
+    subscription_repository().save_config(payload)
     return load_subscription_config()
 
 
@@ -1441,31 +1471,20 @@ def enrich_subscription_items(data, remove_completed=False):
 
 
 def load_subscription_items(with_progress=False, remove_completed=True, persist_progress=True):
-    if not os.path.exists(SUBSCRIPTION_ITEMS_PATH):
-        default_data = {
-            "items": [],
-            "last_run_at": "",
-            "stats": {"total": 0, "movie": 0, "tv": 0},
-        }
-        return enrich_subscription_items(default_data, remove_completed=remove_completed) if with_progress else default_data
-    try:
-        with open(SUBSCRIPTION_ITEMS_PATH, "r", encoding="utf-8") as fp:
-            data = json.load(fp)
-        if isinstance(data, dict):
-            data.setdefault("items", [])
-            data["items"] = [sanitize_subscription_item_for_storage(item) for item in (data.get("items") or []) if isinstance(item, dict)]
-            data.setdefault("last_run_at", "")
-            data.setdefault("stats", {"total": len(data.get("items") or []), "movie": 0, "tv": 0})
-            if with_progress:
-                enriched = enrich_subscription_items(data, remove_completed=remove_completed)
-                if persist_progress:
-                    write_subscription_items_data(enriched)
-                return enriched
-            return data
-    except Exception:
-        pass
-    default_data = {"items": [], "last_run_at": "", "stats": {"total": 0, "movie": 0, "tv": 0}}
-    return enrich_subscription_items(default_data, remove_completed=remove_completed) if with_progress else default_data
+    data = subscription_repository().load_payload()
+    if not isinstance(data, dict):
+        data = {}
+    data.setdefault("items", [])
+    data["items"] = [sanitize_subscription_item_for_storage(item) for item in (data.get("items") or []) if isinstance(item, dict)]
+    data.setdefault("last_run_at", "")
+    data["stats"] = recalc_subscription_stats(data.get("items") or [])
+    data.setdefault("errors", [])
+    if with_progress:
+        enriched = enrich_subscription_items(data, remove_completed=remove_completed)
+        if persist_progress:
+            write_subscription_items_data(enriched)
+        return enriched
+    return data
 
 
 def get_subscription_item_key(item):
@@ -1589,10 +1608,7 @@ def write_subscription_items_data(data):
     payload.setdefault("items", [])
     payload["items"] = [sanitize_subscription_item_for_storage(item) for item in (payload.get("items") or []) if isinstance(item, dict)]
     payload["stats"] = recalc_subscription_stats(payload.get("items") or [])
-    os.makedirs(os.path.dirname(SUBSCRIPTION_ITEMS_PATH), exist_ok=True)
-    with open(SUBSCRIPTION_ITEMS_PATH, "w", encoding="utf-8") as fp:
-        json.dump(payload, fp, ensure_ascii=False, indent=2)
-    return payload
+    return subscription_repository().save_payload(payload, get_subscription_item_key)
 
 
 def delete_subscription_item(payload):
@@ -1613,11 +1629,6 @@ def delete_subscription_item(payload):
                     candidate_keys.add(value)
     if not candidate_keys:
         raise RuntimeError("\u7f3a\u5c11\u5220\u9664\u76ee\u6807")
-    data = load_subscription_items()
-    items = data.get("items") if isinstance(data, dict) else []
-    if not isinstance(items, list):
-        items = []
-
     def matches_delete_target(item):
         row_keys = {
             get_subscription_item_key(item),
@@ -1628,14 +1639,9 @@ def delete_subscription_item(payload):
         row_keys = {value for value in row_keys if value}
         return bool(row_keys & candidate_keys)
 
-    removed = [item for item in items if matches_delete_target(item)]
-    kept = [item for item in items if not matches_delete_target(item)]
-    data["items"] = kept
-    data["stats"] = recalc_subscription_stats(kept)
+    removed = subscription_repository().delete_where(matches_delete_target)
+    data = load_subscription_items()
     data["removed_count"] = len(removed)
-    os.makedirs(os.path.dirname(SUBSCRIPTION_ITEMS_PATH), exist_ok=True)
-    with open(SUBSCRIPTION_ITEMS_PATH, "w", encoding="utf-8") as fp:
-        json.dump(data, fp, ensure_ascii=False, indent=2)
     title = str((removed[0].get("title") if removed else "") or "")
     write_activity("subscription", "delete_subscription", "success", "删除订阅", title=title, key=key)
     return data
@@ -1683,20 +1689,14 @@ def unblock_subscription_title(payload):
 
 
 def clear_subscription_items():
-    old_data = load_subscription_items()
-    old_items = old_data.get("items") if isinstance(old_data, dict) else []
-    if not isinstance(old_items, list):
-        old_items = []
+    old_count = subscription_repository().clear_items()
     data = {
         "items": [],
         "last_run_at": "",
         "stats": {"total": 0, "movie": 0, "tv": 0},
         "errors": [],
     }
-    os.makedirs(os.path.dirname(SUBSCRIPTION_ITEMS_PATH), exist_ok=True)
-    with open(SUBSCRIPTION_ITEMS_PATH, "w", encoding="utf-8") as fp:
-        json.dump(data, fp, ensure_ascii=False, indent=2)
-    write_activity("subscription", "clear_subscriptions", "success", "清空订阅", total=len(old_items))
+    write_activity("subscription", "clear_subscriptions", "success", "清空订阅", total=old_count)
     return data
 
 
@@ -1891,27 +1891,13 @@ def save_subscription_item(payload):
     key = get_subscription_item_key(item)
     if not key:
         raise RuntimeError("\u7f3a\u5c11\u8ba2\u9605\u76ee\u6807")
-    data = load_subscription_items()
-    items = data.get("items") if isinstance(data, dict) else []
-    if not isinstance(items, list):
-        items = []
     item = dict(item)
     item.setdefault("created_at", time.strftime("%Y-%m-%d %H:%M:%S"))
     item["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     set_discover_item_cache(item, "subscription")
-    next_items = []
-    replaced = False
-    for row in items:
-        if get_subscription_item_key(row) == key:
-            next_items.append({**row, **item})
-            replaced = True
-        else:
-            next_items.append(row)
-    if not replaced:
-        next_items.insert(0, item)
-    data["items"] = next_items
-    data["stats"] = recalc_subscription_stats(next_items)
-    data = write_subscription_items_data(data)
+    replaced, saved_item = subscription_repository().upsert_item(item, key)
+    item = saved_item
+    data = load_subscription_items()
     message = "保存订阅，等待 TMDB 匹配" if metadata_pending else "保存订阅成功"
     data["saved_item"] = item
     data["message"] = message
@@ -1936,6 +1922,14 @@ def save_subscription_item(payload):
     data["auto_transfer"] = data["subscription_task"]
     _send_subscription_tg_notify(item, original_title_for_log, replaced, metadata_pending)
     return data
+
+
+def update_subscription_item(key, updater):
+    def mutate(item):
+        updater(item)
+        item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    return subscription_repository().mutate_item(key, mutate, get_subscription_item_key)
 
 
 def subscription_lookup_key_set(item):
@@ -3298,8 +3292,7 @@ def run_subscription_now():
     payload = enrich_subscription_items(payload, remove_completed=True)
     write_subscription_items_data(payload)
     config["douban"]["last_run_at"] = now_text
-    with open(SUBSCRIPTION_CONFIG_PATH, "w", encoding="utf-8") as fp:
-        json.dump(config, fp, ensure_ascii=False, indent=2)
+    write_subscription_config_data(config)
     payload["config"] = config
     summary_status = "success" if not errors else ("skip" if items else "error")
     write_activity(

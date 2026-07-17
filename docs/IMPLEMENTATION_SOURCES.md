@@ -47,6 +47,8 @@
 | 浏览器字段白名单 | `app/contract_mapping.py` |
 | 发现兼容层 | `app/discover_compat_runtime.py` |
 | 订阅兼容层 | `app/subscription_compat_runtime.py` |
+| SQLite 与订阅迁移 | `app/sqlite_runtime.py`、`app/subscription_repository.py`、`app/subscription_migration.py` |
+| 私人 RSS 种子库 | `app/private_rss_repository.py`、`app/private_rss_parser.py`、`app/private_rss_collector.py`、`app/private_rss_api_runtime.py` |
 | Emby 读取与图片 | `app/emby_runtime.py`、`app/media_read_runtime.py` |
 | Emby 证据刷新 | `app/emby_refresh_runtime.py` |
 | qB 摘要 | `app/qbittorrent_runtime.py` |
@@ -72,6 +74,7 @@
 | 日历 | `src/components/pages/CalendarPage.tsx` |
 | 内容发现与我的订阅 | `src/components/pages/DiscoverPage.tsx` |
 | 订阅设置 | `src/components/pages/SubscriptionSettingsPage.tsx` |
+| 种子库 | `src/components/pages/RssSeedLibraryPage.tsx` |
 | 系统设置 | `src/components/pages/SettingsPage.tsx` |
 | HTTP 客户端 | `src/services/api.ts` |
 
@@ -83,7 +86,9 @@
 
 ## 5. 数据归属
 
-- 订阅唯一台账：`db/discover_subscription_items.json`、`db/discover_subscriptions.json`。
+- 订阅唯一台账：`db/media_control_center.sqlite3`。
+- 旧 `discover_subscription_items.json`、`discover_subscriptions.json` 只作为一次性迁移和回滚输入。
+- 私人 RSS 来源、最近种子、FTS5 索引和抓取记录与订阅台账共用同一 SQLite 文件。
 - React 展示只读取 Python 白名单 DTO。
 - 任务链读取同一订阅台账并关联 Torra、qB、Symedia 和 Emby 证据。
 - 不导入外部 NasEmby 台账，不创建 Node 台账，不双写。

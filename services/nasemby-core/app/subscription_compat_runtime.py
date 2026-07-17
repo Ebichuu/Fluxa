@@ -44,7 +44,6 @@ WESTERN_CODES = {
 }
 WESTERN_LANGUAGES = {"en", "fr", "de", "es", "it", "nl", "pt"}
 SOUTH_ASIA_LANGUAGES = {"hi", "bn", "ta", "te", "ur", "si", "ne"}
-_ledger_lock = threading.Lock()
 TORRA_PUSH_COOLDOWN_SECONDS = 60
 
 
@@ -292,22 +291,12 @@ def _safe_torra_push_result(result, request_id, replayed=False):
 
 
 def _update_item(key, updater):
-    with _ledger_lock:
-        data = discover_runtime.load_subscription_items(remove_completed=False)
-        items = data.get("items") if isinstance(data.get("items"), list) else []
-        matched = None
-        for item in items:
-            if discover_runtime.get_subscription_item_key(item) == key:
-                updater(item)
-                item["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                matched = item
-                break
-        if not matched:
-            return None
-        discover_runtime.write_subscription_items_data(data)
-        mapped = dict(matched)
-        mapped["key"] = discover_runtime.get_subscription_item_key(mapped)
-        return mapped
+    matched = discover_runtime.update_subscription_item(key, updater)
+    if not matched:
+        return None
+    mapped = dict(matched)
+    mapped["key"] = discover_runtime.get_subscription_item_key(mapped)
+    return mapped
 
 
 def register_subscription_compat(app: Flask, environment=None):
@@ -333,8 +322,7 @@ def register_subscription_compat(app: Flask, environment=None):
         if not body.get("title") or not body.get("tmdbId") or body.get("mediaType") not in {"movie", "tv"}:
             return _error("SUBSCRIPTION_INVALID", "需要 title、tmdbId 和 mediaType（movie/tv）", 400)
         try:
-            with _ledger_lock:
-                data = discover_runtime.save_subscription_item({"item": _core_item(body)})
+            data = discover_runtime.save_subscription_item({"item": _core_item(body)})
             return jsonify({
                 "success": True,
                 "item": map_subscription_item(data.get("saved_item")),

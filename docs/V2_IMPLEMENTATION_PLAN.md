@@ -2,7 +2,7 @@
 
 > v2 迁移基线计划。基线已经完成；当前代码阶段按 SQLite/RSS 基础计划和 Torra 追更洗版计划继续执行。
 
-状态：v2 基线和 PT 主线收口完成；进入 SQLite/RSS 与追更洗版代码阶段
+状态：v2 基线、PT 主线、SQLite/RSS 第一版完成；进入收集器硬化和迁移演练
 日期：2026-07-18
 
 ## 当前目标
@@ -70,11 +70,12 @@
 
 执行顺序固定为：
 
-1. 按 `docs/superpowers/plans/2026-07-18-sqlite-private-rss-seed-library-implementation-plan.md` 完成 SQLite 唯一台账、JSON 一次性迁移、私人 PT RSS 种子库和本地只读页面。
-2. 在明确停点复核迁移差异、明文 RSS 风险、Passkey 脱敏和候选镜像。
-3. 复核通过后，按 `docs/superpowers/plans/2026-07-18-torra-follow-up-rewash-implementation-plan.md` 完成 RSS 唤醒、Torra 追更洗版、有限主动兜底和 MoviePilot 人工备用入口。
-4. 两份计划都只使用临时 SQLite、脱敏 RSS 夹具和假的外部会话，不连接真实 RSS，也不执行 Torra/qB/MoviePilot 写动作。
-5. 完成模拟回归和新候选镜像后，才进入 fnOS 单条实机验证。
+1. SQLite 唯一台账、JSON 迁移器、私人 PT RSS 基础索引和种子库页面已经完成第一版。
+2. 继续补齐真实脱敏夹具、收集器退避/并发、抓取记录上限和原子迁移演练；SQLite/RSS 第一版候选镜像已经通过。
+3. 在明确停点复核真实迁移差异、明文 RSS 风险和 Passkey 脱敏。
+4. 复核通过后，按 `docs/superpowers/plans/2026-07-18-torra-follow-up-rewash-implementation-plan.md` 完成 RSS 唤醒、Torra 追更洗版、有限主动兜底和 MoviePilot 人工备用入口。
+5. 代码阶段只使用临时 SQLite、脱敏 RSS 夹具和假的外部会话，不连接真实 RSS，也不执行 Torra/qB/MoviePilot 写动作。
+6. 完成模拟回归和新候选镜像后，才进入 fnOS 单条实机验证。
 
 Telegram 频道网盘订阅、HDHive / pansou、影巢和分享转存继续延期，底层源码和原计划保留在 `docs/CLOUD_ACQUISITION_PLAN.md`，不作为当前代码主线。
 

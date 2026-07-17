@@ -416,10 +416,11 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
                 self.assertEqual(failed_push.get_json()["error"], "Torra 推送失败")
                 self.assertNotIn("secret exception", failed_push.get_data(as_text=True))
 
-                stored = json.loads(items_path.read_text(encoding="utf-8"))["items"]
+                stored = discover_runtime.load_subscription_items(remove_completed=False)["items"]
                 self.assertEqual(len(stored), 1)
                 self.assertEqual(stored[0]["media_category"], "anime_jp")
                 self.assertEqual(stored[0]["target_season"], 2)
+                self.assertTrue((root / "media_control_center.sqlite3").exists())
 
     def test_deployment_defaults_block_subscription_writes_and_pushes(self):
         app = create_app(access_environment={}, torra_client_factory=FakeTorraClient)

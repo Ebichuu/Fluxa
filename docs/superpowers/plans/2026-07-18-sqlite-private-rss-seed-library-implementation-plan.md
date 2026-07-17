@@ -1,8 +1,20 @@
 # SQLite 单台账与私人 PT RSS 种子库实施计划
 
-状态：待实施
+状态：第一版已落地并通过 Docker 候选验收；收集器硬化、真实脱敏夹具和原子迁移演练待完成
 
 日期：2026-07-18
+
+## 当前实施进度
+
+- [x] 阶段 0：基线记录，85 项原回归、TypeScript 和构建通过。
+- [x] 阶段 1～2 第一版：SQLite runtime、订阅仓储、JSON 迁移备份/报告和 NasEmby 读写切换。
+- [x] 阶段 3 第一版：RSS 来源/条目/FTS5/抓取记录仓储与标准 RSS/Atom 解析。
+- [~] 阶段 4：闸门、ETag、重定向、SSRF 和基本轮询已完成；429、指数退避、并发 2 和真实站点夹具待补。
+- [x] 阶段 5 第一版：10 条 RSS/动作 v2 契约已注册；匹配列表暂返回稳定空集合。
+- [x] 阶段 6 第一版：顶部“种子库”入口、搜索、时间/来源筛选和来源管理页面已完成。
+- [x] 阶段 7：Docker 候选镜像、重启持久化和第一版停点复核。
+
+当前自动回归为 98 项。真实 RSS、Torra、qB 和 MoviePilot 写调用仍为零。
 
 依据：
 
@@ -356,6 +368,7 @@ feat: migrate subscription ledger to sqlite
 
 - `GET /api/v2/rss-sources`
 - `POST /api/v2/rss-sources`
+- `GET /api/v2/rss-sources/:id`
 - `PATCH /api/v2/rss-sources/:id`
 - `DELETE /api/v2/rss-sources/:id`
 - `POST /api/v2/rss-sources/:id/tests`
@@ -494,6 +507,15 @@ git diff --check
 
 - 新候选镜像通过后，才能进入第二份追更洗版实施计划。
 
+2026-07-18 第一版验收结果：
+
+- 98 项 Python 回归、TypeScript、Vite 构建、npm 高危审计和 Compose 配置通过。
+- 候选镜像 `media-control-center:sqlite-rss-preview` 构建成功。
+- 临时容器完成登录、来源本地写入、RSS API 读取和容器重启持久化。
+- 容器内 SQLite 使用 WAL，FTS5 可用；运行层只有 Python / Gunicorn，没有 Node。
+- API 响应未出现完整 RSS 地址或测试 Passkey；真实 RSS、Torra、qB 和 MoviePilot 写调用为零。
+- 临时容器和验收目录已清理，只保留本地候选镜像。
+
 建议提交：
 
 ```text
@@ -509,5 +531,7 @@ feat: complete sqlite and private rss foundation
 - 页面不泄露 Passkey。
 - 实机 5～10 个 RSS 样本是否已经准备。
 - 是否继续执行 Torra 追更洗版实施计划。
+
+本次停点结论：模拟 JSON 迁移、页面/API 脱敏和 Docker 持久化已经通过；真实 5～10 个站点夹具、临时 SQLite 原子替换演练、429/退避和双并发仍是进入 Torra 追更洗版编码前的前置项。
 
 未完成以上复核前，不开启真实 RSS 收集，不触发 Torra 写动作。

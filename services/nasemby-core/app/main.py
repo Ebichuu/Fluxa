@@ -5,7 +5,7 @@ import os
 import threading
 import time
 
-from flask import Blueprint, Flask, Response, jsonify, redirect, render_template, request, send_from_directory
+from flask import Blueprint, Flask, Response, current_app, jsonify, redirect, render_template, request, send_from_directory
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from app.activity_log import clear_activities, read_activities, write_activity
@@ -28,6 +28,7 @@ from app.task_chain_runtime import register_task_chain
 from app.integration_runtime import register_integrations
 from app.cloud_acquisition_runtime import register_cloud_acquisition
 from app.system_metrics_runtime import register_system_metrics
+from app.private_rss_api_runtime import register_private_rss
 from app.hdhive_auth import (
     hdhive_auth_url,
     hdhive_checkin_now,
@@ -74,6 +75,7 @@ core_routes = Blueprint("nasemby_core_routes", __name__)
 _hdhive_scheduler_started = False
 _discover_preload_started = False
 _subscription_scheduler_started = False
+_private_rss_collector_started = False
 _background_runtime_started = False
 
 
@@ -389,6 +391,27 @@ def start_subscription_scheduler():
     thread.start()
 
 
+def _private_rss_collector_loop():
+    time.sleep(5)
+    while True:
+        try:
+            service = app.extensions.get("mcc_private_rss")
+            if service and service.collection_enabled():
+                service.collector.run_due()
+        except Exception as exc:
+            logger.error("background scheduler failed scheduler=private-rss error_type=%s", type(exc).__name__)
+        time.sleep(30)
+
+
+def start_private_rss_collector():
+    global _private_rss_collector_started
+    if _private_rss_collector_started:
+        return
+    _private_rss_collector_started = True
+    thread = threading.Thread(target=_private_rss_collector_loop, name="private-rss", daemon=True)
+    thread.start()
+
+
 def start_background_runtime():
     global _background_runtime_started
     if _background_runtime_started:
@@ -401,6 +424,9 @@ def start_background_runtime():
     if str(os.getenv("MCC_SUBSCRIPTION_SCHEDULER_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}:
         start_subscription_scheduler()
         started.append("subscription-task")
+    if str(os.getenv("MCC_PRIVATE_RSS_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}:
+        start_private_rss_collector()
+        started.append("private-rss")
     _background_runtime_started = True
     return started
 
@@ -445,10 +471,16 @@ def api_health():
     symedia_username = os.getenv("SYMEDIA_USERNAME") or runtime_config.get("ENV_SYMEDIA_USERNAME", "")
     symedia_password = os.getenv("SYMEDIA_PASSWORD") or runtime_config.get("ENV_SYMEDIA_PASSWORD", "")
 
+    rss_service = current_app.extensions.get("mcc_private_rss")
+    rss_summary = rss_service.repository.summary(rss_service.collection_enabled()) if rss_service else {
+        "enabled": False, "sources": 0, "activeSources": 0, "errorSources": 0, "items": 0, "lastSuccessAt": ""
+    }
+
     return jsonify({
         "app": "media-control-center",
         "status": "ok",
         "runtime": "python",
+        "privateRss": rss_summary,
         "services": [
             {
                 "id": "emby",
@@ -1177,6 +1209,8 @@ def create_app(
     cloud_clock=None,
     system_metrics_sampler=None,
     system_metrics_clock=None,
+    private_rss_repository=None,
+    private_rss_collector=None,
 ):
     environment = os.environ if access_environment is None else access_environment
     application = Flask(__name__, static_folder=None)
@@ -1241,6 +1275,13 @@ def create_app(
     )
     register_discover_compat(application)
     register_subscription_compat(application, environment=environment)
+    register_private_rss(
+        application,
+        discover_runtime.subscription_database_path(),
+        environment=environment,
+        repository=private_rss_repository,
+        collector=private_rss_collector,
+    )
     register_frontend(
         application,
         frontend_dist if frontend_dist is not None else environment.get("MCC_FRONTEND_DIST", ""),

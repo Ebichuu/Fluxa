@@ -7,6 +7,7 @@
 - Flask 应用工厂、统一请求 ID、JSON 错误和整站访问保护。
 - React `dist`、SPA 回退、Mineradio 原始资源和桥接页。
 - NasEmby 原发现、JustWatch 海外流媒体、订阅、日历、资源规则和调度源码。
+- SQLite 唯一订阅台账、旧 JSON 一次性迁移和私人 PT RSS 本地种子索引。
 - 115、Telegram、HDHive / pansou、provider 等原核心能力与接口调用关系。
 - Torra 固定目标推送：预览、确认、幂等、冷却和脱敏审计。
 - 30 秒缓存的 NAS 系统指标与原活动日志。
@@ -49,6 +50,7 @@ python -m app.main
 ```env
 MCC_SUBSCRIPTION_SCHEDULER_ENABLED=false
 NASEMBY_CORE_WRITE_ENABLED=false
+MCC_PRIVATE_RSS_ENABLED=false
 MCC_PRESERVED_CORE_API_ENABLED=false
 TORRA_PUSH_ENABLED=false
 MCC_INTEGRATION_PROBE_ENABLED=false
@@ -76,17 +78,15 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/internal/nasemby-core/*`：已认证的只读诊断兼容路由。
 - `/api/v2/subscriptions/:id/torra-push-*`：固定目标 Torra 的预览和受保护推送。
 - `/api/v2/system/metrics`：缓存、白名单映射的系统指标。
+- `/api/v2/rss-sources`、`/api/v2/rss-items`：私人 RSS 来源和本地种子库；读取响应不含完整 RSS/下载地址。
 - `/api/v2/integrations/*`、`/api/v2/acquisition/cloud/*` 和云盘策略路由继续保留，当前 React 不调用延期动作。
 - `/mineradio/embed`、`/mineradio/*`。
 
-47 条冻结 v1 契约见项目根 `docs/contracts/http-api-contract-v1.json`；16 条新增能力见 `http-api-contract-v2.json`。浏览器公开响应经过白名单映射；内部诊断路由保留 NasEmby 原始字段，仍受整站认证保护。
+47 条冻结 v1 契约见项目根 `docs/contracts/http-api-contract-v1.json`；26 条新增能力见 `http-api-contract-v2.json`。浏览器公开响应经过白名单映射；内部诊断路由保留 NasEmby 原始字段，仍受整站认证保护。
 
 ## 唯一订阅台账
 
-订阅写入只使用 NasEmby 原文件：
-
-- `db/discover_subscription_items.json`
-- `db/discover_subscriptions.json`
+订阅写入只使用 `db/media_control_center.sqlite3`。首次发现旧 JSON 时先备份、校验并生成迁移报告，再一次性导入；运行时不再写回 JSON。
 
 分类与改季直接更新同一条订阅，不创建 Node 副本，也不会因为字段修改排队外部 provider。保存订阅继续调用 NasEmby 原保存函数；外部后处理仍受配置和总开关约束。
 
@@ -98,12 +98,12 @@ python -m unittest discover -s tests -v
 
 测试使用临时台账、隔离的临时活动日志和模拟客户端，不连接真实服务执行写操作。保留接口只在模拟测试中显式开启；Mineradio 注入片段继续使用冻结的 SHA-256 快照保护视觉桥接基线。
 
-当前共 85 项回归测试。Torra、网盘和系统指标测试全部使用临时台账与模拟函数，不连接真实外部服务；确认默认闸门、脱敏、幂等、冷却和缓存行为。
+当前共 98 项回归测试。SQLite、RSS、Torra、网盘和系统指标测试全部使用临时台账与模拟函数，不连接真实外部服务；确认默认闸门、脱敏、迁移、幂等、冷却和缓存行为。
 
 ## 持久目录
 
 - `data/`：配置、活动日志和运行状态。
-- `db/`：订阅、配置和缓存。
+- `db/`：SQLite 订阅/RSS 台账、迁移报告和缓存。
 - `upload/`：上传、会话或临时文件。
 
 这些目录不能提交真实数据。升级和回滚必须整体备份，不能手工合并订阅文件。

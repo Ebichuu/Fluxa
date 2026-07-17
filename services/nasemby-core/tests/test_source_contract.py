@@ -306,7 +306,8 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
                 saved = discover_runtime.save_subscription_item({"item": item})
                 reloaded = discover_runtime.load_subscription_items()
 
-            self.assertTrue(items_path.is_file())
+            self.assertTrue((items_path.parent / "media_control_center.sqlite3").is_file())
+            self.assertFalse(items_path.is_file())
             self.assertEqual(saved["stats"]["total"], 1)
             self.assertEqual(len(reloaded["items"]), 1)
             self.assertEqual(reloaded["items"][0]["title"], "测试电影")
@@ -318,6 +319,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
 
         self.assertIn('NASEMBY_CORE_WRITE_ENABLED: "false"', compose)
         self.assertIn('MCC_SUBSCRIPTION_SCHEDULER_ENABLED: "false"', compose)
+        self.assertIn("MCC_PRIVATE_RSS_ENABLED: ${MCC_PRIVATE_RSS_ENABLED:-false}", compose)
         self.assertIn('MCC_PRESERVED_CORE_API_ENABLED: "false"', compose)
         self.assertIn('TORRA_PUSH_ENABLED: "false"', compose)
         self.assertNotIn("\n  nasemby-core:", compose)

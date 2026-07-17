@@ -361,7 +361,7 @@ Torra、qB、幂等键和内部状态作为次级技术信息显示。
 
 ## 12. 计划 API
 
-以下接口属于待实施 v2 设计，当前不可用：
+以下 Torra/MoviePilot 接口仍属于待实施 v2 设计。统一动作读取路径已经由 RSS 测试动作建立第一版，后续将扩展为 SQLite 持久动作：
 
 - `GET /api/v2/subscription-automation/settings`
 - `PATCH /api/v2/subscription-automation/settings`

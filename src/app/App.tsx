@@ -8,6 +8,7 @@ import { Overview } from '../components/pages/Overview';
 import { SettingsPage } from '../components/pages/SettingsPage';
 import { SubscriptionSettingsPage } from '../components/pages/SubscriptionSettingsPage';
 import { TasksCenter } from '../components/pages/TasksCenter';
+import { RssSeedLibraryPage } from '../components/pages/RssSeedLibraryPage';
 import { getHealth } from '../services/api';
 import type { HealthResponse } from '../types/media';
 import { defaultVisualFx, normalizeVisualFx } from '../types/visualFx';
@@ -94,6 +95,7 @@ export function App() {
         <DiscoverPage onNavigate={setPage} view={page === 'subscriptions' ? 'subscriptions' : 'discover'} />
       )}
       {page === 'subscription-settings' && <SubscriptionSettingsPage onNavigate={setPage} />}
+      {page === 'rss-library' && <RssSeedLibraryPage />}
       {page === 'settings' && <SettingsPage />}
     </div>
   );

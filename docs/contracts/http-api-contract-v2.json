@@ -2,7 +2,7 @@
   "contractVersion": 2,
   "frozenAt": "2026-07-17",
   "pathVersioning": "url-v2",
-  "routeCount": 16,
+  "routeCount": 26,
   "routes": [
     { "method": "GET", "path": "/api/v2/integrations", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "integrations", "client": true },
     { "method": "POST", "path": "/api/v2/integrations/cloud115/probes", "audience": "browser", "auth": "session", "effect": "external-read", "response": "json", "success": [200], "migrationGroup": "integrations", "client": false },
@@ -19,6 +19,16 @@
     { "method": "PATCH", "path": "/api/v2/subscriptions/:id/cloud-policy", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": false },
     { "method": "GET", "path": "/api/v2/subscriptions/:id/torra-push-preview", "audience": "browser", "auth": "session", "effect": "external-read", "response": "json", "success": [200], "migrationGroup": "torra-push", "client": true },
     { "method": "POST", "path": "/api/v2/subscriptions/:id/torra-pushes", "audience": "browser", "auth": "session", "effect": "external-write", "response": "json", "success": [200], "migrationGroup": "torra-push", "client": true },
-    { "method": "GET", "path": "/api/v2/system/metrics", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "system", "client": true }
+    { "method": "GET", "path": "/api/v2/system/metrics", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "system", "client": true },
+    { "method": "GET", "path": "/api/v2/rss-sources", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "private-rss", "client": true },
+    { "method": "POST", "path": "/api/v2/rss-sources", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [201], "migrationGroup": "private-rss", "client": true },
+    { "method": "GET", "path": "/api/v2/rss-sources/:id", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "private-rss", "client": true },
+    { "method": "PATCH", "path": "/api/v2/rss-sources/:id", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "private-rss", "client": true },
+    { "method": "DELETE", "path": "/api/v2/rss-sources/:id", "audience": "browser", "auth": "session", "effect": "write", "response": "empty", "success": [204], "migrationGroup": "private-rss", "client": true },
+    { "method": "POST", "path": "/api/v2/rss-sources/:id/tests", "audience": "browser", "auth": "session", "effect": "external-read", "response": "json", "success": [202], "migrationGroup": "private-rss", "client": true },
+    { "method": "GET", "path": "/api/v2/rss-items", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "private-rss", "client": true },
+    { "method": "GET", "path": "/api/v2/rss-items/:id", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "private-rss", "client": true },
+    { "method": "GET", "path": "/api/v2/rss-matches", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "private-rss", "client": true },
+    { "method": "GET", "path": "/api/v2/automation-actions/:id", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "automation", "client": true }
   ]
 }

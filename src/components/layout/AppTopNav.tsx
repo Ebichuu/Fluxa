@@ -1,7 +1,7 @@
-import { Activity, Bookmark, CalendarDays, Compass, Film, Home, ListChecks, Search, Settings } from 'lucide-react';
+import { Activity, Bookmark, CalendarDays, Compass, Film, Home, ListChecks, Rss, Search, Settings } from 'lucide-react';
 import type { HealthResponse } from '../../types/media';
 
-export type PageId = 'overview' | 'hall' | 'control' | 'tasks' | 'calendar' | 'discover' | 'subscriptions' | 'subscription-settings' | 'settings';
+export type PageId = 'overview' | 'hall' | 'control' | 'tasks' | 'calendar' | 'discover' | 'subscriptions' | 'subscription-settings' | 'rss-library' | 'settings';
 
 const navItems: Array<{
   id: PageId;
@@ -12,6 +12,7 @@ const navItems: Array<{
   { id: 'hall', label: '影院大厅', icon: Film },
   { id: 'discover', label: '发现', icon: Compass },
   { id: 'subscriptions', label: '订阅', icon: Bookmark },
+  { id: 'rss-library', label: '种子库', icon: Rss },
   { id: 'tasks', label: '任务中心', icon: ListChecks },
   { id: 'calendar', label: '日历', icon: CalendarDays }
 ];
