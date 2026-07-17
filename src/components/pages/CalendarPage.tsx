@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { CalendarDays, Check, ChevronLeft, ChevronRight, Clock3, Library, Radio } from 'lucide-react';
+import { CalendarDays, Check, ChevronLeft, ChevronRight } from 'lucide-react';
 import { getSubscriptionCalendar } from '../../services/api';
 import type { SubscriptionCalendarEntry } from '../../types/subscriptions';
 import type { PageId } from '../layout/AppTopNav';
+import { PageStatusHeader } from '../layout/PageStatusHeader';
 
 interface CalendarPageProps {
   onNavigate: (page: PageId) => void;
@@ -127,18 +128,13 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
 
   return (
     <main className="work-page work-page--fill ops-page ops-page--calendar">
-      <section className="ops-hero ops-hero--calendar">
-        <div>
-          <p className="ops-eyebrow">日历 · 播出与入库</p>
-          <h1>什么时候播，哪些还没入库。</h1>
-          <p className="ops-deck">这里汇总订阅内容的播出日期和入库进度；逾期内容可以直接进入任务中心排查。</p>
-        </div>
-        <div className="ops-calendar-stats" aria-label="本月订阅统计">
-          <div><Radio size={15} /><span>待播出</span><strong>{upcomingCount}</strong></div>
-          <div><Library size={15} /><span>已入库</span><strong>{inLibraryCount}</strong></div>
-          <div className={overdueCount ? 'is-alert' : undefined}><Clock3 size={15} /><span>逾期未入库</span><strong>{overdueCount}</strong></div>
-        </div>
-      </section>
+      <PageStatusHeader
+        context="播出与入库"
+        detail={`${mode === 'sample' ? '示例数据 · ' : ''}${year} 年 ${month} 月 · ${inLibraryCount} 个已入库`}
+        status={mode === 'loading' ? '正在读取本月日历' : mode === 'error' ? '日历状态读取失败' : `本月 ${upcomingCount} 个待播 · ${overdueCount} 个逾期`}
+        title="日历"
+        tone={mode === 'error' || overdueCount > 0 ? 'warn' : mode === 'live' ? 'ok' : 'neutral'}
+      />
 
       <section className="ops-panel ops-calendar-board calendar-board">
         <header className="calendar-board__head">

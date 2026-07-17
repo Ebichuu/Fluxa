@@ -9,6 +9,12 @@ import {
   type AuthSessionResponse
 } from '../../services/api';
 import type { SubscriptionHubConfig } from '../../types/subscriptions';
+import type { HealthResponse } from '../../types/media';
+import { PageStatusHeader } from '../layout/PageStatusHeader';
+
+interface SettingsPageProps {
+  health: HealthResponse | null;
+}
 
 const subscriptionModes = [
   { key: 'torra', label: 'PT / Torra 主通道', note: 'Torra 负责 PT 搜索、qB 编排和秒传到 115' }
@@ -300,7 +306,7 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
   );
 }
 
-export function SettingsPage() {
+export function SettingsPage({ health }: SettingsPageProps) {
   const [accessSession, setAccessSession] = useState<AuthSessionResponse | null>(null);
   const [accessError, setAccessError] = useState('');
   const [loggingOut, setLoggingOut] = useState(false);
@@ -330,20 +336,21 @@ export function SettingsPage() {
       });
   };
 
+  const configuredCount = health?.services.filter((service) => service.configured).length ?? 0;
+  const serviceCount = health?.services.length ?? 10;
+  const accessStatus = accessSession
+    ? accessSession.enabled ? accessSession.authenticated ? '访问保护已登录' : '访问保护需要登录' : '本地未启用访问密钥'
+    : accessError ? '访问保护状态不可用' : '正在读取访问保护';
+
   return (
     <main className="work-page ops-page ops-page--settings">
-      <section className="ops-hero ops-hero--settings">
-        <div>
-          <p className="ops-eyebrow">设置 · 连接与安全</p>
-          <h1>管理服务连接与访问保护。</h1>
-          <p className="ops-deck">这里仅管理系统连接和安全边界；账号、密码与访问令牌由服务端保存。</p>
-        </div>
-        <div className="ops-settings-guard">
-          <span><KeyRound size={15} />凭据策略</span>
-          <strong>服务端安全保存</strong>
-          <small>已保存的账号、密码与访问令牌不回填前端</small>
-        </div>
-      </section>
+      <PageStatusHeader
+        context="连接与安全"
+        detail={`${accessStatus} · 凭据由服务端保存`}
+        status={health ? `${configuredCount} / ${serviceCount} 项服务已配置` : '服务配置状态暂不可用'}
+        title="系统设置"
+        tone={health && configuredCount > 0 ? 'ok' : 'neutral'}
+      />
 
       <section className="ops-settings-grid">
         <article className="ops-settings-card ops-settings-policy">
