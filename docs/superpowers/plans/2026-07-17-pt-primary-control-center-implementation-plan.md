@@ -305,6 +305,7 @@ docker build -t media-control-center:v2-pt-final .
 - 质量扫描 0 错误；安全扫描 0 Critical / 0 High；新增 diff 未发现硬编码凭据。
 - 1440×900、1024×768、390×844 页面验收通过；移动端媒体抽屉可明确展开和关闭；Mineradio iframe 与桥接正常。
 - `media-control-center:v2-pt-final` 构建通过；独立临时容器验证登录、指标 200、订阅/Torra 写闸门 403、保留接口 503 和无 Node/npm 运行时。
+- 2026-07-18 基于最新提交 `bde3eba` 重建 `media-control-center:v2-pt-rc-bde3eba`；静态资源、登录、只读 API、写闸门、保留接口、Python-only 运行层和重启恢复再次通过。
 
 尚未完成：
 

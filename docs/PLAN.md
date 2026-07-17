@@ -60,6 +60,7 @@
 - [x] 工作页统一 UI / 等宽混排字体和 WCAG AA 文字令牌；最低文字对比度 6.83:1。
 - [x] 保留原工作页 Hero 布局，不把“0 条订阅 · 0 条未完成”等实时数字放在页面标题旁。
 - [x] 工作页标签支持左右键、Home、End 和单一 Tab 停靠点；qB 与 Emby 确认框共用焦点约束、Escape 和焦点返回。
+- [x] 基于提交 `bde3eba` 构建只读候选镜像 `media-control-center:v2-pt-rc-bde3eba`，完成登录、静态资源、写闸门、保留接口、无 Node 运行层和重启验收。
 
 详细执行清单见 `docs/V2_IMPLEMENTATION_PLAN.md`。
 
@@ -67,6 +68,7 @@
 
 ### 当前下一步：PT 实机证据
 
+- 将已通过本地验收的候选镜像部署到 fnOS，首次启动仍保持全部写闸门关闭。
 - fnOS 正式部署和 HTTPS 源站限制。
 - 单条真实订阅与 Torra 预览。
 - Torra → qB → 115 秒传 → Symedia → Emby 完整闭环。

@@ -114,3 +114,18 @@ upload/
 7. 如需检查 115、Telegram、HDHive 等连接，只开启 `MCC_INTEGRATION_PROBE_ENABLED`，不同时开启管理和转存。
 8. 用户指定单条网盘测试后，先开启 `MCC_CLOUD_SEARCH_ENABLED` 验证脱敏候选，再单独开启 `MCC_CLOUD_TRANSFER_ENABLED` 执行一次转存。
 9. 自动云盘兜底和后台执行器继续关闭。
+
+## 9. 2026-07-18 本地候选镜像记录
+
+- 源提交：`bde3eba`。
+- 镜像：`media-control-center:v2-pt-rc-bde3eba`。
+- 本地镜像 ID：`sha256:8b089f484bfb7d214fb1ccec5011c982a2f7f49942956d5ec1eda5095673b35d`。
+- 镜像大小：77,870,075 字节。
+- React 资源：`index-BpQwAyy7.css`、`index-Bgf3Xiyl.js`，认证后均返回 200。
+- `/healthz` 返回 200；未登录根页面返回 401；登录返回 303，认证会话接口返回 200。
+- `/api/status` 返回 200；订阅执行和 Torra 推送均被写闸门以 403 拒绝。
+- `/api/115/check` 在保留核心接口总开关关闭时返回 503。
+- 运行时只有一个 Gunicorn 主进程和一个 gthread worker，容器内没有 Node/npm。
+- 容器重启后健康恢复，原登录会话仍可验证。
+
+以上仅为本机隔离验收，不代表 fnOS、Torra、qB、115、Symedia 或 Emby 的真实链路已经验证。临时容器和测试目录已清理，只保留候选镜像。
