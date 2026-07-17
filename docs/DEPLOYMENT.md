@@ -130,16 +130,16 @@ upload/
 
 以上仅为本机隔离验收，不代表 fnOS、Torra、qB、115、Symedia 或 Emby 的真实链路已经验证。临时容器和测试目录已清理，只保留候选镜像。
 
-## 10. SQLite 与 Torra 自动洗版检查实施前置条件
+## 10. SQLite 与 Torra 追更洗版实施前置条件
 
-当前候选镜像 `media-control-center:v2-pt-rc-bde3eba` 仍使用 JSON 订阅台账，不是 SQLite/Torra 自动洗版检查版本。进入 fnOS 实机窗口前必须完成以下代码与本地演练：
+当前候选镜像 `media-control-center:v2-pt-rc-bde3eba` 仍使用 JSON 订阅台账，不是 SQLite/Torra 追更洗版版本。进入 fnOS 实机窗口前必须完成以下代码与本地演练：
 
 1. 备份 `discover_subscription_items.json` 和 `discover_subscriptions.json`。
 2. 在临时 SQLite 中导入并校验配置、条目数量、订阅 key、TMDB ID、媒体类型和季号。
 3. 生成差异报告；存在阻塞差异时停止切换。
 4. 迁移成功后只写 `db/media_control_center.sqlite3`，不双写 JSON。
-5. Torra 自动洗版检查、订阅调度和全部外部写闸门继续默认关闭。
+5. Torra 追更洗版、订阅调度和全部外部写闸门继续默认关闭。
 6. 本地模拟验证 Emby 基准就绪、Torra 正分差候选、分析/下载 job 终态轮询、`2 / 6 / 12 / 24 / 48 / 72 小时` 自定义计划、幂等、冷却、qB 活动阻塞和崩溃续查。
 7. 构建新的候选镜像并重复登录、静态资源、只读 API、写闸门、无 Node 运行层和重启验收。
 
-fnOS 首次部署新镜像时只执行迁移预检和只读状态检查。真实 Torra 洗版分析/候选下载必须在用户明确进入实机窗口后，先人工验证一次与 Torra“选中分数更高”操作等价的单条动作，再开放自动观察。
+fnOS 首次部署新镜像时只执行迁移预检和只读状态检查。真实 Torra 追更洗版分析/候选下载必须在用户明确进入实机窗口后，先人工验证一次与 Torra“选中分数更高”操作等价的单条动作，再开放自动追更洗版。

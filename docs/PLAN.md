@@ -1,6 +1,6 @@
 # 媒体控制中心 v2 当前计划
 
-状态：PT 主链基线已完成；进入 fnOS 前先实施 SQLite 单台账与 Torra 自动版本升级
+状态：PT 主链基线已完成；进入 fnOS 前先实施 SQLite 单台账与 Torra 追更洗版
 更新时间：2026-07-18
 
 ## 1. 最终目标
@@ -61,7 +61,7 @@
 - [x] 保留原工作页 Hero 布局，不把“0 条订阅 · 0 条未完成”等实时数字放在页面标题旁。
 - [x] 工作页标签支持左右键、Home、End 和单一 Tab 停靠点；qB 与 Emby 确认框共用焦点约束、Escape 和焦点返回。
 - [x] 基于提交 `bde3eba` 构建只读候选镜像 `media-control-center:v2-pt-rc-bde3eba`，完成登录、静态资源、写闸门、保留接口、无 Node 运行层和重启验收。
-- [x] 完成 SQLite 单台账、Torra 自动洗版检查/版本升级和 MoviePilot 备用边界设计；实现尚未开始。
+- [x] 完成 SQLite 单台账、Torra 追更洗版和 MoviePilot 备用边界设计；实现尚未开始。
 
 详细执行清单见 `docs/V2_IMPLEMENTATION_PLAN.md`。
 
@@ -71,8 +71,8 @@
 
 - 用 `db/media_control_center.sqlite3` 替换两个 JSON 生产台账文件。
 - 提供备份、校验、差异报告和失败停止的一次性迁移。
-- 把 Torra 推送幂等、冷却和质量观察状态持久化到 SQLite。
-- 自动调用 Torra 原本需要人工触发的洗版分析和候选下载接口；与普通订阅重搜明确分开。
+- 把 Torra 推送幂等、冷却和追更洗版观察状态持久化到 SQLite。
+- 自动调用 Torra 原本需要人工触发的追更洗版分析和候选下载接口；与普通订阅重搜、完结洗版明确分开。
 - 首次下载成功后按集等待当前版本进入 Emby，再开始观察更好版本；默认检查时间为基准就绪后的 `2 / 6 / 12 / 24 / 48 / 72 小时`，并允许全局和单条订阅自定义。
 - 版本高低沿用 Torra 已有版本控制和元数据权重；中控只选择 Torra 返回的正分差最高候选，不重复实现资源评分。
 - MoviePilot 使用 NasEmby 原源码，保留独立开关和人工备用入口，默认关闭。
@@ -106,8 +106,8 @@
 - 任务中心：订阅 → Torra/qB → 进入 115 → Symedia/Emby 四步证据链，以及最近活动日志。
 - 日历：订阅播出与入库进度。
 - 内容发现：TMDB、JustWatch、豆瓣、腾讯、优酷、爱奇艺、芒果和全球日播。
-- 我的订阅：顶部独立入口，管理唯一台账并提供 Torra 推送、版本观察和洗版检查状态。
-- 订阅设置：NasEmby 自动订阅来源、时间、Torra 自动洗版检查时间表和 MoviePilot 独立开关。
+- 我的订阅：顶部独立入口，管理唯一台账并提供 Torra 推送和追更洗版状态。
+- 订阅设置：NasEmby 自动订阅来源、时间、Torra 追更洗版时间表和 MoviePilot 独立开关。
 - 系统设置：PT 主线服务连接、MoviePilot 后续配置和系统级安全状态。
 
 页面文案以家人或偶尔使用者能直接理解为第一层；Torra、qB、Symedia、Emby、TMDB 和关联依据继续保留在服务卡、详情与检查信息中。完整规则见 `docs/UI_STANDARD.md`，本轮设计与实施记录见 `docs/superpowers/specs/2026-07-17-friendly-interface-copy-design.md` 和 `docs/superpowers/plans/2026-07-17-friendly-interface-copy-implementation-plan.md`。
@@ -122,7 +122,7 @@
 - Emby 刷新需要 Symedia 较新证据、执行锁和冷却。
 - Torra 推送需要 TMDB 身份、分类、保存路径、下载器 ID、在线查重和独立开关。
 - Torra v2 动作还要求明确确认、幂等键、单订阅冷却和服务端重新读取台账。
-- Torra 自动洗版检查还要求 SQLite 领取动作、qB/Torra 活动复查、正分差候选、最小间隔、每日上限和可暂停状态。
+- Torra 追更洗版还要求 SQLite 领取动作、qB/Torra 活动复查、正分差候选、最小间隔、每日上限和可暂停状态。
 - 原 115、Telegram、HDHive 和 provider 核心接口源码保留，生产默认由兼容开关禁用。
 - 不开放旧管理页面不等于删除其源码或网盘能力；后续使用新的受认证、受闸门保护 API 合并进当前页面。
 
@@ -136,8 +136,8 @@
 4. 备份持久目录并核对 SQLite 迁移报告，只开启订阅写入创建一条测试订阅。
 5. 核对分类、保存路径、Torra 查重和下载器 ID。
 6. 开启单条 Torra 推送，验证 PT / Torra → qB → 115 → Symedia → Emby。
-7. 人工验证一次 Torra 洗版分析、候选下载与版本控制后，才开启单条自动观察。
-8. 主链和洗版检查均稳定后最后开启订阅调度。
+7. 人工验证一次 Torra 追更洗版分析、候选下载与版本控制后，才开启单条自动观察。
+8. 主链和追更洗版均稳定后最后开启订阅调度。
 9. MoviePilot 与 Telegram 网盘能力继续默认关闭。
 
 ## 8. 不做事项
