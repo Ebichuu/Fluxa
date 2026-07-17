@@ -1,0 +1,683 @@
+.setting-field {
+  display: grid;
+  gap: 12px;
+  min-height: 112px;
+}
+
+.setting-field--wide {
+  grid-column: 1 / -1;
+}
+
+.setting-field code {
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fx-preset-row {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.fx-preset {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  min-height: 74px;
+  align-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.035);
+  color: rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.18s, background 0.18s, color 0.18s;
+}
+
+.fx-preset:hover,
+.fx-preset--active {
+  border-color: rgba(122, 215, 194, 0.34);
+  background: rgba(122, 215, 194, 0.085);
+  color: #fff;
+}
+
+.fx-preset small {
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 设置 ─────────────────────────────── */
+
+.settings-section {
+  grid-column: 1 / -1;
+  margin: 26px 0 2px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-section .tool-link {
+  margin-left: auto;
+}
+
+.settings-section:first-child {
+  margin-top: 0;
+}
+
+.settings-section h2 {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 16px;
+  font-weight: 400;
+}
+
+.settings-section p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 12px;
+}
+
+.setting-field {
+  transition: border-color 0.2s;
+}
+
+.setting-field:focus-within,
+.setting-field:hover {
+  border-color: rgba(122, 215, 194, 0.26);
+}
+
+.setting-field__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* 订阅中枢配置面板 */
+
+.sub-config {
+  display: grid;
+  gap: 16px;
+}
+
+.sub-config label {
+  display: grid;
+  gap: 6px;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+}
+
+.sub-config__toggles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 18px;
+}
+
+.sub-config__toggles label,
+.sub-config__sources label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.sub-config input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  accent-color: #7ad7c2;
+}
+
+.sub-config__time {
+  flex-direction: row !important;
+  align-items: center;
+}
+
+.sub-config__row > span {
+  display: block;
+  margin-bottom: 8px;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+}
+
+.sub-config__sources {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 8px 14px;
+}
+
+.sub-config__row--pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.sub-config input[type='text'],
+.sub-config input[type='number'],
+.sub-config input[type='time'],
+.sub-config textarea {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.88);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.sub-config input:focus,
+.sub-config textarea:focus {
+  border-color: rgba(122, 215, 194, 0.34);
+}
+
+.sub-config textarea {
+  resize: vertical;
+}
+
+.sub-config__foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.sub-config__foot small {
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 11px;
+}
+
+@media (max-width: 1100px) {
+
+  .fx-preset-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+}
+
+@media (max-width: 760px) {
+
+  .fx-preset-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.sub-config__source-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.sub-config__source-groups fieldset {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 10px 12px 12px;
+}
+
+.sub-config__source-groups legend {
+  padding: 0 6px;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 11px;
+}
+
+.sub-config__source-groups .sub-config__sources {
+  grid-template-columns: 1fr;
+}
+
+.ops-settings-grid--subscription {
+  grid-template-columns: 1fr;
+}
+
+.sub-config__modes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.sub-config__modes label {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  cursor: pointer;
+}
+
+.sub-config__modes label.is-active {
+  border-color: rgba(122, 215, 194, 0.4);
+  background: rgba(122, 215, 194, 0.08);
+}
+
+.sub-config__modes label strong {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.sub-config__modes label small,
+.sub-config__rules > small {
+  color: rgba(255, 255, 255, 0.42);
+}
+
+.sub-config__rule-head {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.sub-config__rule-head label {
+  display: flex;
+  grid-auto-flow: column;
+  align-items: center;
+  justify-content: start;
+  gap: 8px;
+}
+
+.sub-config__rule-head input[type='number'] {
+  width: 76px;
+}
+
+.sub-config__rule-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.sub-config__rule-groups fieldset {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.sub-config__rule-groups legend {
+  padding: 0 5px;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 11px;
+}
+
+.sub-config__rule-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 5px 4px 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  padding: 6px 9px;
+  background: rgba(255, 255, 255, 0.025);
+  color: rgba(255, 255, 255, 0.48);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.sub-config__rule-chip.is-require {
+  border-color: rgba(122, 215, 194, 0.35);
+  background: rgba(122, 215, 194, 0.08);
+  color: rgba(211, 255, 244, 0.88);
+}
+
+.sub-config__rule-chip.is-reject {
+  border-color: rgba(224, 119, 119, 0.36);
+  background: rgba(224, 119, 119, 0.08);
+  color: rgba(255, 211, 211, 0.86);
+}
+
+.sub-config__cloud {
+  border-color: rgba(120, 156, 181, 0.26);
+  background: rgba(86, 119, 143, 0.08);
+}
+
+.sub-config__cloud .sub-config__rule-head label,
+.sub-config__cloud .sub-config__time {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ops-settings-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.ops-settings-card {
+  min-width: 0;
+  padding: 15px;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 22px;
+  background: linear-gradient(145deg, rgba(18, 21, 26, 0.7), rgba(8, 9, 13, 0.8));
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(24px) saturate(1.1);
+}
+
+.ops-settings-card--wide {
+  grid-column: 1 / -1;
+}
+
+.ops-settings-card__head,
+.ops-settings-card__head > div,
+.ops-settings-card__head > div > span {
+  display: flex;
+  align-items: center;
+}
+
+.ops-settings-card__head {
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 13px;
+}
+
+.ops-settings-card__head > div {
+  gap: 10px;
+}
+
+.ops-settings-card__head > div > span {
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  background: rgba(157, 184, 207, 0.08);
+  color: var(--ops-steel);
+}
+
+.ops-settings-card__head small {
+  color: var(--ops-muted);
+  font-size: 8px;
+  letter-spacing: 0.12em;
+}
+
+.ops-settings-card__head h2 {
+  margin: 3px 0 0;
+  color: var(--ops-ink-strong);
+  font-size: 14px;
+}
+
+.ops-settings-card__head > strong {
+  color: rgba(232, 236, 239, 0.4);
+  font-size: 8.5px;
+  font-weight: 600;
+  text-align: right;
+}
+
+.ops-page--settings .fx-preset-row {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.ops-page--settings .fx-preset {
+  min-height: 62px;
+  border-color: rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+  color: rgba(232, 236, 239, 0.55);
+}
+
+.ops-page--settings .fx-preset:hover,
+.ops-page--settings .fx-preset:focus-visible,
+.ops-page--settings .fx-preset--active {
+  border-color: rgba(36, 66, 255, 0.24);
+  background: rgba(36, 66, 255, 0.08);
+  color: var(--ops-ink-strong);
+  outline: none;
+}
+
+.ops-policy-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 66px;
+  padding: 11px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.ops-policy-row + .ops-policy-row {
+  margin-top: 8px;
+}
+
+.ops-policy-row > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ops-policy-row svg {
+  color: var(--ops-muted);
+}
+
+.ops-policy-row span strong,
+.ops-policy-row span small {
+  display: block;
+}
+
+.ops-policy-row span strong {
+  color: var(--ops-ink-strong);
+  font-size: 11px;
+}
+
+.ops-policy-row span small {
+  margin-top: 4px;
+  color: var(--ops-muted);
+  font-size: 8.5px;
+}
+
+.ops-policy-row b {
+  color: var(--ops-muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.ops-policy-row--primary {
+  border-color: rgba(36, 66, 255, 0.22);
+  background: rgba(36, 66, 255, 0.055);
+}
+
+.ops-policy-row--primary svg,
+.ops-policy-row--primary b {
+  color: var(--ops-steel);
+}
+
+.ops-access-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.ops-access-row > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.ops-access-row strong {
+  color: var(--ops-ink-strong);
+  font-size: 11px;
+}
+
+.ops-access-row small {
+  overflow-wrap: anywhere;
+  color: var(--ops-muted);
+  font-size: 8.5px;
+}
+
+.ops-access-logout {
+  flex: 0 0 auto;
+  color: rgba(255, 119, 151, 0.78);
+}
+
+.ops-access-logout:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.ops-access-error {
+  margin: 10px 0 0;
+  color: rgba(255, 119, 151, 0.82);
+  font-size: 9px;
+}
+
+.ops-settings-note {
+  margin: 10px 2px 0;
+  color: rgba(232, 236, 239, 0.32);
+  font-size: 8.5px;
+  line-height: 1.55;
+}
+
+.ops-connection-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.ops-connection-group {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.016);
+}
+
+.ops-connection-group__head {
+  padding: 11px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.ops-connection-group__head h3 {
+  margin: 0;
+  color: var(--ops-ink-strong);
+  font-size: 11px;
+}
+
+.ops-connection-group__head p {
+  margin: 4px 0 0;
+  color: var(--ops-muted);
+  font-size: 8.5px;
+}
+
+.ops-env-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 7px;
+  gap: 8px;
+  align-items: center;
+  min-height: 38px;
+  padding: 7px 11px;
+}
+
+.ops-env-row + .ops-env-row {
+  border-top: 1px solid rgba(255, 255, 255, 0.045);
+}
+
+.ops-env-row span {
+  color: rgba(232, 236, 239, 0.54);
+  font-size: 9px;
+}
+
+.ops-env-row code {
+  color: rgba(157, 184, 207, 0.52);
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 7.5px;
+}
+
+.ops-env-row i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ops-hair-strong);
+}
+
+.ops-page--settings .sub-config {
+  display: block;
+}
+
+.ops-page--settings .sub-config__toggles,
+.ops-page--settings .sub-config__sources {
+  gap: 7px;
+}
+
+.ops-page--settings .sub-config__toggles label,
+.ops-page--settings .sub-config__sources label {
+  min-height: 34px;
+  border-color: rgba(255, 255, 255, 0.065);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.022);
+  color: rgba(232, 236, 239, 0.52);
+}
+
+.ops-page--settings .sub-config input[type='text'],
+.ops-page--settings .sub-config input[type='number'],
+.ops-page--settings .sub-config input[type='time'],
+.ops-page--settings .sub-config textarea {
+  border-color: rgba(255, 255, 255, 0.075);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--ops-ink);
+}
+
+.ops-page--settings .sub-config input:focus,
+.ops-page--settings .sub-config textarea:focus {
+  border-color: rgba(157, 184, 207, 0.28);
+  box-shadow: 0 0 0 3px rgba(157, 184, 207, 0.05);
+}
+
+@media (max-width: 900px) {
+
+  .ops-settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ops-settings-card--wide {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 640px) {
+
+  .ops-access-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .ops-access-logout {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .ops-page--settings .fx-preset-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ops-settings-card__head > strong {
+    text-align: left;
+  }
+
+  .ops-page--settings .sub-config__row--pair {
+    grid-template-columns: 1fr;
+  }
+
+  .ops-env-row {
+    grid-template-columns: minmax(0, 1fr) 7px;
+  }
+
+  .ops-env-row code {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .ops-env-row i {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+}

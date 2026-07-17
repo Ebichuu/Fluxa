@@ -1,0 +1,52 @@
+:root {
+  color-scheme: dark;
+  --ink: #f8f8f2;
+  --muted: rgba(255, 255, 255, 0.62);
+  --faint: rgba(255, 255, 255, 0.34);
+  --cyan: #7ad7c2;
+  --gold: #f4d28a;
+  --fc-accent: #7ad7c2;
+  --fc-accent-rgb: 122, 215, 194;
+  --champagne: #f4d28a;
+  --rose: #ff5367;
+  --panel: rgba(11, 14, 17, 0.58);
+  --panel-border: rgba(255, 255, 255, 0.11);
+  --console: rgba(2, 5, 8, 0.78);
+  --glass-bg: linear-gradient(112deg, rgba(72, 74, 76, 0.62), rgba(24, 27, 30, 0.7) 48%, rgba(8, 12, 14, 0.74));
+  --glass-bg-focus: linear-gradient(112deg, rgba(88, 91, 92, 0.68), rgba(28, 32, 35, 0.76) 50%, rgba(8, 13, 15, 0.82));
+  --glass-shadow: 0 22px 64px rgba(0, 0, 0, 0.3), 0 0 34px rgba(0, 245, 212, 0.052), inset 0 1px 0 rgba(255, 255, 255, 0.16), inset 0 -24px 58px rgba(0, 0, 0, 0.16);
+  --glass-shadow-focus: 0 24px 72px rgba(0, 0, 0, 0.34), 0 0 0 1px rgba(0, 245, 212, 0.13), 0 0 42px rgba(0, 245, 212, 0.075), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  font-family: "Segoe UI", "Microsoft YaHei UI", "Noto Sans SC", sans-serif;
+  background: #010304;
+  color: var(--ink);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background:
+    radial-gradient(circle at 18% 12%, rgba(122, 215, 194, 0.12), transparent 24rem),
+    radial-gradient(circle at 88% 24%, rgba(244, 210, 138, 0.09), transparent 25rem),
+    #010304;
+  overflow-x: hidden;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+  user-select: none;
+}
