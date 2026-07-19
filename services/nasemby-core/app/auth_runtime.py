@@ -83,6 +83,12 @@ def _iso_timestamp(milliseconds: int):
 
 
 def _origin_allowed(auth):
+    # First-run administrator auth is intentionally host-agnostic. The app is
+    # commonly reached through a private reverse proxy whose browser Origin
+    # can differ from the upstream Host; authentication must not require an
+    # address to be copied into configuration.
+    if getattr(auth, "supports_setup", False):
+        return True
     fetch_site = request.headers.get("Sec-Fetch-Site", "").strip().lower()
     if fetch_site == "cross-site":
         return False
@@ -101,7 +107,7 @@ def configure_access_runtime(app: Flask, auth: AccessAuth):
     def enforce_origin_and_authentication():
         origin = request.headers.get("Origin")
         allowed = _origin_allowed(auth)
-        if origin and allowed:
+        if origin and allowed and not getattr(auth, "supports_setup", False):
             g.mcc_cors_origin = origin
         if request.method == "OPTIONS":
             return ("", 204) if allowed else _json_error("来源不允许", "ORIGIN_FORBIDDEN", 403)

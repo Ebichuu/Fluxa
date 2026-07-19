@@ -73,7 +73,8 @@ class AdminAuthRuntimeTests(unittest.TestCase):
             data={"username": "admin", "password": "wrong-password"},
             headers={"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
         )
-        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(denied.status_code, 401)
+        self.assertNotIn("ORIGIN_FORBIDDEN", denied.get_data(as_text=True))
 
         same_origin = client.post(
             "/auth/login",

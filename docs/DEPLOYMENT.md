@@ -112,7 +112,7 @@ docker compose ps
 docker compose logs --tail=100 fluxa
 ```
 
-Compose 会从 `.env` 读取全部服务配置，并拉取 `ghcr.io/ebichuu/fluxa:latest`。正式镜像统一由 GitHub Actions 构建并推送到 GHCR。
+Compose 会从 `.env` 读取全部服务配置，并拉取 `ghcr.io/ebichuu/fluxa:latest`。正式镜像统一由 GitHub Actions 构建并推送到 GHCR；`main` 更新会自动覆盖 `latest`，无需修改 Compose 版本号。
 
 访问：
 
@@ -156,7 +156,7 @@ docker compose down
 4. `/api/health` 返回 `runtime=python`。
 5. 订阅列表可读取。
 6. 订阅保存因写闸门返回 403。
-7. 跨站浏览器写请求返回 403。
+7. 通过直连或反向代理登录均不会返回 `ORIGIN_FORBIDDEN`。
 8. 已保留的核心兼容 API 返回 `503 PRESERVED_CORE_API_DISABLED`，`/static/app.js` 返回 404。
 9. 容器进程只有 Gunicorn/Python，容器内找不到 Node。
 10. 重启后健康恢复，持久目录中的标记或数据仍存在。
