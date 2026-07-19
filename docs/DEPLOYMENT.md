@@ -59,10 +59,12 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 
 ```bash
 docker compose config
-docker compose build
+docker compose pull
 docker compose up -d
 docker compose ps
 ```
+
+Compose 会从 `.env` 读取全部服务配置，默认拉取 `ghcr.io/ebichuu/fluxa:v0.2`。本地构建时将 `MCC_IMAGE` 改为本地镜像标签即可。
 
 访问：
 

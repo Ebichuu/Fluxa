@@ -92,11 +92,14 @@ docker pull ghcr.io/ebichuu/fluxa:v0.2
 2. 设置至少 16 字符的 `MCC_ACCESS_KEY`。
 3. 将 `MCC_DATA_ROOT` 指向 fnOS 持久目录。
 4. 填写需要接入的 Emby、qB、Torra、Symedia 和 TMDB 配置；TMDB 支持旧版 `TMDB_API_KEY` 或 v4 `TMDB_API_TOKEN`。
-5. 启动：
+5. 拉取并启动：
 
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
+
+本地构建时可先执行 `docker build -t fluxa:v0.2 .`，再将 `.env` 中的 `MCC_IMAGE` 改为 `fluxa:v0.2`。
 
 访问 `http://<fnOS-IP>:8787`。公网必须使用 HTTPS 反向代理并限制源站端口。
 

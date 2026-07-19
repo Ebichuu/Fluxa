@@ -96,7 +96,7 @@
 ## 6. 部署来源
 
 - 根 `Dockerfile`：Node 构建 React，Python 3.13 运行。
-- 根 `docker-compose.yml`：唯一服务、8787、三个持久目录和默认写保护。
+- 根 `docker-compose.yml`：唯一服务、8787、`.env` 注入、三个持久目录和默认写保护。
 - `.env.example`：唯一环境变量模板。
 
 `services/nasemby-core` 下不再保留第二份 Dockerfile 或环境模板。

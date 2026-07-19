@@ -318,16 +318,30 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             queue_task.assert_called_once()
 
     def test_compose_is_single_service_read_only_and_persists_all_core_directories(self):
-        compose = (MODULE_ROOT.parents[1] / "docker-compose.yml").read_text(encoding="utf-8")
+        project_root = MODULE_ROOT.parents[1]
+        compose = (project_root / "docker-compose.yml").read_text(encoding="utf-8")
+        env_example = (project_root / ".env.example").read_text(encoding="utf-8")
 
-        self.assertIn('NASEMBY_CORE_WRITE_ENABLED: "false"', compose)
-        self.assertIn('MCC_SUBSCRIPTION_SCHEDULER_ENABLED: "false"', compose)
-        self.assertIn("MCC_PRIVATE_RSS_ENABLED: ${MCC_PRIVATE_RSS_ENABLED:-false}", compose)
-        self.assertIn("MCC_TORRA_QUALITY_WATCH_ENABLED: ${MCC_TORRA_QUALITY_WATCH_ENABLED:-false}", compose)
-        self.assertIn("MCC_TORRA_REWASH_DOWNLOAD_ENABLED: ${MCC_TORRA_REWASH_DOWNLOAD_ENABLED:-false}", compose)
-        self.assertIn("MCC_MOVIEPILOT_BACKUP_ENABLED: ${MCC_MOVIEPILOT_BACKUP_ENABLED:-false}", compose)
-        self.assertIn('MCC_PRESERVED_CORE_API_ENABLED: "false"', compose)
-        self.assertIn('TORRA_PUSH_ENABLED: "false"', compose)
+        self.assertIn("env_file:\n      - .env", compose)
+        for setting in (
+            "MCC_SUBSCRIPTION_SCHEDULER_ENABLED=false",
+            "NASEMBY_CORE_WRITE_ENABLED=false",
+            "MCC_PRIVATE_RSS_ENABLED=false",
+            "MCC_TORRA_QUALITY_WATCH_ENABLED=false",
+            "MCC_TORRA_REWASH_DOWNLOAD_ENABLED=false",
+            "MCC_MOVIEPILOT_BACKUP_ENABLED=false",
+            "MCC_PRESERVED_CORE_API_ENABLED=false",
+            "TORRA_PUSH_ENABLED=false",
+            "MCC_INTEGRATION_PROBE_ENABLED=false",
+            "MCC_INTEGRATION_MANAGEMENT_ENABLED=false",
+            "MCC_TELEGRAM_MANAGEMENT_ENABLED=false",
+            "MCC_HDHIVE_MANAGEMENT_ENABLED=false",
+            "MCC_CLOUD_SEARCH_ENABLED=false",
+            "MCC_CLOUD_TRANSFER_ENABLED=false",
+        ):
+            self.assertIn(setting, env_example)
+        self.assertNotIn("EMBY_BASE_URL:", compose)
+        self.assertNotIn("TORRA_TOKEN:", compose)
         self.assertNotIn("\n  nasemby-core:", compose)
         self.assertIn("${MCC_DATA_ROOT:-./runtime}/data:/app/data", compose)
         self.assertIn("${MCC_DATA_ROOT:-./runtime}/db:/app/db", compose)
