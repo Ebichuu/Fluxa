@@ -4,26 +4,82 @@
 
 面向 fnOS / NAS 的个人影音中控。生产环境使用一个 Python / Flask / Gunicorn 后端，同时提供 React 页面、Mineradio 影院大厅、订阅中枢和外部服务聚合。
 
-## 当前状态
+## 主要功能
 
-- 最新代码统一保存在 `D:\Projects\媒体控制中心v2`。
-- Python 是唯一生产后端；Node.js 只用于 React / Vite 构建。
-- NasEmby Python 源码负责订阅、发现、日历、资源规则和调度，只使用一份订阅台账。
-- 订阅配置和条目已经切换到 `db/media_control_center.sqlite3`；旧 JSON 只作为一次性迁移和回滚输入，不再双写。
-- “种子库”第一版已经落地：支持私人 PT RSS 来源配置、本地 FTS5 搜索、保留期清理和脱敏展示；真实收集默认关闭。
-- RSS 收集器已补齐 `429/Retry-After`、指数退避、全局并发 2、同来源互斥和抓取记录上限；四个真实结构脱敏夹具已满足当前版本，新增站点兼容作为后续非阻塞扩展。
-- fnOS 当前没有需要保留的旧订阅或配置数据，首次部署直接初始化空 SQLite；旧 JSON 原子迁移和差异报告能力继续保留，但不再是本次上线前置条件。
-- 当前源码的 SQLite schema version 已升至 3，新增按电影/季集隔离的质量观察、外部动作租约和调度游标；旧硬化镜像仍停留在 schema v2。
-- Torra 追更洗版阶段 1–6 已完成：分析、下载和 job 查询严格使用已核对契约；任务链与 Emby 双证据启动按集固定窗口；可靠 RSS 可即时唤醒，有限主动兜底按 SQLite 时间表、公平游标、全局并发 1、冷却和限额运行；人工设置、状态、分析和下载 API 已注册，重启后只续查原 job，自动路径不下载候选。
-- MoviePilot 人工备用阶段 7 已完成：仅在相关观察单元全部到期且 Torra/qB 空闲时允许预览或确认推送；已有订阅重搜、新订阅创建、SQLite 幂等审计和响应脱敏均由独立默认关闭闸门保护，React 只提供人工入口，不含自动调度。
-- SQLite/RSS 第一版候选镜像已完成登录、WAL/FTS5、无 Node 运行层和容器重启持久化验收。
-- 硬化候选镜像 `media-control-center:sqlite-rss-hardened` 已完成 schema v2、收集闸门、脱敏和重启持久化冒烟。
-- PT 主线固定为媒体控制中心订阅 → Torra → qB → Torra 秒传 115 → Symedia → Emby。
-- 订阅详情提供 Torra 安全预览与人工推送；Symedia 不接收重复订阅推送。
-- Telegram、HDHive / pansou、影巢和 115 分享转存已从当前 React 页面隐藏，底层源码、v2 接口和模拟测试完整保留，等待以后版本。
-- 原 NasEmby 核心接口和调用关系已经恢复；生产默认禁用，但源码、模拟测试入口和原页面参考快照全部保留。
-- Mineradio 影院大厅主体视觉保持不变；导航增加订阅入口，媒体抽屉改为准确的“媒体库 / 本库内容”语义并支持移动端明确开合。
-- fnOS 与真实订阅测试暂缓；Torra 推送及所有外部写动作均由默认关闭的细分闸门保护。
+- 内容发现、媒体搜索、订阅管理和播出日历。
+- Torra → qBittorrent → 115 → Symedia → Emby 的 PT 任务链观察。
+- 私人 PT RSS 种子库、本地全文搜索和来源管理。
+- 按电影或季集隔离的质量观察、人工追更分析和候选下载。
+- MoviePilot 人工备用入口，以及 Emby、qB、Torra、Symedia 服务状态。
+- 深色/浅色工作台与独立 Mineradio 影院大厅。
+
+## Docker Compose 快速部署
+
+先复制 `.env.example` 为 `.env`，再创建以下 `docker-compose.yml`。配置中的注释可以原样保留：
+
+```yaml
+# Compose 项目名称
+name: fluxa
+
+services:
+  fluxa:
+    # 默认拉取 Fluxa v0.2；可在 .env 中用 MCC_IMAGE 覆盖
+    image: ${MCC_IMAGE:-ghcr.io/ebichuu/fluxa:v0.2}
+    container_name: fluxa
+    restart: unless-stopped
+
+    ports:
+      # 宿主机端口:容器端口；需要改端口时只修改左侧
+      - "8787:8787"
+
+    # 账号、服务地址和功能开关统一放在 .env
+    env_file:
+      - .env
+
+    # 固定运行参数，不需要在 .env 中重复填写
+    environment:
+      MCC_ENV: production
+      APP_PORT: "8787"
+
+    volumes:
+      # 配置与活动记录
+      - ${MCC_DATA_ROOT:-./runtime}/data:/app/data
+      # SQLite 台账、RSS 索引与缓存
+      - ${MCC_DATA_ROOT:-./runtime}/db:/app/db
+      # 上传文件与运行时资产
+      - ${MCC_DATA_ROOT:-./runtime}/upload:/app/upload
+
+    healthcheck:
+      # 容器内部健康检查
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+```
+
+`.env` 至少填写：
+
+```env
+# Fluxa 页面登录密钥，至少 16 个字符
+MCC_ACCESS_KEY=请替换为随机长密码
+
+# 宿主机持久目录；默认使用当前目录下的 runtime
+MCC_DATA_ROOT=./runtime
+
+# 局域网 HTTP 使用 false；HTTPS 使用 true
+MCC_COOKIE_SECURE=false
+```
+
+Emby、qBittorrent、Torra、Symedia、TMDB 和 MoviePilot 等配置直接在 `.env` 中按需填写，未使用的项目保持空值。启动：
+
+```bash
+docker compose pull
+docker compose up -d
+docker compose ps
+```
+
+访问 `http://<服务器IP>:8787`。完整更新、日志、备份和回滚说明见 [Compose 部署文档](docs/DEPLOYMENT.md)。
 
 ## 架构
 
@@ -77,33 +133,6 @@ docker build -t fluxa:v0.2 .
 ```
 
 自动测试使用临时目录和模拟客户端，不连接真实服务执行写操作，也不会向真实活动日志追加模拟记录。
-
-## Docker / fnOS
-
-GitHub Container Registry 镜像：
-
-```bash
-docker pull ghcr.io/ebichuu/fluxa:v0.2
-```
-
-`docker-compose.yml` 默认使用该版本，也可以通过 `MCC_IMAGE` 指定其他标签。
-
-1. 复制 `.env.example` 为未跟踪的 `.env`。
-2. 设置至少 16 字符的 `MCC_ACCESS_KEY`。
-3. 将 `MCC_DATA_ROOT` 指向 fnOS 持久目录。
-4. 填写需要接入的 Emby、qB、Torra、Symedia 和 TMDB 配置；TMDB 支持旧版 `TMDB_API_KEY` 或 v4 `TMDB_API_TOKEN`。
-5. 拉取并启动：
-
-```bash
-docker compose pull
-docker compose up -d
-```
-
-本地构建时可先执行 `docker build -t fluxa:v0.2 .`，再将 `.env` 中的 `MCC_IMAGE` 改为 `fluxa:v0.2`。
-
-完整目录准备、带中文注释的 Compose 配置、更新、日志和回滚命令见 [Compose 部署文档](docs/DEPLOYMENT.md)。
-
-访问 `http://<fnOS-IP>:8787`。公网必须使用 HTTPS 反向代理并限制源站端口。
 
 ## 默认写保护
 
