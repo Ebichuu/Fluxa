@@ -9,11 +9,12 @@ from flask import Blueprint, Flask, Response, current_app, jsonify, redirect, re
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from app.activity_log import clear_activities, read_activities, write_activity
-from app.config import AUTH_DB_PATH, DATA_DIR, load_runtime_env, read_config, write_config
+from app.config import AUTH_DB_PATH, DATA_DIR, PRESERVE_EMPTY_FIELDS, load_runtime_env, read_config, write_config
 from app import discover_runtime
 from app.access_auth import AccessAuth, is_production_environment, resolve_access_config
 from app.admin_auth import AdminAuth, AdminCredentialStore
 from app.auth_runtime import configure_access_runtime
+from app.runtime_settings import register_runtime_settings
 from app.frontend_runtime import register_frontend
 from app.http_runtime import configure_http_runtime
 from app.mineradio_runtime import register_mineradio
@@ -657,7 +658,11 @@ def api_hdhive_checkin():
 
 @core_routes.get("/api/config")
 def api_get_config():
-    return jsonify({"ok": True, "config": read_config()})
+    config = read_config()
+    return jsonify({
+        "ok": True,
+        "config": {key: "" if key in PRESERVE_EMPTY_FIELDS else value for key, value in config.items()},
+    })
 
 
 @core_routes.post("/api/config")
@@ -1276,6 +1281,7 @@ def create_app(
     else:
         access_auth = AccessAuth(resolve_access_config(environment), now_ms=now_ms)
     configure_access_runtime(application, access_auth)
+    register_runtime_settings(application, environment)
     register_mineradio(
         application,
         public_dir=mineradio_public_dir,
@@ -1424,13 +1430,11 @@ def create_app(
     return application
 
 
+load_runtime_env()
 app = create_app()
 
 
 if __name__ == "__main__":
-    # Resolve the local workspace .env before constructing runtime clients.
-    load_runtime_env()
-    app = create_app()
     start_background_runtime()
     host = os.getenv("APP_HOST", "0.0.0.0")
     port = int(os.getenv("APP_PORT", "12388"))

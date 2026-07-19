@@ -203,6 +203,14 @@ class EmbyClient:
         self._library_cache: dict[str, tuple[float, object]] = {}
         self._library_cache_lock = threading.Lock()
 
+    def reconfigure(self, config: EmbyConfig) -> None:
+        self.config = config
+        self.server_url = config.base_url
+        with _auth_cache_lock:
+            _auth_cache.clear()
+        with self._library_cache_lock:
+            self._library_cache.clear()
+
     def _use_api_key(self) -> bool:
         return bool(self.config.api_key and self.config.user_id)
 

@@ -618,6 +618,257 @@
   background: var(--ops-hair-strong);
 }
 
+.runtime-settings {
+  overflow: hidden;
+}
+
+.runtime-settings--loading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 70px;
+  color: var(--ops-muted);
+  font-size: 10px;
+}
+
+.runtime-settings__head {
+  margin-bottom: 10px;
+}
+
+.runtime-settings__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--ops-hair);
+}
+
+.runtime-settings__toolbar label {
+  display: flex;
+  align-items: center;
+  flex: 1 1 360px;
+  gap: 8px;
+  color: var(--ops-muted);
+}
+
+.runtime-settings__toolbar input {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--ops-hair);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.16);
+  color: var(--ops-ink);
+  font: inherit;
+}
+
+.runtime-settings__toolbar > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ops-muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.runtime-settings__groups {
+  display: grid;
+}
+
+.runtime-settings__group {
+  border-bottom: 1px solid var(--ops-hair);
+}
+
+.runtime-settings__group:last-child {
+  border-bottom: 0;
+}
+
+.runtime-settings__group-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 55px;
+  padding: 10px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--ops-ink-strong);
+  cursor: pointer;
+  text-align: left;
+}
+
+.runtime-settings__group-toggle > span:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.runtime-settings__group-toggle strong {
+  font-size: 11px;
+}
+
+.runtime-settings__group-toggle small,
+.runtime-settings__group-toggle > span:last-child {
+  color: var(--ops-muted);
+  font-size: 8.5px;
+}
+
+.runtime-settings__group-toggle > span:last-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.runtime-settings__group-toggle svg {
+  transition: transform 180ms ease;
+}
+
+.runtime-settings__group-toggle svg.is-open {
+  transform: rotate(180deg);
+}
+
+.runtime-settings__group-body {
+  padding: 0 0 11px;
+}
+
+.runtime-settings__fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.runtime-setting {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--ops-hair);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.runtime-setting__label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.runtime-setting__label strong {
+  color: var(--ops-ink-strong);
+  font-size: 10px;
+}
+
+.runtime-setting__label code {
+  overflow: hidden;
+  color: var(--ops-muted);
+  font-family: var(--font-code);
+  font-size: 7.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-setting__label small {
+  color: var(--ops-steel);
+  font-size: 7.5px;
+}
+
+.runtime-setting__control {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+}
+
+.runtime-setting__control input {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--ops-hair);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.16);
+  color: var(--ops-ink);
+  font: 10px/1.3 var(--font-ui);
+}
+
+.runtime-setting__control input:focus,
+.runtime-settings__toolbar input:focus {
+  border-color: var(--ops-steel);
+  outline: 0;
+  box-shadow: 0 0 0 3px rgba(157, 184, 207, 0.1);
+}
+
+.runtime-setting__control input:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.runtime-setting__icon-button {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid var(--ops-hair);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ops-muted);
+  cursor: pointer;
+}
+
+.runtime-setting__icon-button:hover,
+.runtime-setting__icon-button:focus-visible {
+  color: var(--ops-ink-strong);
+}
+
+.runtime-setting__switch,
+.runtime-setting__secret-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ops-muted);
+  font-size: 9px;
+}
+
+.runtime-setting__switch input,
+.runtime-setting__secret-state input {
+  accent-color: var(--ops-steel);
+}
+
+.runtime-setting__secret-state {
+  justify-content: flex-end;
+  color: var(--ops-steel);
+}
+
+.runtime-setting__secret-state span:last-child {
+  color: var(--ops-muted);
+}
+
+.runtime-settings__group-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 10px;
+}
+
+.runtime-settings__group-foot > span {
+  color: var(--ops-muted);
+  font-size: 8.5px;
+}
+
+.runtime-settings__group-foot > span.is-error,
+.runtime-settings__empty {
+  color: var(--ops-danger, #ff7797);
+}
+
+.runtime-settings__empty {
+  padding: 28px 0;
+  text-align: center;
+  font-size: 10px;
+}
+
 .ops-page--settings .sub-config {
   display: block;
 }
@@ -664,6 +915,16 @@
 }
 
 @media (max-width: 640px) {
+
+  .runtime-settings__toolbar,
+  .runtime-settings__group-foot {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .runtime-settings__fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
 
   .ops-page--subscription-settings .sub-config__row--pair {
     grid-template-columns: minmax(0, 1fr);
@@ -725,4 +986,22 @@
     grid-column: 2;
     grid-row: 1 / span 2;
   }
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .runtime-settings__toolbar input,
+.app-shell:not(.app-shell--hall)[data-theme='light'] .runtime-setting__control input {
+  border-color: var(--theme-border);
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--theme-text-strong);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .runtime-setting,
+.app-shell:not(.app-shell--hall)[data-theme='light'] .runtime-settings__group {
+  border-color: var(--theme-border);
+  background: rgba(255, 255, 255, 0.34);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .runtime-setting__icon-button {
+  border-color: var(--theme-border);
+  color: var(--theme-muted);
 }

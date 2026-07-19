@@ -50,6 +50,11 @@ class SymediaReadClient:
         self.clock = clock or (lambda: datetime.now(BEIJING_TZ))
         self.access_token = ""
 
+    def reconfigure(self, config: SymediaReadConfig) -> None:
+        self.config = config
+        self.base_url = config.base_url.strip().rstrip("/")
+        self.access_token = ""
+
     def is_configured(self) -> bool:
         return bool(
             self.base_url

@@ -6,6 +6,7 @@ import type { TorraSummary } from '../types/torra';
 import type { TaskChainResponse } from '../types/taskChain';
 import type { IntegrationSummary } from '../types/integrations';
 import type { ActivityLogResponse, SystemMetricsResponse } from '../types/operations';
+import type { RuntimeSettingsResponse, RuntimeSettingsUpdate } from '../types/runtimeSettings';
 import type {
   AutomationAction,
   RssMatchListResponse,
@@ -112,6 +113,21 @@ export function getIntegrationSummary(probe = false, options?: RequestOptions): 
 
 export function getAuthSession(): Promise<AuthSessionResponse> {
   return readJson<AuthSessionResponse>('/api/auth/session');
+}
+
+export function getRuntimeSettings(): Promise<RuntimeSettingsResponse> {
+  return readJson<RuntimeSettingsResponse>('/api/v2/settings/runtime');
+}
+
+export function saveRuntimeSettings(input: RuntimeSettingsUpdate): Promise<RuntimeSettingsResponse> {
+  return requestJson<RuntimeSettingsResponse>('/api/v2/settings/runtime', {
+    method: 'PUT',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(input)
+  });
 }
 
 export async function logoutAuthSession(): Promise<void> {

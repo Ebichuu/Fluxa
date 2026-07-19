@@ -10,6 +10,7 @@ import {
 } from '../../services/api';
 import type { SubscriptionHubConfig } from '../../types/subscriptions';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
+import { RuntimeSettingsPanel } from './RuntimeSettingsPanel';
 
 const subscriptionModes = [
   { key: 'torra', label: 'PT / Torra 主通道', note: 'Torra 负责 PT 搜索、qB 编排和秒传到 115' }
@@ -23,60 +24,6 @@ const subscriptionSourceGroups = [
 ] as const;
 
 const latestSubscriptionSources = subscriptionSourceGroups.flatMap((group) => [...group.sources]);
-
-const connectionGroups: Array<{
-  title: string;
-  note: string;
-  fields: Array<[string, string]>;
-}> = [
-  {
-    title: 'Emby',
-    note: '首页数据源 · 媒体库与图片（API Key 或账号密码二选一）',
-    fields: [
-      ['EMBY_BASE_URL', 'Emby 服务地址'],
-      ['EMBY_API_KEY', 'Emby API Key'],
-      ['EMBY_USER_ID', 'Emby 用户 ID'],
-      ['EMBY_USERNAME', 'Emby 用户名（密码模式）'],
-      ['EMBY_PASSWORD', 'Emby 密码（密码模式）']
-    ]
-  },
-  {
-    title: '下载与来源',
-    note: 'qBittorrent · Torra',
-    fields: [
-      ['QB_BASE_URL', 'qBittorrent 地址'],
-      ['QB_USERNAME', 'qBittorrent 用户名'],
-      ['QB_PASSWORD', 'qBittorrent 密码'],
-      ['TORRA_BASE_URL', 'Torra 地址'],
-      ['TORRA_TOKEN', 'Torra Token（订阅推送用）']
-    ]
-  },
-  {
-    title: '工具链',
-    note: 'Symedia · 入库记录读取（Token 或账号密码二选一）',
-    fields: [
-      ['SYMEDIA_BASE_URL', 'Symedia 地址'],
-      ['SYMEDIA_TOKEN', 'Symedia Token'],
-      ['SYMEDIA_USERNAME', 'Symedia 用户名（密码模式）'],
-      ['SYMEDIA_PASSWORD', 'Symedia 密码（密码模式）']
-    ]
-  },
-  {
-    title: '自动订阅（内置）',
-    note: '追剧日历与自动订阅 · TMDB 数据源',
-    fields: [
-      ['TMDB_API_KEY', 'TMDB API Key']
-    ]
-  },
-  {
-    title: 'PT 兼容能力',
-    note: 'MoviePilot 作为可选兼容通道，不改变 Torra 默认优先级',
-    fields: [
-      ['ENV_MOVIEPILOT_URL', 'MoviePilot 地址'],
-      ['ENV_MOVIEPILOT_API_TOKEN', 'MoviePilot Token']
-    ]
-  }
-];
 
 interface SubscriptionHubSettingsProps {
   onModeChange?: (label: string) => void;
@@ -368,8 +315,8 @@ export function SettingsPage() {
         <div>
           <p className="ops-eyebrow">连接与安全</p>
           <h1>设置</h1>
-          <p className="ops-page-subtitle">管理服务连接与访问保护。</p>
-          <p className="ops-deck">这里仅管理系统连接和安全边界；账号、密码与访问令牌由服务端保存。</p>
+          <p className="ops-page-subtitle">管理软件连接、功能开关与访问保护。</p>
+          <p className="ops-deck">所有应用配置都可在这里修改；密码、Token 与 Cookie 只写入服务端，不回显明文。</p>
         </div>
         <div className="ops-settings-guard">
           <span><KeyRound size={15} />凭据策略</span>
@@ -394,31 +341,7 @@ export function SettingsPage() {
           <p className="ops-settings-note">Telegram 频道网盘订阅与自动兜底已延期，底层源码继续保留。</p>
         </article>
 
-        <article className="ops-settings-card ops-settings-card--wide">
-          <header className="ops-settings-card__head">
-            <div><span><KeyRound size={16} /></span><div><small>只读配置</small><h2>服务连接</h2></div></div>
-            <strong>由服务端环境变量提供</strong>
-          </header>
-          <div className="ops-connection-grid">
-          {connectionGroups.map((group) => (
-            <section className="ops-connection-group" key={group.title}>
-              <div className="ops-connection-group__head">
-                <h3>{group.title}</h3>
-                <p>{group.note}</p>
-              </div>
-              <div className="ops-env-list">
-                {group.fields.map(([key, label]) => (
-                  <div className="ops-env-row" key={key}>
-                    <span>{label}</span>
-                    <code>{key}</code>
-                    <i aria-hidden="true" />
-                  </div>
-                ))}
-              </div>
-            </section>
-          ))}
-          </div>
-        </article>
+        <RuntimeSettingsPanel />
 
         <article className="ops-settings-card ops-settings-card--wide ops-access-card">
           <header className="ops-settings-card__head">
@@ -435,7 +358,7 @@ export function SettingsPage() {
               <small>
                 {accessSession?.expiresAt
                   ? `有效至 ${new Date(accessSession.expiresAt).toLocaleString('zh-CN', { hour12: false })}`
-                  : accessSession?.enabled ? '当前会话不可用' : '未设置访问密钥'}
+                  : accessSession?.enabled ? '当前会话不可用' : '管理员认证未启用'}
               </small>
             </div>
             {accessSession?.enabled && accessSession.authenticated && (

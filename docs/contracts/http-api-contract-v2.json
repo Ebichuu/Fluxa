@@ -1,8 +1,8 @@
 {
   "contractVersion": 2,
-  "frozenAt": "2026-07-18",
+  "frozenAt": "2026-07-20",
   "pathVersioning": "url-v2",
-  "routeCount": 35,
+  "routeCount": 37,
   "routes": [
     { "method": "GET", "path": "/api/v2/integrations", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "integrations", "client": true },
     { "method": "POST", "path": "/api/v2/integrations/cloud115/probes", "audience": "browser", "auth": "session", "effect": "external-read", "response": "json", "success": [200], "migrationGroup": "integrations", "client": false },
@@ -22,6 +22,8 @@
     { "method": "POST", "path": "/api/v2/subscriptions/:id/moviepilot-previews", "audience": "browser", "auth": "session", "effect": "external-read", "response": "json", "success": [200], "migrationGroup": "moviepilot-backup", "client": true },
     { "method": "POST", "path": "/api/v2/subscriptions/:id/moviepilot-pushes", "audience": "browser", "auth": "session", "effect": "external-write", "response": "json", "success": [200], "migrationGroup": "moviepilot-backup", "client": true },
     { "method": "GET", "path": "/api/v2/system/metrics", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "system", "client": true },
+    { "method": "GET", "path": "/api/v2/settings/runtime", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "runtime-settings", "client": true },
+    { "method": "PUT", "path": "/api/v2/settings/runtime", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "runtime-settings", "client": true },
     { "method": "GET", "path": "/api/v2/rss-sources", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "private-rss", "client": true },
     { "method": "POST", "path": "/api/v2/rss-sources", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [201], "migrationGroup": "private-rss", "client": true },
     { "method": "GET", "path": "/api/v2/rss-sources/:id", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "private-rss", "client": true },

@@ -33,8 +33,10 @@
 | `GET /api/status` | `api_status → project_status` | 返回项目和功能状态 | 无 | 当前 |
 | `GET /api/health` | `api_health → read_config` | 汇总 Emby、qB、Torra、Symedia 和订阅配置状态 | 无，不返回凭据 | 当前 |
 | `GET /api/dashboard/system` | `api_dashboard_system → dashboard_system_metrics` | 读取 NAS CPU、内存、磁盘等摘要 | 无 | 原入口保留关闭；当前由 `GET /api/v2/system/metrics` 白名单映射并缓存 |
-| `GET /api/config` | `api_get_config → read_config` | 读取 NasEmby 原配置 | 读取可能含敏感配置 | 保留关闭；需拆成脱敏分组接口 |
-| `POST /api/config` | `api_save_config → write_config` | 保存 NasEmby 原配置分组 | 写配置文件，可能改变后台行为 | 保留关闭；待拆分开关和字段白名单 |
+| `GET /api/config` | `api_get_config → read_config` | 原配置兼容读取 | 读取可能含敏感配置 | 保留关闭；不供生产页面使用 |
+| `POST /api/config` | `api_save_config → write_config` | 原配置兼容保存 | 写配置文件，可能改变后台行为 | 保留关闭；不供生产页面使用 |
+| `GET /api/v2/settings/runtime` | `runtime_settings_get → build_runtime_settings` | 管理员网页读取全部应用配置目录 | 敏感字段只返回是否已保存 | 当前生产设置页 |
+| `PUT /api/v2/settings/runtime` | `runtime_settings_put → save_runtime_settings` | 管理员网页分组保存应用配置 | 字段白名单、脱敏、原子写入和客户端热刷新 | 当前生产设置页 |
 | `GET /api/activity/logs` | `api_activity_logs → read_activities` | 读取原操作日志 | 无 | 当前契约已有同路径，原实现作为兼容基线 |
 | `POST /api/activity/clear` | `api_activity_clear → clear_activities` | 清空操作日志 | 删除日志 | 保留关闭；需要二次确认 |
 | `POST /api/activity/event` | `api_activity_event → write_activity` | 记录前端操作事件 | 写日志 | 保留关闭；待限定事件类型和大小 |

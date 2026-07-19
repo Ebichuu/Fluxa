@@ -21,14 +21,14 @@
   upload/
 ```
 
-复制 `.env.example` 为 `.env`，只需配置持久目录和外部服务：
+复制 `.env.example` 为 `.env`，至少配置持久目录；外部服务也可以首次启动后在网页“设置”中填写：
 
 ```env
 # 宿主机持久目录，内部需要 data、db、upload 三个子目录
 MCC_DATA_ROOT=/vol1/docker/fluxa
 ```
 
-按需要填写 Emby、qB、Torra、Symedia 和 TMDB 配置。`.env` 不得提交到 Git。
+如果选择在启动前填写 Emby、qB、Torra、Symedia、TMDB 或其他服务配置，`.env` 仍会作为初始值；登录后网页保存的配置会写入持久化目录并覆盖同名初始值。`.env` 不得提交到 Git。
 
 ## 3. Docker Compose 配置
 
@@ -51,7 +51,7 @@ services:
       # 宿主机端口:容器端口；只修改左侧即可更换访问端口
       - "8987:8987"
 
-    # Emby、qB、Torra、Symedia、TMDB 和功能开关全部从这里读取
+    # 首次启动的初始值；登录后可在网页设置中修改并保存到 data/user.env
     env_file:
       - .env
 
@@ -125,6 +125,8 @@ http://<fnOS-IP>:8987
 ```bash
 docker compose exec fluxa python -m app.admin reset-password
 ```
+
+登录后进入“设置”即可编辑 Emby、qBittorrent、Torra、Symedia、TMDB、MoviePilot、115、Telegram、123 云盘、代理和全部应用开关。敏感项不会回显，留空保持原值；明确勾选清除才会删除。调度线程类开关会提示重启后生效，其余连接配置会立即刷新。
 
 公网必须使用 HTTPS 反向代理；8987 只允许反向代理或受信网络访问。
 

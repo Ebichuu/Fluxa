@@ -32,7 +32,7 @@ services:
       # 宿主机端口:容器端口；需要改端口时只修改左侧
       - "8987:8987"
 
-    # 账号、服务地址和功能开关统一放在 .env
+    # 首次启动可用 .env 提供初始值；登录后也可在设置页修改
     env_file:
       - .env
 
@@ -58,14 +58,14 @@ services:
       start_period: 20s
 ```
 
-`.env` 至少填写：
+`.env` 至少填写持久目录；服务地址、账号、Token 和功能开关也可以在首次启动后登录设置页修改：
 
 ```env
 # 宿主机持久目录；默认使用当前目录下的 runtime
 MCC_DATA_ROOT=./runtime
 ```
 
-Emby、qBittorrent、Torra、Symedia、TMDB 和 MoviePilot 等配置直接在 `.env` 中按需填写，未使用的项目保持空值。启动：
+Emby、qBittorrent、Torra、Symedia、TMDB、MoviePilot、115、Telegram、123 云盘和功能开关都能在设置页按软件分组修改。`.env` 中的同名值只作为首次启动或恢复时的初始值；未使用的项目保持空值。启动：
 
 ```bash
 docker compose pull
@@ -73,7 +73,7 @@ docker compose up -d
 docker compose ps
 ```
 
-访问 `http://<服务器IP>:8987`。完整更新、日志、备份和回滚说明见 [Compose 部署文档](docs/DEPLOYMENT.md)。
+访问 `http://<服务器IP>:8987`。登录后打开“设置”，可以修改全部应用级配置。密码、Token、Cookie 和 API Key 不会回显；留空保持原值，勾选清除后才会删除。Docker 宿主机端口、卷挂载和镜像标签仍由 Compose 管理。完整更新、日志、备份和回滚说明见 [Compose 部署文档](docs/DEPLOYMENT.md)。
 
 ## 架构
 
@@ -162,7 +162,7 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 
 ## 凭据
 
-真实账号、密码、API Key 和 Token 只能放在未跟踪的 `.env` 或 fnOS 容器环境中，不能写入源码、前端、镜像或文档。
+真实账号、密码、API Key 和 Token 只能放在未跟踪的 `.env`、持久化的 `data/user.env` 或容器环境中，不能写入源码、前端资源、镜像或文档；网页设置接口只返回是否已保存。
 
 ## 致谢
 

@@ -128,6 +128,10 @@ class QbittorrentClient:
         self.http = session or requests
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
+    def reconfigure(self, config: QbittorrentConfig) -> None:
+        self.config = config
+        self.base_url = config.base_url.strip().rstrip("/")
+
     def _empty_summary(self, error=None):
         return {
             "configured": bool(self.base_url),

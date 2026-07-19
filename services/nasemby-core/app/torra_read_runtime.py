@@ -111,6 +111,11 @@ class TorraReadClient:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.access_token = ""
 
+    def reconfigure(self, config: TorraReadConfig) -> None:
+        self.config = config
+        self.base_url = config.base_url.strip().rstrip("/")
+        self.access_token = ""
+
     def _use_password(self) -> bool:
         return bool(self.config.username and self.config.password)
 
