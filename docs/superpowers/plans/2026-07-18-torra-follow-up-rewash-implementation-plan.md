@@ -1,6 +1,6 @@
 # Torra 追更洗版与 RSS 唤醒实施计划
 
-状态：待实施；必须在 SQLite/RSS 基础计划验收后开始
+状态：阶段 0–8 与本地代码验收已完成；候选镜像和 fnOS 实机待执行
 
 日期：2026-07-18
 
@@ -64,6 +64,8 @@ git status --short
 - Git 工作区仅包含本计划文档允许的修改。
 
 ## 4. 阶段 1：质量观察和外部动作仓储
+
+状态：已完成。schema version 3、三张仓储表、Torra 推送 SQLite 幂等/冷却和重启回放已通过模拟测试。
 
 ### 任务 2：增加追更洗版表和仓储
 
@@ -133,6 +135,8 @@ feat: persist torra action idempotency in sqlite
 
 ## 5. 阶段 2：Torra 追更洗版适配器
 
+状态：已完成。分析/下载/job 契约、五种状态、最高正分差选择、统一动作查询和脱敏已通过模拟测试；未连接真实 Torra。
+
 ### 任务 4：扩展 Torra job 和洗版客户端
 
 新增：
@@ -196,6 +200,8 @@ feat: persist torra action idempotency in sqlite
 
 ## 6. 阶段 3：Emby 基准和观察单元
 
+状态：已完成。任务链下载终态、Torra 可见 Emby 文件、24/48 小时策略、qB 后关联、多集隔离、历史忽略、身份阻断和目标已达已通过临时 SQLite 测试；未连接真实服务。
+
 ### 任务 6：从现有任务证据创建追更洗版窗口
 
 新增：
@@ -232,6 +238,8 @@ feat: persist torra action idempotency in sqlite
 - 无集号和身份冲突。
 
 ## 7. 阶段 4：RSS 匹配与即时唤醒
+
+状态：任务 7–8 已完成。新 RSS 条目与 `candidate` 在同一 SQLite 事务内写入；只匹配活动窗口，支持标准标题、别名、同名年份消歧和连续集，历史/过期/不可靠身份不创建记录。可靠候选通过完整复查后创建一次性 Torra 分析动作，重启后只续查原 job，分析结果不自动下载。
 
 ### 任务 7：实现 RSS 条目和订阅季集匹配
 
@@ -281,17 +289,19 @@ feat: persist torra action idempotency in sqlite
 2. 通过后创建 provider action 并调用 Torra 分析。
 3. 保存 job ID 后匹配状态改为 `triggered`。
 4. 分析无正分差改为 `ignored`，继续等待其他 RSS。
-5. 下载成功改为 `confirmed`。
-6. 上游失败保持可重试但同条目不无限重放。
+5. 无升级改为 `ignored`；有升级保持 `triggered` 并保存安全摘要，不自动下载。
+6. 上游失败或取消回到 `candidate` 展示，但固定幂等动作阻止自动路径无限重放。
 
 测试：
 
 - 每个阻塞条件零 Torra 调用。
 - 同条目只提交一次。
-- 分析失败、无升级、下载失败和成功。
+- 分析失败/取消、无升级和有升级终态。
 - 服务重启续查相同 job。
 
 ## 8. 阶段 5：有限主动兜底调度
+
+状态：已完成。默认关闭的单线程协调器使用 SQLite 时间表、确定性错峰、公平游标、批量 2 和全局分析并发 1；RSS 已触发时间段跳过，截止点、小时/每日限额和崩溃租约恢复均通过假客户端测试，分析结果不自动下载。
 
 ### 任务 9：实现默认关闭的追更洗版协调器
 
@@ -304,6 +314,10 @@ feat: persist torra action idempotency in sqlite
 
 - `services/nasemby-core/app/main.py`
 - `services/nasemby-core/app/gunicorn.conf.py`（仅确认单 worker 约束，不增加 worker）
+- `services/nasemby-core/app/quality_watch_repository.py`
+- `services/nasemby-core/app/quality_watch_runtime.py`
+- `services/nasemby-core/app/rss_subscription_match_runtime.py`
+- `services/nasemby-core/app/discover_runtime.py`
 
 环境闸门：
 
@@ -338,9 +352,13 @@ feat: persist torra action idempotency in sqlite
 
 ### 任务 10：注册设置、状态、人工分析和下载 API
 
+状态：已完成（模拟 API 与契约评审通过；真实外部服务仍关闭）。
+
 新增：
 
 - `services/nasemby-core/app/subscription_automation_runtime.py`
+- `services/nasemby-core/app/subscription_automation_api_runtime.py`
+- `services/nasemby-core/app/subscription_automation_preflight.py`
 - `services/nasemby-core/tests/test_subscription_automation_runtime.py`
 
 修改：
@@ -379,6 +397,7 @@ feat: persist torra action idempotency in sqlite
 - 分析/下载双闸门。
 - RSS 匹配动作。
 - 原始 Torra 响应和 Token 不泄露。
+- 跨 RSS 匹配复用幂等键返回 409，下载只能读取服务端已完成分析动作。
 
 建议提交：
 
@@ -387,6 +406,8 @@ feat: add torra follow-up rewash coordinator
 ```
 
 ## 10. 阶段 7：MoviePilot 人工备用
+
+完成记录：已实现两条 v2 路由、独立默认关闭闸门、观察单元/Torra/qB 预检、已有订阅重搜、新订阅创建、SQLite 幂等冷却和脱敏同步结果；专项测试使用临时 SQLite 与假客户端，未连接真实外部服务。React 人工入口已在阶段 8 完成，自动调度继续不实施。
 
 ### 任务 11：复用 NasEmby MoviePilot 源码建立安全入口
 
@@ -422,6 +443,8 @@ feat: add torra follow-up rewash coordinator
 - 外部错误、Token 和数据库异常脱敏。
 
 ## 11. 阶段 8：React 页面
+
+完成记录：订阅设置、订阅详情、种子库、控制室和任务中心已接入追更洗版状态与受保护人工动作；MoviePilot 仅提供人工预览和确认。影院大厅未修改，深浅主题、弹窗焦点和桌面 1920×1080 布局已完成回归。
 
 ### 任务 12：增加前端类型和动作轮询
 

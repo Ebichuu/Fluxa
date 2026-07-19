@@ -9,7 +9,13 @@
 - NasEmby Python 源码负责订阅、发现、日历、资源规则和调度，只使用一份订阅台账。
 - 订阅配置和条目已经切换到 `db/media_control_center.sqlite3`；旧 JSON 只作为一次性迁移和回滚输入，不再双写。
 - “种子库”第一版已经落地：支持私人 PT RSS 来源配置、本地 FTS5 搜索、保留期清理和脱敏展示；真实收集默认关闭。
+- RSS 收集器已补齐 `429/Retry-After`、指数退避、全局并发 2、同来源互斥和抓取记录上限；四个真实结构脱敏夹具已满足当前版本，新增站点兼容作为后续非阻塞扩展。
+- fnOS 当前没有需要保留的旧订阅或配置数据，首次部署直接初始化空 SQLite；旧 JSON 原子迁移和差异报告能力继续保留，但不再是本次上线前置条件。
+- 当前源码的 SQLite schema version 已升至 3，新增按电影/季集隔离的质量观察、外部动作租约和调度游标；旧硬化镜像仍停留在 schema v2。
+- Torra 追更洗版阶段 1–6 已完成：分析、下载和 job 查询严格使用已核对契约；任务链与 Emby 双证据启动按集固定窗口；可靠 RSS 可即时唤醒，有限主动兜底按 SQLite 时间表、公平游标、全局并发 1、冷却和限额运行；人工设置、状态、分析和下载 API 已注册，重启后只续查原 job，自动路径不下载候选。
+- MoviePilot 人工备用阶段 7 已完成：仅在相关观察单元全部到期且 Torra/qB 空闲时允许预览或确认推送；已有订阅重搜、新订阅创建、SQLite 幂等审计和响应脱敏均由独立默认关闭闸门保护，React 只提供人工入口，不含自动调度。
 - SQLite/RSS 第一版候选镜像已完成登录、WAL/FTS5、无 Node 运行层和容器重启持久化验收。
+- 硬化候选镜像 `media-control-center:sqlite-rss-hardened` 已完成 schema v2、收集闸门、脱敏和重启持久化冒烟。
 - PT 主线固定为媒体控制中心订阅 → Torra → qB → Torra 秒传 115 → Symedia → Emby。
 - 订阅详情提供 Torra 安全预览与人工推送；Symedia 不接收重复订阅推送。
 - Telegram、HDHive / pansou、影巢和 115 分享转存已从当前 React 页面隐藏，底层源码、v2 接口和模拟测试完整保留，等待以后版本。
@@ -61,7 +67,7 @@ Vite 会把 `/api` 和 `/mineradio` 代理到 Python。
 ## 本地检查
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 98 项
+python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 165 项
 npm test
 npm run build
 docker compose config --services
@@ -75,7 +81,7 @@ docker build -t media-control-center:v2 .
 1. 复制 `.env.example` 为未跟踪的 `.env`。
 2. 设置至少 16 字符的 `MCC_ACCESS_KEY`。
 3. 将 `MCC_DATA_ROOT` 指向 fnOS 持久目录。
-4. 填写需要接入的 Emby、qB、Torra、Symedia 和 TMDB 配置。
+4. 填写需要接入的 Emby、qB、Torra、Symedia 和 TMDB 配置；TMDB 支持旧版 `TMDB_API_KEY` 或 v4 `TMDB_API_TOKEN`。
 5. 启动：
 
 ```bash
@@ -92,6 +98,9 @@ Compose 固定关闭：
 MCC_SUBSCRIPTION_SCHEDULER_ENABLED=false
 NASEMBY_CORE_WRITE_ENABLED=false
 MCC_PRIVATE_RSS_ENABLED=false
+MCC_TORRA_QUALITY_WATCH_ENABLED=false
+MCC_TORRA_REWASH_DOWNLOAD_ENABLED=false
+MCC_MOVIEPILOT_BACKUP_ENABLED=false
 MCC_PRESERVED_CORE_API_ENABLED=false
 TORRA_PUSH_ENABLED=false
 MCC_INTEGRATION_PROBE_ENABLED=false
@@ -100,7 +109,7 @@ MCC_CLOUD_SEARCH_ENABLED=false
 MCC_CLOUD_TRANSFER_ENABLED=false
 ```
 
-因此默认只能读取当前页面、订阅快照和服务状态，不会创建真实订阅、运行调度、整体开放原核心接口或推送 Torra。
+因此默认只能读取当前页面、订阅快照和服务状态，不会创建真实订阅、运行调度、整体开放原核心接口、推送 Torra、提交追更洗版分析、下载候选或调用 MoviePilot 人工备用动作。
 
 ## 持久目录
 

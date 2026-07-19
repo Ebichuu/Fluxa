@@ -1,6 +1,6 @@
 # SQLite 单台账与私人 PT RSS 种子库实施计划
 
-状态：第一版已落地并通过 Docker 候选验收；收集器硬化、真实脱敏夹具和原子迁移演练待完成
+状态：第一版、收集器硬化、原子迁移演练和四个真实结构脱敏夹具（M-Team、HDHome、织梦、青蛙）已完成；当前版本范围已收口
 
 日期：2026-07-18
 
@@ -9,12 +9,12 @@
 - [x] 阶段 0：基线记录，85 项原回归、TypeScript 和构建通过。
 - [x] 阶段 1～2 第一版：SQLite runtime、订阅仓储、JSON 迁移备份/报告和 NasEmby 读写切换。
 - [x] 阶段 3 第一版：RSS 来源/条目/FTS5/抓取记录仓储与标准 RSS/Atom 解析。
-- [~] 阶段 4：闸门、ETag、重定向、SSRF 和基本轮询已完成；429、指数退避、并发 2 和真实站点夹具待补。
+- [x] 阶段 4：闸门、ETag、重定向、SSRF、429、指数退避、并发 2、同来源互斥和抓取记录上限已完成；4 个真实结构脱敏夹具已满足当前版本。
 - [x] 阶段 5 第一版：10 条 RSS/动作 v2 契约已注册；匹配列表暂返回稳定空集合。
 - [x] 阶段 6 第一版：顶部“种子库”入口、搜索、时间/来源筛选和来源管理页面已完成。
 - [x] 阶段 7：Docker 候选镜像、重启持久化和第一版停点复核。
 
-当前自动回归为 98 项。真实 RSS、Torra、qB 和 MoviePilot 写调用仍为零。
+当前自动回归为 165 项。除用户明确授权的真实 RSS 只读结构探测外，测试不连接真实外部服务；RSS enclosure 以及 Torra、qB 和 MoviePilot 写调用仍为零。
 
 依据：
 
@@ -44,7 +44,7 @@
 - 订阅配置和条目只写 SQLite，不双写 JSON。
 - JSON 迁移有备份、差异报告、失败停止和回滚说明。
 - 现有订阅列表、详情、日历、保存、删除、分类和改季契约不变。
-- 5～10 个 RSS 来源可以配置，但生产收集器默认关闭。
+- 多个 RSS 来源可以配置；当前四个真实结构夹具已覆盖版本所需格式，生产收集器默认关闭。
 - SQLite 能保存、去重、搜索和自动清理 RSS 条目。
 - 任何 API、日志、错误和活动记录都不返回完整 RSS/下载 URL。
 - 现有 Python、TypeScript、Vite 和 Docker 验收继续通过。
@@ -269,7 +269,7 @@ feat: migrate subscription ledger to sqlite
 
 - `services/nasemby-core/app/private_rss_parser.py`
 - `services/nasemby-core/tests/test_private_rss_parser.py`
-- `services/nasemby-core/tests/fixtures/private_rss/`
+- `services/nasemby-core/tests/fixtures/mteam_rss_sanitized.xml`
 
 实现：
 
@@ -292,6 +292,8 @@ feat: migrate subscription ledger to sqlite
 阻塞条件：
 
 - 没有真实脱敏样本时，只完成标准 RSS/Atom 解析，不猜测站点私有字段。
+
+2026-07-20 收口：M-Team、HDHome、织梦、青蛙四个 RSS 2.0 真实结构脱敏夹具已完成，覆盖电影/剧集、单集/整季包、S01/S02、S01E03/S02E03、S01E14/E15、720p/1080i/1080p/2160p、多版本、大小、enclosure、Blu-ray/Remux、WEB-DL、H.264/H.265、HDR、Atmos 和 TrueHD；真实地址与个人参数均未保存。解析器已补齐 `1080i` 版本摘要和独立 `Sxx` 季号识别，并确认不依赖请求条目数；四个夹具已通过假 HTTP → 收集器 → 临时 SQLite → 公共脱敏查询回归，已满足当前版本。新增来源只在以后获得明确授权的只读样本时扩展。
 
 ## 7. 阶段 4：RSS 收集器
 
@@ -516,6 +518,15 @@ git diff --check
 - API 响应未出现完整 RSS 地址或测试 Passkey；真实 RSS、Torra、qB 和 MoviePilot 写调用为零。
 - 临时容器和验收目录已清理，只保留本地候选镜像。
 
+2026-07-18 硬化结果：
+
+- RSS 失败状态、HTTP 状态、`Retry-After` 和最大 60 分钟指数退避持久化到 SQLite，成功后复位。
+- 轮询全局最多并发两个来源，同一来源不会重叠抓取；每站抓取记录限制为最近 30 天且最多 1000 条。
+- 旧 JSON 在同目录临时 SQLite 中导入，配置、完整订阅 payload 和 key 逐项一致后原子替换正式库。
+- 迁移演练确认共享 RSS 表不会丢失，差异失败不会发布临时订阅数据，报告不包含测试凭据。
+- 候选镜像 `media-control-center:sqlite-rss-hardened` 已通过登录、RSS 503 闸门、WAL/schema v2/FTS5、无 Node、脱敏和容器重建持久化冒烟。
+- M-Team、HDHome、织梦、青蛙四个真实结构脱敏夹具已完成并满足当前版本；fnOS 没有旧生产台账，首次部署直接初始化空 SQLite。
+
 建议提交：
 
 ```text
@@ -529,9 +540,9 @@ feat: complete sqlite and private rss foundation
 - JSON → SQLite 差异结果。
 - RSS 明文存储风险仍被接受。
 - 页面不泄露 Passkey。
-- 实机 5～10 个 RSS 样本是否已经准备。
+- 后续是否有需要新增兼容的真实 RSS 只读样本；不阻塞当前版本。
 - 是否继续执行 Torra 追更洗版实施计划。
 
-本次停点结论：模拟 JSON 迁移、页面/API 脱敏和 Docker 持久化已经通过；真实 5～10 个站点夹具、临时 SQLite 原子替换演练、429/退避和双并发仍是进入 Torra 追更洗版编码前的前置项。
+本次停点结论：模拟 JSON 原子迁移、页面/API 脱敏、429/退避、双并发、抓取记录上限、Docker 持久化和 M-Team/HDHome/织梦/青蛙四个真实结构脱敏夹具已经通过。四个夹具已满足当前版本；fnOS 没有旧生产台账，因此真实 JSON 差异报告不再是部署前置项。
 
 未完成以上复核前，不开启真实 RSS 收集，不触发 Torra 写动作。

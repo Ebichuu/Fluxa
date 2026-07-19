@@ -2,7 +2,7 @@
 
 > v2 迁移基线计划。基线已经完成；当前代码阶段按 SQLite/RSS 基础计划和 Torra 追更洗版计划继续执行。
 
-状态：v2 基线、PT 主线、SQLite/RSS 第一版完成；进入收集器硬化和迁移演练
+状态：v2 基线、PT 主线、SQLite/RSS、追更洗版与 React 人工入口已完成；等待候选镜像和 fnOS 实机验证
 日期：2026-07-18
 
 ## 当前目标
@@ -71,9 +71,9 @@
 执行顺序固定为：
 
 1. SQLite 唯一台账、JSON 迁移器、私人 PT RSS 基础索引和种子库页面已经完成第一版。
-2. 继续补齐真实脱敏夹具、收集器退避/并发、抓取记录上限和原子迁移演练；SQLite/RSS 第一版候选镜像已经通过。
-3. 在明确停点复核真实迁移差异、明文 RSS 风险和 Passkey 脱敏。
-4. 复核通过后，按 `docs/superpowers/plans/2026-07-18-torra-follow-up-rewash-implementation-plan.md` 完成 RSS 唤醒、Torra 追更洗版、有限主动兜底和 MoviePilot 人工备用入口。
+2. M-Team、HDHome、织梦、青蛙四个真实结构脱敏夹具已满足当前版本。收集器退避/并发、抓取记录上限和原子迁移演练已完成；SQLite/RSS 第一版候选镜像已经通过。
+3. fnOS 没有旧生产台账，首次部署直接初始化空 SQLite；明文 RSS 风险和 Passkey 脱敏已经完成复核。
+4. `docs/superpowers/plans/2026-07-18-torra-follow-up-rewash-implementation-plan.md` 中的 RSS 唤醒、Torra 追更洗版、有限主动兜底、MoviePilot 人工备用和 React 人工入口已经完成。
 5. 代码阶段只使用临时 SQLite、脱敏 RSS 夹具和假的外部会话，不连接真实 RSS，也不执行 Torra/qB/MoviePilot 写动作。
 6. 完成模拟回归和新候选镜像后，才进入 fnOS 单条实机验证。
 

@@ -11,6 +11,7 @@ runtime/
 .env.local
 .codex-dev*.log
 .codex-ui-review*.log
+.codex-vite.*.log
 .superpowers/
 npm-debug.log*
 Dockerfile.local
