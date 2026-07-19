@@ -46,8 +46,8 @@ name: fluxa
 
 services:
   fluxa:
-    # 使用 GitHub Container Registry 发布的 v0.2.1 镜像
-    image: ghcr.io/ebichuu/fluxa:v0.2.1
+    # 使用 GitHub Container Registry 发布的 v0.2.2 镜像
+    image: ghcr.io/ebichuu/fluxa:v0.2.2
 
     # 固定容器名，便于在 fnOS 或命令行中定位
     container_name: fluxa
@@ -118,7 +118,7 @@ docker compose ps
 docker compose logs --tail=100 fluxa
 ```
 
-Compose 会从 `.env` 读取全部服务配置，并拉取 `ghcr.io/ebichuu/fluxa:v0.2.1`。
+Compose 会从 `.env` 读取全部服务配置，并拉取 `ghcr.io/ebichuu/fluxa:v0.2.2`。正式镜像统一由 GitHub Actions 构建并推送到 GHCR。
 
 访问：
 

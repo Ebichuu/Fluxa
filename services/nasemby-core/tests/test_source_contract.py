@@ -29,6 +29,21 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
         )
         self.assertEqual({key: DEFAULT_CONFIG[key] for key in keys}, {key: "0" for key in keys})
 
+    def test_workspace_env_path_supports_local_and_container_roots(self):
+        from app.config import resolve_workspace_env_path
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            container_root = Path(temp_dir) / "app"
+            container_root.mkdir()
+            self.assertEqual(resolve_workspace_env_path(container_root), container_root / ".env")
+
+            workspace_root = Path(temp_dir) / "workspace"
+            workspace_root.mkdir()
+            (workspace_root / "package.json").write_text("{}", encoding="utf-8")
+            service_root = workspace_root / "services" / "nasemby-core"
+            service_root.mkdir(parents=True)
+            self.assertEqual(resolve_workspace_env_path(service_root), workspace_root / ".env")
+
     def test_unified_entry_registers_current_runtimes_and_preserves_core_routes(self):
         main_source = (MODULE_ROOT / "app" / "main.py").read_text(encoding="utf-8")
         for registrar in (

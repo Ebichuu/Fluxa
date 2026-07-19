@@ -1,6 +1,6 @@
 # Fluxa
 
-当前发布版本：`v0.2.1`。
+当前发布版本：`v0.2.2`。
 
 面向 fnOS / NAS 的个人影音中控。生产环境使用一个 Python / Flask / Gunicorn 后端，同时提供 React 页面、Mineradio 影院大厅、订阅中枢和外部服务聚合。
 
@@ -23,8 +23,8 @@ name: fluxa
 
 services:
   fluxa:
-    # Fluxa v0.2.1 镜像
-    image: ghcr.io/ebichuu/fluxa:v0.2.1
+    # Fluxa v0.2.2 镜像
+    image: ghcr.io/ebichuu/fluxa:v0.2.2
     container_name: fluxa
     restart: unless-stopped
 
@@ -125,14 +125,15 @@ Vite 会把 `/api` 和 `/mineradio` 代理到 Python。
 ## 本地检查
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 165 项
+python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 166 项
 npm test
 npm run build
 docker compose config --services
-docker build -t fluxa:v0.2.1 .
+docker compose config --images
 ```
 
 自动测试使用临时目录和模拟客户端，不连接真实服务执行写操作，也不会向真实活动日志追加模拟记录。
+正式镜像只通过 GitHub Actions 构建并推送到 GHCR，不在本地手工推送。
 
 ## 默认写保护
 

@@ -27,7 +27,17 @@ except ModuleNotFoundError:
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-WORKSPACE_ENV_PATH = ROOT_DIR.parents[1] / ".env"
+
+
+def resolve_workspace_env_path(root_dir: Path) -> Path:
+    root_dir = Path(root_dir)
+    for candidate in (root_dir, *root_dir.parents):
+        if (candidate / "package.json").is_file():
+            return candidate / ".env"
+    return root_dir / ".env"
+
+
+WORKSPACE_ENV_PATH = resolve_workspace_env_path(ROOT_DIR)
 DATA_DIR = ROOT_DIR / "data"
 USER_ENV_PATH = DATA_DIR / "user.env"
 LEGACY_DB_DIR = ROOT_DIR / "db"
