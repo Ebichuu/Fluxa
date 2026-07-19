@@ -10,6 +10,10 @@ data
 runtime
 docs/references
 .codex-dev*.log
+.codex-ui-review*.log
+.codex-vite.*.log
 .codex-mineradio-verify*.log
+__pycache__
+*.py[cod]
 npm-debug.log*
 Dockerfile.local

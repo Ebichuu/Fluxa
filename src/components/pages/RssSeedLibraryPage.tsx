@@ -489,7 +489,7 @@ export function RssSeedLibraryPage() {
           <>
           <span className="ops-confirm-dialog__signal">删除本地来源</span>
           <h2 id="rss-delete-title">删除“{deleteTarget.name}”？</h2>
-          <p id="rss-delete-description">这会删除该来源在媒体控制中心内保存的种子索引，不会修改 PT 站点上的任何数据。</p>
+          <p id="rss-delete-description">这会删除该来源在 Fluxa 内保存的种子索引，不会修改 PT 站点上的任何数据。</p>
           <div className="ops-confirm-dialog__meta"><span>来源</span><strong>{deleteTarget.domain}</strong><span>影响</span><strong>本地索引</strong></div>
           <div className="ops-confirm-dialog__actions"><button className="ops-action-button" disabled={saving} type="button" onClick={() => setDeleteTarget(null)}>取消</button><button className="ops-action-button ops-action-button--primary" data-dialog-initial-focus disabled={saving} type="button" onClick={confirmDelete}>{saving ? '正在删除' : '确认删除'}</button></div>
           </>

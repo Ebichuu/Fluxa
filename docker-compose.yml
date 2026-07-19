@@ -1,9 +1,10 @@
-name: media-control-center
+name: fluxa
 
 services:
-  media-control-center:
+  fluxa:
+    image: ${MCC_IMAGE:-ghcr.io/ebichuu/fluxa:v0.2}
     build: .
-    container_name: media-control-center
+    container_name: fluxa
     restart: unless-stopped
     ports:
       - "8787:8787"

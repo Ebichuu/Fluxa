@@ -1,4 +1,6 @@
-# 媒体控制中心 v2
+# Fluxa
+
+当前发布版本：`v0.2`。
 
 面向 fnOS / NAS 的个人影音中控。生产环境使用一个 Python / Flask / Gunicorn 后端，同时提供 React 页面、Mineradio 影院大厅、订阅中枢和外部服务聚合。
 
@@ -71,12 +73,20 @@ python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-c
 npm test
 npm run build
 docker compose config --services
-docker build -t media-control-center:v2 .
+docker build -t fluxa:v0.2 .
 ```
 
 自动测试使用临时目录和模拟客户端，不连接真实服务执行写操作，也不会向真实活动日志追加模拟记录。
 
 ## Docker / fnOS
+
+GitHub Container Registry 镜像：
+
+```bash
+docker pull ghcr.io/ebichuu/fluxa:v0.2
+```
+
+`docker-compose.yml` 默认使用该版本，也可以通过 `MCC_IMAGE` 指定其他标签。
 
 1. 复制 `.env.example` 为未跟踪的 `.env`。
 2. 设置至少 16 字符的 `MCC_ACCESS_KEY`。

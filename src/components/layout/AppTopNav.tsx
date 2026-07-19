@@ -128,7 +128,7 @@ export function AppTopNav({ activePage, health, onNavigate, onToggleTheme, showT
         <button className="brand-lockup" type="button" onClick={() => onNavigate('hall')}>
           <span className="brand-mark" aria-hidden="true" />
           <span className="brand-copy">
-            <span className="brand-title">媒体控制中心</span>
+            <span className="brand-title">Fluxa</span>
             <span className="brand-subtitle">私人影音中枢</span>
           </span>
         </button>
