@@ -346,7 +346,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
         self.assertIn("${MCC_DATA_ROOT:-./runtime}/data:/app/data", compose)
         self.assertIn("${MCC_DATA_ROOT:-./runtime}/db:/app/db", compose)
         self.assertIn("${MCC_DATA_ROOT:-./runtime}/upload:/app/upload", compose)
-        self.assertIn("http://127.0.0.1:8787/healthz", compose)
+        self.assertIn("http://127.0.0.1:8987/healthz", compose)
 
     def test_root_container_builds_react_but_runs_only_python(self):
         dockerfile = (MODULE_ROOT.parents[1] / "Dockerfile").read_text(encoding="utf-8")
@@ -405,7 +405,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
         config = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(config)
 
-        self.assertEqual(config.bind, "0.0.0.0:8787")
+        self.assertEqual(config.bind, "0.0.0.0:8987")
         self.assertEqual(config.workers, 1)
         self.assertEqual(config.worker_class, "gthread")
         self.assertEqual(config.threads, 4)

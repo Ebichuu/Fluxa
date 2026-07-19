@@ -1,10 +1,10 @@
-# 媒体控制中心 v2 功能路线图
+# Fluxa 功能路线图
 
 状态：持续维护
 
 更新时间：2026-07-20
 
-本文只记录尚未完成或仍需实机确认的能力。已经完成的代码状态见 `docs/PLAN.md`，延期能力不等于删除。
+本文只记录尚未完成或仍需实机确认的能力。当前架构与已完成功能见 `README.md` 和 `docs/FRAMEWORK.md`，延期能力不等于删除。
 
 ## 1. 当前完成度
 
@@ -25,7 +25,7 @@
 | 原 NasEmby 核心接口 | 源码已恢复、默认关闭 | 旧总开关继续关闭，逐接口能力矩阵保留 |
 | Telegram 网盘订阅/获取 | 延期 | 底层源码、35 条 v2 契约中的延期路由和模拟测试保留，当前 React 不展示 |
 | MoviePilot PT 备用 | 阶段 7 完成，待实机 | 复用 NasEmby 源码；独立开关默认关闭，仅提供观察到期后的人工预览/推送，不承担周播剧升级主线 |
-| fnOS 正式部署 | 未完成 | 硬化候选镜像 `media-control-center:sqlite-rss-hardened` 已完成本地重启验收，等待 fnOS 窗口 |
+| fnOS 正式部署 | 未完成 | `v0.2.1` 发布候选已完成代码收口，等待镜像发布和 fnOS 窗口 |
 | 单条真实订阅闭环 | 未完成 | 等待实机窗口 |
 | 自动订阅调度 | 未启用 | PT 主链稳定后最后开启 |
 
@@ -41,14 +41,7 @@
 8. 版本优先级沿用 Torra 规则；中控只选择 Torra 返回的正分差最高候选，并负责限频、阻止重复和展示状态。
 9. 本地模拟测试已完成；构建新候选镜像后再进入 fnOS。
 
-正式设计见 `docs/superpowers/specs/2026-07-18-sqlite-torra-quality-upgrade-design.md`。
-
-私人 RSS 种子库设计见 `docs/superpowers/specs/2026-07-18-private-pt-rss-seed-library-design.md`。
-
-当前实施顺序见：
-
-- `docs/superpowers/plans/2026-07-18-sqlite-private-rss-seed-library-implementation-plan.md`
-- `docs/superpowers/plans/2026-07-18-torra-follow-up-rewash-implementation-plan.md`
+剩余实施顺序以本路线图、`docs/CORE_API_CAPABILITY_MATRIX.md` 和 `docs/DEPLOYMENT.md` 为准。
 
 ## 3. 后续：PT 主链实机闭环
 
@@ -106,7 +99,7 @@ MoviePilot 不是 Telegram 网盘通道。后续目标：
 - 不启动 NasEmby `legacy/ptto115.py`；PT 主线秒传由 Torra 独占。
 - 未来重新启用前必须另写设计并重新核对 Torra、qB、115、Symedia 和 Emby 重复证据。
 
-详细历史设计与未完成步骤见 `docs/CLOUD_ACQUISITION_PLAN.md`。
+重新启用前应基于当前接口和安全边界单独设计，不沿用已归档的迁移步骤。
 
 ## 6. 其他未完成工作
 

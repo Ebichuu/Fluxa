@@ -18,10 +18,10 @@ RUN mkdir -p /app/data /app/db /app/upload
 
 ENV PYTHONPATH=/app \
     APP_HOST=0.0.0.0 \
-    APP_PORT=8787 \
+    APP_PORT=8987 \
     MCC_ENV=production \
     MCC_FRONTEND_DIST=/app/dist \
     MINERADIO_PUBLIC_DIR=/app/vendor/mineradio-public
 
-EXPOSE 8787
+EXPOSE 8987
 CMD ["gunicorn", "--config", "app/gunicorn.conf.py", "app.main:app"]

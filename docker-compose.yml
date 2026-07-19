@@ -2,22 +2,22 @@ name: fluxa
 
 services:
   fluxa:
-    image: ghcr.io/ebichuu/fluxa:v0.2
+    image: ghcr.io/ebichuu/fluxa:v0.2.1
     container_name: fluxa
     restart: unless-stopped
     ports:
-      - "8787:8787"
+      - "8987:8987"
     env_file:
       - .env
     environment:
       MCC_ENV: production
-      APP_PORT: "8787"
+      APP_PORT: "8987"
     volumes:
       - ${MCC_DATA_ROOT:-./runtime}/data:/app/data
       - ${MCC_DATA_ROOT:-./runtime}/db:/app/db
       - ${MCC_DATA_ROOT:-./runtime}/upload:/app/upload
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8987/healthz', timeout=3)"]
       interval: 15s
       timeout: 5s
       retries: 5

@@ -8,7 +8,6 @@ dist-server
 preview
 data
 runtime
-docs/references
 .codex-dev*.log
 .codex-ui-review*.log
 .codex-vite.*.log

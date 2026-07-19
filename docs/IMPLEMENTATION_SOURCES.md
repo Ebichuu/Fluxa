@@ -6,7 +6,7 @@
 
 ### NasEmby
 
-来源参考：`D:\Projects\NasEmby_friend_clean\NasEmby_friend_clean_20260630_171606`
+来源：历史 NasEmby 业务源码。
 
 当前纳入：
 
@@ -21,19 +21,11 @@
 
 ### Mineradio
 
-来源参考：`D:\Mineradio\resources\app\public`
+来源：Mineradio 项目提供的影院大厅源码与视觉基础。
 
 仓库副本：`vendor/mineradio-public/`
 
 当前保留 Three.js、GSAP、封面粒子、视觉预设、3D shelf 和交互；音乐播放、登录、歌词、播客、评论、收藏和 Electron 桌面业务由桥接层拦截或不使用。
-
-### 维护资料
-
-原维护资料整理到：
-
-`docs/references/media-automation-maintenance/`
-
-这些文件只作架构与外部服务参考，不参与运行，也不作为配置导入源。
 
 ## 2. 后端能力映射
 
@@ -82,7 +74,7 @@
 
 `legacy/`、`hdhive/` 和 `telegram_runtime.py` 不是公开旧页面。当前 NasEmby 发现、资源搜索、网盘获取、可选 provider 或通知函数仍可能动态调用它们，因此保留源码与依赖。
 
-原核心管理路由和调用关系已经恢复，默认由 `MCC_PRESERVED_CORE_API_ENABLED=false` 隔离；原静态管理页不作为第二套生产页面注册，其源码作为迁移参考保留。当前 React 页面和统一 Python 安全边界已经提供配置状态、候选预览和受控单条转存接口；剩余自动执行器和实机验证见 `docs/CLOUD_ACQUISITION_PLAN.md`，逐接口映射见 `docs/CORE_API_CAPABILITY_MATRIX.md`。
+原核心管理路由和调用关系保留在当前 Python 源码中，默认由 `MCC_PRESERVED_CORE_API_ENABLED=false` 隔离；原静态管理页不作为第二套生产页面注册。当前 React 页面和统一 Python 安全边界已经提供配置状态、候选预览和受控单条转存接口；剩余自动执行器和实机验证见 `docs/ROADMAP.md`，逐接口映射见 `docs/CORE_API_CAPABILITY_MATRIX.md`。
 
 ## 5. 数据归属
 
@@ -96,7 +88,7 @@
 ## 6. 部署来源
 
 - 根 `Dockerfile`：Node 构建 React，Python 3.13 运行。
-- 根 `docker-compose.yml`：唯一服务、8787、`.env` 注入、三个持久目录和默认写保护。
+- 根 `docker-compose.yml`：唯一服务、8987、`.env` 注入、三个持久目录和默认写保护。
 - `.env.example`：唯一环境变量模板。
 
 `services/nasemby-core` 下不再保留第二份 Dockerfile 或环境模板。

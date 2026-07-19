@@ -1,6 +1,6 @@
 # Fluxa
 
-当前发布版本：`v0.2`。
+当前发布版本：`v0.2.1`。
 
 面向 fnOS / NAS 的个人影音中控。生产环境使用一个 Python / Flask / Gunicorn 后端，同时提供 React 页面、Mineradio 影院大厅、订阅中枢和外部服务聚合。
 
@@ -23,14 +23,14 @@ name: fluxa
 
 services:
   fluxa:
-    # Fluxa v0.2 镜像
-    image: ghcr.io/ebichuu/fluxa:v0.2
+    # Fluxa v0.2.1 镜像
+    image: ghcr.io/ebichuu/fluxa:v0.2.1
     container_name: fluxa
     restart: unless-stopped
 
     ports:
       # 宿主机端口:容器端口；需要改端口时只修改左侧
-      - "8787:8787"
+      - "8987:8987"
 
     # 账号、服务地址和功能开关统一放在 .env
     env_file:
@@ -39,7 +39,7 @@ services:
     # 固定运行参数，不需要在 .env 中重复填写
     environment:
       MCC_ENV: production
-      APP_PORT: "8787"
+      APP_PORT: "8987"
 
     volumes:
       # 配置与活动记录
@@ -51,7 +51,7 @@ services:
 
     healthcheck:
       # 容器内部健康检查
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8987/healthz', timeout=3)"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -79,13 +79,13 @@ docker compose up -d
 docker compose ps
 ```
 
-访问 `http://<服务器IP>:8787`。完整更新、日志、备份和回滚说明见 [Compose 部署文档](docs/DEPLOYMENT.md)。
+访问 `http://<服务器IP>:8987`。完整更新、日志、备份和回滚说明见 [Compose 部署文档](docs/DEPLOYMENT.md)。
 
 ## 架构
 
 ```text
 浏览器
-  → 8787
+  → 8987
   → Gunicorn / Flask
       ├─ 整站认证与安全边界
       ├─ React 静态页面
@@ -103,8 +103,8 @@ Node.js / Vite
 - `services/nasemby-core/app/`：统一 Python 后端和 NasEmby 业务源码。
 - `services/nasemby-core/tests/`：Python 回归测试。
 - `vendor/mineradio-public/`：影院大厅原始静态资源。
-- `docs/contracts/`：HTTP v1 机器契约。
-- `docs/references/`：只读参考资料，不参与运行。
+- `docs/contracts/`：HTTP v1 / v2 机器契约。
+- `docs/`：部署、架构、API 契约、实现来源和路线图。
 - `Dockerfile`、`docker-compose.yml`：唯一正式部署入口。
 
 `services/nasemby-core` 只是源码目录名称，不代表第二个服务或第二个容器。
@@ -129,7 +129,7 @@ python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-c
 npm test
 npm run build
 docker compose config --services
-docker build -t fluxa:v0.2 .
+docker build -t fluxa:v0.2.1 .
 ```
 
 自动测试使用临时目录和模拟客户端，不连接真实服务执行写操作，也不会向真实活动日志追加模拟记录。
@@ -169,9 +169,12 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 
 真实账号、密码、API Key 和 Token 只能放在未跟踪的 `.env` 或 fnOS 容器环境中，不能写入源码、前端、镜像或文档。
 
+## 致谢
+
+特别感谢 Mineradio 项目提供影院大厅源码与视觉基础。Fluxa 在保留其原始视觉体验的基础上完成了登录保护、媒体数据桥接与中控集成。
+
 ## 文档
 
-- [当前计划](docs/PLAN.md)
 - [系统框架](docs/FRAMEWORK.md)
 - [API 契约](docs/API_CONTRACT.md)
 - [HTTP v2 机器契约](docs/contracts/http-api-contract-v2.json)
@@ -179,14 +182,4 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - [部署与回滚](docs/DEPLOYMENT.md)
 - [实现来源](docs/IMPLEMENTATION_SOURCES.md)
 - [UI 规范](docs/UI_STANDARD.md)
-- [v2 收口与源码保留设计](docs/V2_CLEANUP_DESIGN.md)
-- [v2 源码与资料完整性清单](docs/V2_SOURCE_INVENTORY.md)
-- [v2 实施计划](docs/V2_IMPLEMENTATION_PLAN.md)
 - [未完成能力路线图](docs/ROADMAP.md)
-- [网盘订阅与获取计划](docs/CLOUD_ACQUISITION_PLAN.md)
-- [PT 主链收口设计](docs/superpowers/specs/2026-07-17-pt-primary-control-center-design.md)
-- [PT 主链实施计划](docs/superpowers/plans/2026-07-17-pt-primary-control-center-implementation-plan.md)
-- [SQLite 与 Torra 追更洗版设计](docs/superpowers/specs/2026-07-18-sqlite-torra-quality-upgrade-design.md)
-- [私人 PT RSS 种子库设计](docs/superpowers/specs/2026-07-18-private-pt-rss-seed-library-design.md)
-- [SQLite 与 RSS 种子库实施计划](docs/superpowers/plans/2026-07-18-sqlite-private-rss-seed-library-implementation-plan.md)
-- [Torra 追更洗版实施计划](docs/superpowers/plans/2026-07-18-torra-follow-up-rewash-implementation-plan.md)

@@ -9,7 +9,7 @@
 
 2026-07-17 恢复核心接口并修正动态 SQL 与固定 115 请求后，生产 Python 源码扫描结果为：0 个 Critical、0 个 High、2 个 Medium、1 个 Low，安全关卡通过。
 
-若把 `docs/references/nasemby-original-ui/` 的不运行参考快照也纳入扫描，会额外报告 64 个 `innerHTML` High。这些文件由 `.dockerignore` 排除，Flask 不注册对应静态路由；它们只用于核对原页面的接口调用关系。
+迁移期的不运行参考快照已从公开仓库清理，不进入当前生产扫描；统一入口也不注册原静态管理页面。
 
 ## 复核结论
 
@@ -21,11 +21,11 @@
 
 `legacy/tgto115.py` 和 `legacy/zhuli115.py` 只允许源码固定的 `my.115.com`、`webapi.115.com` 和 `act.115.com` 地址，不接受调用方提供主机。现已把地址改为明确常量，查询参数使用 `urlencode()`，所有相关请求增加超时；High 清零。该能力在实机前仍保持关闭。
 
-### 原 NasEmby 静态页面 `innerHTML`（64 个 High）
+### 迁移期 NasEmby 静态页面 `innerHTML`（64 个 High）
 
-原 `app/static/app.js` 大量使用模板字符串和 `innerHTML`。部分动态值经过 `escapeHtml`，但自动扫描无法证明完整数据流安全。
+迁移期原 `app/static/app.js` 大量使用模板字符串和 `innerHTML`。部分动态值经过 `escapeHtml`，但自动扫描无法证明完整数据流安全。
 
-统一入口不会把该页面嵌入或暴露给用户；媒体控制中心使用 React 渲染。原静态文件只作为页面内容迁移依据保留。统一端口放行冻结的公开兼容 API；原核心管理路由保留在 URL map 中但默认返回 `503 PRESERVED_CORE_API_DISABLED`，原静态页面路径仍不注册。
+统一入口不会把该页面嵌入或暴露给用户；Fluxa 使用 React 渲染，迁移期静态快照已从公开仓库清理。统一端口放行冻结的公开兼容 API；原核心管理路由保留在 URL map 中但默认返回 `503 PRESERVED_CORE_API_DISABLED`，原静态页面路径不注册。
 
 若未来改变决定并直接暴露原页面，必须重新进行逐点 XSS 审计，不能沿用本结论。
 
@@ -132,7 +132,7 @@
 
 ## 交付闸门
 
-- 8787 只允许受信局域网或 HTTPS 反向代理访问，公网不得直接暴露源站端口。
+- 8987 只允许受信局域网或 HTTPS 反向代理访问，公网不得直接暴露源站端口。
 - 阶段 9 的真实订阅闭环开始前，保持订阅写入、订阅调度和 Torra 推送关闭。
 
 ## 2026-07-18 SQLite 与私人 PT RSS 第一版安全复核
@@ -157,7 +157,7 @@
 
 ## 最终公开边界（2026-07-17）
 
-- 一个 Python/Gunicorn 容器、一个 8787 端口，最终镜像不含 Node。
+- 一个 Python/Gunicorn 容器、一个 8987 端口，最终镜像不含 Node。
 - 47 条冻结路由均由 Python 承载；42 条受保护路由逐条验证 401，所有受保护写路由逐条验证错误 Origin 为 403。
 - 115、Telegram、HDHive、缓存预热和 provider 核心入口逐条验证为默认 503；模拟测试可显式开启，Flask 原 `/static/*` 路由仍关闭。
 - 订阅保存、分类和改季只在临时台账测试；Torra 推送只使用模拟客户端。

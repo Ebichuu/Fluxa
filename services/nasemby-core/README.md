@@ -23,7 +23,7 @@ React、影院大厅、顶部导航和媒体队列不属于本模块的视觉实
 - Python 3.13。
 - Flask 3。
 - Gunicorn：一个 `gthread` worker、四个请求线程。
-- 生产端口：`8787`。
+- 生产端口：`8987`。
 - 本地 `python -m app.main` 默认端口：`12388`。
 
 生产不允许增加 Gunicorn worker 或横向副本。当前订阅台账和调度器没有多进程选主与并发写协调。
@@ -41,7 +41,7 @@ python -m app.main
 
 正式部署使用项目根 `Dockerfile` 与 `docker-compose.yml`。根镜像通过 Node 构建阶段生成 React，再复制到 Python 3.13 运行阶段；最终镜像没有 Node 可执行文件。
 
-原模块 Dockerfile 和环境样例保存在 `docs/references/original-project-omitted-7368790/` 供诊断参考。正式 fnOS 部署只使用项目根 Dockerfile 和 Compose，不启动第二个 Core 容器。
+正式部署只使用项目根 Dockerfile 和 Compose，不启动第二个 Core 容器；本目录不提供独立的 Docker 入口。
 
 ## 安全开关
 

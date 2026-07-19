@@ -111,7 +111,7 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 
 原 115、Telegram、HDHive、provider、缓存预热和 NasEmby 配置接口仍保留在源码与 Flask URL map 中，但不属于当前 47 条 React v1 契约。默认调用返回 `503 PRESERVED_CORE_API_DISABLED`；只允许在模拟测试中通过 `MCC_PRESERVED_CORE_API_ENABLED=true` 开启。
 
-NasEmby 原静态页面源码作为迁移参考保留，但不注册为第二套生产页面，因此 `/static/app.js` 仍返回 404。逐接口用途和副作用见 `docs/CORE_API_CAPABILITY_MATRIX.md`。
+NasEmby 原静态管理页不注册为第二套生产页面，迁移期静态快照不再保存在公开仓库，因此 `/static/app.js` 仍返回 404。逐接口用途和副作用见 `docs/CORE_API_CAPABILITY_MATRIX.md`。
 
 保留接口的守卫顺序固定为：未登录先返回 401；已登录但错误 Origin 的危险方法返回 403；通过认证和 Origin 后，在总开关关闭时返回 503。总开关只用于模拟兼容测试，不能代替后续每组动作的细分写闸门。
 

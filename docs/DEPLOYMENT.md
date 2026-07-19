@@ -3,7 +3,7 @@
 ## 1. 部署边界
 
 - 一个 `fluxa` 服务。
-- 一个宿主端口 `8787`。
+- 一个宿主端口 `8987`。
 - 一个 Python 3.13 / Gunicorn 运行时。
 - Node.js 只在镜像构建阶段生成 React `dist`。
 - `data/`、`db/`、`upload/` 统一持久化到 `MCC_DATA_ROOT`。
@@ -46,8 +46,8 @@ name: fluxa
 
 services:
   fluxa:
-    # 使用 GitHub Container Registry 发布的 v0.2 镜像
-    image: ghcr.io/ebichuu/fluxa:v0.2
+    # 使用 GitHub Container Registry 发布的 v0.2.1 镜像
+    image: ghcr.io/ebichuu/fluxa:v0.2.1
 
     # 固定容器名，便于在 fnOS 或命令行中定位
     container_name: fluxa
@@ -55,7 +55,7 @@ services:
 
     ports:
       # 宿主机端口:容器端口；只修改左侧即可更换访问端口
-      - "8787:8787"
+      - "8987:8987"
 
     # Emby、qB、Torra、Symedia、TMDB 和功能开关全部从这里读取
     env_file:
@@ -64,7 +64,7 @@ services:
     # 只有不会因用户配置改变的运行参数留在 Compose 中
     environment:
       MCC_ENV: production
-      APP_PORT: "8787"
+      APP_PORT: "8987"
 
     volumes:
       # 业务配置和活动记录
@@ -76,7 +76,7 @@ services:
 
     healthcheck:
       # 容器内部健康检查，不依赖宿主机端口映射
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8987/healthz', timeout=3)"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -118,15 +118,15 @@ docker compose ps
 docker compose logs --tail=100 fluxa
 ```
 
-Compose 会从 `.env` 读取全部服务配置，并拉取 `ghcr.io/ebichuu/fluxa:v0.2`。
+Compose 会从 `.env` 读取全部服务配置，并拉取 `ghcr.io/ebichuu/fluxa:v0.2.1`。
 
 访问：
 
 ```text
-http://<fnOS-IP>:8787
+http://<fnOS-IP>:8987
 ```
 
-公网必须使用 HTTPS 反向代理；8787 只允许反向代理或受信网络访问。
+公网必须使用 HTTPS 反向代理；8987 只允许反向代理或受信网络访问。
 
 更新镜像并重建容器：
 
