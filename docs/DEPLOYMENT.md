@@ -1,8 +1,8 @@
-# fnOS 单容器部署与回滚
+# Fluxa Compose 部署与回滚
 
 ## 1. 部署边界
 
-- 一个 `media-control-center` 服务。
+- 一个 `fluxa` 服务。
 - 一个宿主端口 `8787`。
 - 一个 Python 3.13 / Gunicorn 运行时。
 - Node.js 只在镜像构建阶段生成 React `dist`。
@@ -15,7 +15,7 @@
 在 fnOS 建立持久目录，例如：
 
 ```text
-/vol1/docker/media-control-center/
+/vol1/docker/fluxa/
   data/
   db/
   upload/
@@ -24,17 +24,71 @@
 复制 `.env.example` 为 `.env`，至少配置：
 
 ```env
+# Fluxa 登录密钥，至少 16 个字符
 MCC_ACCESS_KEY=至少16字符的随机值
-MCC_DATA_ROOT=/vol1/docker/media-control-center
-MCC_ALLOWED_ORIGINS=https://你的域名
-MCC_COOKIE_SECURE=true
+# 宿主机持久目录，内部需要 data、db、upload 三个子目录
+MCC_DATA_ROOT=/vol1/docker/fluxa
+# 使用域名访问时填写完整来源；仅局域网 IP 访问可以留空
+MCC_ALLOWED_ORIGINS=
+# HTTPS 填 true；局域网 HTTP 测试填 false
+MCC_COOKIE_SECURE=false
 ```
 
 按需要填写 Emby、qB、Torra、Symedia 和 TMDB 配置。`.env` 不得提交到 Git。
 
-## 3. 默认安全开关
+## 3. Docker Compose 配置
 
-Compose 固定：
+将以下内容保存为 `docker-compose.yml`。注释只用于说明，可以原样保留：
+
+```yaml
+# Compose 项目名，用于区分同一台机器上的其他容器项目
+name: fluxa
+
+services:
+  fluxa:
+    # 默认使用 GitHub Container Registry 发布的 v0.2 镜像
+    # 如需切换标签，可在 .env 中设置 MCC_IMAGE
+    image: ${MCC_IMAGE:-ghcr.io/ebichuu/fluxa:v0.2}
+
+    # 固定容器名，便于在 fnOS 或命令行中定位
+    container_name: fluxa
+    restart: unless-stopped
+
+    ports:
+      # 宿主机端口:容器端口；只修改左侧即可更换访问端口
+      - "8787:8787"
+
+    # Emby、qB、Torra、Symedia、TMDB 和功能开关全部从这里读取
+    env_file:
+      - .env
+
+    # 只有不会因用户配置改变的运行参数留在 Compose 中
+    environment:
+      MCC_ENV: production
+      APP_PORT: "8787"
+
+    volumes:
+      # 业务配置和活动记录
+      - ${MCC_DATA_ROOT:-./runtime}/data:/app/data
+      # SQLite 订阅台账、RSS 索引和缓存
+      - ${MCC_DATA_ROOT:-./runtime}/db:/app/db
+      # 上传文件和运行时临时资产
+      - ${MCC_DATA_ROOT:-./runtime}/upload:/app/upload
+
+    healthcheck:
+      # 容器内部健康检查，不依赖宿主机端口映射
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+```
+
+`docker-compose.yml`、`.env` 和持久目录可以放在同一部署目录中，例如 `/vol1/docker/fluxa/`。Compose 自动读取当前目录的 `.env` 解析 `MCC_IMAGE` 和 `MCC_DATA_ROOT`，并通过 `env_file` 将其余服务配置传入容器。
+
+## 4. 默认安全开关
+
+`.env.example` 默认关闭以下能力；复制为 `.env` 后会由 Compose 统一注入容器：
 
 ```env
 MCC_SUBSCRIPTION_SCHEDULER_ENABLED=false
@@ -55,13 +109,14 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 
 代码收口和首次部署阶段不要开启这些值。
 
-## 4. 构建与启动
+## 5. 首次启动
 
 ```bash
 docker compose config
 docker compose pull
 docker compose up -d
 docker compose ps
+docker compose logs --tail=100 fluxa
 ```
 
 Compose 会从 `.env` 读取全部服务配置，默认拉取 `ghcr.io/ebichuu/fluxa:v0.2`。本地构建时将 `MCC_IMAGE` 改为本地镜像标签即可。
@@ -74,7 +129,27 @@ http://<fnOS-IP>:8787
 
 公网必须使用 HTTPS 反向代理；8787 只允许反向代理或受信网络访问。
 
-## 5. 只读验收
+更新镜像并重建容器：
+
+```bash
+docker compose pull
+docker compose up -d
+docker compose ps
+```
+
+持续查看日志：
+
+```bash
+docker compose logs -f --tail=100 fluxa
+```
+
+停止并删除容器，但保留宿主机持久目录：
+
+```bash
+docker compose down
+```
+
+## 6. 只读验收
 
 1. `/healthz` 返回 200。
 2. 未登录业务 API 返回 401。
@@ -87,7 +162,7 @@ http://<fnOS-IP>:8787
 9. 容器进程只有 Gunicorn/Python，容器内找不到 Node。
 10. 重启后健康恢复，持久目录中的标记或数据仍存在。
 
-## 6. 备份
+## 7. 备份
 
 升级或开启任何写能力前备份整个 `MCC_DATA_ROOT`：
 
@@ -99,7 +174,7 @@ upload/
 
 不要只备份某一个订阅 JSON，也不要手工合并两份台账。
 
-## 7. 回滚
+## 8. 回滚
 
 1. 停止当前容器。
 2. 恢复上一份已验证镜像或 v2 Git 提交。
@@ -107,7 +182,7 @@ upload/
 4. 如数据已经发生写入，先恢复完整持久目录备份，再启动旧镜像。
 5. 确认只有一个容器和一套调度器运行。
 
-## 8. 以后实机写入顺序
+## 9. 以后实机写入顺序
 
 等待用户明确进入实机窗口后：
 
@@ -122,7 +197,7 @@ upload/
 9. MoviePilot 仅在相关观察窗口全部到期、Torra/qB 预检通过并另行批准单条动作后，临时开启 `MCC_MOVIEPILOT_BACKUP_ENABLED`；不得与 Torra 并行下载。
 10. 自动云盘兜底、MoviePilot 自动调度和后台执行器继续关闭。
 
-## 9. 2026-07-18 本地候选镜像记录
+## 10. 2026-07-18 本地候选镜像记录
 
 - 源提交：`bde3eba`。
 - 镜像：`media-control-center:v2-pt-rc-bde3eba`。
@@ -137,7 +212,7 @@ upload/
 
 以上仅为本机隔离验收，不代表 fnOS、Torra、qB、115、Symedia 或 Emby 的真实链路已经验证。临时容器和测试目录已清理，只保留候选镜像。
 
-## 10. SQLite 首次部署与 Torra 追更洗版前置条件
+## 11. SQLite 首次部署与 Torra 追更洗版前置条件
 
 旧候选镜像 `media-control-center:v2-pt-rc-bde3eba` 使用 JSON 订阅台账。2026-07-18 已完成 SQLite/RSS 第一版候选 `media-control-center:sqlite-rss-preview`，并在收集器和迁移硬化后重建 `media-control-center:sqlite-rss-hardened`。用户已确认 fnOS 没有需要保留的旧订阅或配置数据，本次首次部署使用空 SQLite，不执行真实 JSON 差异迁移：
 

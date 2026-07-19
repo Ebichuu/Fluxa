@@ -101,11 +101,13 @@ docker compose up -d
 
 本地构建时可先执行 `docker build -t fluxa:v0.2 .`，再将 `.env` 中的 `MCC_IMAGE` 改为 `fluxa:v0.2`。
 
+完整目录准备、带中文注释的 Compose 配置、更新、日志和回滚命令见 [Compose 部署文档](docs/DEPLOYMENT.md)。
+
 访问 `http://<fnOS-IP>:8787`。公网必须使用 HTTPS 反向代理并限制源站端口。
 
 ## 默认写保护
 
-Compose 固定关闭：
+`.env.example` 默认关闭以下能力，Compose 会从 `.env` 注入容器：
 
 ```env
 MCC_SUBSCRIPTION_SCHEDULER_ENABLED=false
