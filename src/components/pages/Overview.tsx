@@ -18,6 +18,7 @@ import type { MediaCategory, SubscriptionItem } from '../../types/subscriptions'
 import { localDateKey, monthsInDateRange } from '../../utils/dateRanges';
 import { formatEta, formatPercent, formatSpeed, formatTimeAgo } from '../../utils/formatters';
 import type { PageId } from '../layout/AppTopNav';
+import { usePolling } from '../../hooks/usePolling';
 
 interface OverviewProps {
   onNavigate: (page: PageId) => void;
@@ -71,30 +72,49 @@ export function Overview({ onNavigate }: OverviewProps) {
   const [symedia, setSymedia] = useState<SymediaSummary | null>(null);
   const [metrics, setMetrics] = useState<SystemMetricsResponse | null>(null);
 
+  const loadLive = async (signal: AbortSignal) => {
+    const options = { signal };
+    const [qbResult, embyResult, torraResult, symediaResult] = await Promise.allSettled([
+      getQbittorrentSummary(options),
+      getEmbyOverview(options),
+      getTorraSummary(options),
+      getSymediaSummary(options)
+    ]);
+    if (signal.aborted) return;
+    if (qbResult.status === 'fulfilled') setQb(qbResult.value);
+    if (embyResult.status === 'fulfilled') setEmby(embyResult.value);
+    if (torraResult.status === 'fulfilled') setTorra(torraResult.value);
+    if (symediaResult.status === 'fulfilled') setSymedia(symediaResult.value);
+  };
+
+  const loadMetrics = async (signal: AbortSignal) => {
+    try {
+      const value = await getSystemMetrics({ signal });
+      if (!signal.aborted) setMetrics(value);
+    } catch {
+      // 保留上一次有效指标，短暂网络失败不伪装成系统无数据。
+    }
+  };
+
+  usePolling(loadLive, 15000);
+  usePolling(loadMetrics, 60000);
+
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
 
-    const loadLive = () => {
-      getQbittorrentSummary().then((value) => !cancelled && setQb(value)).catch(() => !cancelled && setQb(null));
-      getEmbyOverview().then((value) => !cancelled && setEmby(value)).catch(() => !cancelled && setEmby(null));
-      getTorraSummary().then((value) => !cancelled && setTorra(value)).catch(() => !cancelled && setTorra(null));
-      getSymediaSummary().then((value) => !cancelled && setSymedia(value)).catch(() => !cancelled && setSymedia(null));
-    };
-
-    loadLive();
-    const timer = window.setInterval(loadLive, 15000);
-
-    getSubscriptionItems(true)
+    getSubscriptionItems(true, { signal: controller.signal })
       .then((payload) => {
-        if (!cancelled && payload.configured && payload.subscriptions) setSubs(payload.subscriptions.items);
+        if (!controller.signal.aborted && payload.configured && payload.subscriptions) setSubs(payload.subscriptions.items);
       })
-      .catch(() => !cancelled && setSubs([]));
+      .catch(() => undefined);
 
     const now = new Date();
     const endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 3);
-    Promise.all(monthsInDateRange(now, endDate).map(({ year, month }) => getSubscriptionCalendar(year, month)))
+    Promise.all(monthsInDateRange(now, endDate).map(({ year, month }) =>
+      getSubscriptionCalendar(year, month, 'all', { signal: controller.signal })
+    ))
       .then((payloads) => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         const calendars = payloads.filter((payload) => payload.configured && payload.calendar).map((payload) => payload.calendar!);
         if (calendars.length === 0) return;
         const start = localDateKey(now);
@@ -103,27 +123,9 @@ export function Overview({ onNavigate }: OverviewProps) {
           calendars.flatMap((calendar) => calendar.entries).filter((entry) => entry.date >= start && entry.date <= end).length
         );
       })
-      .catch(() => !cancelled && setUpcomingCount(null));
+      .catch(() => undefined);
 
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    const loadMetrics = () => {
-      getSystemMetrics()
-        .then((value) => !cancelled && setMetrics(value))
-        .catch(() => !cancelled && setMetrics(null));
-    };
-    loadMetrics();
-    const timer = window.setInterval(loadMetrics, 60000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
+    return () => controller.abort();
   }, []);
 
   const downloading = useMemo(
@@ -173,8 +175,9 @@ export function Overview({ onNavigate }: OverviewProps) {
     <main className="work-page ops-page ops-page--overview">
       <section className="ops-hero">
         <div>
-          <p className="ops-eyebrow">总览 · PT 主链</p>
-          <h1>从订阅到入库，一眼看清进度。</h1>
+          <p className="ops-eyebrow">PT 主链</p>
+          <h1>总览</h1>
+          <p className="ops-page-subtitle">从订阅到入库，一眼看清进度。</p>
           <p className="ops-deck">这里汇总正在下载、等待整理和已经入库的内容；需要处理时再进入任务中心。</p>
         </div>
         <button className={healthy ? 'ops-command ops-command--ok' : 'ops-command ops-command--warn'} type="button" onClick={() => onNavigate('tasks')}>

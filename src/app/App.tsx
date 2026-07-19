@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AppTopNav, type PageId } from '../components/layout/AppTopNav';
+import { AppTopNav, type PageId, type ThemeMode } from '../components/layout/AppTopNav';
 import { MediaHall } from '../components/media-hall/MediaHall';
 import { CalendarPage } from '../components/pages/CalendarPage';
 import { ControlRoom } from '../components/pages/ControlRoom';
@@ -14,9 +14,22 @@ import type { HealthResponse } from '../types/media';
 import { defaultVisualFx, normalizeVisualFx } from '../types/visualFx';
 
 const VISUAL_FX_VERSION = '4';
+const THEME_STORAGE_KEY = 'mcc-ui-theme';
+
+function initialTheme(): ThemeMode {
+  try {
+    const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (saved === 'dark' || saved === 'light') return saved;
+  } catch {
+    // Theme switching still works for the current session when storage is unavailable.
+  }
+
+  return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
 
 export function App() {
   const [page, setPage] = useState<PageId>('hall');
+  const [theme, setTheme] = useState<ThemeMode>(initialTheme);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [visualFx, setVisualFx] = useState(() => {
     try {
@@ -76,9 +89,41 @@ export function App() {
     window.localStorage.setItem('hallVisualPreset', String(visualFx.preset));
   }, [visualFx]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // Keep the in-memory choice when storage is unavailable.
+    }
+  }, [theme]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (page === 'hall') {
+      delete root.dataset.workbenchTheme;
+    } else {
+      root.dataset.workbenchTheme = theme;
+    }
+
+    return () => {
+      delete root.dataset.workbenchTheme;
+    };
+  }, [page, theme]);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  }, [page]);
+
   return (
-    <div className={`app-shell app-shell--${page}`}>
-      <AppTopNav activePage={page} health={health} onNavigate={setPage} />
+    <div className={`app-shell app-shell--${page}`} data-theme={page === 'hall' ? undefined : theme}>
+      <AppTopNav
+        activePage={page}
+        health={health}
+        onNavigate={setPage}
+        onToggleTheme={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')}
+        showThemeToggle={page !== 'hall'}
+        theme={theme}
+      />
       {page === 'overview' && <Overview onNavigate={setPage} />}
       {page === 'hall' && (
         <MediaHall

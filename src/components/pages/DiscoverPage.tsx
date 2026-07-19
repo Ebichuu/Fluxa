@@ -1,24 +1,35 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Ban, Check, ChevronLeft, ChevronRight, Database, ExternalLink, FileSearch, Plus, RefreshCcw, RotateCcw, Search, Send, SlidersHorizontal, Trash2, X } from 'lucide-react';
+import { Ban, Check, ChevronLeft, ChevronRight, Database, Download, ExternalLink, FileSearch, Pause, Play, Plus, RefreshCcw, RotateCcw, Search, Send, SlidersHorizontal, Trash2, X } from 'lucide-react';
 import {
   blockSubscription,
   browseDiscover,
   deleteSubscription,
+  getAutomationAction,
+  getMoviePilotPreview,
+  getSubscriptionQualityWatch,
   getSubscriptionDetail,
   getSubscriptionItems,
   getTorraPushPreview,
   pushSubscriptionToTorra,
+  pushToMoviePilot,
   runSubscriptionSweep,
   saveSubscription,
   searchDiscover,
   searchDiscoverResources,
   setSubscriptionSeason,
-  unblockSubscription
+  startTorraRewashAnalysis,
+  startTorraRewashDownload,
+  unblockSubscription,
+  updateSubscriptionQualityWatch
 } from '../../services/api';
+import type { AutomationAction } from '../../types/rssSeedLibrary';
 import type {
   DiscoverBrowseParams,
   DiscoverResourceItem,
   DiscoverResourceResponse,
+  MoviePilotPreview,
+  MoviePilotPushResult,
+  QualityWatchResponse,
   DiscoverResult,
   SubscriptionDetailResponse,
   SubscriptionItem,
@@ -26,6 +37,7 @@ import type {
 } from '../../types/subscriptions';
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
 import type { PageId } from '../layout/AppTopNav';
+import { ConfirmDialog } from '../layout/ConfirmDialog';
 
 interface DiscoverPageProps {
   onNavigate: (page: PageId) => void;
@@ -276,6 +288,15 @@ type SubscriptionTab = 'movie' | 'tv' | 'blocked';
 type SubscriptionStatusFilter = 'all' | 'pending' | 'done';
 type SubscriptionUpdateFilter = 'all' | 'today' | '3' | '7';
 
+interface DiscoverConfirmation {
+  signal: string;
+  title: string;
+  description: string;
+  confirmLabel: string;
+  destructive?: boolean;
+  onConfirm: () => void;
+}
+
 function resolvedSubscriptionStatus(item: SubscriptionItem) {
   if (item.status) return item.status;
   const match = item.progressText.match(/^(\d+)\/(\d+)$/);
@@ -295,6 +316,44 @@ function subscriptionUpdateLabel(value: string) {
   if (!Number.isFinite(days)) return '更新时间未知';
   if (days === 0) return '今天更新';
   return `${days} 天前更新`;
+}
+
+const terminalAutomationStates = new Set(['succeeded', 'failed', 'cancelled']);
+
+function watchStateLabel(state: string) {
+  const labels: Record<string, string> = {
+    waiting_first_version: '等待首个版本',
+    waiting_library_baseline: '等待入库基线',
+    observing_upgrade: '观察升级中',
+    search_due: '等待分析',
+    search_running: '分析进行中',
+    target_reached: '已达到目标',
+    observation_expired: '观察已结束',
+    paused: '已暂停',
+    blocked: '已阻塞'
+  };
+  return labels[state] || state || '未知状态';
+}
+
+function unitLabel(unit: QualityWatchResponse['units'][number]) {
+  if (unit.episodeNumber != null) {
+    return `S${String(unit.seasonNumber ?? 1).padStart(2, '0')}E${String(unit.episodeNumber).padStart(2, '0')}`;
+  }
+  if (unit.seasonNumber != null) return `S${String(unit.seasonNumber).padStart(2, '0')}`;
+  return '整部电影';
+}
+
+function automationStatusLabel(action: AutomationAction | null) {
+  if (!action) return '';
+  if (action.status === 'succeeded') {
+    if (action.type === 'rewash-download') return '候选下载已完成';
+    return (action.result?.selectedCount ?? 0) > 0
+      ? `分析已完成，发现 ${action.result?.selectedCount} 个升级候选`
+      : '分析已完成，没有升级候选';
+  }
+  if (action.status === 'failed') return action.error?.message || '动作失败';
+  if (action.status === 'cancelled') return '动作已取消';
+  return action.type === 'rewash-download' ? '候选下载执行中' : 'Torra 分析执行中';
 }
 
 export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProps) {
@@ -336,6 +395,17 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
   const [torraPushPreview, setTorraPushPreview] = useState<TorraPushPreviewResponse | null>(null);
   const [torraPushMessage, setTorraPushMessage] = useState('');
   const [torraPushBusy, setTorraPushBusy] = useState('');
+  const [qualityWatch, setQualityWatch] = useState<QualityWatchResponse | null>(null);
+  const [qualityWatchBusy, setQualityWatchBusy] = useState('');
+  const [qualityWatchMessage, setQualityWatchMessage] = useState('');
+  const [selectedUnitId, setSelectedUnitId] = useState('');
+  const [automationAction, setAutomationAction] = useState<AutomationAction | null>(null);
+  const [moviePilotPreview, setMoviePilotPreview] = useState<MoviePilotPreview | null>(null);
+  const [moviePilotBusy, setMoviePilotBusy] = useState('');
+  const [moviePilotMessage, setMoviePilotMessage] = useState('');
+  const [confirmation, setConfirmation] = useState<DiscoverConfirmation | null>(null);
+  const automationRequestRef = useRef<AbortController | null>(null);
+  const detailRequestRef = useRef<AbortController | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadSubs = useCallback(() => {
@@ -360,6 +430,11 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
     const focusSearch = () => searchInputRef.current?.focus();
     window.addEventListener('mcc:focus-discover-search', focusSearch);
     return () => window.removeEventListener('mcc:focus-discover-search', focusSearch);
+  }, []);
+
+  useEffect(() => () => {
+    automationRequestRef.current?.abort();
+    detailRequestRef.current?.abort();
   }, []);
 
   const applyPayload = useCallback((payload: Awaited<ReturnType<typeof browseDiscover>>) => {
@@ -508,45 +583,77 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
       genreIds: result.genreIds,
       originCountry: result.originCountry
     };
-    if (!window.confirm(`确认订阅《${payload.title}》？\n保存后会按 PT 优先策略自动获取。`)) return;
-    setSubscriptionAction(`save:${payload.mediaType}:${payload.tmdbId}`);
-    saveSubscription(payload)
-      .then(() => {
-        setSweepMessage(`已保存订阅：${payload.title}`);
-        loadSubs();
-      })
-      .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '保存订阅失败'))
-      .finally(() => setSubscriptionAction(''));
+    setConfirmation({
+      signal: '自动订阅',
+      title: `订阅《${payload.title}》？`,
+      description: '保存后会按 PT 优先策略自动获取，后续进度会回到任务中心。',
+      confirmLabel: '确认订阅',
+      onConfirm: () => {
+        setSubscriptionAction(`save:${payload.mediaType}:${payload.tmdbId}`);
+        saveSubscription(payload)
+          .then(() => {
+            setSweepMessage(`已保存订阅：${payload.title}`);
+            loadSubs();
+          })
+          .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '保存订阅失败'))
+          .finally(() => setSubscriptionAction(''));
+      }
+    });
   };
 
   const runSweep = () => {
-    if (!window.confirm('确认立即检查一轮自动订阅？')) return;
-    setSubscriptionAction('run');
-    runSubscriptionSweep()
-      .then(() => {
-        setSweepMessage('已触发 NasEmby 执行一轮，列表正在重新读取。');
-        loadSubs();
-      })
-      .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '执行失败'))
-      .finally(() => setSubscriptionAction(''));
+    setConfirmation({
+      signal: '自动订阅',
+      title: '立即检查一轮自动订阅？',
+      description: '这会读取当前规则和来源，提交一轮后台检查，不会改变现有订阅。',
+      confirmLabel: '开始检查',
+      onConfirm: () => {
+        setSubscriptionAction('run');
+        runSubscriptionSweep()
+          .then(() => {
+            setSweepMessage('已触发 NasEmby 执行一轮，列表正在重新读取。');
+            loadSubs();
+          })
+          .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '执行失败'))
+          .finally(() => setSubscriptionAction(''));
+      }
+    });
   };
 
   const removeSubscription = (item: SubscriptionItem) => {
-    if (!item.id || !window.confirm(`确认删除订阅《${item.title}》？\n删除后不会加入屏蔽列表。`)) return;
-    setSubscriptionAction(`delete:${item.id}`);
-    deleteSubscription(item.id)
-      .then(() => { closeDetail(); loadSubs(); setSweepMessage(`已删除订阅：${item.title}`); })
-      .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '删除失败'))
-      .finally(() => setSubscriptionAction(''));
+    if (!item.id) return;
+    setConfirmation({
+      signal: '订阅管理',
+      title: `删除《${item.title}》？`,
+      description: '删除后不会加入屏蔽列表；如果之后来源再次命中，仍可能重新出现。',
+      confirmLabel: '删除订阅',
+      destructive: true,
+      onConfirm: () => {
+        setSubscriptionAction(`delete:${item.id}`);
+        deleteSubscription(item.id!)
+          .then(() => { closeDetail(); loadSubs(); setSweepMessage(`已删除订阅：${item.title}`); })
+          .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '删除失败'))
+          .finally(() => setSubscriptionAction(''));
+      }
+    });
   };
 
   const blockItem = (item: SubscriptionItem) => {
-    if (!item.id || !window.confirm(`确认删除并屏蔽《${item.title}》？\n自动订阅后续会跳过这个标题。`)) return;
-    setSubscriptionAction(`block:${item.id}`);
-    blockSubscription({ id: item.id, title: item.title })
-      .then(() => { closeDetail(); loadSubs(); setSweepMessage(`已屏蔽订阅：${item.title}`); })
-      .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '屏蔽失败'))
-      .finally(() => setSubscriptionAction(''));
+    if (!item.id) return;
+    setConfirmation({
+      signal: '订阅管理',
+      title: `删除并屏蔽《${item.title}》？`,
+      description: '自动订阅后续会跳过这个标题，直到你在屏蔽列表中取消屏蔽。',
+      confirmLabel: '删除并屏蔽',
+      destructive: true,
+      onConfirm: () => {
+        setSubscriptionAction(`block:${item.id}`);
+        blockSubscription({ id: item.id!, title: item.title })
+          .then(() => { closeDetail(); loadSubs(); setSweepMessage(`已屏蔽订阅：${item.title}`); })
+          .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '屏蔽失败'))
+          .finally(() => setSubscriptionAction(''));
+      }
+    });
   };
 
   const unblockItem = (title: string) => {
@@ -558,12 +665,20 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
   };
 
   const changeSeason = (item: SubscriptionItem, seasonNumber: number, seasonName?: string) => {
-    if (!item.id || !window.confirm(`确认把《${item.title}》改为订阅第 ${seasonNumber} 季？`)) return;
-    setSubscriptionAction(`season:${item.id}`);
-    setSubscriptionSeason(item.id, seasonNumber, seasonName)
-      .then(() => { closeDetail(); loadSubs(); setSweepMessage(`已更新订阅季：${item.title} · S${seasonNumber}`); })
-      .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '更新订阅季失败'))
-      .finally(() => setSubscriptionAction(''));
+    if (!item.id) return;
+    setConfirmation({
+      signal: '订阅管理',
+      title: `改为订阅《${item.title}》第 ${seasonNumber} 季？`,
+      description: '当前订阅季会被替换，下载和入库规则将按新季继续处理。',
+      confirmLabel: '切换订阅季',
+      onConfirm: () => {
+        setSubscriptionAction(`season:${item.id}`);
+        setSubscriptionSeason(item.id!, seasonNumber, seasonName)
+          .then(() => { closeDetail(); loadSubs(); setSweepMessage(`已更新订阅季：${item.title} · S${seasonNumber}`); })
+          .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '更新订阅季失败'))
+          .finally(() => setSubscriptionAction(''));
+      }
+    });
   };
 
   const previewTorraPush = (item: SubscriptionItem) => {
@@ -591,13 +706,149 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
       .finally(() => setTorraPushBusy(''));
   };
 
+  const pollAutomationAction = async (actionId: string) => {
+    automationRequestRef.current?.abort();
+    const controller = new AbortController();
+    automationRequestRef.current = controller;
+    try {
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const action = await getAutomationAction(actionId, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        setAutomationAction(action);
+        if (terminalAutomationStates.has(action.status)) return;
+        await new Promise<void>((resolve) => {
+          const timer = window.setTimeout(resolve, 1500);
+          controller.signal.addEventListener('abort', () => {
+            window.clearTimeout(timer);
+            resolve();
+          }, { once: true });
+        });
+      }
+      if (!controller.signal.aborted) setQualityWatchMessage('动作仍在后台执行，可稍后重新打开详情查看结果。');
+    } catch (reason) {
+      if (!controller.signal.aborted) {
+        setQualityWatchMessage(reason instanceof Error ? reason.message : '自动化动作状态读取失败');
+      }
+    } finally {
+      if (automationRequestRef.current === controller) automationRequestRef.current = null;
+    }
+  };
+
+  const updateQualityWatch = (item: SubscriptionItem, input: { paused?: boolean; windowHours?: 24 | 48; scheduleMinutes?: number[] }) => {
+    if (!item.id) return;
+    setQualityWatchBusy(`update:${item.id}`);
+    setQualityWatchMessage('');
+    updateSubscriptionQualityWatch(item.id, input)
+      .then((payload) => {
+        setQualityWatch(payload);
+        setSelectedUnitId((current) => current || payload.units[0]?.id || '');
+        setQualityWatchMessage(input.paused === undefined ? '质量观察设置已保存' : input.paused ? '质量观察已暂停' : '质量观察已恢复');
+      })
+      .catch((reason: unknown) => setQualityWatchMessage(reason instanceof Error ? reason.message : '质量观察设置失败'))
+      .finally(() => setQualityWatchBusy(''));
+  };
+
+  const startAnalysis = (item: SubscriptionItem) => {
+    if (!item.id) return;
+    setQualityWatchBusy(`analysis:${item.id}`);
+    setQualityWatchMessage('正在提交 Torra 质量分析…');
+    setAutomationAction(null);
+    startTorraRewashAnalysis(item.id, {
+      idempotencyKey: window.crypto.randomUUID(),
+      ...(selectedUnitId ? { unitId: selectedUnitId } : {})
+    })
+      .then((action) => {
+        setAutomationAction(action);
+        setQualityWatchMessage(automationStatusLabel(action));
+        void pollAutomationAction(action.id);
+      })
+      .catch((reason: unknown) => setQualityWatchMessage(reason instanceof Error ? reason.message : 'Torra 分析提交失败'))
+      .finally(() => setQualityWatchBusy(''));
+  };
+
+  const startDownload = (item: SubscriptionItem) => {
+    if (!item.id || !automationAction || automationAction.status !== 'succeeded' || automationAction.type !== 'rewash-analysis') return;
+    const itemId = item.id;
+    const analysis = automationAction;
+    setConfirmation({
+      signal: '质量升级',
+      title: `下载《${item.title}》的升级候选？`,
+      description: '这会把人工分析选中的候选交给 Torra 下载，原有入库版本不会立即删除。',
+      confirmLabel: '确认下载',
+      onConfirm: () => {
+        setQualityWatchBusy(`download:${itemId}`);
+        setQualityWatchMessage('正在提交 Torra 候选下载…');
+        startTorraRewashDownload(itemId, {
+          confirm: true,
+          idempotencyKey: window.crypto.randomUUID(),
+          analysisActionId: analysis.id,
+          ...((analysis.unitId || selectedUnitId) ? { unitId: analysis.unitId || selectedUnitId } : {})
+        })
+          .then((action) => {
+            setAutomationAction(action);
+            setQualityWatchMessage(automationStatusLabel(action));
+            void pollAutomationAction(action.id);
+          })
+          .catch((reason: unknown) => setQualityWatchMessage(reason instanceof Error ? reason.message : 'Torra 候选下载提交失败'))
+          .finally(() => setQualityWatchBusy(''));
+      }
+    });
+  };
+
+  const previewMoviePilot = (item: SubscriptionItem) => {
+    if (!item.id) return;
+    setMoviePilotBusy(`preview:${item.id}`);
+    setMoviePilotMessage('正在检查 MoviePilot 备用条件…');
+    setMoviePilotPreview(null);
+    getMoviePilotPreview(item.id)
+      .then((preview) => {
+        setMoviePilotPreview(preview);
+        setMoviePilotMessage(preview.ready ? 'MoviePilot 备用条件已满足' : preview.blockers.join('；'));
+      })
+      .catch((reason: unknown) => setMoviePilotMessage(reason instanceof Error ? reason.message : 'MoviePilot 预览失败'))
+      .finally(() => setMoviePilotBusy(''));
+  };
+
+  const confirmMoviePilot = (item: SubscriptionItem) => {
+    if (!item.id || !moviePilotPreview?.ready) return;
+    const itemId = item.id;
+    setConfirmation({
+      signal: '备用通道',
+      title: `将《${item.title}》交给 MoviePilot？`,
+      description: '这只会执行已通过预检的备用推送，不会改变 Torra 作为默认主通道的优先级。',
+      confirmLabel: '确认备用推送',
+      onConfirm: () => {
+        setMoviePilotBusy(`push:${itemId}`);
+        setMoviePilotMessage('正在执行 MoviePilot 备用推送…');
+        pushToMoviePilot(itemId, window.crypto.randomUUID())
+          .then((result: MoviePilotPushResult) => {
+            setMoviePilotMessage(result.message);
+            setSweepMessage(`${item.title}：${result.message}`);
+            loadSubs();
+          })
+          .catch((reason: unknown) => setMoviePilotMessage(reason instanceof Error ? reason.message : 'MoviePilot 备用推送失败'))
+          .finally(() => setMoviePilotBusy(''));
+      }
+    });
+  };
+
   const closeDetail = () => {
+    automationRequestRef.current?.abort();
+    detailRequestRef.current?.abort();
     setDetailId(null);
     setDetail(null);
     setDetailSeason(null);
     setTorraPushPreview(null);
     setTorraPushMessage('');
     setTorraPushBusy('');
+    setQualityWatch(null);
+    setQualityWatchBusy('');
+    setQualityWatchMessage('');
+    setSelectedUnitId('');
+    setAutomationAction(null);
+    setMoviePilotPreview(null);
+    setMoviePilotBusy('');
+    setMoviePilotMessage('');
   };
 
   const openDetail = (item: SubscriptionItem) => {
@@ -608,20 +859,44 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
       closeDetail();
       return;
     }
+    detailRequestRef.current?.abort();
+    const controller = new AbortController();
     setDetailId(item.id);
     setDetail(null);
+    setQualityWatch(null);
+    setAutomationAction(null);
+    setMoviePilotPreview(null);
+    setQualityWatchMessage('');
+    setMoviePilotMessage('');
     setDetailSeason(null);
+    setSelectedUnitId('');
     setDetailLoading(true);
     setTorraPushPreview(null);
     setTorraPushMessage('');
-    getSubscriptionDetail(item.id)
-      .then((payload) => {
-        setDetail(payload);
-        const firstSeason = payload.seasons[0];
-        setDetailSeason(firstSeason?.seasonNumber ?? firstSeason?.season_number ?? null);
+    Promise.allSettled([
+      getSubscriptionDetail(item.id, undefined, { signal: controller.signal }),
+      getSubscriptionQualityWatch(item.id, { signal: controller.signal })
+    ])
+      .then(([detailResult, watchResult]) => {
+        if (controller.signal.aborted) return;
+        if (detailResult.status === 'fulfilled') {
+          setDetail(detailResult.value);
+          const firstSeason = detailResult.value.seasons[0];
+          setDetailSeason(firstSeason?.seasonNumber ?? firstSeason?.season_number ?? null);
+        } else {
+          setDetail(null);
+        }
+        if (watchResult.status === 'fulfilled') {
+          setQualityWatch(watchResult.value);
+          setSelectedUnitId(watchResult.value.units[0]?.id || '');
+        } else {
+          setQualityWatchMessage(watchResult.reason instanceof Error ? watchResult.reason.message : '质量观察状态暂不可用');
+        }
       })
-      .catch(() => setDetail(null))
-      .finally(() => setDetailLoading(false));
+      .finally(() => {
+        if (!controller.signal.aborted) setDetailLoading(false);
+        if (detailRequestRef.current === controller) detailRequestRef.current = null;
+      });
   };
 
   const openResourceSearch = (result: DiscoverResult) => {
@@ -683,8 +958,9 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
     <main className={subscriptionsOnly ? 'work-page ops-page ops-page--discover ops-page--subscriptions' : 'work-page ops-page ops-page--discover'}>
       <section className="ops-hero ops-hero--discover">
         <div>
-          <p className="ops-eyebrow">{subscriptionsOnly ? '订阅 · 自动获取' : '发现 · 找片'}</p>
-          <h1>{subscriptionsOnly ? '管理正在追的电影和剧集。' : '找到想看的内容，加入订阅即可。'}</h1>
+          <p className="ops-eyebrow">{subscriptionsOnly ? '自动获取' : '找片'}</p>
+          <h1>{subscriptionsOnly ? '订阅' : '发现'}</h1>
+          <p className="ops-discover-subtitle">{subscriptionsOnly ? '管理正在追的电影和剧集。' : '找到想看的内容，加入订阅即可。'}</p>
           <p className="ops-deck">{subscriptionsOnly ? '在这里查看进度、调整季数或重新交给 Torra；后续下载和入库会自动回到任务中心。' : '可以浏览榜单、国内平台和海外流媒体；加入订阅后由 PT 主线继续处理。'}</p>
         </div>
         <div className="ops-discover-policy">
@@ -1228,6 +1504,95 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                       )}
                     </>
                   )}
+                  <section className="sub-detail__section quality-watch-panel">
+                    <div className="quality-watch-panel__head">
+                      <div><strong>质量观察与人工追更</strong><small>{qualityWatch ? `${qualityWatch.policy.windowHours} 小时观察窗口` : '读取中'}</small></div>
+                      {qualityWatch && (
+                        <span className={qualityWatch.paused ? 'state-chip' : 'state-chip state-chip--ok'}>
+                          {qualityWatch.paused ? '已暂停' : '观察中'}
+                        </span>
+                      )}
+                    </div>
+                    {qualityWatch && qualityWatch.units.length > 0 ? (
+                      <>
+                        {qualityWatch.units.length > 1 && (
+                          <label className="quality-watch-panel__unit">
+                            观察单元
+                            <select aria-label="选择质量观察单元" value={selectedUnitId} onChange={(event) => setSelectedUnitId(event.target.value)}>
+                              {qualityWatch.units.map((unit) => <option key={unit.id} value={unit.id}>{unitLabel(unit)} · {watchStateLabel(unit.state)}</option>)}
+                            </select>
+                          </label>
+                        )}
+                        <div className="quality-watch-panel__units">
+                          {qualityWatch.units.slice(0, 4).map((unit) => (
+                            <span key={unit.id}><b>{unitLabel(unit)}</b><small>{watchStateLabel(unit.state)}</small></span>
+                          ))}
+                        </div>
+                        <div className="quality-watch-panel__actions">
+                          <button
+                            className="tool-link"
+                            disabled={qualityWatchBusy === `update:${item.id}` || Boolean(automationAction && !terminalAutomationStates.has(automationAction.status))}
+                            type="button"
+                            onClick={() => updateQualityWatch(item, { paused: !qualityWatch.paused })}
+                          >
+                            {qualityWatch.paused ? <Play size={13} /> : <Pause size={13} />}
+                            {qualityWatch.paused ? '恢复观察' : '暂停观察'}
+                          </button>
+                          <button
+                            className="tool-link"
+                            disabled={qualityWatchBusy === `update:${item.id}` || Boolean(automationAction && !terminalAutomationStates.has(automationAction.status))}
+                            type="button"
+                            onClick={() => {
+                              const windowHours = qualityWatch.policy.windowHours === 24 ? 48 : 24;
+                              updateQualityWatch(item, { windowHours, scheduleMinutes: windowHours === 24 ? [720, 1440] : [720, 1440, 2880] });
+                            }}
+                          >
+                            <RotateCcw size={13} />切换 {qualityWatch.policy.windowHours === 24 ? '48' : '24'} 小时窗口
+                          </button>
+                          <button
+                            className="ops-action-button ops-action-button--primary"
+                            disabled={Boolean(qualityWatchBusy) || Boolean(automationAction && !terminalAutomationStates.has(automationAction.status)) || (qualityWatch.units.length > 1 && !selectedUnitId)}
+                            type="button"
+                            onClick={() => startAnalysis(item)}
+                          >
+                            <RefreshCcw size={13} />{qualityWatchBusy === `analysis:${item.id}` ? '正在提交' : '人工分析升级'}
+                          </button>
+                          {automationAction?.status === 'succeeded' && automationAction.type === 'rewash-analysis' && (automationAction.result?.selectedCount ?? 0) > 0 && (
+                            <button
+                              className="ops-action-button"
+                              disabled={Boolean(qualityWatchBusy)}
+                              type="button"
+                              onClick={() => startDownload(item)}
+                            >
+                              <Download size={13} />{qualityWatchBusy === `download:${item.id}` ? '正在提交' : '下载升级候选'}
+                            </button>
+                          )}
+                        </div>
+                        {automationAction && <p className="quality-watch-panel__status" role="status">{automationStatusLabel(automationAction)}</p>}
+                      </>
+                    ) : (
+                      <small className="sub-detail__hint">当前没有可操作的观察单元，等待首个版本或入库基线。</small>
+                    )}
+                    {qualityWatchMessage && <p className="quality-watch-panel__status" role="status">{qualityWatchMessage}</p>}
+                  </section>
+                  <section className="sub-detail__section moviepilot-backup-panel">
+                    <div className="quality-watch-panel__head">
+                      <div><strong>MoviePilot 备用通道</strong><small>仅在 Torra 观察结束且主链空闲时可用</small></div>
+                      {moviePilotPreview && <span className={moviePilotPreview.ready ? 'state-chip state-chip--ok' : 'state-chip'}>{moviePilotPreview.ready ? '可以备用' : '当前阻塞'}</span>}
+                    </div>
+                    <div className="quality-watch-panel__actions">
+                      <button className="tool-link" disabled={Boolean(moviePilotBusy)} type="button" onClick={() => previewMoviePilot(item)}>
+                        <SlidersHorizontal size={13} />{moviePilotBusy === `preview:${item.id}` ? '正在检查' : '检查备用条件'}
+                      </button>
+                      {moviePilotPreview?.ready && (
+                        <button className="ops-action-button ops-action-button--primary" disabled={Boolean(moviePilotBusy)} type="button" onClick={() => confirmMoviePilot(item)}>
+                          <Send size={13} />{moviePilotBusy === `push:${item.id}` ? '正在推送' : '确认备用推送'}
+                        </button>
+                      )}
+                    </div>
+                    {moviePilotPreview && <small className="sub-detail__hint">{moviePilotPreview.ready ? `模式：${moviePilotPreview.mode === 'search-existing' ? '已有订阅触发搜索' : '创建订阅并触发搜索'}` : moviePilotPreview.blockers.join('；')}</small>}
+                    {moviePilotMessage && <p className="quality-watch-panel__status" role="status">{moviePilotMessage}</p>}
+                  </section>
                   {torraPushBusy === `preview:${item.id}` && (
                     <small className="sub-detail__hint">正在读取 Torra 分类、路径和在线查重结果…</small>
                   )}
@@ -1267,6 +1632,28 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
         })}
       </aside>
       </div>
+      <ConfirmDialog
+        open={Boolean(confirmation)}
+        labelledBy="discover-confirm-title"
+        describedBy="discover-confirm-description"
+        onClose={() => setConfirmation(null)}
+      >
+        {confirmation && (
+          <>
+            <span className={confirmation.destructive ? 'ops-confirm-dialog__signal ops-confirm-dialog__signal--danger' : 'ops-confirm-dialog__signal'}>{confirmation.signal}</span>
+            <h2 id="discover-confirm-title">{confirmation.title}</h2>
+            <p id="discover-confirm-description">{confirmation.description}</p>
+            <div className="ops-confirm-dialog__actions">
+              <button className="ops-action-button" type="button" onClick={() => setConfirmation(null)}>取消</button>
+              <button className={confirmation.destructive ? 'ops-action-button ops-action-button--danger' : 'ops-action-button ops-action-button--primary'} data-dialog-initial-focus type="button" onClick={() => {
+                const action = confirmation.onConfirm;
+                setConfirmation(null);
+                action();
+              }}>{confirmation.confirmLabel}</button>
+            </div>
+          </>
+        )}
+      </ConfirmDialog>
     </main>
   );
 }

@@ -8,6 +8,7 @@ import type { IntegrationSummary } from '../types/integrations';
 import type { ActivityLogResponse, SystemMetricsResponse } from '../types/operations';
 import type {
   AutomationAction,
+  RssMatchListResponse,
   RssSeedListResponse,
   RssSource,
   RssSourceInput,
@@ -28,6 +29,12 @@ import type {
   TorraPushResult,
   MediaCategory
 } from '../types/subscriptions';
+import type {
+  MoviePilotPreview,
+  MoviePilotPushResult,
+  QualityWatchResponse,
+  SubscriptionAutomationSettings
+} from '../types/subscriptions';
 
 export interface AuthSessionResponse {
   enabled: boolean;
@@ -35,29 +42,72 @@ export interface AuthSessionResponse {
   expiresAt: string | null;
 }
 
-async function readJson<T>(path: string): Promise<T> {
-  const response = await fetch(path, {
-    headers: {
-      Accept: 'application/json'
+export interface RequestOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
+
+function requestSignal(signal: AbortSignal | undefined, timeoutMs: number) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abort = () => controller.abort();
+  if (signal?.aborted) abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    abort();
+  }, timeoutMs);
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    cleanup: () => {
+      window.clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
     }
-  });
-
-  const body = await response.json().catch(() => ({})) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `请求失败：${response.status}`);
-  return body;
+  };
 }
 
-export function getHomeMedia(libraryId?: string): Promise<HomeMediaResponse> {
+async function requestJson<T>(path: string, init: RequestInit = {}, options: RequestOptions = {}): Promise<T> {
+  const request = requestSignal(options.signal, options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(path, {
+      ...init,
+      signal: request.signal,
+      headers: {
+        Accept: 'application/json',
+        ...(init.headers ?? {})
+      }
+    });
+
+    if (response.status === 204) return undefined as T;
+    const body = await response.json().catch(() => ({})) as T & { error?: string };
+    if (!response.ok) throw new Error(body.error || `请求失败：${response.status}`);
+    return body;
+  } catch (reason) {
+    if (request.timedOut()) throw new Error('请求超时，请稍后重试');
+    throw reason;
+  } finally {
+    request.cleanup();
+  }
+}
+
+async function readJson<T>(path: string, options?: RequestOptions): Promise<T> {
+  return requestJson<T>(path, { headers: { Accept: 'application/json' } }, options);
+}
+
+export function getHomeMedia(libraryId?: string, options?: RequestOptions): Promise<HomeMediaResponse> {
   const query = libraryId ? `?libraryId=${encodeURIComponent(libraryId)}` : '';
-  return readJson<HomeMediaResponse>(`/api/media/home${query}`);
+  return readJson<HomeMediaResponse>(`/api/media/home${query}`, options);
 }
 
-export function getHealth(): Promise<HealthResponse> {
-  return readJson<HealthResponse>('/api/health');
+export function getHealth(options?: RequestOptions): Promise<HealthResponse> {
+  return readJson<HealthResponse>('/api/health', options);
 }
 
-export function getIntegrationSummary(probe = false): Promise<IntegrationSummary> {
-  return readJson<IntegrationSummary>(`/api/v2/integrations${probe ? '?probe=1' : ''}`);
+export function getIntegrationSummary(probe = false, options?: RequestOptions): Promise<IntegrationSummary> {
+  return readJson<IntegrationSummary>(`/api/v2/integrations${probe ? '?probe=1' : ''}`, options);
 }
 
 export function getAuthSession(): Promise<AuthSessionResponse> {
@@ -72,8 +122,8 @@ export async function logoutAuthSession(): Promise<void> {
   if (!response.ok) throw new Error(`退出失败：${response.status}`);
 }
 
-export function getQbittorrentSummary(): Promise<QbittorrentSummary> {
-  return readJson<QbittorrentSummary>('/api/qbittorrent/summary');
+export function getQbittorrentSummary(options?: RequestOptions): Promise<QbittorrentSummary> {
+  return readJson<QbittorrentSummary>('/api/qbittorrent/summary', options);
 }
 
 export async function runQbittorrentAction(input: {
@@ -97,20 +147,20 @@ export async function runQbittorrentAction(input: {
   return body;
 }
 
-export function getTorraSummary(): Promise<TorraSummary> {
-  return readJson<TorraSummary>('/api/torra/summary');
+export function getTorraSummary(options?: RequestOptions): Promise<TorraSummary> {
+  return readJson<TorraSummary>('/api/torra/summary', options);
 }
 
-export function getSymediaSummary(): Promise<SymediaSummary> {
-  return readJson<SymediaSummary>('/api/symedia/summary');
+export function getSymediaSummary(options?: RequestOptions): Promise<SymediaSummary> {
+  return readJson<SymediaSummary>('/api/symedia/summary', options);
 }
 
-export function getEmbyOverview(): Promise<EmbyOverview> {
-  return readJson<EmbyOverview>('/api/media/emby/overview');
+export function getEmbyOverview(options?: RequestOptions): Promise<EmbyOverview> {
+  return readJson<EmbyOverview>('/api/media/emby/overview', options);
 }
 
-export function getEmbyRefreshStatus(): Promise<EmbyRefreshStatus> {
-  return readJson<EmbyRefreshStatus>('/api/media/emby/refresh-status');
+export function getEmbyRefreshStatus(options?: RequestOptions): Promise<EmbyRefreshStatus> {
+  return readJson<EmbyRefreshStatus>('/api/media/emby/refresh-status', options);
 }
 
 export async function triggerEmbyRefresh(): Promise<EmbyRefreshResult> {
@@ -125,33 +175,36 @@ export async function triggerEmbyRefresh(): Promise<EmbyRefreshResult> {
   return body;
 }
 
-export function getTaskChain(): Promise<TaskChainResponse> {
-  return readJson<TaskChainResponse>('/api/tasks/chain');
+export function getTaskChain(options?: RequestOptions): Promise<TaskChainResponse> {
+  return readJson<TaskChainResponse>('/api/tasks/chain', options);
 }
 
-export function getSystemMetrics(): Promise<SystemMetricsResponse> {
-  return readJson<SystemMetricsResponse>('/api/v2/system/metrics');
+export function getSystemMetrics(options?: RequestOptions): Promise<SystemMetricsResponse> {
+  return readJson<SystemMetricsResponse>('/api/v2/system/metrics', options);
 }
 
-export function getActivityLogs(category = ''): Promise<ActivityLogResponse> {
+export function getActivityLogs(category = '', options?: RequestOptions): Promise<ActivityLogResponse> {
   const query = new URLSearchParams({ limit: '100' });
   if (category) query.set('category', category);
-  return readJson<ActivityLogResponse>(`/api/activity/logs?${query.toString()}`);
+  return readJson<ActivityLogResponse>(`/api/activity/logs?${query.toString()}`, options);
 }
 
 export function getSubscriptionCalendar(
   year: number,
   month: number,
-  mediaType: 'all' | 'movie' | 'tv' = 'all'
+  mediaType: 'all' | 'movie' | 'tv' = 'all',
+  options?: RequestOptions
 ): Promise<SubscriptionCalendarResponse> {
   return readJson<SubscriptionCalendarResponse>(
-    `/api/subscriptions/calendar?year=${year}&month=${month}&type=${mediaType}`
+    `/api/subscriptions/calendar?year=${year}&month=${month}&type=${mediaType}`,
+    options
   );
 }
 
-export function getSubscriptionItems(includeProgress = false): Promise<SubscriptionListResponse> {
+export function getSubscriptionItems(includeProgress = false, options?: RequestOptions): Promise<SubscriptionListResponse> {
   return readJson<SubscriptionListResponse>(
-    includeProgress ? '/api/subscriptions/items?include_progress=1' : '/api/subscriptions/items'
+    includeProgress ? '/api/subscriptions/items?include_progress=1' : '/api/subscriptions/items',
+    options
   );
 }
 
@@ -192,34 +245,20 @@ export function searchDiscoverResources(result: DiscoverResult): Promise<Discove
   return readJson<DiscoverResourceResponse>(`/api/discover/resources/search?${query.toString()}`);
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(path, {
+async function postJson<T>(path: string, body: unknown, options?: RequestOptions): Promise<T> {
+  return requestJson<T>(path, {
     method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json'
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
-  });
-
-  const payload = await response.json().catch(() => ({})) as T & { error?: string };
-  if (!response.ok) throw new Error(payload.error || `请求失败：${response.status}`);
-  return payload;
+  }, options);
 }
 
-async function patchJson<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(path, {
+async function patchJson<T>(path: string, body: unknown, options?: RequestOptions): Promise<T> {
+  return requestJson<T>(path, {
     method: 'PATCH',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json'
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
-  });
-
-  const payload = await response.json().catch(() => ({})) as T & { error?: string };
-  if (!response.ok) throw new Error(payload.error || `请求失败：${response.status}`);
-  return payload;
+  }, options);
 }
 
 async function deleteRequest(path: string): Promise<void> {
@@ -256,14 +295,34 @@ export function getRssSeedItems(input: {
   window?: '' | '1h' | '24h' | '7d';
   limit?: number;
   offset?: number;
-} = {}): Promise<RssSeedListResponse> {
+} = {}, options?: RequestOptions): Promise<RssSeedListResponse> {
   const query = new URLSearchParams();
   if (input.query) query.set('query', input.query);
   if (input.sourceId) query.set('sourceId', input.sourceId);
   if (input.window) query.set('window', input.window);
   query.set('limit', String(input.limit ?? 50));
   query.set('offset', String(input.offset ?? 0));
-  return readJson<RssSeedListResponse>(`/api/v2/rss-items?${query.toString()}`);
+  return readJson<RssSeedListResponse>(`/api/v2/rss-items?${query.toString()}`, options);
+}
+
+export function getRssMatches(input: { status?: string; limit?: number; offset?: number } = {}, options?: RequestOptions): Promise<RssMatchListResponse> {
+  const query = new URLSearchParams();
+  if (input.status) query.set('status', input.status);
+  query.set('limit', String(input.limit ?? 20));
+  query.set('offset', String(input.offset ?? 0));
+  return readJson<RssMatchListResponse>(`/api/v2/rss-matches?${query.toString()}`, options);
+}
+
+export function startRssMatchAnalysis(
+  matchId: string,
+  idempotencyKey: string,
+  options?: RequestOptions
+): Promise<AutomationAction> {
+  return postJson<AutomationAction>(
+    `/api/v2/rss-matches/${encodeURIComponent(matchId)}/torra-rewash-analyses`,
+    { idempotencyKey },
+    options
+  );
 }
 
 export function saveSubscription(input: {
@@ -307,9 +366,68 @@ export function clearSubscriptions(): Promise<{ success: boolean }> {
   return postJson('/api/subscriptions/clear', {});
 }
 
-export function getSubscriptionDetail(id: string, season?: number): Promise<SubscriptionDetailResponse> {
+export function getSubscriptionDetail(id: string, season?: number, options?: RequestOptions): Promise<SubscriptionDetailResponse> {
   const query = season ? `&season=${season}` : '';
-  return readJson<SubscriptionDetailResponse>(`/api/subscriptions/detail?id=${encodeURIComponent(id)}${query}`);
+  return readJson<SubscriptionDetailResponse>(`/api/subscriptions/detail?id=${encodeURIComponent(id)}${query}`, options);
+}
+
+export function getSubscriptionQualityWatch(id: string, options?: RequestOptions): Promise<QualityWatchResponse> {
+  return readJson<QualityWatchResponse>(`/api/v2/subscriptions/${encodeURIComponent(id)}/quality-watch`, options);
+}
+
+export function updateSubscriptionQualityWatch(
+  id: string,
+  input: { paused?: boolean; windowHours?: 24 | 48; scheduleMinutes?: number[] },
+  options?: RequestOptions
+): Promise<QualityWatchResponse> {
+  return patchJson<QualityWatchResponse>(`/api/v2/subscriptions/${encodeURIComponent(id)}/quality-watch`, input, options);
+}
+
+export function getSubscriptionAutomationSettings(options?: RequestOptions): Promise<SubscriptionAutomationSettings> {
+  return readJson<SubscriptionAutomationSettings>('/api/v2/subscription-automation/settings', options);
+}
+
+export function updateSubscriptionAutomationSettings(
+  input: Partial<Pick<SubscriptionAutomationSettings, 'enabled' | 'defaultWindowHours' | 'scheduleMinutes' | 'minIntervalMinutes' | 'hourlyLimit' | 'dailyLimit' | 'batchSize'>>,
+  options?: RequestOptions
+): Promise<SubscriptionAutomationSettings> {
+  return patchJson<SubscriptionAutomationSettings>('/api/v2/subscription-automation/settings', input, options);
+}
+
+export function getAutomationAction(id: string, options?: RequestOptions): Promise<AutomationAction> {
+  return readJson<AutomationAction>(`/api/v2/automation-actions/${encodeURIComponent(id)}`, options);
+}
+
+export function startTorraRewashAnalysis(
+  id: string,
+  input: { idempotencyKey: string; unitId?: string },
+  options?: RequestOptions
+): Promise<AutomationAction> {
+  return postJson<AutomationAction>(`/api/v2/subscriptions/${encodeURIComponent(id)}/torra-rewash-analyses`, input, options);
+}
+
+export function startTorraRewashDownload(
+  id: string,
+  input: { confirm: true; idempotencyKey: string; analysisActionId: string; unitId?: string },
+  options?: RequestOptions
+): Promise<AutomationAction> {
+  return postJson<AutomationAction>(`/api/v2/subscriptions/${encodeURIComponent(id)}/torra-rewashes`, input, options);
+}
+
+export function getMoviePilotPreview(id: string, options?: RequestOptions): Promise<MoviePilotPreview> {
+  return postJson<MoviePilotPreview>(`/api/v2/subscriptions/${encodeURIComponent(id)}/moviepilot-previews`, {}, options);
+}
+
+export function pushToMoviePilot(
+  id: string,
+  idempotencyKey: string,
+  options?: RequestOptions
+): Promise<MoviePilotPushResult> {
+  return postJson<MoviePilotPushResult>(
+    `/api/v2/subscriptions/${encodeURIComponent(id)}/moviepilot-pushes`,
+    { confirm: true, idempotencyKey },
+    options
+  );
 }
 
 export function setSubscriptionSeason(id: string, seasonNumber: number, seasonName?: string): Promise<{ success: boolean }> {

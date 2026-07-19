@@ -9,6 +9,7 @@ import {
   type AuthSessionResponse
 } from '../../services/api';
 import type { SubscriptionHubConfig } from '../../types/subscriptions';
+import { ConfirmDialog } from '../layout/ConfirmDialog';
 
 const subscriptionModes = [
   { key: 'torra', label: 'PT / Torra 主通道', note: 'Torra 负责 PT 搜索、qB 编排和秒传到 115' }
@@ -86,6 +87,8 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
   const [sources, setSources] = useState<Array<{ key: string; label: string; mediaType: 'movie' | 'tv' }>>([]);
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
+  const [clearDialogOpen, setClearDialogOpen] = useState(false);
+  const [clearPhrase, setClearPhrase] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -141,9 +144,14 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
       .finally(() => setSaving(false));
   };
 
+  const openClearDialog = () => {
+    setClearPhrase('');
+    setClearDialogOpen(true);
+  };
+
   const clearAll = () => {
-    const confirmation = window.prompt('这是高风险操作。请输入“清空全部订阅”继续：');
-    if (confirmation !== '清空全部订阅') return;
+    if (clearPhrase !== '清空全部订阅') return;
+    setClearDialogOpen(false);
     setSaving(true);
     setMessage('');
     clearSubscriptions()
@@ -292,10 +300,34 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
         </button>
         {message && <small>{message}</small>}
         {douban.last_run_at && <small>上次运行：{douban.last_run_at}</small>}
-        <button className="tool-link" disabled={saving} type="button" onClick={clearAll}>
+        <button className="tool-link tool-link--danger" disabled={saving} type="button" onClick={openClearDialog}>
           清空全部订阅
         </button>
       </div>
+      <ConfirmDialog
+        busy={saving}
+        labelledBy="clear-subscriptions-title"
+        describedBy="clear-subscriptions-description"
+        open={clearDialogOpen}
+        onClose={() => setClearDialogOpen(false)}
+      >
+        <span className="ops-confirm-dialog__signal ops-confirm-dialog__signal--danger">高风险操作</span>
+        <h2 id="clear-subscriptions-title">清空全部订阅？</h2>
+        <p id="clear-subscriptions-description">这会删除 NasEmby 订阅台账。输入指定短语后才能继续，来源配置不会被删除。</p>
+        <label className="ops-confirm-dialog__input">
+          输入“清空全部订阅”
+          <input
+            autoComplete="off"
+            data-dialog-initial-focus
+            value={clearPhrase}
+            onChange={(event) => setClearPhrase(event.target.value)}
+          />
+        </label>
+        <div className="ops-confirm-dialog__actions">
+          <button className="ops-action-button" disabled={saving} type="button" onClick={() => setClearDialogOpen(false)}>取消</button>
+          <button className="ops-action-button ops-action-button--danger" disabled={clearPhrase !== '清空全部订阅' || saving} type="button" onClick={clearAll}>确认清空</button>
+        </div>
+      </ConfirmDialog>
     </div>
   );
 }
@@ -334,8 +366,9 @@ export function SettingsPage() {
     <main className="work-page ops-page ops-page--settings">
       <section className="ops-hero ops-hero--settings">
         <div>
-          <p className="ops-eyebrow">设置 · 连接与安全</p>
-          <h1>管理服务连接与访问保护。</h1>
+          <p className="ops-eyebrow">连接与安全</p>
+          <h1>设置</h1>
+          <p className="ops-page-subtitle">管理服务连接与访问保护。</p>
           <p className="ops-deck">这里仅管理系统连接和安全边界；账号、密码与访问令牌由服务端保存。</p>
         </div>
         <div className="ops-settings-guard">

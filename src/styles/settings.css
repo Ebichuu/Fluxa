@@ -164,6 +164,7 @@
 .sub-config input[type='text'],
 .sub-config input[type='number'],
 .sub-config input[type='time'],
+.sub-config select,
 .sub-config textarea {
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
@@ -177,6 +178,7 @@
 }
 
 .sub-config input:focus,
+.sub-config select:focus,
 .sub-config textarea:focus {
   border-color: rgba(122, 215, 194, 0.34);
 }
@@ -194,6 +196,11 @@
 .sub-config__foot small {
   color: var(--ops-faint);
   font-size: 11px;
+}
+
+.quality-settings__readonly {
+  color: rgba(157, 184, 207, 0.68);
+  font-size: 12px;
 }
 
 @media (max-width: 1100px) {
@@ -235,6 +242,15 @@
 
 .ops-settings-grid--subscription {
   grid-template-columns: 1fr;
+}
+
+.ops-page--subscription-settings .sub-config {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.ops-page--subscription-settings .sub-config > * {
+  min-width: 0;
 }
 
 .sub-config__modes {
@@ -648,6 +664,31 @@
 }
 
 @media (max-width: 640px) {
+
+  .ops-page--subscription-settings .sub-config__row--pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ops-page--subscription-settings .sub-config__source-groups,
+  .ops-page--subscription-settings .sub-config__modes,
+  .ops-page--subscription-settings .sub-config__rule-groups {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ops-page--subscription-settings .sub-config__source-groups fieldset,
+  .ops-page--subscription-settings .sub-config__sources {
+    min-width: 0;
+  }
+
+  .ops-page--subscription-settings .sub-config__rule-head {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .ops-page--subscription-settings .sub-config__foot {
+    align-items: stretch;
+    flex-direction: column;
+  }
 
   .ops-access-row {
     align-items: stretch;

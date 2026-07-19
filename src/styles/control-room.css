@@ -290,9 +290,9 @@
 .ops-service-card__metric strong {
   color: var(--ops-ink-strong);
   font-family: var(--font-ui);
-  font-size: clamp(22px, 2.4vw, 34px);
+  font-size: 28px;
   font-weight: 600;
-  letter-spacing: -0.05em;
+  letter-spacing: 0;
 }
 
 .ops-service-card__metric small {
@@ -367,7 +367,7 @@
 
 .ops-control-foot {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr);
+  grid-template-columns: auto auto auto minmax(0, 1fr);
   gap: 13px;
   align-items: center;
   padding: 13px 16px;
@@ -387,10 +387,52 @@
   font-size: 9px;
 }
 
+.ops-control-foot__backup {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(136, 154, 167, 0.2);
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: var(--ops-muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.ops-control-foot__backup--ok {
+  border-color: rgba(122, 215, 194, 0.28);
+  color: var(--cyan);
+}
+
+.ops-control-foot__backup--warn {
+  border-color: rgba(255, 83, 103, 0.28);
+  color: var(--ops-rose);
+}
+
+.ops-control-foot__backup--configured {
+  border-color: rgba(157, 184, 207, 0.24);
+  color: var(--ops-steel);
+}
+
+.ops-control-foot__backup--loading {
+  opacity: 0.72;
+}
+
 .ops-control-foot p {
   margin: 0;
   color: var(--ops-faint);
   font-size: 10px;
+}
+
+@media (max-width: 900px) {
+  .ops-control-foot {
+    grid-template-columns: auto auto;
+  }
+
+  .ops-control-foot p {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 560px) {
@@ -411,33 +453,8 @@
   .ops-control-foot strong {
     justify-self: start;
   }
-}
 
-.ops-control-integrations {
-  margin-bottom: 18px;
-}
-
-.ops-integration-actions > section,
-.ops-integration-telegram {
-  padding: 14px;
-  border: 1px solid rgba(136, 154, 167, 0.16);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.016);
-}
-
-.ops-integration-actions h3,
-.ops-integration-telegram strong {
-  margin: 0 0 5px;
-  color: var(--ops-text);
-  font-size: 13px;
-}
-
-.ops-integration-actions p {
-  margin: 0 0 12px;
-  color: var(--ops-muted);
-  font-size: 12px;
-}
-
-.ops-integration-telegram {
-  margin-top: 14px;
+  .ops-control-foot__backup {
+    justify-self: start;
+  }
 }

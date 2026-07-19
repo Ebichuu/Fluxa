@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { Clapperboard, Download, ExternalLink, HeartPulse, RefreshCcw, Rss, Wrench } from 'lucide-react';
 import { getEmbyOverview, getEmbyRefreshStatus, getIntegrationSummary, getQbittorrentSummary, getSymediaSummary, getTorraSummary, triggerEmbyRefresh } from '../../services/api';
 import type { EmbyOverview, EmbyRefreshStatus } from '../../types/emby';
@@ -6,6 +6,7 @@ import type { QbittorrentSummary } from '../../types/qbittorrent';
 import type { SymediaSummary } from '../../types/symedia';
 import type { TorraSummary } from '../../types/torra';
 import type { IntegrationSummary } from '../../types/integrations';
+import { usePolling } from '../../hooks/usePolling';
 import { formatSpeed, formatTimeAgo } from '../../utils/formatters';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
 
@@ -45,43 +46,41 @@ export function ControlRoom() {
   const [embyRefreshConfirm, setEmbyRefreshConfirm] = useState(false);
   const [embyRefreshFeedback, setEmbyRefreshFeedback] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
 
-  const loadQb = () => {
-    getQbittorrentSummary()
-      .then((summary) => {
-        setQb(summary);
-        setSpeedHistory((current) => [...current.slice(-19), summary.transfer.downloadSpeed]);
-      })
-      .catch(() => {
-        setQb(null);
-        setSpeedHistory((current) => [...current.slice(-19), 0]);
-      });
-  };
-  const loadEmby = () => getEmbyOverview().then(setEmby).catch(() => setEmby(null));
-  const loadTorra = () => getTorraSummary().then(setTorra).catch(() => setTorra(null));
-  const loadSymedia = () => getSymediaSummary().then(setSymedia).catch(() => setSymedia(null));
-  const loadIntegrations = () => getIntegrationSummary(false).then(setIntegrations).catch(() => setIntegrations(null));
-  const loadEmbyRefresh = () => getEmbyRefreshStatus().then(setEmbyRefresh).catch(() => setEmbyRefresh(null));
-  const refreshAll = () => {
-    loadTorra();
-    loadQb();
-    loadSymedia();
-    loadEmby();
-    loadIntegrations();
+  const refreshAll = async (signal: AbortSignal) => {
+    const options = { signal };
+    const [torraResult, qbResult, symediaResult, embyResult, integrationsResult] = await Promise.allSettled([
+      getTorraSummary(options),
+      getQbittorrentSummary(options),
+      getSymediaSummary(options),
+      getEmbyOverview(options),
+      getIntegrationSummary(false, options)
+    ]);
+    if (signal.aborted) return;
+    if (torraResult.status === 'fulfilled') setTorra(torraResult.value);
+    if (symediaResult.status === 'fulfilled') setSymedia(symediaResult.value);
+    if (embyResult.status === 'fulfilled') setEmby(embyResult.value);
+    if (integrationsResult.status === 'fulfilled') setIntegrations(integrationsResult.value);
+    if (qbResult.status === 'fulfilled') {
+      setQb(qbResult.value);
+      setSpeedHistory((current) => [...current.slice(-19), qbResult.value.transfer.downloadSpeed]);
+    }
   };
 
-  useEffect(() => {
-    refreshAll();
-    const timer = window.setInterval(refreshAll, 15000);
-    return () => window.clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const loadEmbyRefresh = async (signal: AbortSignal) => {
+    try {
+      const status = await getEmbyRefreshStatus({ signal });
+      if (!signal.aborted) setEmbyRefresh(status);
+    } catch {
+      if (!signal.aborted) setEmbyRefresh(null);
+    }
+  };
 
-  useEffect(() => {
-    if (focusedService !== 'emby') return;
-    loadEmbyRefresh();
-    const timer = window.setInterval(loadEmbyRefresh, 30000);
-    return () => window.clearInterval(timer);
-  }, [focusedService]);
+  const refreshServices = () => void refreshAll(new AbortController().signal);
+  const refreshEmbyStatus = () => void loadEmbyRefresh(new AbortController().signal);
+
+  usePolling(refreshAll, 15000);
+
+  usePolling(loadEmbyRefresh, 30000, { enabled: focusedService === 'emby' });
 
   const confirmEmbyRefresh = async () => {
     setEmbyRefreshBusy(true);
@@ -90,12 +89,12 @@ export function ControlRoom() {
       const result = await triggerEmbyRefresh();
       setEmbyRefreshFeedback({ tone: 'success', message: result.message });
       setEmbyRefreshConfirm(false);
-      loadEmbyRefresh();
-      loadEmby();
+      refreshEmbyStatus();
+      refreshServices();
     } catch (reason) {
       setEmbyRefreshFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : 'Emby 刷新请求失败' });
       setEmbyRefreshConfirm(false);
-      loadEmbyRefresh();
+      refreshEmbyStatus();
     } finally {
       setEmbyRefreshBusy(false);
     }
@@ -152,42 +151,31 @@ export function ControlRoom() {
   const warningCount = services.filter((service) => service.state === 'warn' || service.state === 'down').length;
   const configuredCount = services.filter((service) => service.state !== 'idle').length;
   const points = sparkPoints(speedHistory);
+  const moviePilot = integrations?.services.find((service) => service.id === 'moviepilot');
+  const moviePilotStatus: { label: string; tone: 'loading' | 'idle' | 'warn' | 'ok' | 'configured' } = !integrations
+    ? { label: '读取中', tone: 'loading' }
+    : !moviePilot?.configured
+      ? { label: '未配置', tone: 'idle' }
+      : moviePilot.connected === true
+        ? { label: '可用', tone: 'ok' }
+        : moviePilot.connected === false
+          ? { label: '需检查', tone: 'warn' }
+          : { label: '已配置', tone: 'configured' };
 
   return (
     <main className="work-page ops-page ops-page--control">
       <section className="ops-hero ops-hero--control">
         <div>
-          <p className="ops-eyebrow">控制室 · 服务状态</p>
-          <h1>查看各项服务是否正常。</h1>
+          <p className="ops-eyebrow">服务状态</p>
+          <h1>控制室</h1>
+          <p className="ops-page-subtitle">查看各项服务是否正常。</p>
           <p className="ops-deck">遇到下载或入库问题时，先在这里找到需要处理的服务，再进入原工具查看详情。</p>
         </div>
         <div className="ops-hero-actions">
           <div className={warningCount ? 'ops-system-score ops-system-score--warn' : 'ops-system-score'}>
             <small>核心服务</small><strong>{onlineCount} / 4 在线</strong><span>{warningCount ? `${warningCount} 项需检查` : configuredCount ? '已配置服务状态正常' : '等待配置核心服务'}</span>
           </div>
-          <button className="ops-icon-button" aria-label="刷新全部服务" type="button" onClick={refreshAll}><RefreshCcw size={18} /></button>
-        </div>
-      </section>
-
-      <section className="ops-panel ops-control-integrations">
-        <header className="ops-task-toolbar">
-          <div><small>后续 PT 补齐</small><h2>MoviePilot 补齐预留</h2></div>
-          <span>当前不自动参与 Torra 主线</span>
-        </header>
-        <div className="ops-connection-grid">
-          {(integrations?.services ?? []).filter((service) => service.id === 'moviepilot').map((service) => (
-            <article className="ops-connection-group" key={service.id}>
-              <div className="ops-connection-group__head">
-                <h3><Rss aria-hidden="true" size={15} />{service.name}</h3>
-                <p>Torra 无结果后的其他 PT 站点补齐，后续单独开发</p>
-              </div>
-              <div className="ops-policy-row">
-                <span><strong>{service.configured ? '已配置' : '未配置'}</strong><small>{service.detail}</small></span>
-                <b>{service.connected === true ? '在线' : service.connected === false ? '不可用' : '未检查'}</b>
-              </div>
-            </article>
-          ))}
-          {!integrations && <div className="ops-empty">正在读取 MoviePilot 兼容状态…</div>}
+          <button aria-label="刷新全部服务" className="ops-icon-button" title="刷新全部服务" type="button" onClick={refreshServices}><RefreshCcw aria-hidden="true" size={18} /></button>
         </div>
       </section>
 
@@ -237,7 +225,7 @@ export function ControlRoom() {
             <div className={`ops-inspector-feedback ops-inspector-feedback--${embyRefreshFeedback.tone}`} role="status">{embyRefreshFeedback.message}</div>
           )}
           <div className={selected.id === 'emby' ? 'ops-inspector__actions ops-inspector__actions--three' : 'ops-inspector__actions'}>
-            <button className="ops-action-button" type="button" onClick={() => { refreshAll(); if (selected.id === 'emby') loadEmbyRefresh(); }}><HeartPulse size={15} />重新检查</button>
+            <button className="ops-action-button" type="button" onClick={() => { refreshServices(); if (selected.id === 'emby') refreshEmbyStatus(); }}><HeartPulse size={15} />重新检查</button>
             {selected.id === 'emby' && (
               <button
                 className="ops-action-button ops-action-button--primary"
@@ -264,16 +252,19 @@ export function ControlRoom() {
       <section className="ops-control-foot">
         <span>自动订阅已启用</span>
         <strong>Torra 单一主通道</strong>
+        <span className={`ops-control-foot__backup ops-control-foot__backup--${moviePilotStatus.tone}`}>
+          <Rss aria-hidden="true" size={12} />MoviePilot 备用 · {moviePilotStatus.label}
+        </span>
         <p>Torra 负责 PT、qB 与 115 秒传；MoviePilot 只保留为以后其他 PT 站点补齐能力。</p>
       </section>
 
-      {embyRefreshConfirm && (
-        <ConfirmDialog
-          busy={embyRefreshBusy}
-          describedBy="emby-refresh-description"
-          labelledBy="emby-refresh-title"
-          onClose={() => setEmbyRefreshConfirm(false)}
-        >
+      <ConfirmDialog
+        busy={embyRefreshBusy}
+        describedBy="emby-refresh-description"
+        labelledBy="emby-refresh-title"
+        open={embyRefreshConfirm}
+        onClose={() => setEmbyRefreshConfirm(false)}
+      >
             <span className="ops-confirm-dialog__signal">媒体库 · 刷新索引</span>
             <h2 id="emby-refresh-title">触发 Emby 全库扫描？</h2>
             <p id="emby-refresh-description">Symedia 出现了比 Emby 索引更晚的成功入库记录。确认后只提交后台扫描请求，页面不会等待扫描完成。</p>
@@ -287,8 +278,7 @@ export function ControlRoom() {
                 <RefreshCcw size={14} />{embyRefreshBusy ? '正在提交' : '确认刷新'}
               </button>
             </div>
-        </ConfirmDialog>
-      )}
+      </ConfirmDialog>
     </main>
   );
 }

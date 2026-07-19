@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   Database,
   Edit3,
@@ -9,18 +11,22 @@ import {
   RefreshCcw,
   Rss,
   Search,
+  Send,
   ServerCog,
   Trash2,
   X
 } from 'lucide-react';
 import {
   deleteRssSource,
+  getAutomationAction,
   getRssSeedItems,
+  getRssMatches,
   getRssSources,
   saveRssSource,
+  startRssMatchAnalysis,
   testRssSource
 } from '../../services/api';
-import type { RssLibrarySummary, RssSeedItem, RssSource, RssSourceInput } from '../../types/rssSeedLibrary';
+import type { AutomationAction, RssLibrarySummary, RssMatch, RssSeedItem, RssSource, RssSourceInput } from '../../types/rssSeedLibrary';
 import { formatTimeAgo } from '../../utils/formatters';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
 
@@ -67,9 +73,17 @@ export function RssSeedLibraryPage() {
   const [summary, setSummary] = useState<RssLibrarySummary>(emptySummary);
   const [items, setItems] = useState<RssSeedItem[]>([]);
   const [total, setTotal] = useState(0);
+  const [matches, setMatches] = useState<RssMatch[]>([]);
+  const [matchesTotal, setMatchesTotal] = useState(0);
+  const [matchesOffset, setMatchesOffset] = useState(0);
+  const [matchesLoading, setMatchesLoading] = useState(false);
+  const [matchActions, setMatchActions] = useState<Record<string, AutomationAction>>({});
+  const [matchBusy, setMatchBusy] = useState('');
   const [query, setQuery] = useState('');
   const [sourceId, setSourceId] = useState('');
   const [windowFilter, setWindowFilter] = useState<WindowFilter>('24h');
+  const [offset, setOffset] = useState(0);
+  const [itemsLoading, setItemsLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<{ tone: 'ok' | 'error'; message: string } | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -77,22 +91,68 @@ export function RssSeedLibraryPage() {
   const [form, setForm] = useState<RssSourceInput>(defaultForm);
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<RssSource | null>(null);
+  const itemsRequestRef = useRef<AbortController | null>(null);
+  const matchesRequestRef = useRef<AbortController | null>(null);
+  const matchPollRef = useRef<AbortController | null>(null);
+  const pageSize = 50;
 
   const loadSources = () => getRssSources().then((payload) => {
     setSources(payload.items);
     setSummary(payload.summary);
   });
 
-  const loadItems = () => getRssSeedItems({ query, sourceId, window: windowFilter, limit: 50 }).then((payload) => {
-    setItems(payload.items);
-    setTotal(payload.total);
-  });
+  const loadItems = async (input: { query?: string; offset?: number } = {}) => {
+    itemsRequestRef.current?.abort();
+    const controller = new AbortController();
+    itemsRequestRef.current = controller;
+    setItemsLoading(true);
+    try {
+      const payload = await getRssSeedItems(
+        {
+          query: input.query ?? query,
+          sourceId,
+          window: windowFilter,
+          limit: pageSize,
+          offset: input.offset ?? offset
+        },
+        { signal: controller.signal }
+      );
+      if (controller.signal.aborted) return;
+      setItems(payload.items);
+      setTotal(payload.total);
+      setOffset(payload.offset);
+    } catch (reason) {
+      if (!controller.signal.aborted) {
+        setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : '种子库读取失败' });
+      }
+    } finally {
+      if (!controller.signal.aborted) setItemsLoading(false);
+    }
+  };
+
+  const loadMatches = async (nextOffset = matchesOffset) => {
+    matchesRequestRef.current?.abort();
+    const controller = new AbortController();
+    matchesRequestRef.current = controller;
+    setMatchesLoading(true);
+    try {
+      const payload = await getRssMatches({ status: 'candidate', limit: 10, offset: nextOffset }, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      setMatches(payload.items);
+      setMatchesTotal(payload.total);
+      setMatchesOffset(payload.offset);
+    } catch (reason) {
+      if (!controller.signal.aborted) setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : 'RSS 匹配读取失败' });
+    } finally {
+      if (!controller.signal.aborted) setMatchesLoading(false);
+    }
+  };
 
   const refresh = async () => {
     setLoading(true);
     setFeedback(null);
     try {
-      await Promise.all([loadSources(), loadItems()]);
+        await Promise.all([loadSources(), loadItems({ offset: 0 }), loadMatches(0)]);
     } catch (reason) {
       setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : '种子库读取失败' });
     } finally {
@@ -104,6 +164,51 @@ export function RssSeedLibraryPage() {
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceId, windowFilter]);
+
+  useEffect(() => () => {
+    itemsRequestRef.current?.abort();
+    matchesRequestRef.current?.abort();
+    matchPollRef.current?.abort();
+  }, []);
+
+  const pollMatchAction = async (matchId: string, actionId: string) => {
+    matchPollRef.current?.abort();
+    const controller = new AbortController();
+    matchPollRef.current = controller;
+    try {
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const action = await getAutomationAction(actionId, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        setMatchActions((current) => ({ ...current, [matchId]: action }));
+        if (['succeeded', 'failed', 'cancelled'].includes(action.status)) {
+          void loadMatches(matchesOffset);
+          return;
+        }
+        await new Promise<void>((resolve) => {
+          const timer = window.setTimeout(resolve, 1500);
+          controller.signal.addEventListener('abort', () => {
+            window.clearTimeout(timer);
+            resolve();
+          }, { once: true });
+        });
+      }
+    } catch (reason) {
+      if (!controller.signal.aborted) setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : 'RSS 匹配动作读取失败' });
+    } finally {
+      if (matchPollRef.current === controller) matchPollRef.current = null;
+    }
+  };
+
+  const analyzeMatch = (match: RssMatch) => {
+    setMatchBusy(match.id);
+    startRssMatchAnalysis(match.id, window.crypto.randomUUID())
+      .then((action) => {
+        setMatchActions((current) => ({ ...current, [match.id]: action }));
+        void pollMatchAction(match.id, action.id);
+      })
+      .catch((reason: unknown) => setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : 'RSS 匹配分析提交失败' }))
+      .finally(() => setMatchBusy(''));
+  };
 
   const timeline = useMemo(() => items.map((item) => ({
     ...item,
@@ -173,7 +278,7 @@ export function RssSeedLibraryPage() {
       if (sourceId === deleteTarget.id) setSourceId('');
       setDeleteTarget(null);
       setFeedback({ tone: 'ok', message: '来源和对应本地索引已删除' });
-      await Promise.all([loadSources(), loadItems()]);
+       await Promise.all([loadSources(), loadItems({ offset: 0 })]);
     } catch (reason) {
       setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : '来源删除失败' });
     } finally {
@@ -185,8 +290,9 @@ export function RssSeedLibraryPage() {
     <main className="work-page ops-page rss-library-page">
       <section className="ops-hero rss-library-hero">
         <div>
-          <p className="ops-eyebrow">PT 来源 · 本地索引</p>
+          <p className="ops-eyebrow">PT 本地索引</p>
           <h1>种子库</h1>
+          <p className="ops-page-subtitle">在本地汇总和筛选最近发布的种子。</p>
           <p className="ops-deck">集中保存最近发布的 PT RSS 内容，在本地完成搜索和筛选，再由 Torra 判断是否需要下载。</p>
         </div>
         <button className={summary.enabled ? 'ops-command ops-command--ok' : 'ops-command'} type="button" onClick={refresh}>
@@ -220,12 +326,12 @@ export function RssSeedLibraryPage() {
               className="rss-search"
               onSubmit={(event) => {
                 event.preventDefault();
-                void loadItems();
+                void loadItems({ offset: 0 });
               }}
             >
               <Search aria-hidden="true" size={16} />
               <input aria-label="搜索本地种子" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="片名、制作组、HDR、2160P…" />
-              {query && <button aria-label="清空搜索" type="button" onClick={() => setQuery('')}><X size={14} /></button>}
+              {query && <button aria-label="清空搜索" title="清空搜索" type="button" onClick={() => { setQuery(''); void loadItems({ query: '', offset: 0 }); }}><X aria-hidden="true" size={14} /></button>}
             </form>
             <div className="rss-window-tabs" aria-label="更新时间范围">
               {([
@@ -237,7 +343,7 @@ export function RssSeedLibraryPage() {
           </div>
 
           <div className="rss-index-head">
-            <span>{loading ? '正在读取本地索引' : `找到 ${total} 条内容`}</span>
+            <span>{loading || itemsLoading ? '正在读取本地索引' : `找到 ${total} 条内容`}</span>
             <select aria-label="按 RSS 来源筛选" value={sourceId} onChange={(event) => setSourceId(event.target.value)}>
               <option value="">全部来源</option>
               {sources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}
@@ -275,6 +381,60 @@ export function RssSeedLibraryPage() {
               </article>
             ))}
           </div>
+          {total > pageSize && (
+            <nav className="rss-pagination" aria-label="种子库分页">
+              <button
+                aria-label="上一页"
+                disabled={itemsLoading || offset <= 0}
+                title="上一页"
+                type="button"
+                onClick={() => void loadItems({ offset: Math.max(0, offset - pageSize) })}
+              >
+                <ChevronLeft aria-hidden="true" size={15} />
+              </button>
+              <span>第 {Math.floor(offset / pageSize) + 1} / {Math.ceil(total / pageSize)} 页</span>
+              <button
+                aria-label="下一页"
+                disabled={itemsLoading || offset + pageSize >= total}
+                title="下一页"
+                type="button"
+                onClick={() => void loadItems({ offset: offset + pageSize })}
+              >
+                <ChevronRight aria-hidden="true" size={15} />
+              </button>
+            </nav>
+          )}
+          <section className="rss-match-panel" aria-label="RSS 候选匹配">
+            <header className="rss-match-panel__head">
+              <div><strong>待人工分析匹配</strong><small>{matchesTotal ? `${matchesTotal} 条候选` : '只展示活动观察窗口内的匹配'}</small></div>
+              <button className="ops-link" disabled={matchesLoading} type="button" onClick={() => void loadMatches(matchesOffset)}><RefreshCcw size={13} />刷新</button>
+            </header>
+            {matchesLoading && <small className="sub-detail__hint">正在读取 RSS 匹配…</small>}
+            {!matchesLoading && matches.length === 0 && <small className="sub-detail__hint">当前没有待人工分析的 RSS 匹配。</small>}
+            <div className="rss-match-list">
+              {matches.map((match) => {
+                const seed = items.find((item) => item.id === match.itemId);
+                const action = matchActions[match.id];
+                const actionRunning = action && !['succeeded', 'failed', 'cancelled'].includes(action.status);
+                return (
+                  <article className="rss-match-row" key={match.id}>
+                    <div><strong>{seed?.title || `种子 ${match.itemId.slice(0, 8)}`}</strong><small>{match.subscriptionId} · {match.unitId}</small></div>
+                    <span>{action ? (action.status === 'succeeded' ? '已完成' : action.status === 'failed' ? '失败' : '分析中') : '待分析'}</span>
+                    <button className="tool-link" disabled={Boolean(actionRunning) || matchBusy === match.id} type="button" onClick={() => analyzeMatch(match)}>
+                      <Send size={12} />{matchBusy === match.id ? '提交中' : '分析'}
+                    </button>
+                  </article>
+                );
+              })}
+            </div>
+            {matchesTotal > 10 && (
+              <nav className="rss-pagination rss-pagination--compact" aria-label="RSS 匹配分页">
+                <button aria-label="上一页匹配" title="上一页匹配" disabled={matchesLoading || matchesOffset <= 0} type="button" onClick={() => void loadMatches(Math.max(0, matchesOffset - 10))}><ChevronLeft aria-hidden="true" size={14} /></button>
+                <span>第 {Math.floor(matchesOffset / 10) + 1} / {Math.ceil(matchesTotal / 10)} 页</span>
+                <button aria-label="下一页匹配" title="下一页匹配" disabled={matchesLoading || matchesOffset + 10 >= matchesTotal} type="button" onClick={() => void loadMatches(matchesOffset + 10)}><ChevronRight aria-hidden="true" size={14} /></button>
+              </nav>
+            )}
+          </section>
         </div>
 
         <aside className="rss-source-panel">
@@ -285,7 +445,7 @@ export function RssSeedLibraryPage() {
 
           {formOpen && (
             <div className="rss-source-form">
-              <div className="rss-source-form__title"><strong>{editing ? '编辑来源' : '添加 RSS 来源'}</strong><button type="button" onClick={() => setFormOpen(false)}><X size={15} /></button></div>
+              <div className="rss-source-form__title"><strong>{editing ? '编辑来源' : '添加 RSS 来源'}</strong><button aria-label="关闭来源表单" title="关闭来源表单" type="button" onClick={() => setFormOpen(false)}><X aria-hidden="true" size={15} /></button></div>
               <label>来源名称<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如：主站 RSS" /></label>
               <label>私人 RSS 地址<input autoComplete="off" className="monospace-text" type="password" value={form.feedUrl || ''} onChange={(event) => setForm({ ...form, feedUrl: event.target.value })} placeholder={editing ? '留空保持原地址' : 'https://…?passkey=…'} /></label>
               <div className="rss-source-form__pair">
@@ -324,15 +484,17 @@ export function RssSeedLibraryPage() {
         </aside>
       </section>
 
-      {deleteTarget && (
-        <ConfirmDialog busy={saving} labelledBy="rss-delete-title" describedBy="rss-delete-description" onClose={() => setDeleteTarget(null)}>
+      <ConfirmDialog busy={saving} labelledBy="rss-delete-title" describedBy="rss-delete-description" open={Boolean(deleteTarget)} onClose={() => setDeleteTarget(null)}>
+        {deleteTarget && (
+          <>
           <span className="ops-confirm-dialog__signal">删除本地来源</span>
           <h2 id="rss-delete-title">删除“{deleteTarget.name}”？</h2>
           <p id="rss-delete-description">这会删除该来源在媒体控制中心内保存的种子索引，不会修改 PT 站点上的任何数据。</p>
           <div className="ops-confirm-dialog__meta"><span>来源</span><strong>{deleteTarget.domain}</strong><span>影响</span><strong>本地索引</strong></div>
           <div className="ops-confirm-dialog__actions"><button className="ops-action-button" disabled={saving} type="button" onClick={() => setDeleteTarget(null)}>取消</button><button className="ops-action-button ops-action-button--primary" data-dialog-initial-focus disabled={saving} type="button" onClick={confirmDelete}>{saving ? '正在删除' : '确认删除'}</button></div>
-        </ConfirmDialog>
-      )}
+          </>
+        )}
+      </ConfirmDialog>
     </main>
   );
 }

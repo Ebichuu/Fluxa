@@ -312,3 +312,66 @@ export interface SubscriptionDetailResponse {
   cacheHit?: boolean;
   error?: string;
 }
+
+export interface QualityWatchUnit {
+  id: string;
+  state: string;
+  seasonNumber: number | null;
+  episodeNumber: number | null;
+  windowHours: number;
+  baselineReadyAt: string;
+  nextCheckAt: string;
+  observationEndsAt: string;
+  attemptCount: number;
+  currentOffsetIndex: number;
+  lastResult: {
+    reason?: string;
+    actionId?: string;
+    selectedCount?: number;
+    offsetIndex?: number;
+    window?: number;
+    limit?: string;
+  };
+}
+
+export interface QualityWatchResponse {
+  subscriptionId: string;
+  policy: {
+    windowHours: 24 | 48;
+    scheduleMinutes: number[];
+  };
+  paused: boolean;
+  units: QualityWatchUnit[];
+}
+
+export interface MoviePilotPreview {
+  subscriptionId: string;
+  ready: boolean;
+  mode: 'search-existing' | 'create-and-search' | string;
+  title: string;
+  mediaType: 'movie' | 'tv' | string;
+  tmdbId: string;
+  seasons: number[];
+  blockers: string[];
+}
+
+export interface MoviePilotPushResult {
+  ok: boolean;
+  mode: string;
+  alreadyExists: boolean;
+  searchTriggered: boolean;
+  message: string;
+  actionId: string;
+}
+
+export interface SubscriptionAutomationSettings {
+  enabled: boolean;
+  environmentEnabled: boolean;
+  downloadEnvironmentEnabled: boolean;
+  defaultWindowHours: 24 | 48;
+  scheduleMinutes: number[];
+  minIntervalMinutes: number;
+  hourlyLimit: number;
+  dailyLimit: number;
+  batchSize: number;
+}

@@ -9,6 +9,8 @@ export interface RssSource {
   allowHttp: boolean;
   lastSuccessAt: string;
   lastError: string;
+  failureCount: number;
+  backoffUntil: string;
   nextPollAt: string;
   createdAt: string;
   updatedAt: string;
@@ -65,8 +67,45 @@ export interface RssSourceInput {
 
 export interface AutomationAction {
   id: string;
+  subscriptionId?: string;
+  unitId?: string;
   provider: string;
   type: string;
-  status: 'running' | 'succeeded' | 'failed';
-  result: { message?: string; items?: number; title?: string } | null;
+  status: string;
+  externalJobId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  completedAt?: string;
+  result: {
+    message?: string;
+    items?: number;
+    title?: string;
+    selectedCount?: number;
+    [key: string]: unknown;
+  } | null;
+  error?: { code?: string; message?: string } | null;
+}
+
+export interface RssMatch {
+  id: string;
+  itemId: string;
+  subscriptionId: string;
+  unitId: string;
+  status: 'candidate' | 'ignored' | 'triggered' | 'confirmed' | 'expired' | string;
+  reason?: Record<string, unknown>;
+  triggerActionId?: string;
+  itemTitle?: string;
+  subscriptionTitle?: string;
+  episodeLabel?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  expiresAt?: string;
+  identity?: Record<string, unknown>;
+}
+
+export interface RssMatchListResponse {
+  items: RssMatch[];
+  total: number;
+  limit: number;
+  offset: number;
 }

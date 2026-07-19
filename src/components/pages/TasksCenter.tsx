@@ -4,6 +4,7 @@ import { getActivityLogs, getTaskChain, runQbittorrentAction } from '../../servi
 import type { QbittorrentAction } from '../../types/qbittorrent';
 import type { TaskChainItem, TaskChainResponse, TaskChainState, TaskChainStep } from '../../types/taskChain';
 import type { ActivityLogItem } from '../../types/operations';
+import { usePolling } from '../../hooks/usePolling';
 import { formatSpeed, formatTimeAgo } from '../../utils/formatters';
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
@@ -79,48 +80,36 @@ export function TasksCenter() {
   const [activities, setActivities] = useState<ActivityLogItem[]>([]);
   const [activityError, setActivityError] = useState('');
 
-  const loadChain = () => {
+  const loadChain = async (signal: AbortSignal) => {
     setLoading(true);
     setError('');
-    getTaskChain()
-      .then(setChain)
-      .catch((reason) => {
-        setError(reason instanceof Error ? reason.message : '任务链读取失败');
-        setChain(null);
-      })
-      .finally(() => setLoading(false));
+    try {
+      const payload = await getTaskChain({ signal });
+      if (!signal.aborted) setChain(payload);
+    } catch (reason) {
+      if (!signal.aborted) setError(reason instanceof Error ? reason.message : '任务链读取失败');
+    } finally {
+      if (!signal.aborted) setLoading(false);
+    }
   };
 
-  useEffect(() => {
-    loadChain();
-    const timer = window.setInterval(loadChain, 30000);
-    return () => window.clearInterval(timer);
-  }, []);
+  const refreshChain = () => void loadChain(new AbortController().signal);
 
-  useEffect(() => {
-    let cancelled = false;
-    const loadActivities = () => {
-      getActivityLogs(activityCategory)
-        .then((payload) => {
-          if (!cancelled) {
-            setActivities(payload.logs);
-            setActivityError('');
-          }
-        })
-        .catch(() => {
-          if (!cancelled) {
-            setActivities([]);
-            setActivityError('活动日志暂不可用');
-          }
-        });
-    };
-    loadActivities();
-    const timer = window.setInterval(loadActivities, 30000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [activityCategory]);
+  usePolling(loadChain, 30000);
+
+  const loadActivities = async (signal: AbortSignal) => {
+    try {
+      const payload = await getActivityLogs(activityCategory, { signal });
+      if (!signal.aborted) {
+        setActivities(payload.logs);
+        setActivityError('');
+      }
+    } catch {
+      if (!signal.aborted) setActivityError('活动日志暂不可用');
+    }
+  };
+
+  usePolling(loadActivities, 30000, { key: activityCategory });
 
   useEffect(() => {
     setVisibleLimit(12);
@@ -162,11 +151,11 @@ export function TasksCenter() {
           : '动作已提交，但最新状态尚未确认，请查看刷新后的任务链'
       });
       setPendingAction(null);
-      loadChain();
+      refreshChain();
     } catch (reason) {
       setActionFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : 'qBittorrent 操作失败' });
       setPendingAction(null);
-      loadChain();
+      refreshChain();
     } finally {
       setActionBusy('');
     }
@@ -176,8 +165,9 @@ export function TasksCenter() {
     <main className="work-page ops-page ops-page--tasks">
       <section className="ops-hero ops-hero--tasks">
         <div>
-          <p className="ops-eyebrow">任务中心 · 处理进度</p>
-          <h1>媒体任务，现在进行到哪一步。</h1>
+          <p className="ops-eyebrow">处理进度</p>
+          <h1>任务中心</h1>
+          <p className="ops-page-subtitle">媒体任务，现在进行到哪一步。</p>
           <p className="ops-deck">订阅、下载、进入 115 和整理入库集中显示；匹配依据和原工具入口放在任务详情中。</p>
         </div>
         <div className="ops-task-hero-status">
@@ -214,7 +204,7 @@ export function TasksCenter() {
           </div>
           <div className="ops-task-toolbar__actions">
             <span>{chain ? `${filtered.length} / ${items.length} 条 · ${formatTimeAgo(chain.generatedAt)}` : '正在读取统一任务链'}</span>
-            <button className="ops-icon-button" aria-label="刷新任务链" type="button" onClick={loadChain}><RefreshCcw size={16} /></button>
+            <button aria-label="刷新任务链" className="ops-icon-button" title="刷新任务链" type="button" onClick={refreshChain}><RefreshCcw aria-hidden="true" size={16} /></button>
           </div>
         </header>
 
@@ -326,13 +316,15 @@ export function TasksCenter() {
         </div>
       </section>
 
-      {pendingAction && (
-        <ConfirmDialog
-          busy={Boolean(actionBusy)}
-          describedBy="qb-action-description"
-          labelledBy="qb-action-title"
-          onClose={() => setPendingAction(null)}
-        >
+      <ConfirmDialog
+        busy={Boolean(actionBusy)}
+        describedBy="qb-action-description"
+        labelledBy="qb-action-title"
+        open={Boolean(pendingAction)}
+        onClose={() => setPendingAction(null)}
+      >
+        {pendingAction && (
+          <>
             <span className="ops-confirm-dialog__signal">下载任务 · {pendingAction.action === 'pause' ? '暂停' : '恢复'}</span>
             <h2 id="qb-action-title">
               {pendingAction.action === 'pause' ? '暂停' : '恢复'} {pendingAction.item.qbControl.total} 个关联下载？
@@ -352,8 +344,9 @@ export function TasksCenter() {
                 {actionBusy ? '正在提交' : `确认${pendingAction.action === 'pause' ? '暂停' : '恢复'}`}
               </button>
             </div>
-        </ConfirmDialog>
-      )}
+          </>
+        )}
+      </ConfirmDialog>
     </main>
   );
 }

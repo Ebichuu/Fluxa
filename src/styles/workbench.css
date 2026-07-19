@@ -21,9 +21,13 @@
 
 .work-page {
   display: grid;
-  gap: 26px;
+  gap: 18px;
   min-height: 100vh;
-  padding: 136px 34px 42px;
+  padding: 104px 34px 42px;
+}
+
+.work-page:not(.work-page--fill) {
+  align-content: start;
 }
 
 .work-page--split {
@@ -240,6 +244,16 @@
   color: #fff;
   background: rgba(255, 255, 255, 0.09);
   transform: translateY(-1px);
+}
+
+.tool-link--danger {
+  border-color: rgba(255, 83, 103, 0.2);
+  color: rgba(255, 144, 157, 0.86);
+}
+
+.tool-link--danger:hover {
+  background: rgba(255, 83, 103, 0.1);
+  color: #ffd8de;
 }
 
 /* ── 总览 ─────────────────────────────── */
@@ -494,7 +508,7 @@
   }
 
   .work-page {
-    padding: 150px 18px 30px;
+    padding: 138px 18px 30px;
   }
 
   .page-hero-copy h1 {
@@ -557,22 +571,23 @@
 /* ── Mineradio 延续方向：工作页样板（总览 / 控制室） ───────── */
 
 .ops-page {
-  --ops-bg: #08090b;
-  --ops-paper: #0e1014;
-  --ops-ink: #e8ecef;
-  --ops-ink-strong: #f8f4ee;
-  --ops-text: #e8ecef;
-  --ops-muted: #aeb7c0;
-  --ops-faint: #929ca6;
-  --ops-focus: #b7d6ff;
-  --ops-hair: #1a1d22;
-  --ops-hair-strong: #262a31;
+  --ops-bg: var(--theme-bg);
+  --ops-paper: var(--theme-surface);
+  --ops-ink: var(--theme-text);
+  --ops-ink-strong: var(--theme-text-strong);
+  --ops-text: var(--theme-text);
+  --ops-muted: var(--theme-muted);
+  --ops-faint: var(--theme-faint);
+  --ops-focus: var(--theme-focus);
+  --ops-focus-ring: var(--theme-focus-ring);
+  --ops-hair: var(--theme-border);
+  --ops-hair-strong: var(--theme-border-strong);
   --ops-blue: #2442ff;
   --ops-blue-soft: rgba(36, 66, 255, 0.18);
-  --ops-steel: #9db8cf;
-  --ops-signal: #9db8cf;
-  --ops-rose: #ff5367;
-  --ops-magenta: #ff5367;
+  --ops-steel: var(--theme-accent);
+  --ops-signal: var(--theme-accent);
+  --ops-rose: var(--theme-danger);
+  --ops-magenta: var(--theme-danger);
   position: relative;
   display: grid;
   gap: 18px;
@@ -628,11 +643,19 @@
   max-width: 840px;
   margin: 0;
   color: var(--ops-ink-strong);
-  font-size: clamp(34px, 4.2vw, 58px);
+  font-size: 56px;
   font-weight: 780;
-  letter-spacing: -0.045em;
+  letter-spacing: 0;
   line-height: 1.06;
   text-shadow: 0 24px 72px rgba(0, 0, 0, 0.48);
+}
+
+.ops-page-subtitle {
+  margin: 12px 0 0;
+  color: rgba(232, 236, 239, 0.82);
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 1.45;
 }
 
 .ops-deck {
@@ -900,7 +923,7 @@
   color: var(--ops-ink-strong);
   font-size: 24px;
   font-weight: 780;
-  letter-spacing: -0.035em;
+  letter-spacing: 0;
 }
 
 .ops-inspector__metric {
@@ -916,7 +939,7 @@
   font-family: var(--font-ui);
   font-size: 30px;
   font-weight: 600;
-  letter-spacing: -0.05em;
+  letter-spacing: 0;
 }
 
 .ops-inspector__metric span {
@@ -966,6 +989,12 @@
   border-color: rgba(36, 66, 255, 0.28);
   background: rgba(36, 66, 255, 0.12);
   color: #fff;
+}
+
+.ops-action-button--danger {
+  border-color: rgba(255, 83, 103, 0.34);
+  background: rgba(255, 83, 103, 0.12);
+  color: #ffd8de;
 }
 
 .ops-action-button:hover:not(:disabled),
@@ -1050,19 +1079,13 @@
   }
 }
 
-.ops-control-integrations .ops-connection-group__head h3 {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .ops-page *,
   .ops-page *::before,
   .ops-page *::after {
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
-    animation-duration: 0.01ms !important;
+    animation: none !important;
   }
 }
 
@@ -1122,6 +1145,12 @@
 }
 
 .ops-confirm-backdrop {
+  --ops-ink-strong: #f8f4ee;
+  --ops-muted: #aeb7c0;
+  --ops-faint: #929ca6;
+  --ops-focus: #b7d6ff;
+  --ops-steel: #9db8cf;
+  --ops-rose: #ff5367;
   position: fixed;
   z-index: 120;
   inset: 0;
@@ -1129,7 +1158,14 @@
   place-items: center;
   padding: 24px;
   background: rgba(3, 4, 7, 0.76);
-  backdrop-filter: blur(16px);
+  opacity: 0;
+  backdrop-filter: blur(0) saturate(1);
+  transition: opacity 220ms cubic-bezier(0.2, 0, 0, 1), backdrop-filter 220ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.ops-confirm-backdrop.is-open {
+  opacity: 1;
+  backdrop-filter: blur(16px) saturate(1.08);
 }
 
 .ops-confirm-dialog {
@@ -1139,8 +1175,23 @@
   border-radius: 24px;
   background:
     radial-gradient(circle at 85% 0%, rgba(36, 66, 255, 0.16), transparent 42%),
-    linear-gradient(145deg, rgba(20, 23, 29, 0.98), rgba(8, 9, 13, 0.98));
+  linear-gradient(145deg, rgba(20, 23, 29, 0.98), rgba(8, 9, 13, 0.98));
   box-shadow: 0 34px 90px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  opacity: 0;
+  filter: blur(5px);
+  transform: translateY(12px) scale(0.985);
+  transition: transform 220ms cubic-bezier(0.2, 0, 0, 1), opacity 180ms cubic-bezier(0.2, 0, 0, 1), filter 220ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.ops-confirm-backdrop.is-open .ops-confirm-dialog {
+  opacity: 1;
+  filter: blur(0);
+  transform: translateY(0) scale(1);
+}
+
+.ops-confirm-dialog button:not(:disabled):active {
+  transform: scale(0.975);
+  transition-duration: 80ms;
 }
 
 .ops-confirm-dialog:focus-visible {
@@ -1158,8 +1209,8 @@
 .ops-confirm-dialog h2 {
   margin: 12px 0 8px;
   color: var(--ops-ink-strong);
-  font-size: clamp(20px, 4vw, 28px);
-  letter-spacing: -0.04em;
+  font-size: 28px;
+  letter-spacing: 0;
 }
 
 .ops-confirm-dialog > p {
@@ -1260,12 +1311,649 @@
   .ops-confirm-dialog {
     padding: 19px;
     border-radius: 22px;
+    transform: translateY(24px) scale(0.99);
+  }
+
+  .ops-confirm-backdrop.is-open .ops-confirm-dialog {
+    transform: translateY(0) scale(1);
+  }
+}
+
+.ops-confirm-dialog__input {
+  display: grid;
+  gap: 7px;
+  margin-top: 18px;
+  color: var(--ops-muted);
+  font-size: 10px;
+}
+
+.ops-confirm-dialog__input input {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 0 12px;
+  background: rgba(0, 0, 0, 0.22);
+  color: var(--ops-ink-strong);
+  font: inherit;
+  outline: none;
+  transition: border-color 160ms cubic-bezier(0.2, 0, 0, 1), box-shadow 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.ops-confirm-dialog__input input:focus {
+  border-color: rgba(157, 184, 207, 0.42);
+  box-shadow: 0 0 0 3px rgba(157, 184, 207, 0.1);
+}
+
+.ops-confirm-dialog__input input:focus-visible {
+  border-color: var(--ops-focus);
+  outline: 2px solid var(--ops-focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--theme-focus-ring);
+}
+
+.ops-confirm-dialog__signal--danger {
+  color: var(--ops-rose);
+}
+
+/* Non-hall work surfaces use restrained, interruptible feedback. */
+.app-shell:not(.app-shell--hall) .ops-page > :not(.ops-confirm-backdrop) {
+  animation: ops-content-enter 280ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+.app-shell:not(.app-shell--hall) .ops-page > :not(.ops-confirm-backdrop):nth-child(2) { animation-delay: 24ms; }
+.app-shell:not(.app-shell--hall) .ops-page > :not(.ops-confirm-backdrop):nth-child(3) { animation-delay: 48ms; }
+.app-shell:not(.app-shell--hall) .ops-page > :not(.ops-confirm-backdrop):nth-child(4) { animation-delay: 72ms; }
+
+@keyframes ops-content-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ops-disclosure-enter {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.app-shell:not(.app-shell--hall) .ops-page :is(button, a, [role='button']) {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.app-shell:not(.app-shell--hall) .ops-page :is(button, a, [role='button']):not(:disabled):active {
+  transform: scale(0.975);
+  transition-duration: 80ms;
+}
+
+.app-shell:not(.app-shell--hall) .ops-page :is(button, a, [role='button']):focus-visible {
+  outline: 2px solid var(--ops-focus);
+  outline-offset: 3px;
+}
+
+.app-shell:not(.app-shell--hall) .ops-page :is(
+  input:not([type='checkbox']):not([type='radio']),
+  select,
+  textarea
+):focus-visible {
+  border-color: var(--ops-focus);
+  outline: 2px solid var(--ops-focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--ops-focus-ring);
+}
+
+.app-shell:not(.app-shell--hall) .ops-page :is(input[type='checkbox'], input[type='radio']):focus-visible {
+  outline: 2px solid var(--ops-focus);
+  outline-offset: 3px;
+}
+
+.app-shell:not(.app-shell--hall) .ops-page :is(.discover-search, .discover-sub-search, .rss-search):focus-within {
+  border-color: var(--ops-focus);
+  box-shadow: 0 0 0 3px var(--ops-focus-ring);
+}
+
+.app-shell:not(.app-shell--hall) .ops-page :is(.discover-search, .discover-sub-search, .rss-search) input:not([type='checkbox']):not([type='radio']):focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.app-shell:not(.app-shell--hall) .app-top-nav button:not(:disabled):active {
+  transform: scale(0.96);
+  transition-duration: 80ms;
+}
+
+.app-shell:not(.app-shell--hall) .ops-page :is([role='status'], [role='alert']) {
+  animation: ops-disclosure-enter 220ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .ops-confirm-backdrop {
+    background: rgba(3, 4, 7, 0.94);
+    backdrop-filter: none !important;
+  }
+
+  .ops-confirm-dialog {
+    background: #12151b;
+    backdrop-filter: none;
+    filter: none !important;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ops-page * {
-    transition-duration: 0.01ms !important;
-    animation-duration: 0.01ms !important;
+  .ops-confirm-backdrop,
+  .ops-confirm-dialog,
+  .ops-confirm-dialog__input input {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .ops-confirm-backdrop { background: rgba(0, 0, 0, 0.9); }
+  .ops-confirm-dialog { border-color: rgba(255, 255, 255, 0.35); }
+}
+
+/* Light workbench material. The media hall is intentionally excluded. */
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page {
+  --ops-paper: rgba(255, 255, 255, 0.78);
+  --ops-hair: rgba(31, 35, 41, 0.1);
+  --ops-hair-strong: rgba(31, 35, 41, 0.18);
+  --ops-blue: #3157d5;
+  --ops-blue-soft: rgba(49, 87, 213, 0.1);
+  background: var(--theme-bg);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page::before {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.56), transparent 18rem);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-hero h1 {
+  text-shadow: none;
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(.ops-page-subtitle, .page-hero-copy h1) {
+  color: var(--theme-text-strong);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-discover-subtitle {
+  color: var(--theme-text-strong);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(.ops-back-link:hover, .ops-back-link:focus-visible, .ops-subscription-settings-guard strong) {
+  color: var(--theme-text-strong);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(.ops-deck, .page-hero-copy p) {
+  color: var(--theme-muted);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+  .ops-command,
+  .ops-panel,
+  .ops-inspector,
+  .ops-control-foot,
+  .pipeline-rail,
+  .ops-task-summary,
+  .ops-calendar-stats,
+  .ops-task-hero-status,
+  .ops-discover-policy,
+  .ops-settings-guard,
+  .ops-subscription-settings-guard,
+  .ops-settings-card,
+  .ops-service-card,
+  .ops-task-card,
+  .ops-page--discover .discover-card,
+  .rss-ledger-strip,
+  .rss-index-panel,
+  .rss-source-panel
+) {
+  border-color: var(--theme-border);
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow: var(--theme-shadow);
+  backdrop-filter: blur(24px) saturate(1.3);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+  .ops-command:hover,
+  .ops-command:focus-visible,
+  .ops-service-card:hover,
+  .ops-service-card:focus-visible,
+  .ops-service-card--selected,
+  .ops-next-air:hover,
+  .ops-next-air:focus-visible
+) {
+  border-color: rgba(var(--theme-accent-rgb), 0.3);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 24px 58px rgba(45, 55, 65, 0.16), inset 0 1px 0 #fff;
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-service-card::before {
+  background: linear-gradient(118deg, rgba(255, 255, 255, 0.72), transparent 46%);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+  .ops-list-row,
+  .ops-metrics-grid > div,
+  .ops-task-cloud-state,
+  .ops-task-tabs,
+  .ops-activity-item,
+  .ops-task-chain__step,
+  .ops-policy-row,
+  .ops-access-row,
+  .ops-connection-group,
+  .discover-filter-summary span,
+  .discover-sub-filters,
+  .discover-sub,
+  .sub-detail,
+  .quality-watch-panel__units > span,
+  .discover-resource-preview,
+  .rss-match-row,
+  .rss-source-card
+) {
+  border-color: var(--theme-border);
+  background: rgba(255, 255, 255, 0.46);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-control-foot__backup {
+  border-color: var(--theme-border);
+  background: rgba(255, 255, 255, 0.46);
+  color: var(--theme-muted);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-control-foot__backup--ok {
+  border-color: rgba(23, 125, 114, 0.26);
+  color: var(--theme-success);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-control-foot__backup--warn {
+  border-color: rgba(201, 52, 78, 0.24);
+  color: var(--theme-danger);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-control-foot__backup--configured {
+  border-color: rgba(var(--theme-accent-rgb), 0.24);
+  color: var(--theme-accent);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+  .ops-task-toolbar,
+  .ops-calendar-board .calendar-board__head,
+  .ops-calendar-legend,
+  .ops-connection-group__head,
+  .quality-watch-panel,
+  .moviepilot-backup-panel,
+  .rss-toolbar,
+  .rss-index-head,
+  .rss-source-head,
+  .rss-source-form,
+  .rss-seed-row
+) {
+  border-color: var(--theme-border);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+  .ops-facts > div,
+  .ops-inspector__facts > div,
+  .ops-inspector__metric,
+  .ops-compact-list > div,
+  .ops-env-row + .ops-env-row,
+  .discover-resource-row,
+  .rss-ledger-strip > div,
+  .rss-seed-row,
+  .rss-source-head,
+  .rss-source-form
+) {
+  border-color: var(--theme-border);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+  .ops-link,
+  .ops-icon-button,
+  .ops-action-button,
+  .tool-link,
+  .round-actions button,
+  .discover-filter-chip,
+  .discover-sub-tab,
+  .discover-resource-tab,
+  .rss-window-tab,
+  .rss-pagination button,
+  .ops-page--settings .fx-preset
+) {
+  border-color: var(--theme-border);
+  background: rgba(255, 255, 255, 0.56);
+  color: var(--theme-muted);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+  .ops-link:hover,
+  .ops-link:focus-visible,
+  .ops-icon-button:hover,
+  .ops-icon-button:focus-visible,
+  .ops-action-button:hover:not(:disabled),
+  .ops-action-button:focus-visible:not(:disabled),
+  .tool-link:hover,
+  .discover-filter-chip:hover,
+  .discover-filter-chip--active,
+  .discover-sub-tab--active,
+  .discover-resource-tab--active,
+  .rss-window-tab:hover,
+  .rss-window-tab:focus-visible,
+  .rss-window-tab--active,
+  .ops-page--settings .fx-preset:hover,
+  .ops-page--settings .fx-preset:focus-visible,
+  .ops-page--settings .fx-preset--active
+) {
+  border-color: rgba(var(--theme-accent-rgb), 0.28);
+  background: rgba(var(--theme-accent-rgb), 0.1);
+  color: var(--theme-text-strong);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-action-button--primary,
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-action-button--primary:hover:not(:disabled),
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-action-button--primary:focus-visible:not(:disabled) {
+  border-color: #3157d5;
+  background: #3157d5;
+  color: #fff;
+  box-shadow: 0 7px 18px rgba(49, 87, 213, 0.2);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-action-button--danger,
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-action-button--danger:hover:not(:disabled) {
+  border-color: rgba(201, 52, 78, 0.24);
+  background: rgba(201, 52, 78, 0.09);
+  color: var(--theme-danger);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+  .ops-empty,
+  .ops-progress,
+  .ops-task-progress,
+  .progress-track
+) {
+  border-color: var(--theme-border);
+  background: rgba(31, 35, 41, 0.055);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+  .ops-list-row__copy strong,
+  .ops-compact-list strong,
+  .ops-metrics-grid strong,
+  .ops-facts dd,
+  .ops-inspector__facts dd,
+  .ops-activity-item strong,
+  .ops-task-chain__step strong,
+  .ops-task-state--active,
+  .ops-control-foot strong,
+  .ops-env-row span,
+  .discover-search input,
+  .discover-card__body strong,
+  .discover-sub-search input,
+  .discover-sub-blocked strong,
+  .sub-detail__summary > strong,
+  .sub-detail__summary > p,
+  .sub-detail__meta span,
+  .quality-watch-panel__head strong,
+  .sub-detail__section > strong,
+  .sub-detail__season-head > strong,
+  .sub-detail__cast strong,
+  .sub-detail__episode span,
+  .torra-push-panel dd,
+  .discover-resource-preview pre,
+  .rss-match-row strong,
+  .rss-version-line span
+) {
+  color: var(--theme-text);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+  .discover-search,
+  .discover-sub-search,
+  .rss-search,
+  .rss-window-tabs,
+  .rss-index-head select,
+  .rss-source-form select,
+  .rss-source-form input,
+  .quality-watch-panel__unit select,
+  .ops-page--settings .sub-config input[type='text'],
+  .ops-page--settings .sub-config input[type='number'],
+  .ops-page--settings .sub-config input[type='time'],
+  .ops-page--settings .sub-config select,
+  .ops-page--settings .sub-config textarea
+) {
+  border-color: var(--theme-border);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--theme-text-strong);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .discover-sub-filter-row select {
+  border-color: var(--theme-border);
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--theme-text);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page .sub-config :is(label, .sub-config__row > span) {
+  color: var(--theme-muted);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page .sub-config :is(
+  .sub-config__toggles label,
+  .sub-config__sources label,
+  .sub-config__modes label,
+  .sub-config__rule-chip
+) {
+  border-color: var(--theme-border);
+  background: rgba(255, 255, 255, 0.56);
+  color: var(--theme-text);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page .sub-config :is(
+  input[type='text'],
+  input[type='number'],
+  input[type='time'],
+  select,
+  textarea
+) {
+  border-color: var(--theme-border);
+  background: rgba(255, 255, 255, 0.76);
+  color: var(--theme-text-strong);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page .sub-config :is(
+  .sub-config__source-groups fieldset,
+  .sub-config__rule-groups fieldset
+) {
+  border-color: var(--theme-border);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page .sub-config :is(
+  .sub-config__source-groups legend,
+  .sub-config__rule-groups legend,
+  .sub-config__modes label small,
+  .sub-config__rules > small
+) {
+  color: var(--theme-muted);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page .sub-config .sub-config__modes label strong {
+  color: var(--theme-text-strong);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page .sub-config :is(
+  .sub-config__modes label.is-active,
+  .sub-config__rule-chip.is-require
+) {
+  border-color: rgba(23, 125, 114, 0.26);
+  background: rgba(23, 125, 114, 0.08);
+  color: var(--theme-success);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page .sub-config .sub-config__rule-chip.is-reject {
+  border-color: rgba(201, 52, 78, 0.24);
+  background: rgba(201, 52, 78, 0.07);
+  color: var(--theme-danger);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--discover :is(.discover-source-panel, .discover-filter-panel) {
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--discover .discover-source--active,
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--discover .discover-source:hover,
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--discover .discover-source:focus-visible {
+  border-color: rgba(var(--theme-accent-rgb), 0.2);
+  background: rgba(var(--theme-accent-rgb), 0.1);
+  color: var(--theme-text-strong);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(.discover-resource-panel, .discover-resource-seasons) {
+  border-color: var(--theme-border);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .discover-resource-seasons > div {
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-grid {
+  background: var(--theme-border);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-grid__weekday {
+  background: rgba(247, 249, 251, 0.94);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-cell {
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-cell--empty {
+  background: rgba(237, 240, 243, 0.76);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-entry {
+  border-color: rgba(var(--theme-accent-rgb), 0.15);
+  background: rgba(var(--theme-accent-rgb), 0.07);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .calendar-entry strong {
+  color: var(--theme-text);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(.rss-search, .rss-window-tabs) {
+  background: rgba(247, 249, 251, 0.9);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .rss-seed-row:hover {
+  background: rgba(var(--theme-accent-rgb), 0.06);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .rss-seed-time > span {
+  border-color: #f5f7f9;
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .rss-source-light--off {
+  background: rgba(31, 35, 41, 0.22);
+}
+
+body .app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page :is(
+  input:not([type='checkbox']):not([type='radio']),
+  select,
+  textarea
+):focus-visible,
+body .app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page :is(.discover-search, .discover-sub-search, .rss-search):focus-within {
+  border-color: var(--ops-focus);
+}
+
+:root[data-workbench-theme='light'] .ops-confirm-backdrop {
+  --ops-ink-strong: var(--theme-text-strong);
+  --ops-muted: var(--theme-muted);
+  --ops-faint: var(--theme-faint);
+  --ops-focus: var(--theme-focus);
+  --ops-steel: var(--theme-accent);
+  --ops-rose: var(--theme-danger);
+  background: rgba(71, 78, 86, 0.26);
+}
+
+:root[data-workbench-theme='light'] .ops-confirm-dialog {
+  border-color: rgba(255, 255, 255, 0.76);
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: var(--theme-shadow-strong);
+  color: var(--theme-text);
+  backdrop-filter: blur(28px) saturate(1.35);
+}
+
+:root[data-workbench-theme='light'] .ops-confirm-dialog__meta {
+  border-color: var(--theme-border);
+  background: rgba(240, 243, 246, 0.72);
+}
+
+:root[data-workbench-theme='light'] .ops-confirm-dialog__input input {
+  border-color: var(--theme-border);
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--theme-text-strong);
+}
+
+:root[data-workbench-theme='light'] .ops-confirm-dialog__input input:focus-visible {
+  border-color: var(--ops-focus);
+}
+
+:root[data-workbench-theme='light'] .ops-confirm-dialog :is(.ops-action-button, .ops-action-button:hover:not(:disabled), .ops-action-button:focus-visible:not(:disabled)) {
+  border-color: var(--theme-border);
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--theme-text);
+}
+
+:root[data-workbench-theme='light'] .ops-confirm-dialog .ops-action-button--primary,
+:root[data-workbench-theme='light'] .ops-confirm-dialog .ops-action-button--primary:hover:not(:disabled),
+:root[data-workbench-theme='light'] .ops-confirm-dialog .ops-action-button--primary:focus-visible:not(:disabled) {
+  border-color: #3157d5;
+  background: #3157d5;
+  color: #fff;
+}
+
+:root[data-workbench-theme='light'] .ops-confirm-dialog .ops-action-button--danger,
+:root[data-workbench-theme='light'] .ops-confirm-dialog .ops-action-button--danger:hover:not(:disabled) {
+  border-color: rgba(201, 52, 78, 0.24);
+  background: rgba(201, 52, 78, 0.09);
+  color: var(--theme-danger);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+    .ops-command,
+    .ops-panel,
+    .ops-inspector,
+    .ops-control-foot,
+    .pipeline-rail,
+    .ops-task-summary,
+    .ops-calendar-stats,
+    .ops-settings-card,
+    .ops-service-card,
+    .ops-task-card,
+    .ops-page--discover .discover-card,
+    .rss-ledger-strip,
+    .rss-index-panel,
+    .rss-source-panel
+  ),
+  :root[data-workbench-theme='light'] .ops-confirm-dialog {
+    background: #fff;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+    .ops-command,
+    .ops-panel,
+    .ops-inspector,
+    .ops-settings-card,
+    .ops-service-card,
+    .ops-task-card,
+    .rss-index-panel,
+    .rss-source-panel
+  ),
+  :root[data-workbench-theme='light'] .ops-confirm-dialog {
+    border-color: rgba(0, 0, 0, 0.32);
+    background: #fff;
   }
 }

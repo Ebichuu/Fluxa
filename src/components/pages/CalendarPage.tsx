@@ -130,8 +130,9 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     <main className="work-page work-page--fill ops-page ops-page--calendar">
       <section className="ops-hero ops-hero--calendar">
         <div>
-          <p className="ops-eyebrow">日历 · 播出与入库</p>
-          <h1>什么时候播，哪些还没入库。</h1>
+          <p className="ops-eyebrow">播出与入库</p>
+          <h1>日历</h1>
+          <p className="ops-page-subtitle">什么时候播，哪些还没入库。</p>
           <p className="ops-deck">这里汇总订阅内容的播出日期和入库进度；逾期内容可以直接进入任务中心排查。</p>
         </div>
         <div className="ops-calendar-stats" aria-label="本月订阅统计">
@@ -162,10 +163,10 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
               >{label}</button>
             ))}
           </div>
-          <button aria-label="上个月" className="ops-icon-button" type="button" onClick={() => shiftMonth(-1)}>
+          <button aria-label="上个月" className="ops-icon-button" title="上个月" type="button" onClick={() => shiftMonth(-1)}>
             <ChevronLeft aria-hidden="true" size={14} />
           </button>
-          <button aria-label="下个月" className="ops-icon-button" type="button" onClick={() => shiftMonth(1)}>
+          <button aria-label="下个月" className="ops-icon-button" title="下个月" type="button" onClick={() => shiftMonth(1)}>
             <ChevronRight aria-hidden="true" size={14} />
           </button>
           <span className="ops-calendar-mode">

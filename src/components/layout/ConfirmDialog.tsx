@@ -1,12 +1,24 @@
-import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode
+} from 'react';
+import { createPortal } from 'react-dom';
 
 interface ConfirmDialogProps {
   busy?: boolean;
   children: ReactNode;
   describedBy?: string;
   labelledBy: string;
+  open: boolean;
   onClose: () => void;
 }
+
+const DIALOG_EXIT_MS = 220;
 
 const focusableSelector = [
   'button:not([disabled])',
@@ -22,11 +34,46 @@ function focusableElements(container: HTMLElement) {
     .filter((element) => element.getClientRects().length > 0);
 }
 
-export function ConfirmDialog({ busy = false, children, describedBy, labelledBy, onClose }: ConfirmDialogProps) {
+function reducedMotionEnabled() {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+export function ConfirmDialog({ busy = false, children, describedBy, labelledBy, open, onClose }: ConfirmDialogProps) {
   const dialogRef = useRef<HTMLElement>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
+  const pointerStartRef = useRef<{ id: number; x: number; y: number } | null>(null);
+  const [rendered, setRendered] = useState(open);
+  const [visible, setVisible] = useState(false);
 
   useEffect(() => {
+    let frame = 0;
+    let timer = 0;
+
+    if (open) {
+      setRendered(true);
+      frame = window.requestAnimationFrame(() => setVisible(true));
+    } else {
+      setVisible(false);
+      timer = window.setTimeout(() => setRendered(false), reducedMotionEnabled() ? 0 : DIALOG_EXIT_MS);
+    }
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!rendered) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [rendered]);
+
+  useEffect(() => {
+    if (!open || !rendered) return undefined;
     triggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const dialog = dialogRef.current;
     if (!dialog) return undefined;
@@ -34,20 +81,25 @@ export function ConfirmDialog({ busy = false, children, describedBy, labelledBy,
     const initialFocus = dialog.querySelector<HTMLElement>('[data-dialog-initial-focus]')
       ?? focusableElements(dialog)[0]
       ?? dialog;
-    initialFocus.focus();
+    const frame = window.requestAnimationFrame(() => initialFocus.focus({ preventScroll: true }));
 
     return () => {
+      window.cancelAnimationFrame(frame);
       const trigger = triggerRef.current;
-      window.requestAnimationFrame(() => {
+      window.setTimeout(() => {
         if (trigger?.isConnected && !(trigger instanceof HTMLButtonElement && trigger.disabled)) trigger.focus();
-      });
+      }, reducedMotionEnabled() ? 0 : DIALOG_EXIT_MS);
     };
-  }, []);
+  }, [open, rendered]);
+
+  const requestClose = useCallback(() => {
+    if (!busy) onClose();
+  }, [busy, onClose]);
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (event.key === 'Escape') {
       event.preventDefault();
-      if (!busy) onClose();
+      requestClose();
       return;
     }
     if (event.key !== 'Tab') return;
@@ -73,13 +125,29 @@ export function ConfirmDialog({ busy = false, children, describedBy, labelledBy,
     }
   };
 
-  return (
+  const handleBackdropPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget || busy) return;
+    pointerStartRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleBackdropPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const start = pointerStartRef.current;
+    pointerStartRef.current = null;
+    if (!start || start.id !== event.pointerId || event.target !== event.currentTarget) return;
+    const distance = Math.hypot(event.clientX - start.x, event.clientY - start.y);
+    if (distance <= 6) requestClose();
+  };
+
+  if (!rendered) return null;
+
+  return createPortal((
     <div
-      className="ops-confirm-backdrop"
+      className={visible && open ? 'ops-confirm-backdrop is-open' : 'ops-confirm-backdrop'}
       role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !busy) onClose();
-      }}
+      onPointerCancel={() => { pointerStartRef.current = null; }}
+      onPointerDown={handleBackdropPointerDown}
+      onPointerUp={handleBackdropPointerUp}
     >
       <section
         aria-describedby={describedBy}
@@ -94,5 +162,5 @@ export function ConfirmDialog({ busy = false, children, describedBy, labelledBy,
         {children}
       </section>
     </div>
-  );
+  ), document.body);
 }
