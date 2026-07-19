@@ -33,7 +33,7 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 }
 ```
 
-危险方法要求 Origin 与当前站点相同，或精确出现在 `MCC_ALLOWED_ORIGINS` 中。
+危险方法使用 Fetch Metadata 和同源 Origin 保护，不要求配置来源白名单。
 
 ## 3. 路由分组
 

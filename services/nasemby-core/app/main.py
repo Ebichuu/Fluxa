@@ -9,9 +9,10 @@ from flask import Blueprint, Flask, Response, current_app, jsonify, redirect, re
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from app.activity_log import clear_activities, read_activities, write_activity
-from app.config import DATA_DIR, load_runtime_env, read_config, write_config
+from app.config import AUTH_DB_PATH, DATA_DIR, load_runtime_env, read_config, write_config
 from app import discover_runtime
 from app.access_auth import AccessAuth, is_production_environment, resolve_access_config
+from app.admin_auth import AdminAuth, AdminCredentialStore
 from app.auth_runtime import configure_access_runtime
 from app.frontend_runtime import register_frontend
 from app.http_runtime import configure_http_runtime
@@ -1262,6 +1263,7 @@ def create_app(
     torra_quality_client=None,
     subscription_automation_service=None,
     moviepilot_backup_service=None,
+    admin_store=None,
 ):
     environment = os.environ if access_environment is None else access_environment
     application = Flask(__name__, static_folder=None)
@@ -1269,10 +1271,11 @@ def create_app(
     if is_production_environment(environment):
         application.wsgi_app = ProxyFix(application.wsgi_app, x_for=1, x_proto=1, x_host=1)
     configure_http_runtime(application)
-    configure_access_runtime(
-        application,
-        AccessAuth(resolve_access_config(environment), now_ms=now_ms),
-    )
+    if admin_store is not None or access_environment is None:
+        access_auth = AdminAuth(admin_store or AdminCredentialStore(AUTH_DB_PATH), now_ms=now_ms)
+    else:
+        access_auth = AccessAuth(resolve_access_config(environment), now_ms=now_ms)
+    configure_access_runtime(application, access_auth)
     register_mineradio(
         application,
         public_dir=mineradio_public_dir,

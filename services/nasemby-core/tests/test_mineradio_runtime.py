@@ -63,7 +63,7 @@ ctx.drawImage(rec.img, cx, cy, coverSize, coverSize); ctx.restore();
                 "window.mineradioContract = true;",
                 encoding="utf-8",
             )
-            application = main.create_app(mineradio_public_dir=public_dir)
+            application = main.create_app(access_environment={}, mineradio_public_dir=public_dir)
             client = application.test_client()
 
             response = client.get("/mineradio/embed")
@@ -127,6 +127,7 @@ ctx.drawImage(rec.img, cx, cy, coverSize, coverSize); ctx.restore();
                 )
 
             response = main.create_app(
+                access_environment={},
                 mineradio_public_dir=empty,
             ).test_client().get("/mineradio/embed")
 

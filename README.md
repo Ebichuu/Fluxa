@@ -1,6 +1,6 @@
 # Fluxa
 
-当前发布版本：`v0.2.2`。
+当前发布版本：`v0.3.0`。
 
 面向 fnOS / NAS 的个人影音中控。生产环境使用一个 Python / Flask / Gunicorn 后端，同时提供 React 页面、Mineradio 影院大厅、订阅中枢和外部服务聚合。
 
@@ -23,8 +23,8 @@ name: fluxa
 
 services:
   fluxa:
-    # Fluxa v0.2.2 镜像
-    image: ghcr.io/ebichuu/fluxa:v0.2.2
+    # Fluxa 稳定镜像，版本由 latest 指向当前发布版本
+    image: ghcr.io/ebichuu/fluxa:latest
     container_name: fluxa
     restart: unless-stopped
 
@@ -61,14 +61,8 @@ services:
 `.env` 至少填写：
 
 ```env
-# Fluxa 页面登录密钥，至少 16 个字符
-MCC_ACCESS_KEY=请替换为随机长密码
-
 # 宿主机持久目录；默认使用当前目录下的 runtime
 MCC_DATA_ROOT=./runtime
-
-# 局域网 HTTP 使用 false；HTTPS 使用 true
-MCC_COOKIE_SECURE=false
 ```
 
 Emby、qBittorrent、Torra、Symedia、TMDB 和 MoviePilot 等配置直接在 `.env` 中按需填写，未使用的项目保持空值。启动：
@@ -125,7 +119,7 @@ Vite 会把 `/api` 和 `/mineradio` 代理到 Python。
 ## 本地检查
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 166 项
+python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 172 项
 npm test
 npm run build
 docker compose config --services
@@ -182,5 +176,6 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - [核心接口能力矩阵](docs/CORE_API_CAPABILITY_MATRIX.md)
 - [部署与回滚](docs/DEPLOYMENT.md)
 - [实现来源](docs/IMPLEMENTATION_SOURCES.md)
+- [管理员认证](docs/AUTHENTICATION.md)
 - [UI 规范](docs/UI_STANDARD.md)
 - [未完成能力路线图](docs/ROADMAP.md)

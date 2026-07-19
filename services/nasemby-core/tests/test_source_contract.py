@@ -75,7 +75,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
     def test_preserved_core_routes_are_disabled_by_default_but_remain_testable(self):
         from app import main
 
-        disabled = main.create_app().test_client().post("/api/115/check", json={})
+        disabled = main.create_app(access_environment={}).test_client().post("/api/115/check", json={})
         self.assertEqual(disabled.status_code, 503)
         self.assertEqual(disabled.get_json()["code"], "PRESERVED_CORE_API_DISABLED")
 
@@ -88,7 +88,9 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "check_115_account",
             return_value={"ok": True, "account": "mocked"},
         ):
-            enabled = main.create_app().test_client().post("/api/115/check", json={})
+            enabled = main.create_app(
+                access_environment={"MCC_PRESERVED_CORE_API_ENABLED": "true"}
+            ).test_client().post("/api/115/check", json={})
 
         self.assertEqual(enabled.status_code, 200)
         self.assertTrue(enabled.get_json()["ok"])
@@ -566,8 +568,8 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "project_status",
             return_value={"ok": True, "features": ["subscriptions"]},
         ):
-            first = main.create_app()
-            second = main.create_app()
+            first = main.create_app(access_environment={})
+            second = main.create_app(access_environment={})
             response = second.test_client().get(
                 "/api/status",
                 headers={"X-Request-ID": "contract-request-1"},
@@ -586,7 +588,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
     def test_flask_runtime_returns_request_id_and_redacted_json_errors(self):
         from app import main
 
-        application = main.create_app()
+        application = main.create_app(access_environment={})
 
         @application.get("/api/test/unhandled")
         def unhandled_for_test():
@@ -654,7 +656,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             environment,
             clear=True,
         ):
-            response = main.create_app().test_client().get("/api/health")
+            response = main.create_app(access_environment={}).test_client().get("/api/health")
 
         payload = response.get_json()
         self.assertEqual(response.status_code, 200)

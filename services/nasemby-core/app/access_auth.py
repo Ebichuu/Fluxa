@@ -30,6 +30,7 @@ class AccessConfig:
 @dataclass(frozen=True)
 class AccessSession:
     expires_at: int
+    username: str | None = None
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class LoginResult:
     status: str
     token: str = ""
     expires_at: int = 0
+    username: str | None = None
 
 
 @dataclass
@@ -119,6 +121,8 @@ def _decode_base64url(value: str):
 
 
 class AccessAuth:
+    supports_setup = False
+
     def __init__(self, config: AccessConfig, now_ms: Callable[[], int] | None = None):
         self.config = config
         self._now_ms = now_ms or (lambda: int(time.time() * 1000))
@@ -133,6 +137,18 @@ class AccessAuth:
         left = hashlib.sha256(supplied.encode("utf-8")).digest()
         right = hashlib.sha256(self.config.access_key.encode("utf-8")).digest()
         return hmac.compare_digest(left, right)
+
+    def is_enabled(self):
+        return self.config.enabled
+
+    def setup_required(self):
+        return False
+
+    def cookie_secure(self, request_is_secure: bool):
+        return self.config.cookie_secure
+
+    def attempt_credentials(self, username: str, password: str, address: str):
+        return self.attempt_login(password, address)
 
     def issue_token(self, expires_at: int, nonce: str | None = None):
         token_nonce = nonce or secrets.token_urlsafe(16)

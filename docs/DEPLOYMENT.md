@@ -21,17 +21,11 @@
   upload/
 ```
 
-复制 `.env.example` 为 `.env`，至少配置：
+复制 `.env.example` 为 `.env`，只需配置持久目录和外部服务：
 
 ```env
-# Fluxa 登录密钥，至少 16 个字符
-MCC_ACCESS_KEY=至少16字符的随机值
 # 宿主机持久目录，内部需要 data、db、upload 三个子目录
 MCC_DATA_ROOT=/vol1/docker/fluxa
-# 使用域名访问时填写完整来源；仅局域网 IP 访问可以留空
-MCC_ALLOWED_ORIGINS=
-# HTTPS 填 true；局域网 HTTP 测试填 false
-MCC_COOKIE_SECURE=false
 ```
 
 按需要填写 Emby、qB、Torra、Symedia 和 TMDB 配置。`.env` 不得提交到 Git。
@@ -46,8 +40,8 @@ name: fluxa
 
 services:
   fluxa:
-    # 使用 GitHub Container Registry 发布的 v0.2.2 镜像
-    image: ghcr.io/ebichuu/fluxa:v0.2.2
+    # 使用 GitHub Container Registry 发布的稳定镜像
+    image: ghcr.io/ebichuu/fluxa:latest
 
     # 固定容器名，便于在 fnOS 或命令行中定位
     container_name: fluxa
@@ -118,12 +112,18 @@ docker compose ps
 docker compose logs --tail=100 fluxa
 ```
 
-Compose 会从 `.env` 读取全部服务配置，并拉取 `ghcr.io/ebichuu/fluxa:v0.2.2`。正式镜像统一由 GitHub Actions 构建并推送到 GHCR。
+Compose 会从 `.env` 读取全部服务配置，并拉取 `ghcr.io/ebichuu/fluxa:latest`。正式镜像统一由 GitHub Actions 构建并推送到 GHCR。
 
 访问：
 
 ```text
 http://<fnOS-IP>:8987
+```
+
+首次打开会进入管理员初始化页面，创建账号和密码即可。忘记密码时在部署目录执行：
+
+```bash
+docker compose exec fluxa python -m app.admin reset-password
 ```
 
 公网必须使用 HTTPS 反向代理；8987 只允许反向代理或受信网络访问。
@@ -152,11 +152,11 @@ docker compose down
 
 1. `/healthz` 返回 200。
 2. 未登录业务 API 返回 401。
-3. 使用访问密钥登录后首页与工作页可访问。
+3. 首次打开创建管理员，之后使用账号密码登录。
 4. `/api/health` 返回 `runtime=python`。
 5. 订阅列表可读取。
 6. 订阅保存因写闸门返回 403。
-7. 错误 Origin 的写请求返回 403。
+7. 跨站浏览器写请求返回 403。
 8. 已保留的核心兼容 API 返回 `503 PRESERVED_CORE_API_DISABLED`，`/static/app.js` 返回 404。
 9. 容器进程只有 Gunicorn/Python，容器内找不到 Node。
 10. 重启后健康恢复，持久目录中的标记或数据仍存在。

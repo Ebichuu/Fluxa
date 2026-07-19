@@ -41,6 +41,7 @@ WORKSPACE_ENV_PATH = resolve_workspace_env_path(ROOT_DIR)
 DATA_DIR = ROOT_DIR / "data"
 USER_ENV_PATH = DATA_DIR / "user.env"
 LEGACY_DB_DIR = ROOT_DIR / "db"
+AUTH_DB_PATH = LEGACY_DB_DIR / "auth.sqlite3"
 LEGACY_USER_ENV_PATH = LEGACY_DB_DIR / "user.env"
 SYS_ENV_PATH = ROOT_DIR / "sys.env"
 
