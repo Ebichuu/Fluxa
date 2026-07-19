@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>织梦 Torrents</title>
+    <link>https://tracker.example/</link>
+    <description>Sanitized RSS fixture for parser regression.</description>
+    <language>zh-cn</language>
+    <copyright>sanitized</copyright>
+    <pubDate>Sun, 19 Jul 2026 00:00:00 GMT</pubDate>
+    <lastBuildDate>Sun, 19 Jul 2026 00:00:00 GMT</lastBuildDate>
+    <generator>sanitized-fixture</generator>
+    <item>
+      <guid isPermaLink="false">zmpt-sanitized-3001</guid>
+      <title>What's Wrong With Secretary Kim 2018 S01 2160p EDR WEB-DL HEVC DDP2.0-ZmWeb</title>
+      <link>https://tracker.example/details/3001</link>
+      <description>Sanitized UHD season pack.</description>
+      <author>fixture@example.invalid</author>
+      <pubDate>Sun, 19 Jul 2026 00:01:00 GMT</pubDate>
+      <category domain="source">TV</category>
+      <enclosure url="https://tracker.example/download/3001" length="140386116603" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <guid isPermaLink="false">zmpt-sanitized-3002</guid>
+      <title>Xiang Qin Fan Che Yu Shang Ai 2026 S01 720p WEB-DL H.265 AAC-GodDramas</title>
+      <link>https://tracker.example/details/3002</link>
+      <description>Sanitized H.265 season pack.</description>
+      <author>fixture@example.invalid</author>
+      <pubDate>Sun, 19 Jul 2026 00:02:00 GMT</pubDate>
+      <category domain="source">TV</category>
+      <enclosure url="https://tracker.example/download/3002" length="364163106" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <guid isPermaLink="false">zmpt-sanitized-3003</guid>
+      <title>Ju Shou Ye Ren Wo Nai Dao Men Zhen Jun 2026 S01 1080p WEB-DL H.264 AAC-GodDramas</title>
+      <link>https://tracker.example/details/3003</link>
+      <description>Sanitized H.264 season pack.</description>
+      <author>fixture@example.invalid</author>
+      <pubDate>Sun, 19 Jul 2026 00:03:00 GMT</pubDate>
+      <category domain="source">TV</category>
+      <enclosure url="https://tracker.example/download/3003" length="604369667" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <guid isPermaLink="false">zmpt-sanitized-3004</guid>
+      <title>Quan Chong Tian Xia Ban Di Ji 2025 S02 720p WEB-DL H.264 AAC-GodDramas</title>
+      <link>https://tracker.example/details/3004</link>
+      <description>Sanitized second-season pack.</description>
+      <author>fixture@example.invalid</author>
+      <pubDate>Sun, 19 Jul 2026 00:04:00 GMT</pubDate>
+      <category domain="source">TV</category>
+      <enclosure url="https://tracker.example/download/3004" length="1629960213" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <guid isPermaLink="false">zmpt-sanitized-3005</guid>
+      <title>Wu San Gui Lai Huan Xin Sheng 2026 S01 720p WEB-DL H.264 AAC-GodDramas</title>
+      <link>https://tracker.example/details/3005</link>
+      <description>Sanitized season pack.</description>
+      <author>fixture@example.invalid</author>
+      <pubDate>Sun, 19 Jul 2026 00:05:00 GMT</pubDate>
+      <category domain="source">TV</category>
+      <enclosure url="https://tracker.example/download/3005" length="998959790" type="application/x-bittorrent" />
+    </item>
+  </channel>
+</rss>

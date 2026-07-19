@@ -41,7 +41,9 @@ def _season_episode(title):
         episode_start = int(match.group(2))
         episode_end = int(match.group(3) or match.group(2))
     else:
-        season_match = re.search(r"(?i)(?:Season\s*|第\s*)(\d{1,2})(?:\s*季)", text)
+        season_match = re.search(r"(?i)\bS(\d{1,2})\b", text)
+        if not season_match:
+            season_match = re.search(r"(?i)(?:Season\s*|第\s*)(\d{1,2})(?:\s*季)", text)
         episode_match = re.search(r"第\s*(\d{1,4})(?:\s*[-~至]\s*(\d{1,4}))?\s*[集话]", text)
         if season_match:
             season = int(season_match.group(1))
@@ -55,7 +57,7 @@ def _season_episode(title):
 def _version_summary(title):
     text = str(title or "")
     patterns = (
-        r"(?i)\b(?:2160p|1080p|720p|4k|8k)\b",
+        r"(?i)\b(?:2160p|1080p|1080i|720p|4k|8k)\b",
         r"(?i)\b(?:web[- .]?dl|web[- .]?rip|bluray|blu[- .]?ray|remux|hdtv)\b",
         r"(?i)\b(?:hdr10\+?|dolby[ .]?vision|dv|hlg|hdr)\b",
         r"(?i)\b(?:x265|h\.265|hevc|av1|x264|h\.264)\b",

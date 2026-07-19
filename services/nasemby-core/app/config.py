@@ -27,6 +27,7 @@ except ModuleNotFoundError:
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+WORKSPACE_ENV_PATH = ROOT_DIR.parents[1] / ".env"
 DATA_DIR = ROOT_DIR / "data"
 USER_ENV_PATH = DATA_DIR / "user.env"
 LEGACY_DB_DIR = ROOT_DIR / "db"
@@ -187,6 +188,9 @@ def apply_proxy_env(proxy: str) -> None:
 
 
 def load_runtime_env() -> None:
+    # Local development keeps the shared environment file at the workspace root;
+    # deployment containers may still provide a service-local .env.
+    load_dotenv(WORKSPACE_ENV_PATH, override=False)
     load_dotenv(ROOT_DIR / ".env", override=False)
     load_dotenv(USER_ENV_PATH, override=True)
     load_dotenv(LEGACY_USER_ENV_PATH, override=True)

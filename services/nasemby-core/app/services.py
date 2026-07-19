@@ -711,7 +711,13 @@ def _moviepilot_already_subscribed(result: object, message: str) -> bool:
     return any(token in blob for token in ("已存在", "已经存在", "已订阅", "重复", "already", "exist"))
 
 
-def _moviepilot_trigger_subscribe_search(cfg: dict[str, object], subscribe_id: int, title: str, reason: str = "") -> dict[str, object]:
+def _moviepilot_trigger_subscribe_search(
+    cfg: dict[str, object],
+    subscribe_id: int,
+    title: str,
+    reason: str = "",
+    safe_audit: bool = False,
+) -> dict[str, object]:
     if not subscribe_id:
         return {"ok": False, "message": "未找到 MoviePilot 订阅 ID"}
     response = requests.get(
@@ -727,14 +733,15 @@ def _moviepilot_trigger_subscribe_search(cfg: dict[str, object], subscribe_id: i
         result = {"success": True, "message": response.text[:200]}
     success = bool(result.get("success", True)) if isinstance(result, dict) else True
     message = str(result.get("message") or ("MoviePilot 搜索已触发" if success else "MoviePilot 搜索触发失败")) if isinstance(result, dict) else "MoviePilot 搜索已触发"
+    audit_meta = {"title": title, "reason": reason}
+    if not safe_audit:
+        audit_meta["subscribe_id"] = subscribe_id
     write_activity(
         "push",
         "moviepilot_subscribe_search",
         "success" if success else "error",
-        message,
-        title=title,
-        subscribe_id=subscribe_id,
-        reason=reason,
+        ("MoviePilot 搜索已触发" if success else "MoviePilot 搜索触发失败") if safe_audit else message,
+        **audit_meta,
     )
     return {
         "ok": success,
@@ -780,6 +787,7 @@ def moviepilot_subscribe(payload: dict[str, object] | None = None) -> dict[str, 
     payload = payload or {}
     auto = bool(payload.get("auto"))
     skip_existing = bool(payload.get("skip_existing"))
+    safe_audit = bool(payload.get("_safe_audit"))
     cfg = _moviepilot_config()
     if auto and not cfg["auto_subscribe"]:
         return {"ok": True, "configured": bool(cfg["url"] and cfg["token"]), "pushed": False, "skipped": "MoviePilot 自动推送未启用"}
@@ -825,22 +833,28 @@ def moviepilot_subscribe(payload: dict[str, object] | None = None) -> dict[str, 
     try:
         existing_before_push = _moviepilot_find_subscribe(cfg, media_type, tmdb_id, seasons, title, year)
     except Exception as exc:
-        lookup_error = str(exc)
+        lookup_error = "MoviePilot 查重失败" if safe_audit else str(exc)
+        if safe_audit:
+            raise RuntimeError(lookup_error) from exc
     if skip_existing and existing_before_push:
         subscribe_id = _push_int((existing_before_push or {}).get("id"))
         message = f"MoviePilot 已有订阅，跳过推送：{title}"
+        audit_meta = {
+            "title": title,
+            "media_type": media_type,
+            "tmdb_id": tmdb_id,
+            "seasons": seasons,
+            "already_exists": True,
+            "lookup_error": lookup_error,
+        }
+        if not safe_audit:
+            audit_meta["subscribe_id"] = subscribe_id
         write_activity(
             "push",
             "moviepilot_subscribe",
             "skip",
             message,
-            title=title,
-            media_type=media_type,
-            tmdb_id=tmdb_id,
-            seasons=seasons,
-            subscribe_id=subscribe_id,
-            already_exists=True,
-            lookup_error=lookup_error,
+            **audit_meta,
         )
         return {
             "ok": True,
@@ -884,7 +898,7 @@ def moviepilot_subscribe(payload: dict[str, object] | None = None) -> dict[str, 
             matched_subscribe = matched_subscribe or _moviepilot_find_subscribe(cfg, media_type, tmdb_id, seasons, title, year)
             subscribe_id = _push_int((matched_subscribe or {}).get("id"))
         except Exception as exc:
-            search_error = f"订阅匹配失败：{exc}"
+            search_error = "MoviePilot 订阅匹配失败" if safe_audit else f"订阅匹配失败：{exc}"
     if subscribe_id:
         try:
             search_result = _moviepilot_trigger_subscribe_search(
@@ -892,16 +906,19 @@ def moviepilot_subscribe(payload: dict[str, object] | None = None) -> dict[str, 
                 subscribe_id,
                 title,
                 "已有订阅触发搜索" if already_exists else "推送订阅后触发搜索",
+                safe_audit=safe_audit,
             )
         except Exception as exc:
-            search_error = str(exc)
+            search_error = "MoviePilot 搜索触发失败" if safe_audit else str(exc)
+            audit_meta = {"title": title}
+            if not safe_audit:
+                audit_meta["subscribe_id"] = subscribe_id
             write_activity(
                 "push",
                 "moviepilot_subscribe_search",
                 "error",
-                f"MoviePilot 搜索触发失败：{exc}",
-                title=title,
-                subscribe_id=subscribe_id,
+                "MoviePilot 搜索触发失败" if safe_audit else f"MoviePilot 搜索触发失败：{exc}",
+                **audit_meta,
             )
     search_triggered = bool(search_result and search_result.get("ok"))
     if search_triggered:
@@ -911,19 +928,23 @@ def moviepilot_subscribe(payload: dict[str, object] | None = None) -> dict[str, 
     elif search_error:
         message = f"{message}，搜索触发失败：{search_error}"
     success = bool(success or (already_exists and search_triggered))
+    audit_meta = {
+        "title": title,
+        "media_type": media_type,
+        "tmdb_id": tmdb_id,
+        "seasons": seasons,
+        "already_exists": already_exists,
+        "search_triggered": search_triggered,
+        "search_error": search_error,
+    }
+    if not safe_audit:
+        audit_meta["subscribe_id"] = subscribe_id
     write_activity(
         "push",
         "moviepilot_subscribe",
         "success" if success else "error",
-        message,
-        title=title,
-        media_type=media_type,
-        tmdb_id=tmdb_id,
-        seasons=seasons,
-        subscribe_id=subscribe_id,
-        already_exists=already_exists,
-        search_triggered=search_triggered,
-        search_error=search_error,
+        ("MoviePilot 备用订阅动作已完成" if success else "MoviePilot 备用订阅动作失败") if safe_audit else message,
+        **audit_meta,
     )
     return {
         "ok": success,
@@ -942,6 +963,67 @@ def moviepilot_subscribe(payload: dict[str, object] | None = None) -> dict[str, 
         "search_result": search_result,
         "moviepilot_response": result,
     }
+
+
+def moviepilot_backup_inspect(item: dict[str, object]) -> dict[str, object]:
+    cfg = _moviepilot_config()
+    if not cfg["url"] or not cfg["token"]:
+        raise RuntimeError("MoviePilot 未配置")
+    title = str(item.get("title") or "").strip()
+    media_type = _moviepilot_type(item.get("media_type"))
+    tmdb_id = _push_int(item.get("tmdb_id"))
+    seasons = [
+        int(value)
+        for value in item.get("seasons") or []
+        if str(value).isdigit() and int(value) > 0
+    ]
+    existing = _moviepilot_find_subscribe(
+        cfg,
+        media_type,
+        tmdb_id,
+        seasons,
+        title,
+        str(item.get("year") or ""),
+    )
+    subscribe_id = _extract_moviepilot_subscribe_id(existing)
+    if existing and not subscribe_id:
+        raise RuntimeError("MoviePilot 已有订阅缺少 ID")
+    return {
+        "exists": existing is not None,
+        "subscribe_id": subscribe_id,
+    }
+
+
+def moviepilot_backup_search_existing(
+    item: dict[str, object],
+    inspection: dict[str, object],
+) -> dict[str, object]:
+    cfg = _moviepilot_config()
+    if not cfg["url"] or not cfg["token"]:
+        raise RuntimeError("MoviePilot 未配置")
+    subscribe_id = _push_int(inspection.get("subscribe_id"))
+    if not subscribe_id:
+        raise RuntimeError("MoviePilot 已有订阅缺少 ID")
+    return _moviepilot_trigger_subscribe_search(
+        cfg,
+        subscribe_id,
+        str(item.get("title") or "").strip(),
+        "人工备用入口触发已有订阅搜索",
+        safe_audit=True,
+    )
+
+
+def moviepilot_backup_create(item: dict[str, object]) -> dict[str, object]:
+    return moviepilot_subscribe({
+        "item": {
+            "title": str(item.get("title") or "").strip(),
+            "media_type": str(item.get("media_type") or "").strip(),
+            "tmdb_id": _push_int(item.get("tmdb_id")),
+            "year": str(item.get("year") or "").strip(),
+        },
+        "seasons": list(item.get("seasons") or []),
+        "_safe_audit": True,
+    })
 
 
 def _torra_config() -> dict[str, object]:

@@ -6,7 +6,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 
 def resolve_database_path(project_root=None, environment=None, legacy_path=None):

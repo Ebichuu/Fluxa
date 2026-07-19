@@ -200,6 +200,13 @@ DEFAULT_SUBSCRIPTION_SOURCES = [
 
 DEFAULT_SUBSCRIPTION_CONFIG = {
     "mode": "torra",
+    "torra_quality_watch_enabled": False,
+    "torra_quality_default_window_hours": 48,
+    "torra_quality_schedule_json": None,
+    "torra_quality_min_interval_minutes": 60,
+    "torra_quality_hourly_limit": 4,
+    "torra_quality_daily_limit": 30,
+    "torra_quality_scheduler_batch_size": 2,
     "douban": {
         "enabled": True,
         "movie_enabled": True,
@@ -343,11 +350,13 @@ def load_tmdb_config():
         load_runtime_env()
     except Exception:
         pass
-    if TMDB_CONFIG is not None and TMDB_CONFIG.get("api_key"):
+    if TMDB_CONFIG is not None and (TMDB_CONFIG.get("api_key") or TMDB_CONFIG.get("api_token")):
         return TMDB_CONFIG
     module = SourcelessFileLoader("tmdb_config", str(RUNTIME_DIR / "tmdb_config.pyc")).load_module()
+    api_token = str(os.getenv("TMDB_API_TOKEN") or "").strip()
     TMDB_CONFIG = {
-        "api_key": module.resolve_tmdb_api_key(),
+        "api_key": "" if api_token else module.resolve_tmdb_api_key(),
+        "api_token": api_token,
         "api_base_url": module.resolve_tmdb_api_base_url().rstrip("/"),
         "image_base_url": module.resolve_tmdb_image_base_url().rstrip("/"),
     }
@@ -369,10 +378,15 @@ def load_hdhive_module():
 
 
 def http_json(url, timeout=18):
-    req = urllib.request.Request(url, headers={
+    headers = {
         "User-Agent": "NasEmby Discover/1.0",
         "Accept": "application/json",
-    })
+    }
+    tmdb_base_url = str((TMDB_CONFIG or {}).get("api_base_url") or "").rstrip("/")
+    tmdb_token = str((TMDB_CONFIG or {}).get("api_token") or "").strip()
+    if tmdb_token and tmdb_base_url and url.startswith(f"{tmdb_base_url}/"):
+        headers["Authorization"] = f"Bearer {tmdb_token}"
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         body = resp.read().decode("utf-8", "replace")
     return json.loads(body)

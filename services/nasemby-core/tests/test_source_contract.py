@@ -33,9 +33,12 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
         main_source = (MODULE_ROOT / "app" / "main.py").read_text(encoding="utf-8")
         for registrar in (
             "register_discover_compat(application)",
-            "register_subscription_compat(application, environment=environment)",
+            "register_subscription_compat(",
             "register_task_chain(application)",
             "register_torra_read(",
+            "register_quality_watch(",
+            "register_moviepilot_backup(",
+            "register_private_rss(",
             "register_symedia_read(",
         ):
             self.assertIn(registrar, main_source)
@@ -320,6 +323,9 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
         self.assertIn('NASEMBY_CORE_WRITE_ENABLED: "false"', compose)
         self.assertIn('MCC_SUBSCRIPTION_SCHEDULER_ENABLED: "false"', compose)
         self.assertIn("MCC_PRIVATE_RSS_ENABLED: ${MCC_PRIVATE_RSS_ENABLED:-false}", compose)
+        self.assertIn("MCC_TORRA_QUALITY_WATCH_ENABLED: ${MCC_TORRA_QUALITY_WATCH_ENABLED:-false}", compose)
+        self.assertIn("MCC_TORRA_REWASH_DOWNLOAD_ENABLED: ${MCC_TORRA_REWASH_DOWNLOAD_ENABLED:-false}", compose)
+        self.assertIn("MCC_MOVIEPILOT_BACKUP_ENABLED: ${MCC_MOVIEPILOT_BACKUP_ENABLED:-false}", compose)
         self.assertIn('MCC_PRESERVED_CORE_API_ENABLED: "false"', compose)
         self.assertIn('TORRA_PUSH_ENABLED: "false"', compose)
         self.assertNotIn("\n  nasemby-core:", compose)
@@ -422,6 +428,8 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "_hdhive_scheduler_started",
             "_discover_preload_started",
             "_subscription_scheduler_started",
+            "_private_rss_collector_started",
+            "_quality_watch_scheduler_started",
             "_background_runtime_started",
         )
         previous_flags = {name: getattr(main, name) for name in flag_names}
@@ -463,6 +471,8 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "_hdhive_scheduler_started",
             "_discover_preload_started",
             "_subscription_scheduler_started",
+            "_private_rss_collector_started",
+            "_quality_watch_scheduler_started",
             "_background_runtime_started",
         )
         previous_flags = {name: getattr(main, name) for name in flag_names}
@@ -480,6 +490,43 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
                 setattr(main, name, value)
 
         self.assertEqual(started_threads, ["hdhive-checkin", "discover-cache-preload", "subscription-task"])
+        self.assertEqual(started, started_threads)
+
+    def test_background_runtime_starts_quality_watch_only_when_environment_gate_is_enabled(self):
+        from app import main
+
+        started_threads = []
+
+        class FakeThread:
+            def __init__(self, *, target, name, daemon):
+                self.name = name
+
+            def start(self):
+                started_threads.append(self.name)
+
+        flag_names = (
+            "_hdhive_scheduler_started",
+            "_discover_preload_started",
+            "_subscription_scheduler_started",
+            "_private_rss_collector_started",
+            "_quality_watch_scheduler_started",
+            "_background_runtime_started",
+        )
+        previous_flags = {name: getattr(main, name) for name in flag_names}
+        try:
+            for name in flag_names:
+                setattr(main, name, False)
+            with patch.object(main.threading, "Thread", FakeThread), patch.dict(
+                main.os.environ,
+                {"MCC_TORRA_QUALITY_WATCH_ENABLED": "true"},
+                clear=True,
+            ):
+                started = main.start_background_runtime()
+        finally:
+            for name, value in previous_flags.items():
+                setattr(main, name, value)
+
+        self.assertEqual(started_threads, ["hdhive-checkin", "discover-cache-preload", "quality-watch"])
         self.assertEqual(started, started_threads)
 
     def test_flask_app_factory_keeps_routes_and_does_not_start_schedulers(self):

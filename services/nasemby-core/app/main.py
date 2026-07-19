@@ -9,7 +9,7 @@ from flask import Blueprint, Flask, Response, current_app, jsonify, redirect, re
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from app.activity_log import clear_activities, read_activities, write_activity
-from app.config import DATA_DIR, read_config, write_config
+from app.config import DATA_DIR, load_runtime_env, read_config, write_config
 from app import discover_runtime
 from app.access_auth import AccessAuth, is_production_environment, resolve_access_config
 from app.auth_runtime import configure_access_runtime
@@ -22,13 +22,32 @@ from app.media_read_runtime import register_emby_reads
 from app.emby_refresh_runtime import register_emby_refresh
 from app.qbittorrent_runtime import register_qbittorrent_read
 from app.qbittorrent_action_runtime import register_qbittorrent_actions
-from app.torra_read_runtime import register_torra_read
+from app.torra_read_runtime import register_torra_read, resolve_torra_read_config
+from app.torra_quality_runtime import TorraQualityClient
 from app.symedia_read_runtime import register_symedia_read
 from app.task_chain_runtime import register_task_chain
 from app.integration_runtime import register_integrations
 from app.cloud_acquisition_runtime import register_cloud_acquisition
 from app.system_metrics_runtime import register_system_metrics
 from app.private_rss_api_runtime import register_private_rss
+from app.automation_action_runtime import register_automation_actions
+from app.quality_watch_repository import QualityWatchRepository
+from app.quality_watch_runtime import register_quality_watch
+from app.quality_watch_scheduler import (
+    QualityWatchScheduler,
+    QualityWatchSchedulerDependencies,
+    register_quality_watch_scheduler,
+)
+from app.subscription_automation_api_runtime import register_subscription_automation
+from app.subscription_automation_runtime import (
+    SubscriptionAutomationDependencies,
+    SubscriptionAutomationService,
+)
+from app.moviepilot_backup_runtime import (
+    MoviePilotBackupDependencies,
+    MoviePilotBackupService,
+    register_moviepilot_backup,
+)
 from app.hdhive_auth import (
     hdhive_auth_url,
     hdhive_checkin_now,
@@ -56,6 +75,9 @@ from app.services import (
     fetch_emby_libraries,
     moviepilot_status,
     moviepilot_subscribe,
+    moviepilot_backup_create,
+    moviepilot_backup_inspect,
+    moviepilot_backup_search_existing,
     project_status,
     run_115_cleanup,
     run_115_invite_boost,
@@ -76,6 +98,7 @@ _hdhive_scheduler_started = False
 _discover_preload_started = False
 _subscription_scheduler_started = False
 _private_rss_collector_started = False
+_quality_watch_scheduler_started = False
 _background_runtime_started = False
 
 
@@ -412,6 +435,27 @@ def start_private_rss_collector():
     thread.start()
 
 
+def _quality_watch_scheduler_loop():
+    time.sleep(5)
+    while True:
+        try:
+            scheduler = app.extensions.get("mcc_quality_watch_scheduler")
+            if scheduler:
+                scheduler.run_once()
+        except Exception as exc:
+            logger.error("background scheduler failed scheduler=quality-watch error_type=%s", type(exc).__name__)
+        time.sleep(30)
+
+
+def start_quality_watch_scheduler():
+    global _quality_watch_scheduler_started
+    if _quality_watch_scheduler_started:
+        return
+    _quality_watch_scheduler_started = True
+    thread = threading.Thread(target=_quality_watch_scheduler_loop, name="quality-watch", daemon=True)
+    thread.start()
+
+
 def start_background_runtime():
     global _background_runtime_started
     if _background_runtime_started:
@@ -427,6 +471,9 @@ def start_background_runtime():
     if str(os.getenv("MCC_PRIVATE_RSS_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}:
         start_private_rss_collector()
         started.append("private-rss")
+    if str(os.getenv("MCC_TORRA_QUALITY_WATCH_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}:
+        start_quality_watch_scheduler()
+        started.append("quality-watch")
     _background_runtime_started = True
     return started
 
@@ -1211,6 +1258,10 @@ def create_app(
     system_metrics_clock=None,
     private_rss_repository=None,
     private_rss_collector=None,
+    quality_watch_repository=None,
+    torra_quality_client=None,
+    subscription_automation_service=None,
+    moviepilot_backup_service=None,
 ):
     environment = os.environ if access_environment is None else access_environment
     application = Flask(__name__, static_folder=None)
@@ -1242,11 +1293,14 @@ def create_app(
         clock=qb_clock,
     )
     register_qbittorrent_actions(application, qb_client)
-    register_torra_read(
+    torra_read_client = register_torra_read(
         application,
         environment=environment,
         client_factory=torra_client_factory,
         clock=torra_clock,
+    )
+    application.extensions["mcc_torra_quality_client"] = torra_quality_client or TorraQualityClient(
+        resolve_torra_read_config(environment), clock=torra_clock
     )
     register_symedia_read(
         application,
@@ -1274,13 +1328,74 @@ def create_app(
         clock=system_metrics_clock,
     )
     register_discover_compat(application)
-    register_subscription_compat(application, environment=environment)
+    quality_repository = quality_watch_repository or QualityWatchRepository(
+        discover_runtime.subscription_database_path()
+    )
+    application.extensions["mcc_quality_watch_repository"] = quality_repository
+    register_quality_watch(
+        application,
+        quality_repository,
+        config_loader=discover_runtime.load_subscription_config,
+        clock=quality_repository.clock,
+    )
+    register_automation_actions(application, quality_repository)
+    register_subscription_compat(
+        application,
+        environment=environment,
+        action_repository=quality_repository,
+    )
     register_private_rss(
         application,
         discover_runtime.subscription_database_path(),
         environment=environment,
         repository=private_rss_repository,
         collector=private_rss_collector,
+        subscription_loader=lambda: discover_runtime.load_subscription_items(remove_completed=False),
+        config_loader=discover_runtime.load_subscription_config,
+    )
+    automation_service = subscription_automation_service or SubscriptionAutomationService(
+        SubscriptionAutomationDependencies(
+            environment,
+            quality_repository,
+            application.extensions["mcc_torra_quality_client"],
+            qb_client,
+            discover_runtime.load_subscription_config,
+            discover_runtime.write_subscription_config_data,
+            lambda: discover_runtime.load_subscription_items(remove_completed=False),
+            discover_runtime.update_subscription_item,
+            rss_runtime=application.extensions.get("mcc_rss_subscription_match_runtime"),
+            clock=quality_repository.clock,
+        )
+    )
+    register_subscription_automation(application, automation_service)
+    backup_service = moviepilot_backup_service or MoviePilotBackupService(
+        MoviePilotBackupDependencies(
+            environment,
+            quality_repository,
+            lambda: discover_runtime.load_subscription_items(remove_completed=False),
+            torra_read_client,
+            qb_client,
+            moviepilot_backup_inspect,
+            moviepilot_backup_search_existing,
+            moviepilot_backup_create,
+        )
+    )
+    register_moviepilot_backup(application, backup_service)
+    register_quality_watch_scheduler(
+        application,
+        QualityWatchScheduler(
+            quality_repository,
+            QualityWatchSchedulerDependencies(
+                environment,
+                application.extensions["mcc_torra_quality_client"],
+                qb_client,
+                lambda: discover_runtime.load_subscription_items(remove_completed=False),
+                discover_runtime.load_subscription_config,
+                rss_runtime=application.extensions.get("mcc_rss_subscription_match_runtime"),
+                automation_runtime=automation_service,
+            ),
+            clock=quality_repository.clock,
+        ),
     )
     register_frontend(
         application,
@@ -1310,6 +1425,9 @@ app = create_app()
 
 
 if __name__ == "__main__":
+    # Resolve the local workspace .env before constructing runtime clients.
+    load_runtime_env()
+    app = create_app()
     start_background_runtime()
     host = os.getenv("APP_HOST", "0.0.0.0")
     port = int(os.getenv("APP_PORT", "12388"))

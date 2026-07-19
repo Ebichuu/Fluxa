@@ -7,11 +7,11 @@
 - Flask 应用工厂、统一请求 ID、JSON 错误和整站访问保护。
 - React `dist`、SPA 回退、Mineradio 原始资源和桥接页。
 - NasEmby 原发现、JustWatch 海外流媒体、订阅、日历、资源规则和调度源码。
-- SQLite 唯一订阅台账、旧 JSON 一次性迁移和私人 PT RSS 本地种子索引。
+- SQLite 唯一订阅台账、旧 JSON 一次性迁移、私人 PT RSS 本地种子索引和活动观察窗口匹配。
 - 115、Telegram、HDHive / pansou、provider 等原核心能力与接口调用关系。
-- Torra 固定目标推送：预览、确认、幂等、冷却和脱敏审计。
+- Torra 固定目标推送，以及追更洗版分析、候选下载、job 状态解析、按集 Emby 基准、SQLite 幂等/租约和脱敏审计。
 - 30 秒缓存的 NAS 系统指标与原活动日志。
-- 115、Telegram、HDHive / pansou 和 MoviePilot 的 v2 细分接口继续保留；当前 React 只使用 MoviePilot 摘要，其他能力延期。
+- 115、Telegram、HDHive / pansou 和 MoviePilot 的 v2 细分接口继续保留；MoviePilot 阶段 7 已增加默认关闭的人工备用预览/推送，其他能力延期。
 - Emby、qBittorrent、Torra、Symedia 的服务端适配和凭据隔离。
 - 统一任务链、qB 暂停/恢复和证据驱动的 Emby 刷新。
 - 单一 `data/`、`db/`、`upload/` 持久边界。
@@ -51,6 +51,9 @@ python -m app.main
 MCC_SUBSCRIPTION_SCHEDULER_ENABLED=false
 NASEMBY_CORE_WRITE_ENABLED=false
 MCC_PRIVATE_RSS_ENABLED=false
+MCC_TORRA_QUALITY_WATCH_ENABLED=false
+MCC_TORRA_REWASH_DOWNLOAD_ENABLED=false
+MCC_MOVIEPILOT_BACKUP_ENABLED=false
 MCC_PRESERVED_CORE_API_ENABLED=false
 TORRA_PUSH_ENABLED=false
 MCC_INTEGRATION_PROBE_ENABLED=false
@@ -63,6 +66,9 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 
 - 写闸门关闭时，订阅保存、分类、改季、配置、执行、删除和推送均被服务端拒绝。
 - 订阅调度器只在显式开启时启动；发现缓存和关闭状态检查不会替代订阅调度。
+- 追更洗版协调器只在 `MCC_TORRA_QUALITY_WATCH_ENABLED=true` 时启动，并继续要求 SQLite 中的追更设置开启；默认不创建线程或调用 Torra。
+- 追更洗版候选下载还要求独立的 `MCC_TORRA_REWASH_DOWNLOAD_ENABLED=true`、人工确认和服务端已完成分析动作；打开分析闸门不会自动下载。
+- MoviePilot 人工备用还要求 `MCC_MOVIEPILOT_BACKUP_ENABLED=true`、观察单元全部 `observation_expired`、Torra/qB 预检通过和明确确认；已有订阅只重搜，没有订阅才复用创建逻辑，默认不接入自动调度。
 - NasEmby 的 115、Telegram、HDHive、缓存预热和 provider 核心 API 保留在统一端口的 URL map 中，但默认返回 `503 PRESERVED_CORE_API_DISABLED`。
 - qB 与 Emby 手动动作仍由各自的确认、目标复查和冷却保护；只读验收阶段不得调用。
 
@@ -79,14 +85,19 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/v2/subscriptions/:id/torra-push-*`：固定目标 Torra 的预览和受保护推送。
 - `/api/v2/system/metrics`：缓存、白名单映射的系统指标。
 - `/api/v2/rss-sources`、`/api/v2/rss-items`：私人 RSS 来源和本地种子库；读取响应不含完整 RSS/下载地址。
+- `/api/v2/rss-matches`：只读本地 `candidate` 与后续状态；双闸门开启时后台可创建一次性 Torra 分析动作，但不把标题匹配当作版本质量结论，也不自动下载候选。
+- `/api/v2/subscription-automation/settings`、`/api/v2/subscriptions/:id/quality-watch`：追更洗版全局与单条观察设置、暂停和恢复。
+- `/api/v2/subscriptions/:id/torra-rewash-analyses`、`/api/v2/subscriptions/:id/torra-rewashes`、`/api/v2/rss-matches/:id/torra-rewash-analyses`：人工异步分析与候选下载；服务端从观察单元和已完成分析动作读取 Torra ID/候选，不接受浏览器映射。
+- `/api/v2/subscriptions/:id/moviepilot-previews`、`/api/v2/subscriptions/:id/moviepilot-pushes`：阶段 7 人工备用预览与同步推送；只复用 NasEmby MoviePilot 门面，不返回外部订阅 ID、URL、Token 或原始响应。
+- `/api/v2/automation-actions/:id`：从 SQLite 读取统一外部动作状态，只返回哈希化 job 引用和安全结果摘要。
 - `/api/v2/integrations/*`、`/api/v2/acquisition/cloud/*` 和云盘策略路由继续保留，当前 React 不调用延期动作。
 - `/mineradio/embed`、`/mineradio/*`。
 
-47 条冻结 v1 契约见项目根 `docs/contracts/http-api-contract-v1.json`；26 条新增能力见 `http-api-contract-v2.json`。浏览器公开响应经过白名单映射；内部诊断路由保留 NasEmby 原始字段，仍受整站认证保护。
+47 条冻结 v1 契约见项目根 `docs/contracts/http-api-contract-v1.json`；35 条新增能力见 `http-api-contract-v2.json`。浏览器公开响应经过白名单映射；内部诊断路由保留 NasEmby 原始字段，仍受整站认证保护。
 
 ## 唯一订阅台账
 
-订阅写入只使用 `db/media_control_center.sqlite3`。首次发现旧 JSON 时先备份、校验并生成迁移报告，再一次性导入；运行时不再写回 JSON。
+订阅写入只使用 `db/media_control_center.sqlite3`。首次发现旧 JSON 时先备份，在同目录临时 SQLite 中导入并逐字段复核，再原子替换正式库；运行时不再写回 JSON。失败迁移不会发布半成品数据库。
 
 分类与改季直接更新同一条订阅，不创建 Node 副本，也不会因为字段修改排队外部 provider。保存订阅继续调用 NasEmby 原保存函数；外部后处理仍受配置和总开关约束。
 
@@ -98,7 +109,11 @@ python -m unittest discover -s tests -v
 
 测试使用临时台账、隔离的临时活动日志和模拟客户端，不连接真实服务执行写操作。保留接口只在模拟测试中显式开启；Mineradio 注入片段继续使用冻结的 SHA-256 快照保护视觉桥接基线。
 
-当前共 98 项回归测试。SQLite、RSS、Torra、网盘和系统指标测试全部使用临时台账与模拟函数，不连接真实外部服务；确认默认闸门、脱敏、迁移、幂等、冷却和缓存行为。
+当前共 165 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘和系统指标测试全部使用临时台账与模拟函数，不连接真实外部服务；确认默认闸门、脱敏、原子迁移、退避、并发上限、幂等、冷却、job 状态、按集固定窗口、RSS 活动匹配、主动兜底、公平轮询、截止点和缓存行为。
+
+RSS 解析回归已加入四个真实结构的完全脱敏夹具：M-Team 的 `tests/fixtures/mteam_rss_sanitized.xml`、HDHome 的 `tests/fixtures/hdhome_rss_sanitized.xml`、织梦的 `tests/fixtures/zmpt_rss_sanitized.xml` 和青蛙的 `tests/fixtures/qingwa_rss_sanitized.xml`，覆盖 RSS 2.0、电影/剧集、多版本、单集/整季包、文件大小、`enclosure`、`720p/1080i/1080p/2160p`、Blu-ray/Remux、WEB-DL、H.264/H.265、HDR、Atmos 和 TrueHD 版本摘要。四个夹具还会经过假 HTTP 响应、收集器、临时 SQLite 和公共脱敏查询的完整回归，已满足当前版本；夹具只使用 `tracker.example` 地址，不保存真实签名、UID、详情或下载 URL，也不访问 enclosure。
+
+当前源码为 schema version 3；本地硬化候选镜像 `media-control-center:sqlite-rss-hardened` 仍是上一阶段的 schema v2。该镜像的隔离冒烟已确认 WAL、FTS5、RSS 外部访问闸门、无 Node 运行层和容器重建持久化，本轮代码尚未重建候选镜像。
 
 ## 持久目录
 

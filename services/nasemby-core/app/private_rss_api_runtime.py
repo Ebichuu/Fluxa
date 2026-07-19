@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import os
-import threading
 import uuid
 
 from flask import jsonify, request
 
 from app.http_runtime import current_request_id
+from app.automation_action_runtime import present_automation_action
 from app.private_rss_collector import PrivateRssCollector
 from app.private_rss_repository import PrivateRssRepository
+from app.quality_watch_repository import QualityWatchRepository
+from app.rss_subscription_match_runtime import (
+    RssAnalysisDependencies,
+    RssSubscriptionMatchRuntime,
+    register_rss_subscription_match,
+)
 
 
 def _truthy(value):
@@ -20,12 +26,11 @@ def _error(code, message, status):
 
 
 class PrivateRssService:
-    def __init__(self, repository, environment=None, collector=None):
+    def __init__(self, repository, action_repository, environment=None, collector=None):
         self.repository = repository
+        self.action_repository = action_repository
         self.environment = os.environ if environment is None else environment
         self.collector = collector or PrivateRssCollector(repository)
-        self.actions = {}
-        self.action_lock = threading.Lock()
 
     def collection_enabled(self):
         return _truthy(self.environment.get("MCC_PRIVATE_RSS_ENABLED"))
@@ -34,36 +39,74 @@ class PrivateRssService:
         return _truthy(self.environment.get("NASEMBY_CORE_WRITE_ENABLED"))
 
     def create_test_action(self, source_id):
-        action_id = uuid.uuid4().hex
-        action = {
-            "id": action_id,
-            "provider": "private-rss",
-            "type": "rss-source-test",
-            "status": "running",
-            "result": None,
-        }
-        with self.action_lock:
-            self.actions[action_id] = action
+        claimed = self.action_repository.claim_action(
+            f"rss-source-test:{source_id}:{uuid.uuid4().hex}",
+            str(source_id),
+            "private-rss",
+            "rss-source-test",
+            request_summary={"sourceId": str(source_id)},
+        )
+        action_id = claimed["action"]["action_id"]
         try:
             result = self.collector.fetch_source(source_id, persist=False)
-            action = {**action, "status": "succeeded", "result": result}
+            source = result if isinstance(result, dict) else {}
+            summary = {
+                "status": str(source.get("status") or "success")[:40],
+                "items": int(source.get("items") or 0),
+                "title": str(source.get("title") or "")[:120],
+                "message": str(source.get("message") or "")[:240],
+            }
+            return self.action_repository.complete_action(
+                action_id,
+                "succeeded",
+                summary,
+                http_status=200,
+            )
         except Exception:
-            action = {**action, "status": "failed", "result": {"message": "RSS 测试失败"}}
-        with self.action_lock:
-            self.actions[action_id] = action
-        return action
+            return self.action_repository.complete_action(
+                action_id,
+                "failed",
+                {"message": "RSS 测试失败"},
+                http_status=502,
+                error_code="RSS_SOURCE_TEST_FAILED",
+                error_message="RSS 测试失败",
+            )
 
-    def get_action(self, action_id):
-        with self.action_lock:
-            action = self.actions.get(str(action_id))
-        return dict(action) if action else None
 
-
-def register_private_rss(app, database_path, environment=None, repository=None, collector=None):
+def register_private_rss(
+    app,
+    database_path,
+    environment=None,
+    repository=None,
+    collector=None,
+    subscription_loader=None,
+    config_loader=None,
+    match_runtime=None,
+):
+    resolved_environment = os.environ if environment is None else environment
+    repository = repository or PrivateRssRepository(database_path)
+    watch_repository = app.extensions.get("mcc_quality_watch_repository") or QualityWatchRepository(database_path)
+    match_runtime = match_runtime or RssSubscriptionMatchRuntime(
+        repository,
+        watch_repository,
+        subscription_loader,
+        analysis=RssAnalysisDependencies(
+            resolved_environment,
+            app.extensions.get("mcc_torra_quality_client"),
+            app.extensions.get("mcc_qbittorrent_client"),
+            config_loader,
+        ),
+    )
+    register_rss_subscription_match(app, match_runtime)
     service = PrivateRssService(
-        repository or PrivateRssRepository(database_path),
-        environment=environment,
-        collector=collector,
+        repository,
+        watch_repository,
+        environment=resolved_environment,
+        collector=collector or PrivateRssCollector(
+            repository,
+            item_matcher=match_runtime.match_inserted_rows,
+            match_waker=match_runtime.wake_matches,
+        ),
     )
     app.extensions["mcc_private_rss"] = service
 
@@ -119,9 +162,10 @@ def register_private_rss(app, database_path, environment=None, repository=None, 
         if not service.repository.get_source(source_id):
             return _error("RSS_SOURCE_NOT_FOUND", "RSS 来源不存在", 404)
         action = service.create_test_action(source_id)
-        response = jsonify(action)
+        public_action = present_automation_action(action)
+        response = jsonify(public_action)
         response.status_code = 202
-        response.headers["Location"] = f"/api/v2/automation-actions/{action['id']}"
+        response.headers["Location"] = f"/api/v2/automation-actions/{public_action['id']}"
         return response
 
     @app.get("/api/v2/rss-items")
@@ -147,11 +191,13 @@ def register_private_rss(app, database_path, environment=None, repository=None, 
 
     @app.get("/api/v2/rss-matches")
     def rss_matches_list():
-        return jsonify({"items": [], "total": 0, "limit": 50, "offset": 0})
-
-    @app.get("/api/v2/automation-actions/<action_id>")
-    def automation_action_detail(action_id):
-        action = service.get_action(action_id)
-        return jsonify(action) if action else _error("AUTOMATION_ACTION_NOT_FOUND", "自动化动作不存在", 404)
+        try:
+            return jsonify(service.repository.list_matches(
+                status=request.args.get("status") or "",
+                limit=request.args.get("limit") or 50,
+                offset=request.args.get("offset") or 0,
+            ))
+        except (TypeError, ValueError):
+            return _error("RSS_MATCH_QUERY_INVALID", "RSS 匹配查询参数无效", 422)
 
     return service

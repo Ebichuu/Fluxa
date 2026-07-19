@@ -2,13 +2,15 @@ import json
 import re
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from app import discover_runtime
 from app import activity_log
 from app.contract_mapping import map_calendar_payload, map_subscription_detail, sanitize_resource_payload
 from app.main import create_app
+from app.quality_watch_repository import QualityWatchRepository
 from tests.activity_log_test_support import IsolatedActivityLogMixin
 
 
@@ -330,7 +332,15 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
             with patch.object(discover_runtime, "SUBSCRIPTION_ITEMS_PATH", str(items_path)), patch.object(
                 discover_runtime, "SUBSCRIPTION_CONFIG_PATH", str(config_path)
             ), patch.object(activity_log, "LOG_PATH", log_path):
-                app = create_app(access_environment=environment, torra_client_factory=FakeTorraClient)
+                clock = [datetime(2026, 7, 18, 1, 0, tzinfo=timezone.utc)]
+                action_repository = QualityWatchRepository(
+                    root / "media_control_center.sqlite3", clock=lambda: clock[0]
+                )
+                app = create_app(
+                    access_environment=environment,
+                    torra_client_factory=FakeTorraClient,
+                    quality_watch_repository=action_repository,
+                )
                 client = app.test_client()
                 saved = client.post("/api/subscriptions/save", json={
                     "title": "测试剧集",
@@ -373,13 +383,12 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
                     "confirm": True,
                     "idempotencyKey": "torra-test-action-202",
                 }
-                with patch("app.subscription_compat_runtime.time.monotonic", return_value=1.0):
-                    first_push = client.post(f"/api/v2/subscriptions/{key}/torra-pushes", json=action)
-                    replayed_push = client.post(f"/api/v2/subscriptions/{key}/torra-pushes", json=action)
-                    cooldown_push = client.post(f"/api/v2/subscriptions/{key}/torra-pushes", json={
-                        "confirm": True,
-                        "idempotencyKey": "torra-test-action-203",
-                    })
+                first_push = client.post(f"/api/v2/subscriptions/{key}/torra-pushes", json=action)
+                replayed_push = client.post(f"/api/v2/subscriptions/{key}/torra-pushes", json=action)
+                cooldown_push = client.post(f"/api/v2/subscriptions/{key}/torra-pushes", json={
+                    "confirm": True,
+                    "idempotencyKey": "torra-test-action-203",
+                })
                 self.assertEqual(first_push.status_code, 200)
                 self.assertFalse(first_push.get_json()["replayed"])
                 self.assertEqual(replayed_push.status_code, 200)
@@ -388,7 +397,8 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
                 self.assertEqual(cooldown_push.get_json()["code"], "TORRA_PUSH_COOLDOWN")
                 self.assertEqual(len(app.extensions["mcc_torra_client"].pushes), 2)
 
-                with patch("app.subscription_compat_runtime.time.monotonic", return_value=62.0), patch.object(
+                clock[0] += timedelta(seconds=61)
+                with patch.object(
                     app.extensions["mcc_torra_client"],
                     "push_subscription",
                     return_value={"success": False, "message": "secret upstream response"},
@@ -402,7 +412,8 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
                 self.assertEqual(rejected_push.get_json()["error"], "Torra 推送未完成")
                 self.assertNotIn("secret upstream response", rejected_push.get_data(as_text=True))
 
-                with patch("app.subscription_compat_runtime.time.monotonic", return_value=123.0), patch.object(
+                clock[0] += timedelta(seconds=61)
+                with patch.object(
                     app.extensions["mcc_torra_client"],
                     "push_subscription",
                     side_effect=RuntimeError("secret exception"),
@@ -415,6 +426,24 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
                 self.assertEqual(failed_push.get_json()["code"], "TORRA_PUSH_FAILED")
                 self.assertEqual(failed_push.get_json()["error"], "Torra 推送失败")
                 self.assertNotIn("secret exception", failed_push.get_data(as_text=True))
+
+                restarted_repository = QualityWatchRepository(
+                    root / "media_control_center.sqlite3", clock=lambda: clock[0]
+                )
+                restarted_app = create_app(
+                    access_environment=environment,
+                    torra_client_factory=FakeTorraClient,
+                    quality_watch_repository=restarted_repository,
+                )
+                restarted_app.extensions["mcc_torra_client"].inspect_duplicate = Mock(
+                    side_effect=AssertionError("持久化回放不应访问 Torra")
+                )
+                restarted_push = restarted_app.test_client().post(
+                    f"/api/v2/subscriptions/{key}/torra-pushes", json=action
+                )
+                self.assertEqual(restarted_push.status_code, 200)
+                self.assertTrue(restarted_push.get_json()["replayed"])
+                self.assertEqual(restarted_app.extensions["mcc_torra_client"].pushes, [])
 
                 stored = discover_runtime.load_subscription_items(remove_completed=False)["items"]
                 self.assertEqual(len(stored), 1)

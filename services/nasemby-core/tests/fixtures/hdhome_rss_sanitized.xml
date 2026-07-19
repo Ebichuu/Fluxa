@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>HDHome Torrents</title>
+    <link>https://tracker.example/</link>
+    <description>Sanitized RSS fixture for parser regression.</description>
+    <language>en-us</language>
+    <copyright>sanitized</copyright>
+    <pubDate>Sun, 19 Jul 2026 00:00:00 GMT</pubDate>
+    <lastBuildDate>Sun, 19 Jul 2026 00:00:00 GMT</lastBuildDate>
+    <ttl>90</ttl>
+    <generator>sanitized-fixture</generator>
+    <item>
+      <guid isPermaLink="false">hdhome-sanitized-2001</guid>
+      <title>Summer 1993 2017 BluRay Remux 1080p AVC DTS-HD MA 5.1-HDH</title>
+      <link>https://tracker.example/details/2001</link>
+      <description>Sanitized Blu-ray remux movie item.</description>
+      <author>fixture@example.invalid</author>
+      <pubDate>Tue, 23 Oct 2018 09:43:55 GMT</pubDate>
+      <category domain="source">Movie</category>
+      <enclosure url="https://tracker.example/download/2001" length="25303777323" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <guid isPermaLink="false">hdhome-sanitized-2002</guid>
+      <title>Paralympic Games Paris 2024 Opening Ceremony 1080i HDTV H264 DD2.0-HDHTV</title>
+      <link>https://tracker.example/details/2002</link>
+      <description>Sanitized interlaced HDTV movie item.</description>
+      <author>fixture@example.invalid</author>
+      <pubDate>Fri, 30 Aug 2024 11:09:37 GMT</pubDate>
+      <category domain="source">Movie</category>
+      <enclosure url="https://tracker.example/download/2002" length="34519376352" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <guid isPermaLink="false">hdhome-sanitized-2003</guid>
+      <title>Dirty Harry 1971 2160p UHD Blu-ray REMUX HEVC Atmos TrueHD7.1-HDH</title>
+      <link>https://tracker.example/details/2003</link>
+      <description>Sanitized UHD remux movie item.</description>
+      <author>fixture@example.invalid</author>
+      <pubDate>Sun, 27 Apr 2025 06:45:28 GMT</pubDate>
+      <category domain="source">Movie</category>
+      <enclosure url="https://tracker.example/download/2003" length="59764315644" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <guid isPermaLink="false">hdhome-sanitized-2004</guid>
+      <title>Love in Shanghai S01 2021 2160p WEB-DL H.265 AAC 2.0-ADWeb</title>
+      <link>https://tracker.example/details/2004</link>
+      <description>Sanitized WEB-DL item with a season marker.</description>
+      <author>fixture@example.invalid</author>
+      <pubDate>Sun, 10 May 2026 07:54:17 GMT</pubDate>
+      <category domain="source">Movie</category>
+      <enclosure url="https://tracker.example/download/2004" length="24396331251" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <guid isPermaLink="false">hdhome-sanitized-2005</guid>
+      <title>Mortal Kombat II 2026 1080p GBR Blu-ray AVC Atmos TrueHD7.1-DiY</title>
+      <link>https://tracker.example/details/2005</link>
+      <description>Sanitized Blu-ray movie item.</description>
+      <author>fixture@example.invalid</author>
+      <pubDate>Sat, 18 Jul 2026 14:54:45 GMT</pubDate>
+      <category domain="source">Movie</category>
+      <enclosure url="https://tracker.example/download/2005" length="44070723703" type="application/x-bittorrent" />
+    </item>
+  </channel>
+</rss>

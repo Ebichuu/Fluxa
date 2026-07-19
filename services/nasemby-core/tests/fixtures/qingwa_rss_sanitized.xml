@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>青蛙 Torrents</title>
+    <link>https://tracker.example/</link>
+    <description>Sanitized RSS fixture for parser regression.</description>
+    <language>zh-cn</language>
+    <copyright>sanitized</copyright>
+    <pubDate>Sun, 19 Jul 2026 00:00:00 GMT</pubDate>
+    <lastBuildDate>Sun, 19 Jul 2026 00:00:00 GMT</lastBuildDate>
+    <generator>sanitized-fixture</generator>
+    <item>
+      <guid isPermaLink="false">qingwa-sanitized-4001</guid>
+      <title>Love in Shanghai S01 2021 2160p WEB-DL H.265 AAC 2.0-ADWeb</title>
+      <link>https://tracker.example/details/4001</link>
+      <description>Sanitized UHD season pack.</description>
+      <author>fixture@example.invalid</author>
+      <pubDate>Sun, 19 Jul 2026 00:01:00 GMT</pubDate>
+      <category domain="source">TV</category>
+      <enclosure url="https://tracker.example/download/4001" length="24396331251" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <guid isPermaLink="false">qingwa-sanitized-4002</guid>
+      <title>Senin Harga Naik 2026 1080p NF WEB-DL H.264 DDP 5.1-HDSWEB</title>
+      <link>https://tracker.example/details/4002</link>
+      <description>Sanitized movie item.</description>
+      <author>fixture@example.invalid</author>
+      <pubDate>Sun, 19 Jul 2026 00:02:00 GMT</pubDate>
+      <category domain="source">Movie</category>
+      <enclosure url="https://tracker.example/download/4002" length="4913600633" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <guid isPermaLink="false">qingwa-sanitized-4003</guid>
+      <title>Rich Girl Caretaker S01E03 2026 1080p Baha WEB-DL H.264 AAC-FROGWeb</title>
+      <link>https://tracker.example/details/4003</link>
+      <description>Sanitized single-episode item.</description>
+      <author>fixture@example.invalid</author>
+      <pubDate>Sun, 19 Jul 2026 00:03:00 GMT</pubDate>
+      <category domain="source">TV</category>
+      <enclosure url="https://tracker.example/download/4003" length="345117202" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <guid isPermaLink="false">qingwa-sanitized-4004</guid>
+      <title>Magilumiere Magical Girls Inc. S02E03 2026 1080p AMZN WEB-DL H.264 DDP 2.0</title>
+      <link>https://tracker.example/details/4004</link>
+      <description>Sanitized second-season episode item.</description>
+      <author>fixture@example.invalid</author>
+      <pubDate>Sun, 19 Jul 2026 00:04:00 GMT</pubDate>
+      <category domain="source">TV</category>
+      <enclosure url="https://tracker.example/download/4004" length="715670068" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <guid isPermaLink="false">qingwa-sanitized-4005</guid>
+      <title>The East Palace S01 2026 2160p NF WEB-DL HDR H.265 DDP 5.1 Atmos</title>
+      <link>https://tracker.example/details/4005</link>
+      <description>Sanitized HDR season pack.</description>
+      <author>fixture@example.invalid</author>
+      <pubDate>Sun, 19 Jul 2026 00:05:00 GMT</pubDate>
+      <category domain="source">TV</category>
+      <enclosure url="https://tracker.example/download/4005" length="61311514350" type="application/x-bittorrent" />
+    </item>
+  </channel>
+</rss>

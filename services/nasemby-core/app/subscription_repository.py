@@ -159,7 +159,7 @@ class SubscriptionRepository:
                 raise RuntimeError("SQLite 已存在订阅配置，停止旧台账迁移")
             if connection.execute("SELECT 1 FROM subscriptions LIMIT 1").fetchone():
                 raise RuntimeError("SQLite 已存在订阅条目，停止旧台账迁移")
-            if config:
+            if config is not None:
                 connection.execute(
                     "INSERT INTO subscription_config (id, payload_json, version, updated_at) VALUES (1, ?, 1, ?)",
                     (_json_dump(dict(config)), now),

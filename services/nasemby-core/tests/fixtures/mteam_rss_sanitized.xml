@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>M-Team - TP</title>
+    <link>https://tracker.example/</link>
+    <description>Sanitized RSS fixture for parser regression.</description>
+    <language>en-us</language>
+    <copyright>sanitized</copyright>
+    <pubDate>Sun, 19 Jul 2026 00:00:00 GMT</pubDate>
+    <lastBuildDate>Sun, 19 Jul 2026 00:00:00 GMT</lastBuildDate>
+    <ttl>10</ttl>
+    <docs>https://www.rssboard.org/rss-specification</docs>
+    <generator>sanitized-fixture</generator>
+    <item>
+      <guid isPermaLink="false">mteam-sanitized-1001</guid>
+      <title>Chai Sheng Fang 2016 HDTV 1080i MP1 H.264-TPTV</title>
+      <link>https://tracker.example/details/1001</link>
+      <description>Sanitized movie item.</description>
+      <author>fixture@example.invalid</author>
+      <comments>https://tracker.example/comments/1001</comments>
+      <pubDate>Sat, 18 Jul 2026 23:00:00 GMT</pubDate>
+      <category domain="source">Movie</category>
+      <enclosure url="https://tracker.example/download/1001" length="4733662528" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <guid isPermaLink="false">mteam-sanitized-1002</guid>
+      <title>Deadly Sins S01E14 2026 1080p WEB-DL H.264 AAC2.0-HHWEB</title>
+      <link>https://tracker.example/details/1002</link>
+      <description>Sanitized television item.</description>
+      <author>fixture@example.invalid</author>
+      <comments>https://tracker.example/comments/1002</comments>
+      <pubDate>Sat, 18 Jul 2026 23:01:00 GMT</pubDate>
+      <category domain="source">TV</category>
+      <enclosure url="https://tracker.example/download/1002" length="319951197" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <guid isPermaLink="false">mteam-sanitized-1003</guid>
+      <title>Deadly Sins S01E14 2026 2160p WEB-DL H.265 AAC2.0-HHWEB</title>
+      <link>https://tracker.example/details/1003</link>
+      <description>Sanitized television upgrade item.</description>
+      <author>fixture@example.invalid</author>
+      <comments>https://tracker.example/comments/1003</comments>
+      <pubDate>Sat, 18 Jul 2026 23:02:00 GMT</pubDate>
+      <category domain="source">TV</category>
+      <enclosure url="https://tracker.example/download/1003" length="817805125" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <guid isPermaLink="false">mteam-sanitized-1004</guid>
+      <title>Deadly Sins S01E15 2026 2160p WEB-DL H.265 AAC2.0-HHWEB</title>
+      <link>https://tracker.example/details/1004</link>
+      <description>Sanitized television item.</description>
+      <author>fixture@example.invalid</author>
+      <comments>https://tracker.example/comments/1004</comments>
+      <pubDate>Sat, 18 Jul 2026 23:03:00 GMT</pubDate>
+      <category domain="source">TV</category>
+      <enclosure url="https://tracker.example/download/1004" length="817805125" type="application/x-bittorrent" />
+    </item>
+    <item>
+      <guid isPermaLink="false">mteam-sanitized-1005</guid>
+      <title>Deadly Sins S01E15 2026 1080p WEB-DL H.264 AAC2.0-HHWEB</title>
+      <link>https://tracker.example/details/1005</link>
+      <description>Sanitized television item.</description>
+      <author>fixture@example.invalid</author>
+      <comments>https://tracker.example/comments/1005</comments>
+      <pubDate>Sat, 18 Jul 2026 23:04:00 GMT</pubDate>
+      <category domain="source">TV</category>
+      <enclosure url="https://tracker.example/download/1005" length="319951197" type="application/x-bittorrent" />
+    </item>
+  </channel>
+</rss>
