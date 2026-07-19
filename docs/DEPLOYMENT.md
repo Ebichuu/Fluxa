@@ -46,9 +46,8 @@ name: fluxa
 
 services:
   fluxa:
-    # 默认使用 GitHub Container Registry 发布的 v0.2 镜像
-    # 如需切换标签，可在 .env 中设置 MCC_IMAGE
-    image: ${MCC_IMAGE:-ghcr.io/ebichuu/fluxa:v0.2}
+    # 使用 GitHub Container Registry 发布的 v0.2 镜像
+    image: ghcr.io/ebichuu/fluxa:v0.2
 
     # 固定容器名，便于在 fnOS 或命令行中定位
     container_name: fluxa
@@ -84,7 +83,7 @@ services:
       start_period: 20s
 ```
 
-`docker-compose.yml`、`.env` 和持久目录可以放在同一部署目录中，例如 `/vol1/docker/fluxa/`。Compose 自动读取当前目录的 `.env` 解析 `MCC_IMAGE` 和 `MCC_DATA_ROOT`，并通过 `env_file` 将其余服务配置传入容器。
+`docker-compose.yml`、`.env` 和持久目录可以放在同一部署目录中，例如 `/vol1/docker/fluxa/`。Compose 自动读取当前目录的 `.env` 解析 `MCC_DATA_ROOT`，并通过 `env_file` 将其余服务配置传入容器。
 
 ## 4. 默认安全开关
 
@@ -119,7 +118,7 @@ docker compose ps
 docker compose logs --tail=100 fluxa
 ```
 
-Compose 会从 `.env` 读取全部服务配置，默认拉取 `ghcr.io/ebichuu/fluxa:v0.2`。本地构建时将 `MCC_IMAGE` 改为本地镜像标签即可。
+Compose 会从 `.env` 读取全部服务配置，并拉取 `ghcr.io/ebichuu/fluxa:v0.2`。
 
 访问：
 

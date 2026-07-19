@@ -23,8 +23,8 @@ name: fluxa
 
 services:
   fluxa:
-    # 默认拉取 Fluxa v0.2；可在 .env 中用 MCC_IMAGE 覆盖
-    image: ${MCC_IMAGE:-ghcr.io/ebichuu/fluxa:v0.2}
+    # Fluxa v0.2 镜像
+    image: ghcr.io/ebichuu/fluxa:v0.2
     container_name: fluxa
     restart: unless-stopped
 
