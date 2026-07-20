@@ -9,6 +9,7 @@ from flask import Blueprint, Flask, Response, current_app, jsonify, redirect, re
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from app.activity_log import clear_activities, read_activities, write_activity
+from app.activity_api_runtime import register_activity_api
 from app.config import AUTH_DB_PATH, DATA_DIR, PRESERVE_EMPTY_FIELDS, load_runtime_env, read_config, write_config
 from app import discover_runtime
 from app.access_auth import AccessAuth, is_production_environment, resolve_access_config
@@ -25,6 +26,10 @@ from app.emby_refresh_runtime import register_emby_refresh
 from app.qbittorrent_runtime import register_qbittorrent_read
 from app.qbittorrent_action_runtime import register_qbittorrent_actions
 from app.torra_read_runtime import register_torra_read, resolve_torra_read_config
+from app.torra_subscription_sync_runtime import (
+    TorraSubscriptionSyncService,
+    register_torra_subscription_sync,
+)
 from app.torra_quality_runtime import TorraQualityClient
 from app.symedia_read_runtime import register_symedia_read
 from app.task_chain_runtime import register_task_chain
@@ -99,6 +104,7 @@ core_routes = Blueprint("nasemby_core_routes", __name__)
 _hdhive_scheduler_started = False
 _discover_preload_started = False
 _subscription_scheduler_started = False
+_torra_subscription_sync_started = False
 _private_rss_collector_started = False
 _quality_watch_scheduler_started = False
 _background_runtime_started = False
@@ -416,6 +422,31 @@ def start_subscription_scheduler():
     thread.start()
 
 
+def _torra_subscription_sync_loop():
+    time.sleep(10)
+    while True:
+        try:
+            service = app.extensions.get("mcc_torra_subscription_sync")
+            if service:
+                service.sync_existing()
+        except Exception as exc:
+            logger.error("background scheduler failed scheduler=torra-subscription-sync error_type=%s", type(exc).__name__)
+        time.sleep(10 * 60)
+
+
+def start_torra_subscription_sync_scheduler():
+    global _torra_subscription_sync_started
+    if _torra_subscription_sync_started:
+        return
+    _torra_subscription_sync_started = True
+    thread = threading.Thread(
+        target=_torra_subscription_sync_loop,
+        name="torra-subscription-sync",
+        daemon=True,
+    )
+    thread.start()
+
+
 def _private_rss_collector_loop():
     time.sleep(5)
     while True:
@@ -467,6 +498,8 @@ def start_background_runtime():
     started.append("hdhive-checkin")
     start_discover_preload_scheduler()
     started.append("discover-cache-preload")
+    start_torra_subscription_sync_scheduler()
+    started.append("torra-subscription-sync")
     if str(os.getenv("MCC_SUBSCRIPTION_SCHEDULER_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}:
         start_subscription_scheduler()
         started.append("subscription-task")
@@ -1281,6 +1314,7 @@ def create_app(
     else:
         access_auth = AccessAuth(resolve_access_config(environment), now_ms=now_ms)
     configure_access_runtime(application, access_auth)
+    register_activity_api(application)
     register_runtime_settings(application, environment)
     register_mineradio(
         application,
@@ -1337,6 +1371,17 @@ def create_app(
         clock=system_metrics_clock,
     )
     register_discover_compat(application)
+    register_torra_subscription_sync(
+        application,
+        TorraSubscriptionSyncService(
+            environment,
+            discover_runtime.subscription_repository(),
+            torra_read_client,
+            lambda: discover_runtime.load_subscription_items(remove_completed=False),
+            discover_runtime.get_subscription_item_key,
+            clock=torra_clock,
+        ),
+    )
     quality_repository = quality_watch_repository or QualityWatchRepository(
         discover_runtime.subscription_database_path()
     )

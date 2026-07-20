@@ -16,10 +16,28 @@ const filters: FilterName[] = ['全部', '进行中', '等待中', '卡住', '�
 const activityFilters = [
   { key: '', label: '全部' },
   { key: 'subscription', label: '订阅' },
+  { key: 'torra_sync', label: 'Torra 同步' },
   { key: 'push', label: 'Torra 推送' },
   { key: 'qbittorrent', label: 'qB' },
   { key: 'system', label: '系统' }
 ] as const;
+
+const activityCategoryLabels: Record<string, string> = {
+  subscription: '订阅',
+  torra_sync: 'Torra 同步',
+  push: 'Torra 推送',
+  qbittorrent: 'qBittorrent',
+  operation: '操作',
+  system: '系统'
+};
+
+const activityActionLabels: Record<string, string> = {
+  torra_sync_preview: '同步预览',
+  torra_sync_import: '导入订阅',
+  torra_sync_run: '状态同步',
+  torra_push_v2: '订阅推送',
+  private_rss_request: 'RSS 请求'
+};
 
 const stateLabel: Record<TaskChainState, string> = {
   active: '进行中',
@@ -309,7 +327,14 @@ export function TasksCenter() {
           {activities.map((item, index) => (
             <article className={`ops-activity-item is-${item.status}`} key={`${item.ts}-${item.action}-${index}`}>
               <span><Activity size={13} /></span>
-              <div><strong>{item.message || item.action}</strong><small>{item.category} · {item.action}</small></div>
+              <div>
+                <strong>{item.message || activityActionLabels[item.action] || item.action}</strong>
+                <small>
+                  {activityCategoryLabels[item.category] || item.category} · {activityActionLabels[item.action] || item.action}
+                  {typeof item.meta?.code === 'string' && ` · ${item.meta.code}`}
+                  {typeof item.meta?.request_id === 'string' && ` · 请求 ${item.meta.request_id}`}
+                </small>
+              </div>
               <time>{item.time}</time>
             </article>
           ))}

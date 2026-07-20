@@ -60,6 +60,14 @@ def _error(code, message, status):
 def _write_guard(environment):
     if _truthy(environment.get("NASEMBY_CORE_WRITE_ENABLED")):
         return None
+    write_activity(
+        "operation",
+        request.path,
+        "error",
+        "订阅写入尚未启用",
+        code="NASEMBY_CORE_WRITE_DISABLED",
+        http_status=403,
+    )
     return _error("NASEMBY_CORE_WRITE_DISABLED", "订阅写入尚未启用", 403)
 
 
@@ -215,6 +223,22 @@ def _torra_payload(item, category, environment):
 
 
 def _push_preview(item, environment, torra_client):
+    if item.get("read_only") and item.get("torra_remote_id"):
+        return {
+            "ready": False,
+            "blockers": ["该订阅来自 Torra，已由远端管理，无需重复推送"],
+            "warnings": [],
+            "category": None,
+            "categoryReason": "Torra 单向镜像",
+            "savePath": "",
+            "payload": None,
+            "duplicate": {
+                "checked": True,
+                "found": True,
+                "subscriptionId": "",
+                "name": str(item.get("title") or ""),
+            },
+        }
     blockers = []
     warnings = ["Torra 版本控制模板尚待现网核对，dry-run 暂不启用版本控制"]
     category, reason = _resolve_category(item)
@@ -276,6 +300,8 @@ def register_subscription_compat(app: Flask, environment=None, action_repository
         app.extensions["mcc_torra_client"],
         _find_item,
         lambda item: _push_preview(item, environment, app.extensions["mcc_torra_client"]),
+        link_recorder=(app.extensions.get("mcc_torra_subscription_sync") or object()).record_push_link
+        if app.extensions.get("mcc_torra_subscription_sync") else None,
     )
     app.extensions["mcc_torra_subscription_action_service"] = torra_action_service
 
@@ -450,6 +476,8 @@ def register_subscription_compat(app: Flask, environment=None, action_repository
         body = request.get_json(silent=True) or {}
         key = str(body.get("id") or "").strip()
         item = _find_item(key) if key else None
+        if item and item.get("read_only"):
+            return _error("TORRA_MIRROR_READ_ONLY", "Torra 镜像订阅第一阶段不能屏蔽或删除", 409)
         title = str(body.get("title") or (item or {}).get("title") or "").strip()
         if not title:
             return _error("SUBSCRIPTION_TARGET_REQUIRED", "缺少屏蔽目标", 400)
@@ -478,6 +506,8 @@ def register_subscription_compat(app: Flask, environment=None, action_repository
         denied = _write_guard(environment)
         if denied:
             return denied
+        if any(item.get("read_only") for item in _raw_subscription_payload()["items"]):
+            return _error("TORRA_MIRROR_READ_ONLY", "存在 Torra 镜像订阅，第一阶段不能清空订阅台账", 409)
         try:
             discover_runtime.clear_subscription_items()
             return jsonify({"success": True})
@@ -504,6 +534,9 @@ def register_subscription_compat(app: Flask, environment=None, action_repository
         season = integer(body.get("seasonNumber"))
         if not key or season < 1:
             return _error("SUBSCRIPTION_SEASON_INVALID", "需要 id 和有效的 seasonNumber", 400)
+        stored_item = _find_item(key)
+        if stored_item and stored_item.get("read_only"):
+            return _error("TORRA_MIRROR_READ_ONLY", "Torra 镜像订阅第一阶段不能修改季数", 409)
 
         def update(item):
             item.update({
@@ -530,6 +563,8 @@ def register_subscription_compat(app: Flask, environment=None, action_repository
         item = _find_item(key)
         if not item:
             return _error("SUBSCRIPTION_NOT_FOUND", "订阅不存在", 404)
+        if item.get("read_only"):
+            return _error("TORRA_MIRROR_READ_ONLY", "Torra 镜像订阅第一阶段不能删除", 409)
         try:
             data = discover_runtime.delete_subscription_item({"key": key, "item": item})
             return jsonify({"success": bool(data.get("removed_count")), "removed_count": data.get("removed_count") or 0})

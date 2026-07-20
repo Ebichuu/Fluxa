@@ -7,10 +7,10 @@
 - Flask 应用工厂、统一请求 ID、JSON 错误和整站访问保护。
 - React `dist`、SPA 回退、Mineradio 原始资源和桥接页。
 - NasEmby 原发现、JustWatch 海外流媒体、订阅、日历、资源规则和调度源码。
-- SQLite 唯一订阅台账、旧 JSON 一次性迁移、私人 PT RSS 本地种子索引和活动观察窗口匹配。
+- SQLite 唯一订阅台账、Torra 已有订阅单向镜像、旧 JSON 一次性迁移、私人 PT RSS 本地种子索引和活动观察窗口匹配。
 - 115、Telegram、HDHive / pansou、provider 等原核心能力与接口调用关系。
 - Torra 固定目标推送，以及追更洗版分析、候选下载、job 状态解析、按集 Emby 基准、SQLite 幂等/租约和脱敏审计。
-- 30 秒缓存的 NAS 系统指标与原活动日志。
+- 30 秒缓存的 NAS 系统指标，以及统一脱敏、可筛选的 v2 活动日志。
 - 115、Telegram、HDHive / pansou 和 MoviePilot 的 v2 细分接口继续保留；MoviePilot 阶段 7 已增加默认关闭的人工备用预览/推送，其他能力延期。
 - Emby、qBittorrent、Torra、Symedia 的服务端适配和凭据隔离。
 - 统一任务链、qB 暂停/恢复和证据驱动的 Emby 刷新。
@@ -49,6 +49,7 @@ python -m app.main
 
 ```env
 MCC_SUBSCRIPTION_SCHEDULER_ENABLED=false
+MCC_TORRA_SUBSCRIPTION_SYNC_ENABLED=false
 NASEMBY_CORE_WRITE_ENABLED=false
 MCC_PRIVATE_RSS_ENABLED=false
 MCC_TORRA_QUALITY_WATCH_ENABLED=false
@@ -65,6 +66,8 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 ```
 
 - 写闸门关闭时，订阅保存、分类、改季、配置、执行、删除和推送均被服务端拒绝。
+- Torra 单向镜像线程随生产后台运行时启动，但 `MCC_TORRA_SUBSCRIPTION_SYNC_ENABLED=false` 时不会访问 Torra；开启后每 10 分钟只同步已关联条目的状态。
+- 第一阶段导入项标记为只读，服务端拒绝改季、屏蔽、清空和删除；删除 Torra 订阅留到第二阶段单独设计。
 - 订阅调度器只在显式开启时启动；发现缓存和关闭状态检查不会替代订阅调度。
 - 追更洗版协调器只在 `MCC_TORRA_QUALITY_WATCH_ENABLED=true` 时启动，并继续要求 SQLite 中的追更设置开启；默认不创建线程或调用 Torra。
 - 追更洗版候选下载还要求独立的 `MCC_TORRA_REWASH_DOWNLOAD_ENABLED=true`、人工确认和服务端已完成分析动作；打开分析闸门不会自动下载。
@@ -83,6 +86,8 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/tasks/chain`：订阅到入库的统一证据链。
 - `/api/internal/nasemby-core/*`：已认证的只读诊断兼容路由。
 - `/api/v2/subscriptions/:id/torra-push-*`：固定目标 Torra 的预览和受保护推送。
+- `/api/v2/torra/subscription-sync/*`：Torra 已有订阅状态、只读预览、幂等确认导入和手动状态同步。
+- `/api/v2/activity/logs`：读取或经确认清空统一脱敏活动日志；React 任务中心使用读取接口。
 - `/api/v2/system/metrics`：缓存、白名单映射的系统指标。
 - `/api/v2/rss-sources`、`/api/v2/rss-items`：私人 RSS 来源和本地种子库；读取响应不含完整 RSS/下载地址。
 - `/api/v2/rss-matches`：只读本地 `candidate` 与后续状态；双闸门开启时后台可创建一次性 Torra 分析动作，但不把标题匹配当作版本质量结论，也不自动下载候选。
@@ -93,7 +98,7 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/v2/integrations/*`、`/api/v2/acquisition/cloud/*` 和云盘策略路由继续保留，当前 React 不调用延期动作。
 - `/mineradio/embed`、`/mineradio/*`。
 
-47 条冻结 v1 契约见项目根 `docs/contracts/http-api-contract-v1.json`；35 条新增能力见 `http-api-contract-v2.json`。浏览器公开响应经过白名单映射；内部诊断路由保留 NasEmby 原始字段，仍受整站认证保护。
+47 条冻结 v1 契约见项目根 `docs/contracts/http-api-contract-v1.json`；43 条新增能力见 `http-api-contract-v2.json`。浏览器公开响应经过白名单映射；内部诊断路由保留 NasEmby 原始字段，仍受整站认证保护。
 
 ## 唯一订阅台账
 
@@ -109,7 +114,7 @@ python -m unittest discover -s tests -v
 
 测试使用临时台账、隔离的临时活动日志和模拟客户端，不连接真实服务执行写操作。保留接口只在模拟测试中显式开启；Mineradio 注入片段继续使用冻结的 SHA-256 快照保护视觉桥接基线。
 
-当前共 165 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘和系统指标测试全部使用临时台账与模拟函数，不连接真实外部服务；确认默认闸门、脱敏、原子迁移、退避、并发上限、幂等、冷却、job 状态、按集固定窗口、RSS 活动匹配、主动兜底、公平轮询、截止点和缓存行为。
+当前共 189 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘和系统指标测试全部使用临时台账与模拟函数，不连接真实外部服务；确认默认闸门、脱敏、原子迁移、Torra 镜像导入与幂等结果同事务、退避、并发上限、冷却、job 状态、按集固定窗口、RSS 活动匹配、主动兜底、公平轮询、截止点和缓存行为。
 
 RSS 解析回归已加入四个真实结构的完全脱敏夹具：M-Team 的 `tests/fixtures/mteam_rss_sanitized.xml`、HDHome 的 `tests/fixtures/hdhome_rss_sanitized.xml`、织梦的 `tests/fixtures/zmpt_rss_sanitized.xml` 和青蛙的 `tests/fixtures/qingwa_rss_sanitized.xml`，覆盖 RSS 2.0、电影/剧集、多版本、单集/整季包、文件大小、`enclosure`、`720p/1080i/1080p/2160p`、Blu-ray/Remux、WEB-DL、H.264/H.265、HDR、Atmos 和 TrueHD 版本摘要。四个夹具还会经过假 HTTP 响应、收集器、临时 SQLite 和公共脱敏查询的完整回归，已满足当前版本；夹具只使用 `tracker.example` 地址，不保存真实签名、UID、详情或下载 URL，也不访问 enclosure。
 

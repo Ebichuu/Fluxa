@@ -59,6 +59,96 @@ class SubscriptionRepositoryTests(unittest.TestCase):
                 ]}, item_key)
             self.assertEqual(repository.load_payload()["items"], [])
 
+    def test_torra_mirror_is_idempotent_and_marks_remote_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SubscriptionRepository(Path(directory) / "media_control_center.sqlite3")
+            candidates = [{
+                "subscription_key": "torra:remote-1",
+                "remote_id": "remote-1",
+                "origin": "torra_import",
+                "mapping_status": "mapped",
+                "remote_status": {"enabled": True},
+                "remote_fingerprint": "fingerprint-1",
+                "item": {
+                    "subscription_key": "torra:remote-1",
+                    "title": "镜像电影",
+                    "media_type": "movie",
+                    "tmdb_id": "100",
+                    "origin": "torra",
+                    "read_only": True,
+                },
+            }]
+            first = repository.apply_torra_mirror(candidates, item_key)
+            second = repository.apply_torra_mirror(candidates, item_key)
+            missing = repository.apply_torra_mirror([], item_key, import_new=False)
+
+            self.assertEqual(first["imported"], 1)
+            self.assertEqual(second["updated"], 1)
+            self.assertEqual(len(repository.load_payload()["items"]), 1)
+            self.assertEqual(missing["remoteMissing"], 1)
+            self.assertEqual(repository.get_torra_link(remote_id="remote-1")["sync_state"], "remote_missing")
+
+    def test_torra_remote_id_cannot_link_two_local_subscriptions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SubscriptionRepository(Path(directory) / "media_control_center.sqlite3")
+            repository.save_torra_link({"subscription_key": "movie:1", "remote_id": "remote-1"})
+            with self.assertRaises(ValueError):
+                repository.save_torra_link({"subscription_key": "movie:2", "remote_id": "remote-1"})
+
+    def test_torra_sync_run_replays_saved_response(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SubscriptionRepository(Path(directory) / "media_control_center.sqlite3")
+            repository.record_torra_sync_run("idempotency-0001", {"ok": True, "imported": 3})
+            repository.record_torra_sync_run("idempotency-0001", {"ok": False})
+            self.assertEqual(
+                repository.get_torra_sync_run("idempotency-0001"),
+                {"ok": True, "imported": 3},
+            )
+
+    def test_torra_mirror_and_idempotency_response_share_one_transaction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SubscriptionRepository(Path(directory) / "media_control_center.sqlite3")
+            candidates = [{
+                "subscription_key": "torra:remote-atomic",
+                "remote_id": "remote-atomic",
+                "item": {
+                    "subscription_key": "torra:remote-atomic",
+                    "title": "原子导入",
+                    "media_type": "movie",
+                    "origin": "torra",
+                    "read_only": True,
+                },
+            }]
+
+            with self.assertRaises(RuntimeError):
+                repository.apply_torra_mirror_once(
+                    candidates,
+                    item_key,
+                    "idempotency-atomic-failure",
+                    lambda _result: (_ for _ in ()).throw(RuntimeError("response failed")),
+                )
+
+            self.assertEqual(repository.load_payload()["items"], [])
+            self.assertIsNone(repository.get_torra_sync_run("idempotency-atomic-failure"))
+
+            first, replayed = repository.apply_torra_mirror_once(
+                candidates,
+                item_key,
+                "idempotency-atomic-success",
+                lambda result: {"ok": True, "summary": result},
+            )
+            second, second_replayed = repository.apply_torra_mirror_once(
+                candidates,
+                item_key,
+                "idempotency-atomic-success",
+                lambda _result: (_ for _ in ()).throw(AssertionError("replay must not rebuild")),
+            )
+
+            self.assertFalse(replayed)
+            self.assertTrue(second_replayed)
+            self.assertEqual(first, second)
+            self.assertEqual(len(repository.load_payload()["items"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -342,6 +342,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
         self.assertIn("env_file:\n      - .env", compose)
         for setting in (
             "MCC_SUBSCRIPTION_SCHEDULER_ENABLED=false",
+            "MCC_TORRA_SUBSCRIPTION_SYNC_ENABLED=false",
             "NASEMBY_CORE_WRITE_ENABLED=false",
             "MCC_PRIVATE_RSS_ENABLED=false",
             "MCC_TORRA_QUALITY_WATCH_ENABLED=false",
@@ -461,6 +462,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "_subscription_scheduler_started",
             "_private_rss_collector_started",
             "_quality_watch_scheduler_started",
+            "_torra_subscription_sync_started",
             "_background_runtime_started",
         )
         previous_flags = {name: getattr(main, name) for name in flag_names}
@@ -480,10 +482,13 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
 
         self.assertEqual(
             [thread.name for thread in started_threads],
-            ["hdhive-checkin", "discover-cache-preload"],
+            ["hdhive-checkin", "discover-cache-preload", "torra-subscription-sync"],
         )
         self.assertTrue(all(thread.daemon for thread in started_threads))
-        self.assertEqual(started, ["hdhive-checkin", "discover-cache-preload"])
+        self.assertEqual(
+            started,
+            ["hdhive-checkin", "discover-cache-preload", "torra-subscription-sync"],
+        )
         self.assertEqual(repeated, [])
 
     def test_background_runtime_starts_subscription_scheduler_only_when_enabled(self):
@@ -504,6 +509,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "_subscription_scheduler_started",
             "_private_rss_collector_started",
             "_quality_watch_scheduler_started",
+            "_torra_subscription_sync_started",
             "_background_runtime_started",
         )
         previous_flags = {name: getattr(main, name) for name in flag_names}
@@ -520,7 +526,15 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             for name, value in previous_flags.items():
                 setattr(main, name, value)
 
-        self.assertEqual(started_threads, ["hdhive-checkin", "discover-cache-preload", "subscription-task"])
+        self.assertEqual(
+            started_threads,
+            [
+                "hdhive-checkin",
+                "discover-cache-preload",
+                "torra-subscription-sync",
+                "subscription-task",
+            ],
+        )
         self.assertEqual(started, started_threads)
 
     def test_background_runtime_starts_quality_watch_only_when_environment_gate_is_enabled(self):
@@ -541,6 +555,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "_subscription_scheduler_started",
             "_private_rss_collector_started",
             "_quality_watch_scheduler_started",
+            "_torra_subscription_sync_started",
             "_background_runtime_started",
         )
         previous_flags = {name: getattr(main, name) for name in flag_names}
@@ -557,7 +572,15 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             for name, value in previous_flags.items():
                 setattr(main, name, value)
 
-        self.assertEqual(started_threads, ["hdhive-checkin", "discover-cache-preload", "quality-watch"])
+        self.assertEqual(
+            started_threads,
+            [
+                "hdhive-checkin",
+                "discover-cache-preload",
+                "torra-subscription-sync",
+                "quality-watch",
+            ],
+        )
         self.assertEqual(started, started_threads)
 
     def test_flask_app_factory_keeps_routes_and_does_not_start_schedulers(self):

@@ -7,6 +7,7 @@
 ## 主要功能
 
 - 内容发现、媒体搜索、订阅管理和播出日历。
+- Torra 已有订阅单向镜像到本地 SQLite，支持预览、确认导入和状态同步；第一阶段不修改或删除 Torra 订阅。
 - Torra → qBittorrent → 115 → Symedia → Emby 的 PT 任务链观察。
 - 私人 PT RSS 种子库、本地全文搜索和来源管理。
 - 按电影或季集隔离的质量观察、人工追更分析和候选下载。
@@ -119,7 +120,7 @@ Vite 会把 `/api` 和 `/mineradio` 代理到 Python。
 ## 本地检查
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 172 项
+python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 189 项
 npm test
 npm run build
 docker compose config --services
@@ -135,6 +136,7 @@ docker compose config --images
 
 ```env
 MCC_SUBSCRIPTION_SCHEDULER_ENABLED=false
+MCC_TORRA_SUBSCRIPTION_SYNC_ENABLED=false
 NASEMBY_CORE_WRITE_ENABLED=false
 MCC_PRIVATE_RSS_ENABLED=false
 MCC_TORRA_QUALITY_WATCH_ENABLED=false
@@ -148,7 +150,7 @@ MCC_CLOUD_SEARCH_ENABLED=false
 MCC_CLOUD_TRANSFER_ENABLED=false
 ```
 
-因此默认只能读取当前页面、订阅快照和服务状态，不会创建真实订阅、运行调度、整体开放原核心接口、推送 Torra、提交追更洗版分析、下载候选或调用 MoviePilot 人工备用动作。
+因此默认只能读取当前页面、订阅快照和服务状态，不会导入或同步 Torra 订阅、创建真实订阅、运行调度、整体开放原核心接口、推送 Torra、提交追更洗版分析、下载候选或调用 MoviePilot 人工备用动作。
 
 ## 持久目录
 

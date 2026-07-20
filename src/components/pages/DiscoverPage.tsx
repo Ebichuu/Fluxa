@@ -9,10 +9,14 @@ import {
   getSubscriptionQualityWatch,
   getSubscriptionDetail,
   getSubscriptionItems,
+  getTorraSubscriptionSyncStatus,
   getTorraPushPreview,
+  importTorraSubscriptions,
+  previewTorraSubscriptionSync,
   pushSubscriptionToTorra,
   pushToMoviePilot,
   runSubscriptionSweep,
+  runTorraSubscriptionSync,
   saveSubscription,
   searchDiscover,
   searchDiscoverResources,
@@ -33,6 +37,8 @@ import type {
   DiscoverResult,
   SubscriptionDetailResponse,
   SubscriptionItem,
+  TorraSubscriptionSyncPreview,
+  TorraSubscriptionSyncStatus,
   TorraPushPreviewResponse
 } from '../../types/subscriptions';
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
@@ -403,6 +409,10 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
   const [moviePilotPreview, setMoviePilotPreview] = useState<MoviePilotPreview | null>(null);
   const [moviePilotBusy, setMoviePilotBusy] = useState('');
   const [moviePilotMessage, setMoviePilotMessage] = useState('');
+  const [torraSyncStatus, setTorraSyncStatus] = useState<TorraSubscriptionSyncStatus | null>(null);
+  const [torraSyncPreview, setTorraSyncPreview] = useState<TorraSubscriptionSyncPreview | null>(null);
+  const [torraSyncBusy, setTorraSyncBusy] = useState('');
+  const [torraSyncMessage, setTorraSyncMessage] = useState('');
   const [confirmation, setConfirmation] = useState<DiscoverConfirmation | null>(null);
   const automationRequestRef = useRef<AbortController | null>(null);
   const detailRequestRef = useRef<AbortController | null>(null);
@@ -425,6 +435,17 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
   useEffect(() => {
     loadSubs();
   }, [loadSubs]);
+
+  const loadTorraSyncStatus = useCallback(() => {
+    if (!subscriptionsOnly) return;
+    getTorraSubscriptionSyncStatus()
+      .then(setTorraSyncStatus)
+      .catch(() => setTorraSyncMessage('Torra 同步状态暂不可用'));
+  }, [subscriptionsOnly]);
+
+  useEffect(() => {
+    loadTorraSyncStatus();
+  }, [loadTorraSyncStatus]);
 
   useEffect(() => {
     const focusSearch = () => searchInputRef.current?.focus();
@@ -618,6 +639,53 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
           .finally(() => setSubscriptionAction(''));
       }
     });
+  };
+
+  const previewTorraMirror = () => {
+    setTorraSyncBusy('preview');
+    setTorraSyncMessage('');
+    previewTorraSubscriptionSync()
+      .then((preview) => {
+        setTorraSyncPreview(preview);
+        setTorraSyncMessage(`已读取 Torra：${preview.summary.total} 条，${preview.summary.importable} 条可同步`);
+      })
+      .catch((error: unknown) => setTorraSyncMessage(error instanceof Error ? error.message : 'Torra 订阅预览失败'))
+      .finally(() => setTorraSyncBusy(''));
+  };
+
+  const importTorraMirror = () => {
+    if (!torraSyncPreview) return;
+    setConfirmation({
+      signal: 'Torra 单向镜像',
+      title: `导入 ${torraSyncPreview.summary.importable} 条 Torra 订阅？`,
+      description: '只会写入 Fluxa 本地订阅台账，不会修改或删除 Torra 中的任何订阅。',
+      confirmLabel: '确认导入',
+      onConfirm: () => {
+        setTorraSyncBusy('import');
+        importTorraSubscriptions(window.crypto.randomUUID())
+          .then((result) => {
+            setTorraSyncMessage(`已导入 ${result.summary.imported ?? 0} 条，更新 ${result.summary.updated ?? 0} 条`);
+            setTorraSyncPreview(null);
+            loadSubs();
+            loadTorraSyncStatus();
+          })
+          .catch((error: unknown) => setTorraSyncMessage(error instanceof Error ? error.message : 'Torra 订阅导入失败'))
+          .finally(() => setTorraSyncBusy(''));
+      }
+    });
+  };
+
+  const refreshTorraMirror = () => {
+    setTorraSyncBusy('sync');
+    setTorraSyncMessage('');
+    runTorraSubscriptionSync()
+      .then((result) => {
+        setTorraSyncMessage(`状态同步完成：更新 ${result.summary.updated ?? 0} 条`);
+        loadSubs();
+        loadTorraSyncStatus();
+      })
+      .catch((error: unknown) => setTorraSyncMessage(error instanceof Error ? error.message : 'Torra 状态同步失败'))
+      .finally(() => setTorraSyncBusy(''));
   };
 
   const removeSubscription = (item: SubscriptionItem) => {
@@ -1249,6 +1317,53 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
         </div>
         <div className="ops-subscription-policy"><strong>PT 优先</strong><span>Torra 推送保持安全开关控制</span></div>
         {sweepMessage && <p className="console-panel__hint">{sweepMessage}</p>}
+        {subscriptionsOnly && (
+          <section className="torra-sync-panel" aria-label="Torra 订阅同步">
+            <header>
+              <div><small>Torra 单向镜像</small><strong>{torraSyncStatus?.linked ?? 0} 条已关联</strong></div>
+              <span className={torraSyncStatus?.enabled ? 'is-enabled' : undefined}>
+                {torraSyncStatus?.enabled ? '同步已开启' : '同步未开启'}
+              </span>
+            </header>
+            <div className="torra-sync-panel__status">
+              <span><b>{torraSyncStatus?.current ?? 0}</b>当前有效</span>
+              <span><b>{torraSyncStatus?.remoteMissing ?? 0}</b>远端缺失</span>
+              <span><b>{torraSyncStatus?.lastSyncedAt ? subscriptionUpdateLabel(torraSyncStatus.lastSyncedAt) : '尚未'}</b>最近同步</span>
+            </div>
+            {torraSyncPreview && (
+              <div className="torra-sync-panel__preview">
+                <span>远端 <b>{torraSyncPreview.summary.total}</b></span>
+                <span>新增 <b>{torraSyncPreview.summary.new}</b></span>
+                <span>已关联 <b>{torraSyncPreview.summary.linked}</b></span>
+                <span>重复 <b>{torraSyncPreview.summary.duplicates}</b></span>
+                <span>无法识别 <b>{torraSyncPreview.summary.unmapped}</b></span>
+              </div>
+            )}
+            {!torraSyncStatus?.enabled && (
+              <p>先在设置中开启“Torra 订阅状态同步”，预览本身不会写入 Torra。</p>
+            )}
+            {torraSyncMessage && <p role="status">{torraSyncMessage}</p>}
+            <footer>
+              <button className="ops-action-button" disabled={Boolean(torraSyncBusy)} type="button" onClick={previewTorraMirror}>
+                <Database aria-hidden="true" size={14} />
+                {torraSyncBusy === 'preview' ? '读取中' : '预览订阅'}
+              </button>
+              {torraSyncPreview && torraSyncPreview.summary.importable > 0 && (
+                <button className="ops-action-button ops-action-button--primary" disabled={Boolean(torraSyncBusy) || !torraSyncStatus?.enabled || torraSyncPreview.summary.conflicts > 0} type="button" onClick={importTorraMirror}>
+                  <Download aria-hidden="true" size={14} />
+                  {torraSyncBusy === 'import' ? '导入中' : '确认导入'}
+                </button>
+              )}
+              {(torraSyncStatus?.linked ?? 0) > 0 && (
+                <button className="ops-action-button" disabled={Boolean(torraSyncBusy) || !torraSyncStatus?.enabled} type="button" onClick={refreshTorraMirror}>
+                  <RefreshCcw aria-hidden="true" size={14} />
+                  {torraSyncBusy === 'sync' ? '同步中' : '同步状态'}
+                </button>
+              )}
+              {!torraSyncStatus?.enabled && <button className="tool-link" type="button" onClick={() => onNavigate('settings')}>前往设置</button>}
+            </footer>
+          </section>
+        )}
         <div className="discover-sub-tabs" role="tablist" aria-label="订阅类型">
           {([
             ['movie', '电影订阅', subs.filter((item) => item.mediaType === 'movie').length],
@@ -1360,7 +1475,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                     {item.progressText && ` · 进度 ${item.progressText}`}
                     {item.inLibrary && ' · 已入库'}
                   </small>
-                  <em>{item.sourceLabel || 'NasEmby'} · {subscriptionUpdateLabel(item.updatedAt)}</em>
+                  <em>{item.readOnly ? '来自 Torra · 只读' : item.sourceLabel || 'Fluxa'} · {subscriptionUpdateLabel(item.updatedAt)}</em>
                 </button>
                 <button
                   aria-label={`搜索 ${item.title} 的资源`}
@@ -1371,7 +1486,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                 >
                   <FileSearch aria-hidden="true" size={14} />
                 </button>
-                <button
+                {!item.readOnly && <button
                   aria-label={`检查并推送 ${item.title} 到 Torra`}
                   className="tool-link"
                   disabled={Boolean(torraPushBusy)}
@@ -1383,8 +1498,8 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                   }}
                 >
                   <Send aria-hidden="true" size={14} />
-                </button>
-                <button
+                </button>}
+                {!item.readOnly && <button
                   aria-label={`屏蔽订阅 ${item.title}`}
                   className="tool-link"
                   disabled={subscriptionAction === `block:${item.id}`}
@@ -1393,10 +1508,10 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                   onClick={() => blockItem(item)}
                 >
                   <Ban aria-hidden="true" size={14} />
-                </button>
-                <button aria-label={`删除订阅 ${item.title}`} className="tool-link" disabled={subscriptionAction === `delete:${item.id}`} title="只删除，不加入屏蔽列表" type="button" onClick={() => removeSubscription(item)}>
+                </button>}
+                {!item.readOnly && <button aria-label={`删除订阅 ${item.title}`} className="tool-link" disabled={subscriptionAction === `delete:${item.id}`} title="只删除，不加入屏蔽列表" type="button" onClick={() => removeSubscription(item)}>
                   <Trash2 aria-hidden="true" size={14} />
-                </button>
+                </button>}
               </div>
 
               {detailId === item.id && (
@@ -1489,7 +1604,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                           )}
                         </div>
                       )}
-                      {item.mediaType === 'tv' &&
+                      {!item.readOnly && item.mediaType === 'tv' &&
                         activeSeasonNumber !== (item.seasonNumber ?? activeSeasonNumber) && (
                           <button
                             className="tool-link"

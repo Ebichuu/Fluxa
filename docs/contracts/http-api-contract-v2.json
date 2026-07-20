@@ -2,7 +2,7 @@
   "contractVersion": 2,
   "frozenAt": "2026-07-20",
   "pathVersioning": "url-v2",
-  "routeCount": 37,
+  "routeCount": 43,
   "routes": [
     { "method": "GET", "path": "/api/v2/integrations", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "integrations", "client": true },
     { "method": "POST", "path": "/api/v2/integrations/cloud115/probes", "audience": "browser", "auth": "session", "effect": "external-read", "response": "json", "success": [200], "migrationGroup": "integrations", "client": false },
@@ -40,6 +40,12 @@
     { "method": "PATCH", "path": "/api/v2/subscriptions/:id/quality-watch", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "subscription-automation", "client": true },
     { "method": "POST", "path": "/api/v2/subscriptions/:id/torra-rewash-analyses", "audience": "browser", "auth": "session", "effect": "external-write", "response": "json", "success": [202], "migrationGroup": "subscription-automation", "client": true },
     { "method": "POST", "path": "/api/v2/subscriptions/:id/torra-rewashes", "audience": "browser", "auth": "session", "effect": "external-write", "response": "json", "success": [202], "migrationGroup": "subscription-automation", "client": true },
-    { "method": "POST", "path": "/api/v2/rss-matches/:id/torra-rewash-analyses", "audience": "browser", "auth": "session", "effect": "external-write", "response": "json", "success": [202], "migrationGroup": "subscription-automation", "client": true }
+    { "method": "POST", "path": "/api/v2/rss-matches/:id/torra-rewash-analyses", "audience": "browser", "auth": "session", "effect": "external-write", "response": "json", "success": [202], "migrationGroup": "subscription-automation", "client": true },
+    { "method": "GET", "path": "/api/v2/activity/logs", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "activity", "client": true },
+    { "method": "DELETE", "path": "/api/v2/activity/logs", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "activity", "client": false },
+    { "method": "GET", "path": "/api/v2/torra/subscription-sync/status", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "torra-sync", "client": true },
+    { "method": "GET", "path": "/api/v2/torra/subscription-sync/preview", "audience": "browser", "auth": "session", "effect": "external-read", "response": "json", "success": [200], "migrationGroup": "torra-sync", "client": true },
+    { "method": "POST", "path": "/api/v2/torra/subscription-sync/imports", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "torra-sync", "client": true },
+    { "method": "POST", "path": "/api/v2/torra/subscription-sync/runs", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "torra-sync", "client": true }
   ]
 }

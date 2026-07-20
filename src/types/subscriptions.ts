@@ -55,7 +55,52 @@ export interface SubscriptionItem {
   sourceLabel?: string;
   status?: 'pending' | 'done';
   metadataPending?: boolean;
-  origin?: 'manual' | 'auto' | 'unknown';
+  origin?: 'manual' | 'auto' | 'torra' | 'unknown';
+  readOnly?: boolean;
+  torraSyncState?: 'current' | 'remote_missing' | 'error' | string;
+  torraMappingStatus?: 'mapped' | 'partial' | 'unmapped' | string;
+}
+
+export interface TorraSubscriptionSyncStatus {
+  ok: boolean;
+  enabled: boolean;
+  linked: number;
+  current: number;
+  remoteMissing: number;
+  errors: number;
+  lastSyncedAt: string;
+}
+
+export interface TorraSubscriptionSyncSummary {
+  total: number;
+  new: number;
+  linked: number;
+  duplicates: number;
+  unmapped: number;
+  conflicts: number;
+  importable: number;
+  imported?: number;
+  updated?: number;
+  skipped?: number;
+  remoteMissing?: number;
+}
+
+export interface TorraSubscriptionSyncPreview {
+  ok: boolean;
+  enabled: boolean;
+  summary: TorraSubscriptionSyncSummary;
+  conflictItems: Array<{ subscriptionKey: string; remoteRefs: string[]; title: string }>;
+  checkedAt: string;
+}
+
+export interface TorraSubscriptionSyncResult {
+  ok: boolean;
+  success?: boolean;
+  replayed?: boolean;
+  ran?: boolean;
+  summary: TorraSubscriptionSyncSummary;
+  syncedAt: string;
+  requestId: string;
 }
 
 export type MediaCategory =

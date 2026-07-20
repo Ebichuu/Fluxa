@@ -110,7 +110,7 @@ def map_subscription_item(value):
         done = True
     year = first_text(row, "year") or first_text(row, "release_date", "air_date")[:4]
     origin = first_text(row, "origin", "subscription_origin").lower()
-    if origin not in {"manual", "auto"}:
+    if origin not in {"manual", "auto", "torra"}:
         origin = "unknown"
     result = {
         "id": first_text(row, "key", "subscription_key", "dedupe_key", "id"),
@@ -131,12 +131,18 @@ def map_subscription_item(value):
         "status": "done" if done else "pending",
         "metadataPending": source_boolean(row.get("metadata_pending")),
         "origin": origin,
+        "readOnly": source_boolean(row.get("read_only")),
+        "torraSyncState": first_text(row, "torra_sync_state") or None,
+        "torraMappingStatus": first_text(row, "torra_mapping_status") or None,
     }
     season = season_number(row)
     if season is not None:
         result["seasonNumber"] = season
     if not result["mediaCategory"]:
         result.pop("mediaCategory")
+    for optional_key in ("torraSyncState", "torraMappingStatus"):
+        if result[optional_key] is None:
+            result.pop(optional_key)
     return result
 
 

@@ -56,6 +56,22 @@ class SubscriptionRepository:
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, source_fingerprint TEXT NOT NULL UNIQUE, "
                 "status TEXT NOT NULL, report_path TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)"
             )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS torra_subscription_links ("
+                "subscription_key TEXT PRIMARY KEY, remote_id TEXT NOT NULL UNIQUE, "
+                "origin TEXT NOT NULL, mapping_status TEXT NOT NULL, remote_status_json TEXT NOT NULL, "
+                "remote_fingerprint TEXT NOT NULL, last_seen_at TEXT NOT NULL, last_synced_at TEXT NOT NULL, "
+                "sync_state TEXT NOT NULL, last_error TEXT NOT NULL DEFAULT '', "
+                "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_torra_subscription_links_state "
+                "ON torra_subscription_links(sync_state, updated_at DESC)"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS torra_subscription_sync_runs ("
+                "idempotency_key TEXT PRIMARY KEY, response_json TEXT NOT NULL, created_at TEXT NOT NULL)"
+            )
 
     @staticmethod
     def _identity(item):
@@ -249,6 +265,248 @@ class SubscriptionRepository:
                 (_json_dump({"last_run_at": "", "stats": {"total": 0, "movie": 0, "tv": 0}, "errors": []}), _now_text()),
             )
         return count
+
+    def list_torra_links(self):
+        with closing(self.runtime.connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM torra_subscription_links ORDER BY updated_at DESC, remote_id"
+            ).fetchall()
+        return [{
+            "subscription_key": row["subscription_key"],
+            "remote_id": row["remote_id"],
+            "origin": row["origin"],
+            "mapping_status": row["mapping_status"],
+            "remote_status": _json_load(row["remote_status_json"], {}),
+            "remote_fingerprint": row["remote_fingerprint"],
+            "last_seen_at": row["last_seen_at"],
+            "last_synced_at": row["last_synced_at"],
+            "sync_state": row["sync_state"],
+            "last_error": row["last_error"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        } for row in rows]
+
+    def get_torra_link(self, subscription_key="", remote_id=""):
+        subscription_key = str(subscription_key or "").strip()
+        remote_id = str(remote_id or "").strip()
+        if not subscription_key and not remote_id:
+            return None
+        column, value = ("subscription_key", subscription_key) if subscription_key else ("remote_id", remote_id)
+        with closing(self.runtime.connect()) as connection:
+            row = connection.execute(
+                f"SELECT * FROM torra_subscription_links WHERE {column}=?", (value,)
+            ).fetchone()
+        if not row:
+            return None
+        return next((link for link in self.list_torra_links() if link[column] == value), None)
+
+    def get_torra_sync_run(self, idempotency_key):
+        key = str(idempotency_key or "").strip()
+        if not key:
+            return None
+        with closing(self.runtime.connect()) as connection:
+            row = connection.execute(
+                "SELECT response_json FROM torra_subscription_sync_runs WHERE idempotency_key=?", (key,)
+            ).fetchone()
+        return _json_load(row["response_json"], {}) if row else None
+
+    def record_torra_sync_run(self, idempotency_key, response):
+        key = str(idempotency_key or "").strip()
+        if not key:
+            raise ValueError("同步幂等键不能为空")
+        with self.runtime.transaction(immediate=True) as connection:
+            connection.execute(
+                "INSERT INTO torra_subscription_sync_runs (idempotency_key, response_json, created_at) "
+                "VALUES (?, ?, ?) ON CONFLICT(idempotency_key) DO NOTHING",
+                (key, _json_dump(dict(response or {})), _now_text()),
+            )
+        return self.get_torra_sync_run(key)
+
+    def save_torra_link(self, link):
+        row = dict(link or {})
+        subscription_key = str(row.get("subscription_key") or "").strip()
+        remote_id = str(row.get("remote_id") or "").strip()
+        if not subscription_key or not remote_id:
+            raise ValueError("Torra 关联缺少本地 key 或远端 ID")
+        now = _now_text()
+        with self.runtime.transaction(immediate=True) as connection:
+            conflict = connection.execute(
+                "SELECT subscription_key FROM torra_subscription_links WHERE remote_id=?", (remote_id,)
+            ).fetchone()
+            if conflict and conflict["subscription_key"] != subscription_key:
+                raise ValueError("Torra 远端 ID 已关联其他订阅")
+            connection.execute(
+                "INSERT INTO torra_subscription_links ("
+                "subscription_key, remote_id, origin, mapping_status, remote_status_json, remote_fingerprint, "
+                "last_seen_at, last_synced_at, sync_state, last_error, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(subscription_key) DO UPDATE SET remote_id=excluded.remote_id, origin=excluded.origin, "
+                "mapping_status=excluded.mapping_status, remote_status_json=excluded.remote_status_json, "
+                "remote_fingerprint=excluded.remote_fingerprint, last_seen_at=excluded.last_seen_at, "
+                "last_synced_at=excluded.last_synced_at, sync_state=excluded.sync_state, "
+                "last_error=excluded.last_error, updated_at=excluded.updated_at",
+                (
+                    subscription_key,
+                    remote_id,
+                    str(row.get("origin") or "torra_import"),
+                    str(row.get("mapping_status") or "mapped"),
+                    _json_dump(row.get("remote_status") if isinstance(row.get("remote_status"), dict) else {}),
+                    str(row.get("remote_fingerprint") or ""),
+                    str(row.get("last_seen_at") or now),
+                    str(row.get("last_synced_at") or now),
+                    str(row.get("sync_state") or "current"),
+                    str(row.get("last_error") or "")[:500],
+                    now,
+                    now,
+                ),
+            )
+        return self.get_torra_link(subscription_key=subscription_key)
+
+    def _apply_torra_mirror_rows(
+        self,
+        connection,
+        rows,
+        key_resolver,
+        *,
+        import_new,
+        mark_missing,
+        now,
+    ):
+        seen_remote_ids = set()
+        imported = 0
+        updated = 0
+        skipped = 0
+        for candidate in rows:
+            remote_id = str(candidate.get("remote_id") or "").strip()
+            item = dict(candidate.get("item") or {})
+            if not remote_id or not item:
+                skipped += 1
+                continue
+            seen_remote_ids.add(remote_id)
+            linked = connection.execute(
+                "SELECT subscription_key FROM torra_subscription_links WHERE remote_id=?", (remote_id,)
+            ).fetchone()
+            subscription_key = str(
+                (linked["subscription_key"] if linked else candidate.get("subscription_key"))
+                or key_resolver(item)
+                or ""
+            ).strip()
+            if not subscription_key:
+                skipped += 1
+                continue
+            conflicting_link = connection.execute(
+                "SELECT remote_id FROM torra_subscription_links WHERE subscription_key=?", (subscription_key,)
+            ).fetchone()
+            if conflicting_link and conflicting_link["remote_id"] != remote_id:
+                raise ValueError("本地订阅已关联其他 Torra 远端 ID")
+            stored = connection.execute(
+                "SELECT payload_json, sort_order, created_at FROM subscriptions WHERE subscription_key=?",
+                (subscription_key,),
+            ).fetchone()
+            if not stored and not import_new:
+                skipped += 1
+                continue
+            merged = {**(_json_load(stored["payload_json"], {}) if stored else {}), **item}
+            merged["subscription_key"] = subscription_key
+            media_type, tmdb_id, season, title = self._identity(merged)
+            if stored:
+                connection.execute(
+                    "UPDATE subscriptions SET media_type=?, tmdb_id=?, season_number=?, title=?, payload_json=?, "
+                    "version=version+1, updated_at=? WHERE subscription_key=?",
+                    (media_type, tmdb_id, season, title, _json_dump(merged), now, subscription_key),
+                )
+                updated += 1
+            else:
+                connection.execute("UPDATE subscriptions SET sort_order=sort_order+1")
+                connection.execute(
+                    "INSERT INTO subscriptions (subscription_key, media_type, tmdb_id, season_number, title, "
+                    "payload_json, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                    (subscription_key, media_type, tmdb_id, season, title, _json_dump(merged), now, now),
+                )
+                imported += 1
+            connection.execute(
+                "INSERT INTO torra_subscription_links ("
+                "subscription_key, remote_id, origin, mapping_status, remote_status_json, remote_fingerprint, "
+                "last_seen_at, last_synced_at, sync_state, last_error, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'current', '', ?, ?) "
+                "ON CONFLICT(subscription_key) DO UPDATE SET remote_id=excluded.remote_id, "
+                "mapping_status=excluded.mapping_status, remote_status_json=excluded.remote_status_json, "
+                "remote_fingerprint=excluded.remote_fingerprint, last_seen_at=excluded.last_seen_at, "
+                "last_synced_at=excluded.last_synced_at, sync_state='current', last_error='', updated_at=excluded.updated_at",
+                (
+                    subscription_key,
+                    remote_id,
+                    str(candidate.get("origin") or "torra_import"),
+                    str(candidate.get("mapping_status") or "mapped"),
+                    _json_dump(candidate.get("remote_status") if isinstance(candidate.get("remote_status"), dict) else {}),
+                    str(candidate.get("remote_fingerprint") or ""),
+                    now,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+        if mark_missing:
+            if seen_remote_ids:
+                placeholders = ",".join("?" for _ in seen_remote_ids)
+                connection.execute(
+                    f"UPDATE torra_subscription_links SET sync_state='remote_missing', updated_at=? "
+                    f"WHERE remote_id NOT IN ({placeholders})",
+                    (now, *sorted(seen_remote_ids)),
+                )
+            else:
+                connection.execute(
+                    "UPDATE torra_subscription_links SET sync_state='remote_missing', updated_at=?", (now,)
+                )
+        remote_missing = int(connection.execute(
+            "SELECT COUNT(*) AS count FROM torra_subscription_links WHERE sync_state='remote_missing'"
+        ).fetchone()["count"])
+        return {
+            "imported": imported,
+            "updated": updated,
+            "skipped": skipped,
+            "remoteMissing": remote_missing,
+        }
+
+    def apply_torra_mirror(self, candidates, key_resolver, import_new=True, mark_missing=True):
+        rows = [dict(candidate) for candidate in (candidates or []) if isinstance(candidate, dict)]
+        with self.runtime.transaction(immediate=True) as connection:
+            return self._apply_torra_mirror_rows(
+                connection,
+                rows,
+                key_resolver,
+                import_new=import_new,
+                mark_missing=mark_missing,
+                now=_now_text(),
+            )
+
+    def apply_torra_mirror_once(self, candidates, key_resolver, idempotency_key, response_builder):
+        key = str(idempotency_key or "").strip()
+        if not key:
+            raise ValueError("同步幂等键不能为空")
+        if not callable(response_builder):
+            raise TypeError("同步响应构造器无效")
+        rows = [dict(candidate) for candidate in (candidates or []) if isinstance(candidate, dict)]
+        with self.runtime.transaction(immediate=True) as connection:
+            replay = connection.execute(
+                "SELECT response_json FROM torra_subscription_sync_runs WHERE idempotency_key=?", (key,)
+            ).fetchone()
+            if replay:
+                return _json_load(replay["response_json"], {}), True
+            result = self._apply_torra_mirror_rows(
+                connection,
+                rows,
+                key_resolver,
+                import_new=True,
+                mark_missing=True,
+                now=_now_text(),
+            )
+            response = dict(response_builder(result) or {})
+            connection.execute(
+                "INSERT INTO torra_subscription_sync_runs (idempotency_key, response_json, created_at) VALUES (?, ?, ?)",
+                (key, _json_dump(response), _now_text()),
+            )
+            return response, False
 
     def migration_completed(self, fingerprint):
         with closing(self.runtime.connect()) as connection:

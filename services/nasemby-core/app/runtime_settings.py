@@ -35,6 +35,7 @@ RESTART_REQUIRED = {
 
 
 FIELD_LABELS = {
+    "MCC_TORRA_SUBSCRIPTION_SYNC_ENABLED": "Torra 订阅状态同步",
     "EMBY_BASE_URL": "Emby 服务地址",
     "EMBY_API_KEY": "Emby API Key",
     "EMBY_USER_ID": "Emby 用户 ID",

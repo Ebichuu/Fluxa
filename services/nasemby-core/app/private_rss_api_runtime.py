@@ -5,6 +5,7 @@ import uuid
 
 from flask import jsonify, request
 
+from app.activity_log import write_activity
 from app.http_runtime import current_request_id
 from app.automation_action_runtime import present_automation_action
 from app.private_rss_collector import PrivateRssCollector
@@ -22,6 +23,15 @@ def _truthy(value):
 
 
 def _error(code, message, status):
+    write_activity(
+        "operation",
+        "private_rss_request",
+        "error",
+        message,
+        request_id=current_request_id(),
+        code=code,
+        http_status=status,
+    )
     return jsonify({"code": code, "error": message, "request_id": current_request_id()}), status
 
 

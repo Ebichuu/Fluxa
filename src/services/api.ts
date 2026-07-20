@@ -26,6 +26,9 @@ import type {
   SubscriptionHubConfig,
   SubscriptionListResponse,
   SubscriptionPushPreview,
+  TorraSubscriptionSyncPreview,
+  TorraSubscriptionSyncResult,
+  TorraSubscriptionSyncStatus,
   TorraPushPreviewResponse,
   TorraPushResult,
   MediaCategory
@@ -202,7 +205,7 @@ export function getSystemMetrics(options?: RequestOptions): Promise<SystemMetric
 export function getActivityLogs(category = '', options?: RequestOptions): Promise<ActivityLogResponse> {
   const query = new URLSearchParams({ limit: '100' });
   if (category) query.set('category', category);
-  return readJson<ActivityLogResponse>(`/api/activity/logs?${query.toString()}`, options);
+  return readJson<ActivityLogResponse>(`/api/v2/activity/logs?${query.toString()}`, options);
 }
 
 export function getSubscriptionCalendar(
@@ -477,4 +480,27 @@ export function pushSubscriptionToTorra(
     `/api/v2/subscriptions/${encodeURIComponent(id)}/torra-pushes`,
     { confirm: true, idempotencyKey }
   );
+}
+
+export function getTorraSubscriptionSyncStatus(options?: RequestOptions): Promise<TorraSubscriptionSyncStatus> {
+  return readJson<TorraSubscriptionSyncStatus>('/api/v2/torra/subscription-sync/status', options);
+}
+
+export function previewTorraSubscriptionSync(options?: RequestOptions): Promise<TorraSubscriptionSyncPreview> {
+  return readJson<TorraSubscriptionSyncPreview>('/api/v2/torra/subscription-sync/preview', options);
+}
+
+export function importTorraSubscriptions(
+  idempotencyKey: string,
+  options?: RequestOptions
+): Promise<TorraSubscriptionSyncResult> {
+  return postJson<TorraSubscriptionSyncResult>(
+    '/api/v2/torra/subscription-sync/imports',
+    { confirm: true, idempotencyKey },
+    options
+  );
+}
+
+export function runTorraSubscriptionSync(options?: RequestOptions): Promise<TorraSubscriptionSyncResult> {
+  return postJson<TorraSubscriptionSyncResult>('/api/v2/torra/subscription-sync/runs', {}, options);
 }

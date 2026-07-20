@@ -51,12 +51,13 @@ def _safe_torra_push_result(result, request_id):
 
 
 class TorraSubscriptionActionService:
-    def __init__(self, environment, repository, client, item_loader, preview_builder):
+    def __init__(self, environment, repository, client, item_loader, preview_builder, link_recorder=None):
         self.environment = environment
         self.repository = repository
         self.client = client
         self.item_loader = item_loader
         self.preview_builder = preview_builder
+        self.link_recorder = link_recorder
 
     def _validate(self, key, body):
         if body.get("confirm") is not True:
@@ -115,10 +116,17 @@ class TorraSubscriptionActionService:
             return None, _error("TORRA_PUSH_IN_PROGRESS", "相同 Torra 推送正在执行", 409)
         return claim, None
 
-    def _push(self, action_id, payload, request_id):
+    def _push(self, action_id, key, payload, request_id):
         try:
             result = self.client.push_subscription(payload)
             response = _safe_torra_push_result(result, request_id)
+            if response["success"] and response["subscriptionId"] and callable(self.link_recorder):
+                try:
+                    self.link_recorder(key, response["subscriptionId"])
+                    response["linkRecorded"] = True
+                except Exception:
+                    response["linkRecorded"] = False
+                    response["message"] += "；本地关联将在下次同步时补齐"
             http_status = 200 if response["success"] else 502
         except Exception:
             response = {
@@ -166,4 +174,4 @@ class TorraSubscriptionActionService:
             claim, immediate = self._claim_new(idempotency_key, key, request_id)
             if immediate:
                 return immediate
-        return self._push(claim["action"]["action_id"], plan["payload"], request_id)
+        return self._push(claim["action"]["action_id"], key, plan["payload"], request_id)
