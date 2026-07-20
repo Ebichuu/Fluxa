@@ -133,6 +133,23 @@ class RuntimeSettingsTests(unittest.TestCase):
         catalog = {field["key"] for group in payload["groups"] for field in group["fields"]}
         self.assertTrue(keys <= catalog)
 
+    def test_catalog_uses_chinese_metadata_and_keeps_legacy_fields_advanced(self):
+        payload = build_runtime_settings(self.environment)
+        fields = [field for group in payload["groups"] for field in group["fields"]]
+        self.assertEqual(payload["groups"][-1]["id"], "advanced")
+        self.assertTrue(all(field["description"] for field in fields))
+        self.assertFalse(any(field["label"].startswith(("Env ", "Mcc ", "Nasemby ")) for field in fields))
+        self.assertEqual(field_by_key(payload, "MCC_PRIVATE_RSS_ENABLED")["label"], "启用私人 RSS 采集")
+        advanced_keys = {
+            field["key"]
+            for group in payload["groups"]
+            if group["id"] == "advanced"
+            for field in group["fields"]
+        }
+        self.assertIn("ENV_SYMEDIA_TOKEN", advanced_keys)
+        self.assertIn("ENV_TORRA_URL", advanced_keys)
+        self.assertNotIn("ENV_UPLOAD_PID", advanced_keys)
+
 
 if __name__ == "__main__":
     unittest.main()

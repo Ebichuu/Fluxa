@@ -16,7 +16,7 @@ import type {
   RuntimeSettingsResponse
 } from '../../types/runtimeSettings';
 
-const initiallyOpen = new Set(['emby', 'qbittorrent', 'torra', 'symedia', 'tmdb']);
+const initiallyOpen = new Set(['emby', 'qbittorrent', 'torra', 'symedia', 'tmdb', 'automation']);
 
 function valuesFrom(payload: RuntimeSettingsResponse) {
   return Object.fromEntries(
@@ -25,7 +25,7 @@ function valuesFrom(payload: RuntimeSettingsResponse) {
 }
 
 function fieldMatches(field: RuntimeSettingField, query: string) {
-  const haystack = `${field.label} ${field.key}`.toLocaleLowerCase('zh-CN');
+  const haystack = `${field.label} ${field.description} ${field.key}`.toLocaleLowerCase('zh-CN');
   return haystack.includes(query);
 }
 
@@ -40,6 +40,7 @@ export function RuntimeSettingsPanel() {
   const [messages, setMessages] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
+  const [showTechnicalNames, setShowTechnicalNames] = useState(false);
 
   const load = () => {
     setError('');
@@ -163,7 +164,7 @@ export function RuntimeSettingsPanel() {
       </header>
 
       <div className="runtime-settings__toolbar">
-        <label>
+        <label className="runtime-settings__search">
           <Search aria-hidden="true" size={15} />
           <input
             aria-label="搜索配置项"
@@ -173,7 +174,17 @@ export function RuntimeSettingsPanel() {
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
-        <span><KeyRound aria-hidden="true" size={14} />敏感值不回显</span>
+        <div className="runtime-settings__toolbar-meta">
+          <span><KeyRound aria-hidden="true" size={14} />敏感值不回显</span>
+          <label className="runtime-settings__technical-toggle">
+            <input
+              checked={showTechnicalNames}
+              type="checkbox"
+              onChange={(event) => setShowTechnicalNames(event.target.checked)}
+            />
+            显示技术字段名
+          </label>
+        </div>
       </div>
 
       <div className="runtime-settings__groups">
@@ -181,7 +192,7 @@ export function RuntimeSettingsPanel() {
           const expanded = Boolean(normalisedQuery) || openGroups.has(group.id);
           const groupDirty = group.fields.some((field) => dirty.has(field.key));
           return (
-            <section className="runtime-settings__group" key={group.id}>
+            <section className={group.id === 'advanced' ? 'runtime-settings__group runtime-settings__group--advanced' : 'runtime-settings__group'} key={group.id}>
               <button
                 aria-expanded={expanded}
                 className="runtime-settings__group-toggle"
@@ -200,9 +211,10 @@ export function RuntimeSettingsPanel() {
                         <label className={`runtime-setting runtime-setting--${field.type}`} key={field.key}>
                           <span className="runtime-setting__label">
                             <strong>{field.label}</strong>
-                            <code>{field.key}</code>
+                            {showTechnicalNames && <code>{field.key}</code>}
                             {field.restartRequired && <small>重启后生效</small>}
                           </span>
+                          <small className="runtime-setting__description">{field.description}</small>
                           {field.type === 'boolean' ? (
                             <span className="runtime-setting__switch">
                               <input

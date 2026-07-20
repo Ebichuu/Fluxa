@@ -1452,8 +1452,19 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
           ) ?? seasons[0];
           const activeSeasonNumber = activeSeason?.seasonNumber ?? activeSeason?.season_number ?? 0;
           const detailInfo = detailId === item.id ? detail?.detail : null;
+          const libraryProgress = detailInfo?.inLibrary || item.inLibrary
+            ? '已完成入库'
+            : item.mediaType === 'tv' && detailInfo?.episodeCount
+              ? `${detailInfo.libraryEpisodeCount ?? 0}/${detailInfo.episodeCount} 集已入库`
+              : item.progressText || '等待首个入库记录';
+          const subscriptionScope = item.mediaType === 'tv'
+            ? item.seasonName || (item.seasonNumber != null ? `第 ${item.seasonNumber} 季` : '按剧集持续追更')
+            : '整部电影';
+          const torraRoute = item.readOnly
+            ? item.torraSyncState === 'remote_missing' ? 'Torra 远端已缺失' : 'Torra 已有订阅，只读同步'
+            : '由 Fluxa 管理，可检查后推送';
           return (
-            <div className="discover-sub" key={item.id ?? item.title}>
+            <div className={detailId === item.id ? 'discover-sub discover-sub--open' : 'discover-sub'} key={item.id ?? item.title}>
               <div className="activity-row">
                 {item.posterUrl ? (
                   <img alt="" aria-hidden="true" className="discover-sub__poster" src={item.posterUrl} />
@@ -1542,6 +1553,31 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                         <span><b>国家 / 语言</b>{[detailInfo?.country, detailInfo?.language].filter(Boolean).join(' / ') || '-'}</span>
                         <span><b>日期</b>{detailInfo?.date || detailInfo?.release_date || detailInfo?.first_air_date || '-'}</span>
                       </div>
+                      <section className="sub-detail__route" aria-label="订阅处理轨道">
+                        <header>
+                          <div><strong>订阅处理轨道</strong><small>从订阅到入库的当前状态</small></div>
+                          <span>{subscriptionUpdateLabel(item.updatedAt)}</span>
+                        </header>
+                        <div className="sub-detail__route-grid">
+                          <span><b>01</b><strong>订阅来源</strong><small>{item.readOnly ? 'Torra 镜像' : item.sourceLabel || 'Fluxa'}</small></span>
+                          <span><b>02</b><strong>订阅范围</strong><small>{subscriptionScope}</small></span>
+                          <span><b>03</b><strong>PT / Torra</strong><small>{torraRoute}</small></span>
+                          <span className={detailInfo?.inLibrary || item.inLibrary ? 'is-complete' : undefined}><b>04</b><strong>整理入库</strong><small>{libraryProgress}</small></span>
+                        </div>
+                        <footer>
+                          <button className="tool-link" type="button" onClick={() => searchSubscriptionResources(item)}>
+                            <FileSearch aria-hidden="true" size={13} />搜索资源
+                          </button>
+                          <button className="tool-link" type="button" onClick={() => onNavigate('tasks')}>
+                            <Database aria-hidden="true" size={13} />查看任务中心
+                          </button>
+                          {!item.readOnly && (
+                            <button className="ops-action-button ops-action-button--primary" disabled={Boolean(torraPushBusy)} type="button" onClick={() => previewTorraPush(item)}>
+                              <Send aria-hidden="true" size={13} />检查 Torra 推送
+                            </button>
+                          )}
+                        </footer>
+                      </section>
                       <div className="sub-detail__section">
                         <strong>整体入库路径</strong>
                         {(detailInfo?.libraryPaths ?? []).length > 0 ? (

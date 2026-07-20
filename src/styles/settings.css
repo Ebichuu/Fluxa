@@ -644,7 +644,7 @@
   border-bottom: 1px solid var(--ops-hair);
 }
 
-.runtime-settings__toolbar label {
+.runtime-settings__search {
   display: flex;
   align-items: center;
   flex: 1 1 360px;
@@ -652,7 +652,7 @@
   color: var(--ops-muted);
 }
 
-.runtime-settings__toolbar input {
+.runtime-settings__search input {
   width: 100%;
   min-height: 34px;
   padding: 0 10px;
@@ -663,13 +663,33 @@
   font: inherit;
 }
 
-.runtime-settings__toolbar > span {
+.runtime-settings__toolbar-meta,
+.runtime-settings__toolbar-meta > span,
+.runtime-settings__technical-toggle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.runtime-settings__toolbar-meta {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px 14px;
+}
+
+.runtime-settings__toolbar-meta > span,
+.runtime-settings__technical-toggle {
   color: var(--ops-muted);
   font-size: 9px;
   white-space: nowrap;
+}
+
+.runtime-settings__technical-toggle {
+  cursor: pointer;
+}
+
+.runtime-settings__technical-toggle input {
+  accent-color: var(--ops-steel);
 }
 
 .runtime-settings__groups {
@@ -682,6 +702,18 @@
 
 .runtime-settings__group:last-child {
   border-bottom: 0;
+}
+
+.runtime-settings__group--advanced {
+  margin-top: 6px;
+  border: 1px solid rgba(157, 184, 207, 0.1);
+  border-radius: 10px;
+  background: rgba(157, 184, 207, 0.025);
+}
+
+.runtime-settings__group--advanced .runtime-settings__group-toggle {
+  padding-right: 10px;
+  padding-left: 10px;
 }
 
 .runtime-settings__group-toggle {
@@ -774,6 +806,13 @@
   font-size: 7.5px;
 }
 
+.runtime-setting__description {
+  min-height: 2.8em;
+  color: var(--ops-muted);
+  font-size: 8.5px;
+  line-height: 1.4;
+}
+
 .runtime-setting__control {
   display: flex;
   align-items: center;
@@ -793,7 +832,7 @@
 }
 
 .runtime-setting__control input:focus,
-.runtime-settings__toolbar input:focus {
+.runtime-settings__search input:focus {
   border-color: var(--ops-steel);
   outline: 0;
   box-shadow: 0 0 0 3px rgba(157, 184, 207, 0.1);
@@ -922,6 +961,10 @@
     flex-direction: column;
   }
 
+  .runtime-settings__toolbar-meta {
+    justify-content: space-between;
+  }
+
   .runtime-settings__fields {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -988,7 +1031,7 @@
   }
 }
 
-.app-shell:not(.app-shell--hall)[data-theme='light'] .runtime-settings__toolbar input,
+.app-shell:not(.app-shell--hall)[data-theme='light'] .runtime-settings__search input,
 .app-shell:not(.app-shell--hall)[data-theme='light'] .runtime-setting__control input {
   border-color: var(--theme-border);
   background: rgba(255, 255, 255, 0.78);

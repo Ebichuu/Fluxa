@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Activity, Bookmark, CalendarDays, Compass, Film, Home, ListChecks, Moon, Rss, Search, Settings, Sun } from 'lucide-react';
 import type { HealthResponse } from '../../types/media';
 
@@ -39,6 +39,19 @@ export function AppTopNav({ activePage, health, onNavigate, onToggleTheme, showT
   const selectionTargetRef = useRef<{ left: number; width: number } | null>(null);
   const activeNavId = activePage === 'subscription-settings' ? 'subscriptions' : navItems.some((item) => item.id === activePage) ? activePage : null;
   const [selection, setSelection] = useState({ left: 0, width: 0, visible: false });
+  const [isScrolled, setIsScrolled] = useState(false);
+
+  useEffect(() => {
+    if (!showThemeToggle) {
+      setIsScrolled(false);
+      return undefined;
+    }
+
+    const updateScrollState = () => setIsScrolled(window.scrollY > 12);
+    updateScrollState();
+    window.addEventListener('scroll', updateScrollState, { passive: true });
+    return () => window.removeEventListener('scroll', updateScrollState);
+  }, [showThemeToggle]);
 
   useLayoutEffect(() => {
     const nav = navRef.current;
@@ -123,7 +136,7 @@ export function AppTopNav({ activePage, health, onNavigate, onToggleTheme, showT
   }, [selection.left, selection.visible, selection.width]);
 
   return (
-    <header className="app-top-nav">
+    <header className={isScrolled ? 'app-top-nav app-top-nav--scrolled' : 'app-top-nav'}>
       <div className="nav-left-group">
         <button className="brand-lockup" type="button" onClick={() => onNavigate('hall')}>
           <span className="brand-mark" aria-hidden="true" />

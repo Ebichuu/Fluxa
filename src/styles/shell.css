@@ -26,6 +26,28 @@
   pointer-events: none;
 }
 
+.app-top-nav::before {
+  position: absolute;
+  z-index: -1;
+  top: -28px;
+  right: -34px;
+  bottom: -18px;
+  left: -34px;
+  border-bottom: 1px solid transparent;
+  background: rgba(6, 8, 11, 0.74);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.14);
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  backdrop-filter: blur(24px) saturate(1.18);
+  transition: opacity 220ms cubic-bezier(0.2, 0, 0, 1), background-color 220ms cubic-bezier(0.2, 0, 0, 1), border-color 220ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.app-shell:not(.app-shell--hall) .app-top-nav--scrolled::before {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+  opacity: 1;
+}
+
 .nav-left-group,
 .nav-actions {
   display: flex;
@@ -263,6 +285,15 @@
   backdrop-filter: blur(22px) saturate(1.35);
 }
 
+.app-shell:not(.app-shell--hall)[data-theme='light'] .app-top-nav::before {
+  background: rgba(248, 250, 252, 0.82);
+  box-shadow: 0 14px 32px rgba(45, 55, 65, 0.08);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .app-top-nav--scrolled::before {
+  border-bottom-color: rgba(31, 35, 41, 0.1);
+}
+
 .app-shell:not(.app-shell--hall)[data-theme='light'] .brand-mark {
   border-color: rgba(31, 35, 41, 0.1);
   background: rgba(255, 255, 255, 0.72);
@@ -315,9 +346,18 @@
     transform: none !important;
     transition: opacity 160ms ease-out !important;
   }
+
+  .app-shell:not(.app-shell--hall) .app-top-nav::before {
+    transition: none;
+  }
 }
 
 @media (prefers-reduced-transparency: reduce) {
+  .app-shell:not(.app-shell--hall) .app-top-nav::before {
+    background: var(--theme-bg);
+    backdrop-filter: none;
+  }
+
   .app-shell:not(.app-shell--hall)[data-theme='light'] .app-top-nav :is(.primary-nav, .nav-pill, .settings-button, .theme-toggle) {
     background: #f8f9fa;
     backdrop-filter: none;
