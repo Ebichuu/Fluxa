@@ -3073,6 +3073,19 @@ def queue_subscription_resource_rule_transfer(items, trigger="subscription_saved
         "rule": resource_rules_required_summary(rules),
         "background": True,
     }
+    if mode == "torra":
+        from app.config import read_config
+
+        torra_push_enabled = str(read_config().get("TORRA_PUSH_ENABLED") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if not torra_push_enabled:
+            result["enabled"] = False
+            result["reason"] = "允许向 Torra 创建订阅已关闭"
+            return result
     if not enabled:
         result["reason"] = "资源规则未启用"
         return result

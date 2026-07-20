@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Ban, Check, ChevronLeft, ChevronRight, Database, Download, ExternalLink, FileSearch, Pause, Play, Plus, RefreshCcw, RotateCcw, Search, Send, SlidersHorizontal, Trash2, X } from 'lucide-react';
+import { Ban, Check, ChevronLeft, ChevronRight, Database, Download, FileSearch, Pause, Play, Plus, RefreshCcw, RotateCcw, Search, Send, SlidersHorizontal, Trash2, X } from 'lucide-react';
 import {
   blockSubscription,
   browseDiscover,
   deleteSubscription,
   getAutomationAction,
   getMoviePilotPreview,
+  getRssSeedItems,
   getSubscriptionQualityWatch,
   getSubscriptionDetail,
   getSubscriptionItems,
@@ -19,14 +20,13 @@ import {
   runTorraSubscriptionSync,
   saveSubscription,
   searchDiscover,
-  searchDiscoverResources,
   setSubscriptionSeason,
   startTorraRewashAnalysis,
   startTorraRewashDownload,
   unblockSubscription,
   updateSubscriptionQualityWatch
 } from '../../services/api';
-import type { AutomationAction } from '../../types/rssSeedLibrary';
+import type { AutomationAction, RssSeedItem, RssSeedListResponse } from '../../types/rssSeedLibrary';
 import type {
   DiscoverBrowseParams,
   DiscoverResourceItem,
@@ -248,25 +248,6 @@ function resultMeta(result: DiscoverResult) {
   return parts.join(' · ');
 }
 
-function safeExternalUrl(value: string | undefined) {
-  if (!value) return '';
-  try {
-    const url = new URL(value);
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : '';
-  } catch {
-    return '';
-  }
-}
-
-function resourceLinks(item: DiscoverResourceItem) {
-  return Array.from(new Set([
-    item.share_url,
-    item.url,
-    item.preview_url,
-    ...(item.links ?? [])
-  ].map(safeExternalUrl).filter(Boolean)));
-}
-
 function resourceTitle(item: DiscoverResourceItem) {
   return item.title?.trim() || '未命名资源';
 }
@@ -288,6 +269,88 @@ function resourcePreviewText(item: DiscoverResourceItem) {
     item.season ? `第 ${item.season} 季` : '',
     item.episodes?.length ? `集数：${item.episodes.join(', ')}` : ''
   ].filter(Boolean).join('\n');
+}
+
+function formatRssSeedSize(sizeBytes: number) {
+  if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const unitIndex = Math.min(Math.floor(Math.log(sizeBytes) / Math.log(1024)), units.length - 1);
+  const value = sizeBytes / (1024 ** unitIndex);
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function rssEpisodeNumbers(item: RssSeedItem) {
+  if (item.episodeStart == null) return [];
+  const start = Math.max(0, item.episodeStart);
+  const end = Math.max(start, item.episodeEnd ?? start);
+  return Array.from({ length: Math.min(end - start + 1, 200) }, (_, index) => start + index);
+}
+
+function rssEpisodeLabel(item: RssSeedItem) {
+  const parts: string[] = [];
+  if (item.seasonNumber != null) parts.push(`S${String(item.seasonNumber).padStart(2, '0')}`);
+  if (item.episodeStart != null) {
+    const start = `E${String(item.episodeStart).padStart(2, '0')}`;
+    const end = item.episodeEnd != null && item.episodeEnd !== item.episodeStart
+      ? `-E${String(item.episodeEnd).padStart(2, '0')}`
+      : '';
+    parts.push(`${start}${end}`);
+  }
+  return parts.join('');
+}
+
+function mapRssSeedsToResources(
+  target: DiscoverResult,
+  payload: RssSeedListResponse
+): DiscoverResourceResponse {
+  const sourceCounts = new Map<string, { label: string; count: number }>();
+  const seasonEpisodes = new Map<number, Set<number>>();
+  const items = payload.items.map((item) => {
+    const sourceKey = item.sourceId || 'rss';
+    const source = sourceCounts.get(sourceKey) ?? { label: item.sourceName || 'RSS', count: 0 };
+    source.count += 1;
+    sourceCounts.set(sourceKey, source);
+    const episodes = rssEpisodeNumbers(item);
+    if (item.seasonNumber != null && episodes.length > 0) {
+      const values = seasonEpisodes.get(item.seasonNumber) ?? new Set<number>();
+      episodes.forEach((episode) => values.add(episode));
+      seasonEpisodes.set(item.seasonNumber, values);
+    }
+    return {
+      source: sourceKey,
+      source_key: sourceKey,
+      source_label: item.sourceName || 'RSS',
+      title: item.title,
+      subtitle: [
+        rssEpisodeLabel(item),
+        item.hasDownload ? '已保留下载信息' : '仅保存种子元数据'
+      ].filter(Boolean).join(' · '),
+      quality: item.versionSummary,
+      size: formatRssSeedSize(item.sizeBytes),
+      date: item.publishedAt || item.lastSeenAt,
+      full_text: item.description,
+      season: item.seasonNumber == null ? undefined : String(item.seasonNumber),
+      episodes
+    } satisfies DiscoverResourceItem;
+  });
+  const sources = [
+    { key: 'all', label: '全部来源', count: items.length },
+    ...Array.from(sourceCounts, ([key, source]) => ({ key, ...source }))
+  ];
+  const seasons = Array.from(seasonEpisodes, ([season, episodes]) => {
+    const values = Array.from(episodes).sort((left, right) => left - right);
+    return { season: String(season), episodes: values, resource_episodes: values };
+  }).sort((left, right) => Number(left.season) - Number(right.season));
+  return {
+    success: true,
+    title: target.title,
+    media_type: target.mediaType,
+    items,
+    sources,
+    seasons,
+    errors: [],
+    cache_hits: []
+  };
 }
 
 type SubscriptionTab = 'movie' | 'tv' | 'blocked';
@@ -974,10 +1037,10 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
     setResourceSource('all');
     setResourcePreview(null);
     setResourceLoading(true);
-    searchDiscoverResources(result)
-      .then(setResourceData)
+    getRssSeedItems({ query: result.title, limit: 50, offset: 0 })
+      .then((payload) => setResourceData(mapRssSeedsToResources(result, payload)))
       .catch((error: unknown) => {
-        setResourceError(error instanceof Error ? error.message : '资源搜索失败');
+        setResourceError(error instanceof Error ? error.message : '本地 RSS 种子箱查询失败');
       })
       .finally(() => setResourceLoading(false));
   };
@@ -1187,16 +1250,16 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
           <section className="discover-resource-panel" aria-label={`${resourceTarget.title} 资源搜索结果`}>
             <header className="discover-resource-panel__head">
               <div>
-                <small>资源搜索</small>
+                <small>RSS 种子搜索</small>
                 <h2>{resourceTarget.title}</h2>
-                <p>{resourceLoading ? '正在读取资源…' : `${visibleResources.length} 条资源`}</p>
+                <p>{resourceLoading ? '正在查询本地种子箱…' : `仅查询本地种子箱，不会自动下载 · ${visibleResources.length} 条`}</p>
               </div>
               <button aria-label="关闭资源搜索" className="tool-link" title="关闭" type="button" onClick={closeResourceSearch}>
                 <X aria-hidden="true" size={16} />
               </button>
             </header>
 
-            {resourceLoading && <div className="discover-resource-empty">正在读取资源来源…</div>}
+            {resourceLoading && <div className="discover-resource-empty">正在查询本地 RSS 种子箱…</div>}
             {!resourceLoading && resourceError && <div className="discover-resource-empty">{resourceError}</div>}
             {!resourceLoading && resourceData && (
               <>
@@ -1240,26 +1303,19 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
 
                 <div className="discover-resource-list">
                   {visibleResources.map((item, index) => {
-                    const links = resourceLinks(item);
                     const previewText = resourcePreviewText(item);
                     const activePreview = resourcePreview === item;
                     return (
-                      <article className="discover-resource-row" key={`${item.source_key || item.source || 'resource'}-${item.url || item.title || index}`}>
+                      <article className="discover-resource-row" key={`${item.source_key || item.source || 'rss'}-${item.title || index}-${item.date || index}`}>
                         <div>
                           <strong>{resourceTitle(item)}</strong>
                           <small>{resourceMeta(item) || '来源信息未提供'}</small>
                         </div>
                         <div className="discover-resource-row__actions">
-                          {links[0] && (
-                            <a className="tool-link" href={links[0]} rel="noreferrer" target="_blank">
-                              <ExternalLink aria-hidden="true" size={14} />
-                              打开
-                            </a>
-                          )}
                           <button
                             aria-expanded={activePreview}
                             className="tool-link"
-                            disabled={!previewText && links.length === 0}
+                            disabled={!previewText}
                             type="button"
                             onClick={() => setResourcePreview(activePreview ? null : item)}
                           >
@@ -1270,17 +1326,12 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                         {activePreview && (
                           <div className="discover-resource-preview">
                             {previewText && <pre>{previewText}</pre>}
-                            {links.length > 0 && (
-                              <div>
-                                {links.map((link) => <a href={link} key={link} rel="noreferrer" target="_blank">{link}</a>)}
-                              </div>
-                            )}
                           </div>
                         )}
                       </article>
                     );
                   })}
-                  {visibleResources.length === 0 && <div className="discover-resource-empty">没有找到资源。</div>}
+                  {visibleResources.length === 0 && <div className="discover-resource-empty">本地种子箱中没有匹配资源。</div>}
                 </div>
               </>
             )}

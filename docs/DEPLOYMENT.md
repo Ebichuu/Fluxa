@@ -252,10 +252,10 @@ fnOS 首次部署新镜像时只执行空库初始化和只读状态检查。真
 - 原子迁移模拟演练确认共享 RSS 表保留，差异失败不发布半成品，迁移报告不包含测试凭据。
 - 没有连接真实 RSS、Torra、qB、MoviePilot、115、Symedia 或 Emby 写接口；临时容器和验收目录已清理。
 
-### Torra 追更洗版阶段 1–6 源码验收记录
+### 当前源码验收记录
 
-- 当前源码为 SQLite schema version 3，新增质量观察、provider 动作和调度状态；上一份硬化候选镜像仍是 schema version 2。
-- 156 项 Python 回归、前端类型检查、生产构建、npm 审计和 Compose 配置通过；RSS 活动匹配、有限主动兜底和阶段 6 HTTP API 使用脱敏夹具验证，真实 Torra/RSS 写动作仍关闭。
+- 当前源码使用 SQLite schema version 3，包含质量观察、provider 动作、调度状态和私人 RSS 种子索引。
+- 191 项 Python 回归和前端类型检查通过；RSS 活动匹配、有限主动兜底和 HTTP API 使用脱敏夹具验证，真实 Torra/RSS 写动作保持关闭。
 - Torra 分析、下载和 job 查询测试全部使用假 session；质量观察与调度使用假任务链证据、假 Torra/qB 客户端和临时 SQLite，覆盖双闸门、并发 1、批量 2、公平游标、限额、截止点与租约恢复，没有连接真实外部服务。
 - 阶段 6 的 GET/PATCH/POST 契约、202 + Location、错误状态映射、跨匹配幂等冲突和独立下载闸门已通过模拟 API 测试；候选下载不会因分析闸门开启而自动执行。
-- 本轮尚未重建候选镜像；进入 fnOS 前必须在后续阶段完成后构建新镜像并重复只读、重启和 schema 验收。
+- 正式 GHCR 镜像只由 GitHub Actions 在推送 `main` 后构建并同时更新版本标签与 `latest`；部署后仍需重复只读、重启和 schema 验收。

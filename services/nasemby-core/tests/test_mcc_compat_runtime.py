@@ -451,6 +451,37 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
                 self.assertEqual(stored[0]["target_season"], 2)
                 self.assertTrue((root / "media_control_center.sqlite3").exists())
 
+    def test_torra_subscription_queue_respects_push_gate(self):
+        item = {"id": "subscription-1", "title": "测试剧集", "media_type": "tv"}
+        config = {"mode": "torra", "resource_rules": {}}
+        with patch.object(discover_runtime, "SUBSCRIPTION_RESOURCE_TASK_KEYS", set()), patch(
+            "app.config.read_config", return_value={"TORRA_PUSH_ENABLED": "false"}
+        ), patch.object(discover_runtime, "write_activity") as write_activity, patch.object(
+            discover_runtime.threading, "Timer"
+        ) as timer:
+            blocked = discover_runtime.queue_subscription_resource_rule_transfer(
+                [item], "manual_subscription", config_override=config
+            )
+
+        self.assertFalse(blocked["enabled"])
+        self.assertEqual(blocked["queued"], 0)
+        self.assertEqual(blocked["reason"], "允许向 Torra 创建订阅已关闭")
+        timer.assert_not_called()
+        write_activity.assert_not_called()
+
+        with patch.object(discover_runtime, "SUBSCRIPTION_RESOURCE_TASK_KEYS", set()), patch(
+            "app.config.read_config", return_value={"TORRA_PUSH_ENABLED": "true"}
+        ), patch.object(discover_runtime, "write_activity"), patch.object(
+            discover_runtime.threading, "Timer"
+        ) as timer:
+            allowed = discover_runtime.queue_subscription_resource_rule_transfer(
+                [item], "manual_subscription", config_override=config
+            )
+
+        self.assertTrue(allowed["enabled"])
+        self.assertEqual(allowed["queued"], 1)
+        timer.assert_called_once()
+
     def test_deployment_defaults_block_subscription_writes_and_pushes(self):
         app = create_app(access_environment={}, torra_client_factory=FakeTorraClient)
         client = app.test_client()
