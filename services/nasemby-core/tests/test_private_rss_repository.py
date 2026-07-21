@@ -40,6 +40,29 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             self.assertNotIn("secret-value", str(result))
             self.assertTrue(result["items"][0]["hasDownload"])
 
+    def test_custom_poll_interval_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({
+                "name": "自定义周期站",
+                "feedUrl": "https://tracker.example/custom-rss",
+                "intervalMinutes": 30,
+            })
+            self.assertEqual(source["intervalMinutes"], 30)
+
+            with self.assertRaisesRegex(ValueError, "1 到 1440"):
+                repository.save_source({
+                    "name": "无效周期站",
+                    "feedUrl": "https://tracker.example/invalid-rss",
+                    "intervalMinutes": 1441,
+                })
+            with self.assertRaisesRegex(ValueError, "整数分钟"):
+                repository.save_source({
+                    "name": "小数周期站",
+                    "feedUrl": "https://tracker.example/fractional-rss",
+                    "intervalMinutes": 1.5,
+                })
+
     def test_duplicate_source_and_item_are_deduplicated(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")

@@ -62,6 +62,7 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `POST /api/media/emby/refresh` | 无正文，必须有较新 Symedia 证据 |
 | `POST /api/qbittorrent/actions/:action` | `hashes`、`taskId`、`title`，最多 20 个 hash |
 | `GET /api/subscriptions/items` | 可选 `include_progress=1` |
+| `GET /api/v2/subscriptions/workbench` | 无参数；聚合五项能力状态、订阅统计和 Torra/qB/115/入库链路，只读访问外部服务 |
 | `POST /api/subscriptions/save` | 标题、TMDB ID、媒体类型和可选元数据 |
 | `PATCH /api/subscriptions/:id/category` | 八分类 key 或 `null` |
 | `GET /api/subscriptions/detail` | 必填 `id`，可选 `season` |

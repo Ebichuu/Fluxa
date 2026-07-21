@@ -26,6 +26,7 @@ import type {
   SubscriptionHubConfig,
   SubscriptionListResponse,
   SubscriptionPushPreview,
+  SubscriptionWorkbenchResponse,
   TorraSubscriptionSyncPreview,
   TorraSubscriptionSyncResult,
   TorraSubscriptionSyncStatus,
@@ -225,6 +226,10 @@ export function getSubscriptionItems(includeProgress = false, options?: RequestO
     includeProgress ? '/api/subscriptions/items?include_progress=1' : '/api/subscriptions/items',
     options
   );
+}
+
+export function getSubscriptionWorkbench(options?: RequestOptions): Promise<SubscriptionWorkbenchResponse> {
+  return readJson<SubscriptionWorkbenchResponse>('/api/v2/subscriptions/workbench', options);
 }
 
 export function getDiscoverTrending(type: 'movie' | 'tv'): Promise<DiscoverResponse> {

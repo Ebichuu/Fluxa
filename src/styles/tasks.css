@@ -118,6 +118,37 @@
   overflow: hidden;
 }
 
+.ops-task-focus {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+  border: 1px solid rgba(36, 66, 255, 0.28);
+  border-radius: 14px;
+  padding: 11px 13px;
+  background: rgba(36, 66, 255, 0.08);
+}
+
+.ops-task-focus > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ops-task-focus strong {
+  overflow: hidden;
+  color: var(--ops-ink-strong);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ops-task-focus span {
+  color: var(--ops-muted);
+  font-size: 9px;
+}
+
 .ops-task-toolbar {
   display: flex;
   align-items: center;
@@ -301,6 +332,22 @@
 
 .ops-task-card--stuck {
   border-color: rgba(255, 83, 103, 0.24);
+}
+
+.ops-task-card--focused {
+  border-color: rgba(36, 66, 255, 0.5);
+  box-shadow: 0 0 0 3px rgba(36, 66, 255, 0.14), 0 22px 62px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.ops-task-card--focused:focus-visible {
+  outline: 2px solid var(--ops-focus);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ops-task-card--focused {
+    transition: none;
+  }
 }
 
 .ops-task-card__head {
@@ -490,6 +537,15 @@
 }
 
 @media (max-width: 900px) {
+
+  .ops-task-focus {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ops-task-focus strong {
+    white-space: normal;
+  }
 
   .ops-task-summary > div:nth-child(4) {
     border-top: 1px solid rgba(255, 255, 255, 0.06);

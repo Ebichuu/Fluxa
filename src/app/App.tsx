@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AppTopNav, type PageId, type ThemeMode } from '../components/layout/AppTopNav';
+import { AppTopNav, type AppNavigate, type PageId, type TaskNavigationTarget, type ThemeMode } from '../components/layout/AppTopNav';
 import { MediaHall } from '../components/media-hall/MediaHall';
 import { CalendarPage } from '../components/pages/CalendarPage';
 import { ControlRoom } from '../components/pages/ControlRoom';
@@ -29,6 +29,7 @@ function initialTheme(): ThemeMode {
 
 export function App() {
   const [page, setPage] = useState<PageId>('hall');
+  const [taskNavigationTarget, setTaskNavigationTarget] = useState<TaskNavigationTarget | null>(null);
   const [theme, setTheme] = useState<ThemeMode>(initialTheme);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [visualFx, setVisualFx] = useState(() => {
@@ -114,17 +115,22 @@ export function App() {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
   }, [page]);
 
+  const navigate: AppNavigate = (nextPage, target) => {
+    setPage(nextPage);
+    setTaskNavigationTarget(nextPage === 'tasks' ? target ?? null : null);
+  };
+
   return (
     <div className={`app-shell app-shell--${page}`} data-theme={page === 'hall' ? undefined : theme}>
       <AppTopNav
         activePage={page}
         health={health}
-        onNavigate={setPage}
+        onNavigate={navigate}
         onToggleTheme={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')}
         showThemeToggle={page !== 'hall'}
         theme={theme}
       />
-      {page === 'overview' && <Overview onNavigate={setPage} />}
+      {page === 'overview' && <Overview onNavigate={navigate} />}
       {page === 'hall' && (
         <MediaHall
           visualFx={visualFx}
@@ -134,12 +140,12 @@ export function App() {
         />
       )}
       {page === 'control' && <ControlRoom />}
-      {page === 'tasks' && <TasksCenter />}
-      {page === 'calendar' && <CalendarPage onNavigate={setPage} />}
+      {page === 'tasks' && <TasksCenter target={taskNavigationTarget} onClearTarget={() => setTaskNavigationTarget(null)} />}
+      {page === 'calendar' && <CalendarPage onNavigate={navigate} />}
       {(page === 'discover' || page === 'subscriptions') && (
-        <DiscoverPage onNavigate={setPage} view={page === 'subscriptions' ? 'subscriptions' : 'discover'} />
+        <DiscoverPage onNavigate={navigate} view={page === 'subscriptions' ? 'subscriptions' : 'discover'} />
       )}
-      {page === 'subscription-settings' && <SubscriptionSettingsPage onNavigate={setPage} />}
+      {page === 'subscription-settings' && <SubscriptionSettingsPage onNavigate={navigate} />}
       {page === 'rss-library' && <RssSeedLibraryPage />}
       {page === 'settings' && <SettingsPage />}
     </div>

@@ -669,17 +669,19 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "ENV_SYMEDIA_URL": "http://symedia.invalid",
             "ENV_SYMEDIA_TOKEN": "symedia-token-must-not-escape",
         }
-        environment = {
-            "EMBY_USER_ID": "user-id-must-not-escape",
-            "QB_BASE_URL": "http://qb.invalid",
-            "TMDB_API_KEY": "tmdb-key-must-not-escape",
-        }
-        with patch.object(main, "read_config", return_value=fake_config), patch.dict(
-            main.os.environ,
-            environment,
-            clear=True,
-        ):
-            response = main.create_app(access_environment={}).test_client().get("/api/health")
+        with tempfile.TemporaryDirectory() as directory:
+            environment = {
+                "EMBY_USER_ID": "user-id-must-not-escape",
+                "QB_BASE_URL": "http://qb.invalid",
+                "TMDB_API_KEY": "tmdb-key-must-not-escape",
+                "MCC_DATABASE_PATH": str(Path(directory) / "health.sqlite3"),
+            }
+            with patch.object(main, "read_config", return_value=fake_config), patch.dict(
+                main.os.environ,
+                environment,
+                clear=True,
+            ):
+                response = main.create_app(access_environment={}).test_client().get("/api/health")
 
         payload = response.get_json()
         self.assertEqual(response.status_code, 200)

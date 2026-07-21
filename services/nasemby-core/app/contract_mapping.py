@@ -225,6 +225,8 @@ def map_subscription_detail(payload):
             "tmdbId": first_text(detail, "tmdb_id"),
             "imdbId": first_text(detail, "imdb_id"),
             "title": first_text(detail, "title", "name"),
+            "originalTitle": first_text(detail, "original_title", "original_name"),
+            "englishTitle": first_text(detail, "english_title"),
             "year": first_text(detail, "year"),
             "rating": first_text(detail, "rating"),
             "overview": first_text(detail, "overview"),

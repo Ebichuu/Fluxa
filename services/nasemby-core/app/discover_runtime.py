@@ -127,7 +127,7 @@ HDHIVE_MODULE = None
 SUBSCRIPTION_CONFIG_PATH = str(PROJECT_ROOT / "db" / "discover_subscriptions.json")
 SUBSCRIPTION_ITEMS_PATH = str(PROJECT_ROOT / "db" / "discover_subscription_items.json")
 SUBSCRIPTION_DETAIL_CACHE_PATH = str(PROJECT_ROOT / "db" / "discover_subscription_detail_cache.json")
-SUBSCRIPTION_DETAIL_CACHE_VERSION = 2
+SUBSCRIPTION_DETAIL_CACHE_VERSION = 3
 DISCOVER_CACHE_DB_PATH = str(PROJECT_ROOT / "db" / "discover_cache.db")
 DISCOVER_CACHE_TTL_SECONDS = 6 * 60 * 60
 DISCOVER_PERMANENT_CACHE_SECONDS = 20 * 365 * 24 * 60 * 60
@@ -1625,6 +1625,73 @@ def write_subscription_items_data(data):
     return subscription_repository().save_payload(payload, get_subscription_item_key)
 
 
+def merge_subscription_source_items(existing_items, source_items):
+    """Merge one automatic-source result without deleting local intent.
+
+    Automatic source refreshes are additive. Manual subscriptions and Torra
+    mirror rows remain in the ledger even when they are absent from this
+    source's current result set.
+    """
+    existing = [dict(item) for item in (existing_items or []) if isinstance(item, dict)]
+    incoming = [dict(item) for item in (source_items or []) if isinstance(item, dict)]
+    by_key = {}
+    by_identity = {}
+    for item in existing:
+        key = str(get_subscription_item_key(item) or "").strip()
+        if key:
+            by_key[key] = item
+        identity = str(get_subscription_dedupe_key(item) or "").strip()
+        if identity:
+            by_identity[identity] = item
+
+    merged = list(existing)
+    positions = {id(item): index for index, item in enumerate(merged)}
+    protected_fields = {
+        "origin",
+        "read_only",
+        "torra_remote_id",
+        "torra_sync_state",
+        "torra_mapping_status",
+        "torra_remote_status",
+    }
+    added = 0
+    updated = 0
+    for candidate in incoming:
+        normalized = normalize_subscription_item_metadata(candidate, resolve_tmdb=False)
+        key = str(get_subscription_item_key(normalized) or "").strip()
+        identity = str(get_subscription_dedupe_key(normalized) or "").strip()
+        current = by_key.get(key) or by_identity.get(identity)
+        if current is None:
+            merged.append(normalized)
+            if key:
+                by_key[key] = normalized
+            if identity:
+                by_identity[identity] = normalized
+            added += 1
+            continue
+        preserved = {field: current[field] for field in protected_fields if field in current}
+        if current.get("read_only") or str(current.get("origin") or "") in {"manual", "torra"}:
+            for field in ("source", "source_label"):
+                if field in current:
+                    preserved[field] = current[field]
+        next_item = {**current, **normalized, **preserved}
+        index = positions.get(id(current))
+        if index is None:
+            index = next((idx for idx, item in enumerate(merged) if item is current), None)
+        if index is None:
+            merged.append(next_item)
+        else:
+            merged[index] = next_item
+        next_key = str(get_subscription_item_key(next_item) or key).strip()
+        next_identity = str(get_subscription_dedupe_key(next_item) or identity).strip()
+        if next_key:
+            by_key[next_key] = next_item
+        if next_identity:
+            by_identity[next_identity] = next_item
+        updated += 1
+    return merged, {"added": added, "updated": updated, "preserved": max(0, len(existing) - updated)}
+
+
 def delete_subscription_item(payload):
     payload = payload or {}
     key = str(payload.get("key") or "").strip()
@@ -2323,6 +2390,7 @@ def fetch_subscription_detail(query):
                 "tmdb_id": tmdb_id,
                 "imdb_id": external.get("imdb_id") or raw.get("imdb_id") or "",
                 "title": title_value,
+                "original_title": raw.get("original_title") or raw.get("original_name") or "",
                 "year": (date_value or "")[:4],
                 "rating": f"{float(raw.get('vote_average') or 0):.1f}" if raw.get("vote_average") is not None else (item.get("rating") or ""),
                 "overview": raw.get("overview") or "",
@@ -2339,6 +2407,14 @@ def fetch_subscription_detail(query):
                 "media_type": media_type,
                 "cast": cast,
             }
+            try:
+                english_detail = http_json(f"{cfg['api_base_url']}/{media_type}/{tmdb_id}?" + urllib.parse.urlencode({
+                    "api_key": cfg["api_key"],
+                    "language": "en-US",
+                }))
+                detail["english_title"] = english_detail.get("title") or english_detail.get("name") or ""
+            except Exception:
+                detail["english_title"] = ""
             library_status = get_library_item_status(title_value, tmdb_id, media_type)
             detail["in_library"] = bool(library_status.get("in_library"))
             detail["library_episode_count"] = int(library_status.get("episode_count") or 0)
@@ -3307,16 +3383,22 @@ def run_subscription_now():
         "sources": 1 if daily_only else len(selected_sources),
         "daily_only": daily_only,
     }
+    existing_payload = load_subscription_items(remove_completed=False, persist_progress=False)
+    merged_items, merge_stats = merge_subscription_source_items(
+        existing_payload.get("items") if isinstance(existing_payload, dict) else [],
+        items,
+    )
     payload = {
         "success": True,
         "last_run_at": now_text,
         "stats": stats,
-        "items": items,
+        "items": merged_items,
         "errors": errors,
+        "source_merge": merge_stats,
     }
-    for item in items:
+    for item in merged_items:
         set_discover_item_cache(item, "subscription_task")
-    payload = enrich_subscription_items(payload, remove_completed=True)
+    payload = enrich_subscription_items(payload, remove_completed=False)
     write_subscription_items_data(payload)
     config["douban"]["last_run_at"] = now_text
     write_subscription_config_data(config)
@@ -3335,7 +3417,7 @@ def run_subscription_now():
         task=subscription_mode_task_label(config.get("mode")),
         first_error=errors[0] if errors else "",
     )
-    subscription_task = queue_subscription_resource_rule_transfer(payload.get("items") or [], "subscription_run")
+    subscription_task = queue_subscription_resource_rule_transfer(items, "subscription_run")
     payload["subscription_task"] = subscription_task
     payload["auto_transfer"] = subscription_task
     return payload

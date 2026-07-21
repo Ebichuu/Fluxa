@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Ban, Check, ChevronLeft, ChevronRight, Database, Download, FileSearch, Pause, Play, Plus, RefreshCcw, RotateCcw, Search, Send, SlidersHorizontal, Trash2, X } from 'lucide-react';
 import {
   blockSubscription,
@@ -10,6 +10,7 @@ import {
   getSubscriptionQualityWatch,
   getSubscriptionDetail,
   getSubscriptionItems,
+  getSubscriptionWorkbench,
   getTorraSubscriptionSyncStatus,
   getTorraPushPreview,
   importTorraSubscriptions,
@@ -37,16 +38,17 @@ import type {
   DiscoverResult,
   SubscriptionDetailResponse,
   SubscriptionItem,
+  SubscriptionWorkbenchResponse,
   TorraSubscriptionSyncPreview,
   TorraSubscriptionSyncStatus,
   TorraPushPreviewResponse
 } from '../../types/subscriptions';
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
-import type { PageId } from '../layout/AppTopNav';
+import type { AppNavigate } from '../layout/AppTopNav';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
 
 interface DiscoverPageProps {
-  onNavigate: (page: PageId) => void;
+  onNavigate: AppNavigate;
   view?: 'discover' | 'subscriptions';
 }
 
@@ -353,6 +355,19 @@ function mapRssSeedsToResources(
   };
 }
 
+function mergeRssSeedResponses(payloads: RssSeedListResponse[]): RssSeedListResponse {
+  const items = new Map<string, RssSeedItem>();
+  payloads.forEach((payload) => {
+    payload.items.forEach((item) => items.set(item.id, item));
+  });
+  return {
+    items: Array.from(items.values()).slice(0, 50),
+    total: items.size,
+    limit: 50,
+    offset: 0
+  };
+}
+
 type SubscriptionTab = 'movie' | 'tv' | 'blocked';
 type SubscriptionStatusFilter = 'all' | 'pending' | 'done';
 type SubscriptionUpdateFilter = 'all' | 'today' | '3' | '7';
@@ -385,6 +400,19 @@ function subscriptionUpdateLabel(value: string) {
   if (!Number.isFinite(days)) return '更新时间未知';
   if (days === 0) return '今天更新';
   return `${days} 天前更新`;
+}
+
+function subscriptionReadAtLabel(value: string) {
+  if (!value) return '尚未读取';
+  const parsed = new Date(value.replace(' ', 'T'));
+  if (!Number.isFinite(parsed.getTime())) return '读取时间未知';
+  return `最近读取 ${parsed.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  })}`;
 }
 
 const terminalAutomationStates = new Set(['succeeded', 'failed', 'cancelled']);
@@ -444,6 +472,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
   const [blockedTitles, setBlockedTitles] = useState<string[]>([]);
   const [subsLoading, setSubsLoading] = useState(true);
   const [subsError, setSubsError] = useState('');
+  const [workbench, setWorkbench] = useState<SubscriptionWorkbenchResponse | null>(null);
   const [subscriptionTab, setSubscriptionTab] = useState<SubscriptionTab>('tv');
   const [subscriptionKeyword, setSubscriptionKeyword] = useState('');
   const [subscriptionYear, setSubscriptionYear] = useState('all');
@@ -459,6 +488,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
   const [resourceData, setResourceData] = useState<DiscoverResourceResponse | null>(null);
   const [resourceLoading, setResourceLoading] = useState(false);
   const [resourceError, setResourceError] = useState('');
+  const [resourceQueries, setResourceQueries] = useState<string[]>([]);
   const [resourceSource, setResourceSource] = useState('all');
   const [resourcePreview, setResourcePreview] = useState<DiscoverResourceItem | null>(null);
   const [torraPushPreview, setTorraPushPreview] = useState<TorraPushPreviewResponse | null>(null);
@@ -479,21 +509,31 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
   const [confirmation, setConfirmation] = useState<DiscoverConfirmation | null>(null);
   const automationRequestRef = useRef<AbortController | null>(null);
   const detailRequestRef = useRef<AbortController | null>(null);
+  const resourceRequestRef = useRef<AbortController | null>(null);
+  const resourcePanelRef = useRef<HTMLElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadSubs = useCallback(() => {
     setSubsLoading(true);
     setSubsError('');
-    getSubscriptionItems(true)
+    const request = subscriptionsOnly ? getSubscriptionWorkbench() : getSubscriptionItems(true);
+    request
       .then((payload) => {
+        if ('items' in payload) {
+          setWorkbench(payload);
+          setSubs(payload.items);
+          setBlockedTitles(payload.blockedTitles ?? []);
+          setTorraSyncStatus(payload.torraSync);
+          return;
+        }
         if (payload.subscriptions) {
           setSubs(payload.subscriptions.items);
           setBlockedTitles(payload.blockedTitles ?? []);
         }
       })
-      .catch(() => setSubsError('订阅引擎当前不可用，没有回退到旧订阅台账。'))
+      .catch((reason: unknown) => setSubsError(reason instanceof Error ? reason.message : '订阅工作台当前不可用'))
       .finally(() => setSubsLoading(false));
-  }, []);
+  }, [subscriptionsOnly]);
 
   useEffect(() => {
     loadSubs();
@@ -603,6 +643,16 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
       return true;
     });
   }, [subs, subscriptionKeyword, subscriptionStatus, subscriptionTab, subscriptionUpdate, subscriptionYear]);
+  const localWriteEnabled = subscriptionsOnly
+    ? Boolean(workbench?.capabilities.find((capability) => capability.key === 'local_write')?.enabled)
+    : true;
+  const workbenchStats = workbench?.stats ?? {
+    total: subs.length,
+    movie: subs.filter((item) => item.mediaType === 'movie').length,
+    tv: subs.filter((item) => item.mediaType === 'tv').length,
+    pending: subs.filter((item) => !item.inLibrary).length,
+    inLibrary: subs.filter((item) => item.inLibrary).length
+  };
 
   const changeSource = (source: DiscoverSource) => {
     setQuery('');
@@ -688,14 +738,14 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
   const runSweep = () => {
     setConfirmation({
       signal: '自动订阅',
-      title: '立即检查一轮自动订阅？',
-      description: '这会读取当前规则和来源，提交一轮后台检查，不会改变现有订阅。',
-      confirmLabel: '开始检查',
+      title: '更新自动订阅来源？',
+      description: '这会重新读取已启用的榜单来源，并增量合并到本地台账；不会搜索当前剧集，也不会删除手动订阅或 Torra 镜像。',
+      confirmLabel: '开始更新',
       onConfirm: () => {
         setSubscriptionAction('run');
         runSubscriptionSweep()
           .then(() => {
-            setSweepMessage('已触发 NasEmby 执行一轮，列表正在重新读取。');
+            setSweepMessage('自动订阅来源已更新，列表正在重新读取。');
             loadSubs();
           })
           .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '执行失败'))
@@ -1030,23 +1080,67 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
       });
   };
 
-  const openResourceSearch = (result: DiscoverResult) => {
+  useEffect(() => {
+    if (!resourceTarget) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      const panel = resourcePanelRef.current;
+      if (!panel) return;
+      const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      panel.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'nearest' });
+      panel.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [resourceTarget]);
+
+  useEffect(() => () => resourceRequestRef.current?.abort(), []);
+
+  const openResourceSearch = (
+    result: DiscoverResult,
+    querySource: string[] | Promise<string[]> = [result.title]
+  ) => {
+    resourceRequestRef.current?.abort();
+    const controller = new AbortController();
+    resourceRequestRef.current = controller;
     setResourceTarget(result);
     setResourceData(null);
     setResourceError('');
+    setResourceQueries([result.title]);
     setResourceSource('all');
     setResourcePreview(null);
     setResourceLoading(true);
-    getRssSeedItems({ query: result.title, limit: 50, offset: 0 })
-      .then((payload) => setResourceData(mapRssSeedsToResources(result, payload)))
-      .catch((error: unknown) => {
-        setResourceError(error instanceof Error ? error.message : '本地 RSS 种子箱查询失败');
+    Promise.resolve(querySource)
+      .then((values) => {
+        const queries = Array.from(new Set(
+          values.map((value) => value.trim()).filter(Boolean)
+        )).slice(0, 4);
+        const resolvedQueries = queries.length > 0 ? queries : [result.title];
+        if (!controller.signal.aborted) setResourceQueries(resolvedQueries);
+        return Promise.all(resolvedQueries.map((query) => getRssSeedItems(
+          { query, limit: 50, offset: 0 },
+          { signal: controller.signal }
+        )));
       })
-      .finally(() => setResourceLoading(false));
+      .then((payloads) => {
+        if (!controller.signal.aborted) {
+          setResourceData(mapRssSeedsToResources(result, mergeRssSeedResponses(payloads)));
+        }
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setResourceError(error instanceof Error ? error.message : '本地 RSS 种子箱查询失败');
+        }
+      })
+      .finally(() => {
+        if (resourceRequestRef.current === controller) {
+          setResourceLoading(false);
+          resourceRequestRef.current = null;
+        }
+      });
   };
 
   const searchSubscriptionResources = (item: SubscriptionItem) => {
-    openResourceSearch({
+    if (!item.id) return;
+    const target = {
       id: Number(item.tmdbId) || 0,
       mediaType: item.mediaType === 'tv' ? 'tv' : 'movie',
       title: item.title,
@@ -1056,15 +1150,31 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
       rating: 0,
       source: 'subscription',
       sourceLabel: item.sourceLabel || '我的订阅',
+      sourceId: item.id,
       tmdbId: item.tmdbId
-    });
+    } satisfies DiscoverResult;
+    const detailRequest = detailId === item.id && detail?.detail
+      ? Promise.resolve(detail)
+      : getSubscriptionDetail(item.id);
+    const aliases = detailRequest
+      .then((payload) => [
+        item.title,
+        payload.detail?.title || '',
+        payload.detail?.englishTitle || '',
+        payload.detail?.originalTitle || ''
+      ])
+      .catch(() => [item.title]);
+    openResourceSearch(target, aliases);
   };
 
   const closeResourceSearch = () => {
     setResourceTarget(null);
     setResourceData(null);
     setResourceError('');
+    setResourceQueries([]);
     setResourcePreview(null);
+    resourceRequestRef.current?.abort();
+    resourceRequestRef.current = null;
   };
 
   const updateProvider = (value: string) => {
@@ -1084,6 +1194,106 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
       ? rows
       : rows.filter((item) => (item.source_key || item.source) === resourceSource);
   }, [resourceData, resourceSource]);
+
+  const renderResourcePanel = (variant: 'subscription' | 'discover') => {
+    if (!resourceTarget) return null;
+    if (variant === 'subscription' && resourceTarget.source !== 'subscription') return null;
+    if (variant === 'discover' && resourceTarget.source === 'subscription') return null;
+    return (
+      <section
+        ref={resourcePanelRef}
+        aria-label={`${resourceTarget.title} RSS 种子搜索结果`}
+        aria-live="polite"
+        className={`discover-resource-panel discover-resource-panel--${variant === 'subscription' ? 'inline' : 'grid'}`}
+        tabIndex={-1}
+      >
+        <header className="discover-resource-panel__head">
+          <div>
+            <small>RSS 种子搜索</small>
+            <h2>{resourceTarget.title}</h2>
+            <p>{resourceLoading ? '正在查询本地种子箱…' : `已搜索：${resourceQueries.join(' / ')} · ${visibleResources.length} 条`}</p>
+          </div>
+          <button aria-label="关闭资源搜索" className="tool-link" title="关闭" type="button" onClick={closeResourceSearch}>
+            <X aria-hidden="true" size={16} />
+          </button>
+        </header>
+        {resourceLoading && <div className="discover-resource-empty">正在查询本地 RSS 种子箱…</div>}
+        {!resourceLoading && resourceError && <div className="discover-resource-empty">{resourceError}</div>}
+        {!resourceLoading && resourceData && (
+          <>
+            {resourceData.sources.length > 0 && (
+              <div className="discover-resource-tabs" role="tablist" aria-label="资源来源">
+                {resourceData.sources.map((source) => (
+                  <button
+                    aria-selected={resourceSource === source.key}
+                    className={resourceSource === source.key ? 'discover-resource-tab discover-resource-tab--active' : 'discover-resource-tab'}
+                    key={source.key}
+                    role="tab"
+                    tabIndex={resourceSource === source.key ? 0 : -1}
+                    type="button"
+                    onClick={() => {
+                      setResourceSource(source.key);
+                      setResourcePreview(null);
+                    }}
+                    onKeyDown={handleHorizontalTabKeyDown}
+                  >
+                    {source.label} <span>{source.count}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {resourceData.seasons.length > 0 && (
+              <div className="discover-resource-seasons" aria-label="资源季集状态">
+                {resourceData.seasons.map((season) => (
+                  <div key={season.season}>
+                    <strong>S{String(season.season).padStart(2, '0')}</strong>
+                    <span>{season.resource_episodes?.length ?? season.episodes.length} / {season.episodes.length} 集</span>
+                    {season.notice && <small>{season.notice}</small>}
+                  </div>
+                ))}
+              </div>
+            )}
+            {resourceData.errors.length > 0 && <p className="discover-resource-notice">{resourceData.errors[0]}</p>}
+            <div className="discover-resource-list">
+              {visibleResources.map((item, index) => {
+                const previewText = resourcePreviewText(item);
+                const activePreview = resourcePreview === item;
+                return (
+                  <article className="discover-resource-row" key={`${item.source_key || item.source || 'rss'}-${item.title || index}-${item.date || index}`}>
+                    <div>
+                      <strong>{resourceTitle(item)}</strong>
+                      <small>{resourceMeta(item) || '来源信息未提供'}</small>
+                    </div>
+                    <div className="discover-resource-row__actions">
+                      <button
+                        aria-expanded={activePreview}
+                        className="tool-link"
+                        disabled={!previewText}
+                        type="button"
+                        onClick={() => setResourcePreview(activePreview ? null : item)}
+                      >
+                        <FileSearch aria-hidden="true" size={14} />
+                        预览
+                      </button>
+                    </div>
+                    {activePreview && previewText && (
+                      <div className="discover-resource-preview"><pre>{previewText}</pre></div>
+                    )}
+                  </article>
+                );
+              })}
+              {visibleResources.length === 0 && (
+                <div className="discover-resource-empty">
+                  <span>本地种子箱中没有匹配种子。</span>
+                  <small>已搜索：{resourceQueries.join(' / ')}</small>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </section>
+    );
+  };
 
   return (
     <main className={subscriptionsOnly ? 'work-page ops-page ops-page--discover ops-page--subscriptions' : 'work-page ops-page ops-page--discover'}>
@@ -1211,132 +1421,50 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
             const tmdbId = tmdbIdForResult(result);
             const canSubscribe = Boolean(tmdbId);
             const subscribed = canSubscribe && subscribedKeys.has(`${result.mediaType}:${tmdbId}`);
+            const resourceActive = resourceTarget === result;
+            const cardKey = `${result.mediaType}-${result.source || 'tmdb'}-${result.sourceId || result.id}`;
             return (
-              <article className="ops-panel discover-card" key={`${result.mediaType}-${result.source || 'tmdb'}-${result.sourceId || result.id}`}>
-                {result.posterUrl ? (
-                  <img alt="" className="discover-card__poster" loading="lazy" src={result.posterUrl} />
-                ) : (
-                  <span aria-hidden="true" className="discover-card__poster discover-card__poster--fallback">
-                    {result.title.charAt(0)}
-                  </span>
-                )}
-                <div className="discover-card__body">
-                  <strong title={result.title}>{result.title}</strong>
-                  <small>{resultMeta(result)}</small>
-                  {result.overview && <p>{result.overview}</p>}
-                  <div className="discover-card__actions">
-                    <button className="tool-link discover-card__action" type="button" onClick={() => openResourceSearch(result)}>
-                      <FileSearch aria-hidden="true" size={14} />
-                      资源
-                    </button>
-                    <button
-                      className={subscribed ? 'tool-link discover-card__action discover-card__action--done' : 'tool-link discover-card__action'}
-                      disabled={subscribed || !canSubscribe}
-                      title={canSubscribe ? '保存到我的订阅' : '未匹配到 TMDB，暂不能订阅'}
-                      type="button"
-                      onClick={() => subscribe(result)}
-                    >
-                      {subscribed ? <Check aria-hidden="true" size={14} /> : <Plus aria-hidden="true" size={14} />}
-                      {subscribed ? '已订阅' : subscriptionAction === `save:${result.mediaType}:${tmdbIdForResult(result)}` ? '保存中' : canSubscribe ? '订阅' : '待匹配'}
-                    </button>
+              <Fragment key={cardKey}>
+                <article className="ops-panel discover-card">
+                  {result.posterUrl ? (
+                    <img alt="" className="discover-card__poster" loading="lazy" src={result.posterUrl} />
+                  ) : (
+                    <span aria-hidden="true" className="discover-card__poster discover-card__poster--fallback">
+                      {result.title.charAt(0)}
+                    </span>
+                  )}
+                  <div className="discover-card__body">
+                    <strong title={result.title}>{result.title}</strong>
+                    <small>{resultMeta(result)}</small>
+                    {result.overview && <p>{result.overview}</p>}
+                    <div className="discover-card__actions">
+                      <button
+                        aria-expanded={resourceActive}
+                        className={resourceActive ? 'tool-link discover-card__action discover-card__action--active' : 'tool-link discover-card__action'}
+                        type="button"
+                        onClick={() => openResourceSearch(result)}
+                      >
+                        <FileSearch aria-hidden="true" size={14} />
+                        {resourceActive ? (resourceLoading ? '查询中' : '查看结果') : '资源'}
+                      </button>
+                      <button
+                        className={subscribed ? 'tool-link discover-card__action discover-card__action--done' : 'tool-link discover-card__action'}
+                        disabled={subscribed || !canSubscribe || Boolean(subscriptionAction)}
+                        title={canSubscribe ? '保存到我的订阅' : '未匹配到 TMDB，暂不能订阅'}
+                        type="button"
+                        onClick={() => subscribe(result)}
+                      >
+                        {subscribed ? <Check aria-hidden="true" size={14} /> : <Plus aria-hidden="true" size={14} />}
+                        {subscribed ? '已订阅' : subscriptionAction === `save:${result.mediaType}:${tmdbIdForResult(result)}` ? '保存中' : canSubscribe ? '订阅' : '待匹配'}
+                      </button>
+                    </div>
                   </div>
-                </div>
-              </article>
+                </article>
+                {resourceActive && renderResourcePanel('discover')}
+              </Fragment>
             );
           })}
         </div>
-
-        {resourceTarget && (
-          <section className="discover-resource-panel" aria-label={`${resourceTarget.title} 资源搜索结果`}>
-            <header className="discover-resource-panel__head">
-              <div>
-                <small>RSS 种子搜索</small>
-                <h2>{resourceTarget.title}</h2>
-                <p>{resourceLoading ? '正在查询本地种子箱…' : `仅查询本地种子箱，不会自动下载 · ${visibleResources.length} 条`}</p>
-              </div>
-              <button aria-label="关闭资源搜索" className="tool-link" title="关闭" type="button" onClick={closeResourceSearch}>
-                <X aria-hidden="true" size={16} />
-              </button>
-            </header>
-
-            {resourceLoading && <div className="discover-resource-empty">正在查询本地 RSS 种子箱…</div>}
-            {!resourceLoading && resourceError && <div className="discover-resource-empty">{resourceError}</div>}
-            {!resourceLoading && resourceData && (
-              <>
-                {resourceData.sources.length > 0 && (
-                  <div className="discover-resource-tabs" role="tablist" aria-label="资源来源">
-                    {resourceData.sources.map((source) => (
-                      <button
-                        aria-selected={resourceSource === source.key}
-                        className={resourceSource === source.key ? 'discover-resource-tab discover-resource-tab--active' : 'discover-resource-tab'}
-                        key={source.key}
-                        role="tab"
-                        tabIndex={resourceSource === source.key ? 0 : -1}
-                        type="button"
-                        onClick={() => {
-                          setResourceSource(source.key);
-                          setResourcePreview(null);
-                        }}
-                        onKeyDown={handleHorizontalTabKeyDown}
-                      >
-                        {source.label} <span>{source.count}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {resourceData.seasons.length > 0 && (
-                  <div className="discover-resource-seasons" aria-label="资源季集状态">
-                    {resourceData.seasons.map((season) => (
-                      <div key={season.season}>
-                        <strong>S{String(season.season).padStart(2, '0')}</strong>
-                        <span>{season.resource_episodes?.length ?? season.episodes.length} / {season.episodes.length} 集</span>
-                        {season.notice && <small>{season.notice}</small>}
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {resourceData.errors.length > 0 && (
-                  <p className="discover-resource-notice">{resourceData.errors[0]}</p>
-                )}
-
-                <div className="discover-resource-list">
-                  {visibleResources.map((item, index) => {
-                    const previewText = resourcePreviewText(item);
-                    const activePreview = resourcePreview === item;
-                    return (
-                      <article className="discover-resource-row" key={`${item.source_key || item.source || 'rss'}-${item.title || index}-${item.date || index}`}>
-                        <div>
-                          <strong>{resourceTitle(item)}</strong>
-                          <small>{resourceMeta(item) || '来源信息未提供'}</small>
-                        </div>
-                        <div className="discover-resource-row__actions">
-                          <button
-                            aria-expanded={activePreview}
-                            className="tool-link"
-                            disabled={!previewText}
-                            type="button"
-                            onClick={() => setResourcePreview(activePreview ? null : item)}
-                          >
-                            <FileSearch aria-hidden="true" size={14} />
-                            预览
-                          </button>
-                        </div>
-                        {activePreview && (
-                          <div className="discover-resource-preview">
-                            {previewText && <pre>{previewText}</pre>}
-                          </div>
-                        )}
-                      </article>
-                    );
-                  })}
-                  {visibleResources.length === 0 && <div className="discover-resource-empty">本地种子箱中没有匹配资源。</div>}
-                </div>
-              </>
-            )}
-          </section>
-        )}
 
         {configured && !loading && results.length > 0 && (
           <nav className="discover-pagination" aria-label="发现页分页">
@@ -1361,12 +1489,35 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
             <SlidersHorizontal aria-hidden="true" size={14} />
             订阅设置
           </button>
-          <button className="ops-action-button" disabled={subscriptionAction === 'run'} title="由自动订阅服务执行" type="button" onClick={runSweep}>
+          {subscriptionsOnly && <button className="ops-action-button" disabled={subsLoading} title="重新读取工作台状态和订阅链路" type="button" onClick={loadSubs}>
             <RefreshCcw aria-hidden="true" size={14} />
-            {subscriptionAction === 'run' ? '执行中' : '执行一轮'}
+            {subsLoading ? '读取中' : '刷新'}
+          </button>}
+          <button className="ops-action-button" disabled={Boolean(subscriptionAction) || !localWriteEnabled} title={localWriteEnabled ? '更新已启用的自动订阅来源' : '本地订阅写入已关闭'} type="button" onClick={runSweep}>
+            <RefreshCcw aria-hidden="true" size={14} />
+            {subscriptionAction === 'run' ? '更新中' : '更新自动订阅来源'}
           </button>
         </div>
         <div className="ops-subscription-policy"><strong>PT 优先</strong><span>Torra 推送保持安全开关控制</span></div>
+        {subscriptionsOnly && workbench && (
+          <>
+            <section className="subscription-capabilities" aria-label="订阅工作台能力状态">
+              {workbench.capabilities.map((capability) => (
+                <div className={`subscription-capability is-${capability.state}`} key={capability.key} title={capability.detail}>
+                  <span aria-hidden="true" />
+                  <div><strong>{capability.label}</strong><small>{capability.detail}</small></div>
+                </div>
+              ))}
+            </section>
+            <section className="subscription-workbench-summary" aria-label="订阅统计">
+              <span><b>{workbenchStats.movie}</b>电影</span>
+              <span><b>{workbenchStats.tv}</b>剧集</span>
+              <span><b>{workbenchStats.pending}</b>待处理</span>
+              <span><b>{workbenchStats.inLibrary}</b>已入库</span>
+              <small>{subscriptionReadAtLabel(workbench.lastReadAt)}</small>
+            </section>
+          </>
+        )}
         {sweepMessage && <p className="console-panel__hint">{sweepMessage}</p>}
         {subscriptionsOnly && (
           <section className="torra-sync-panel" aria-label="Torra 订阅同步">
@@ -1480,8 +1631,15 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
           </div>
         )}
 
-        {subsLoading && <p className="console-panel__hint">正在读取 NasEmby 订阅台账…</p>}
-        {subsError && <p className="console-panel__hint console-panel__hint--error">{subsError}</p>}
+        {subsLoading && <p className="console-panel__hint">正在读取订阅工作台…</p>}
+        {subsError && (
+          <div className="subscription-read-error" role="alert">
+            <span>{subsError}</span>
+            <button className="ops-action-button" disabled={subsLoading} type="button" onClick={loadSubs}>
+              <RefreshCcw aria-hidden="true" size={14} />重试
+            </button>
+          </div>
+        )}
 
         {!subsLoading && !subsError && subscriptionTab === 'blocked' && blockedTitles.length === 0 && (
           <p className="console-panel__hint">暂无被屏蔽订阅。</p>
@@ -1489,11 +1647,38 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
         {!subsLoading && !subsError && subscriptionTab === 'blocked' && blockedTitles.map((title) => (
           <div className="discover-sub-blocked" key={title}>
             <div><Ban aria-hidden="true" size={14} /><span><strong>{title}</strong><small>自动订阅会跳过这个标题</small></span></div>
-            <button className="tool-link" disabled={subscriptionAction === `unblock:${title}`} type="button" onClick={() => unblockItem(title)}>取消屏蔽</button>
+            <button className="tool-link" disabled={Boolean(subscriptionAction) || !localWriteEnabled} type="button" onClick={() => unblockItem(title)}>取消屏蔽</button>
           </div>
         ))}
 
-        {!subsLoading && !subsError && subscriptionTab !== 'blocked' && visibleSubscriptions.length === 0 && (
+        {!subsLoading && !subsError && subscriptionsOnly && subscriptionTab !== 'blocked' && subs.length === 0 && (
+          <section className="subscription-empty-guide" aria-label="导入 Torra 订阅引导">
+            <Database aria-hidden="true" size={24} />
+            <div>
+              <strong>本地订阅台账为空</strong>
+              <p>先只读预览 Torra 现有订阅，确认数量和冲突后再导入 Fluxa。第一阶段不会修改或删除 Torra 远端订阅。</p>
+            </div>
+            <ol>
+              <li className={torraSyncPreview ? 'is-complete' : 'is-current'}><b>1</b><span>预览 Torra 订阅</span></li>
+              <li className={torraSyncPreview ? 'is-current' : undefined}><b>2</b><span>检查新增、重复和冲突</span></li>
+              <li><b>3</b><span>明确确认后导入本地台账</span></li>
+            </ol>
+            <footer>
+              <button className="ops-action-button" disabled={Boolean(torraSyncBusy)} type="button" onClick={previewTorraMirror}>
+                <Database aria-hidden="true" size={14} />
+                {torraSyncBusy === 'preview' ? '读取中' : '预览 Torra 订阅'}
+              </button>
+              {torraSyncPreview && torraSyncPreview.summary.importable > 0 && (
+                <button className="ops-action-button ops-action-button--primary" disabled={Boolean(torraSyncBusy) || !torraSyncStatus?.enabled || torraSyncPreview.summary.conflicts > 0} type="button" onClick={importTorraMirror}>
+                  <Download aria-hidden="true" size={14} />
+                  {torraSyncBusy === 'import' ? '导入中' : `确认导入 ${torraSyncPreview.summary.importable} 条`}
+                </button>
+              )}
+              {!torraSyncStatus?.enabled && <button className="tool-link" type="button" onClick={() => onNavigate('settings')}>先开启镜像同步</button>}
+            </footer>
+          </section>
+        )}
+        {!subsLoading && !subsError && subscriptionTab !== 'blocked' && subs.length > 0 && visibleSubscriptions.length === 0 && (
           <p className="console-panel__hint">当前筛选下没有订阅内容。</p>
         )}
         {subscriptionTab !== 'blocked' && visibleSubscriptions.map((item) => {
@@ -1551,7 +1736,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                 {!item.readOnly && <button
                   aria-label={`检查并推送 ${item.title} 到 Torra`}
                   className="tool-link"
-                  disabled={Boolean(torraPushBusy)}
+                  disabled={Boolean(torraPushBusy) || !localWriteEnabled}
                   title="先读取分类、保存路径和 Torra 查重结果"
                   type="button"
                   onClick={() => {
@@ -1564,17 +1749,41 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                 {!item.readOnly && <button
                   aria-label={`屏蔽订阅 ${item.title}`}
                   className="tool-link"
-                  disabled={subscriptionAction === `block:${item.id}`}
+                  disabled={Boolean(subscriptionAction) || !localWriteEnabled}
                   title="删除并屏蔽：自动订阅不再加回"
                   type="button"
                   onClick={() => blockItem(item)}
                 >
                   <Ban aria-hidden="true" size={14} />
                 </button>}
-                {!item.readOnly && <button aria-label={`删除订阅 ${item.title}`} className="tool-link" disabled={subscriptionAction === `delete:${item.id}`} title="只删除，不加入屏蔽列表" type="button" onClick={() => removeSubscription(item)}>
+                {!item.readOnly && <button aria-label={`删除订阅 ${item.title}`} className="tool-link" disabled={Boolean(subscriptionAction) || !localWriteEnabled} title={localWriteEnabled ? '只删除，不加入屏蔽列表' : '本地订阅写入已关闭'} type="button" onClick={() => removeSubscription(item)}>
                   <Trash2 aria-hidden="true" size={14} />
                 </button>}
               </div>
+
+              {subscriptionsOnly && (
+                <div className="discover-sub__chain" aria-label={`${item.title} 处理状态`}>
+                  <span><b>范围</b><small>{item.scope || subscriptionScope}</small></span>
+                  <span className={(item.missingEpisodes?.length ?? 0) > 0 ? 'is-warn' : undefined}>
+                    <b>缺集</b><small>{item.missingEpisodes?.length ? item.missingEpisodes.join('、') : item.inLibrary ? '无' : '尚未确认'}</small>
+                  </span>
+                  <span className={item.torra?.status === 'linked' ? 'is-ok' : undefined} title={item.torra?.detail}>
+                    <b>Torra</b><small>{item.torra?.status === 'linked' ? '已关联' : '未关联'}</small>
+                  </span>
+                  <span className={item.qb?.status === 'blocked' ? 'is-warn' : item.qb?.status === 'done' || item.qb?.status === 'active' ? 'is-ok' : undefined} title={item.qb?.detail}>
+                    <b>qB</b><small>{item.qb?.detail || '未接入'}</small>
+                  </span>
+                  <span className={item.cloud115?.status === 'blocked' ? 'is-warn' : item.cloud115?.status === 'done' ? 'is-ok' : undefined} title={item.cloud115?.detail}>
+                    <b>115</b><small>{item.cloud115?.detail || '未接入'}</small>
+                  </span>
+                  <span className={item.library?.status === 'done' || item.inLibrary ? 'is-ok' : item.library?.status === 'blocked' ? 'is-warn' : undefined} title={item.library?.detail}>
+                    <b>入库</b><small>{item.library?.detail || (item.inLibrary ? '已入库' : '等待中')}</small>
+                  </span>
+                  {item.blockingReason && <p><strong>当前阻塞</strong>{item.blockingReason}</p>}
+                </div>
+              )}
+
+              {resourceTarget?.source === 'subscription' && resourceTarget.sourceId === item.id && renderResourcePanel('subscription')}
 
               {detailId === item.id && (
                 <div className="sub-detail">
@@ -1619,11 +1828,20 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                           <button className="tool-link" type="button" onClick={() => searchSubscriptionResources(item)}>
                             <FileSearch aria-hidden="true" size={13} />搜索资源
                           </button>
-                          <button className="tool-link" type="button" onClick={() => onNavigate('tasks')}>
+                          <button
+                            className="tool-link"
+                            type="button"
+                            onClick={() => onNavigate('tasks', {
+                              subscriptionId: item.id,
+                              tmdbId: detailInfo?.tmdbId || item.tmdbId,
+                              title: detailInfo?.title || item.title,
+                              seasonNumber: item.seasonNumber ?? detailSeason
+                            })}
+                          >
                             <Database aria-hidden="true" size={13} />查看任务中心
                           </button>
                           {!item.readOnly && (
-                            <button className="ops-action-button ops-action-button--primary" disabled={Boolean(torraPushBusy)} type="button" onClick={() => previewTorraPush(item)}>
+                            <button className="ops-action-button ops-action-button--primary" disabled={Boolean(torraPushBusy) || !localWriteEnabled} type="button" onClick={() => previewTorraPush(item)}>
                               <Send aria-hidden="true" size={13} />检查 Torra 推送
                             </button>
                           )}
@@ -1641,8 +1859,8 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                           <div className="sub-detail__cast">
                             {detailInfo?.cast?.map((person) => (
                               <div key={`${person.name}-${person.character}`}>
-                                {person.profileUrl ? <img alt="" aria-hidden="true" src={person.profileUrl} /> : <span>{person.name.charAt(0)}</span>}
-                                <strong>{person.name}</strong><small>{person.character || '演员'}</small>
+                                {person.profileUrl ? <img alt="" aria-hidden="true" loading="lazy" src={person.profileUrl} /> : <span>{person.name.charAt(0)}</span>}
+                                <strong title={person.name}>{person.name}</strong><small title={person.character || '演员'}>{person.character || '演员'}</small>
                               </div>
                             ))}
                           </div>
@@ -1695,7 +1913,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                         activeSeasonNumber !== (item.seasonNumber ?? activeSeasonNumber) && (
                           <button
                             className="tool-link"
-                            disabled={subscriptionAction === `season:${item.id}`}
+                            disabled={Boolean(subscriptionAction) || !localWriteEnabled}
                             title="通过 NasEmby 原保存接口更新订阅季"
                             type="button"
                             onClick={() => changeSeason(item, activeSeasonNumber, activeSeason.name)}
@@ -1819,7 +2037,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                       <div>
                         <button className="tool-link" disabled={Boolean(torraPushBusy)} type="button" onClick={() => setTorraPushPreview(null)}>关闭预览</button>
                         {torraPushPreview.preview.ready && (
-                          <button className="ops-action-button ops-action-button--primary" disabled={Boolean(torraPushBusy)} type="button" onClick={() => confirmTorraPush(item)}>
+                          <button className="ops-action-button ops-action-button--primary" disabled={Boolean(torraPushBusy) || !localWriteEnabled} type="button" onClick={() => confirmTorraPush(item)}>
                             <Send size={14} />{torraPushBusy === `push:${item.id}` ? '正在推送' : '确认推送到 Torra'}
                           </button>
                         )}

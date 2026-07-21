@@ -3,10 +3,10 @@ import { CalendarDays, Check, ChevronLeft, ChevronRight, Clock3, Library, Radio 
 import { getSubscriptionCalendar } from '../../services/api';
 import type { SubscriptionCalendarEntry } from '../../types/subscriptions';
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
-import type { PageId } from '../layout/AppTopNav';
+import type { AppNavigate } from '../layout/AppTopNav';
 
 interface CalendarPageProps {
-  onNavigate: (page: PageId) => void;
+  onNavigate: AppNavigate;
 }
 
 type EntryState = '待播出' | '已入库' | '未入库';
@@ -38,6 +38,12 @@ function entryState(entry: SubscriptionCalendarEntry, todayKey: string): EntrySt
   return entry.date < todayKey ? '未入库' : '待播出';
 }
 
+function entrySeasonNumber(entry: SubscriptionCalendarEntry) {
+  if (entry.seasonNumber != null) return entry.seasonNumber;
+  const match = /^S(\d+)/i.exec(entry.episodeLabel);
+  return match ? Number(match[1]) : null;
+}
+
 const entryClass: Record<EntryState, string> = {
   待播出: 'calendar-entry',
   已入库: 'calendar-entry calendar-entry--done',
@@ -45,8 +51,24 @@ const entryClass: Record<EntryState, string> = {
 };
 
 function EntryPoster({ entry }: { entry: SubscriptionCalendarEntry }) {
-  if (entry.posterUrl) {
-    return <img alt="" aria-hidden="true" className="calendar-entry__poster" src={entry.posterUrl} />;
+  const [imageFailed, setImageFailed] = useState(false);
+
+  useEffect(() => {
+    setImageFailed(false);
+  }, [entry.posterUrl]);
+
+  if (entry.posterUrl && !imageFailed) {
+    return (
+      <img
+        alt=""
+        aria-hidden="true"
+        className="calendar-entry__poster"
+        decoding="async"
+        loading="lazy"
+        src={entry.posterUrl}
+        onError={() => setImageFailed(true)}
+      />
+    );
   }
   return (
     <span aria-hidden="true" className="calendar-entry__poster calendar-entry__poster--fallback">
@@ -207,7 +229,12 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                       key={`${entry.title}-${entry.episodeLabel}`}
                       title={`${entry.title} ${entry.episodeLabel} · 已播出但未入库，点击去任务中心`}
                       type="button"
-                      onClick={() => onNavigate('tasks')}
+                      onClick={() => onNavigate('tasks', {
+                        subscriptionId: entry.key,
+                        tmdbId: entry.tmdbId,
+                        title: entry.title,
+                        seasonNumber: entrySeasonNumber(entry)
+                      })}
                     >
                       <EntryPoster entry={entry} />
                       <span className="calendar-entry__text">

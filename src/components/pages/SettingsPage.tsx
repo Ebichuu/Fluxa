@@ -130,24 +130,25 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
       </header>
       <div className="sub-config__toggles">
         <label>
-          <input checked={douban.enabled} type="checkbox" onChange={(event) => patch({ enabled: event.target.checked })} />
+          <input checked={douban.enabled} disabled={saving} type="checkbox" onChange={(event) => patch({ enabled: event.target.checked })} />
           启用自动订阅
         </label>
         <label>
-          <input checked={douban.movie_enabled} type="checkbox" onChange={(event) => patch({ movie_enabled: event.target.checked })} />
+          <input checked={douban.movie_enabled} disabled={saving} type="checkbox" onChange={(event) => patch({ movie_enabled: event.target.checked })} />
           电影
         </label>
         <label>
-          <input checked={douban.tv_enabled} type="checkbox" onChange={(event) => patch({ tv_enabled: event.target.checked })} />
+          <input checked={douban.tv_enabled} disabled={saving} type="checkbox" onChange={(event) => patch({ tv_enabled: event.target.checked })} />
           剧集
         </label>
         <label>
-          <input checked={douban.task_enabled} type="checkbox" onChange={(event) => patch({ task_enabled: event.target.checked })} />
+          <input checked={douban.task_enabled} disabled={saving} type="checkbox" onChange={(event) => patch({ task_enabled: event.target.checked })} />
           每日定时任务
         </label>
         <label className="sub-config__time">
           任务时间
           <input
+            disabled={saving}
             type="time"
             value={douban.task_time}
             onChange={(event) => patch({ task_time: event.target.value })}
@@ -167,7 +168,7 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
                   if (!source) return null;
                   return (
                     <label key={source.key}>
-                      <input checked={douban.sources.includes(source.key)} type="checkbox" onChange={() => toggleSource(source.key)} />
+                      <input checked={douban.sources.includes(source.key)} disabled={saving} type="checkbox" onChange={() => toggleSource(source.key)} />
                       {source.label}
                     </label>
                   );
@@ -182,6 +183,7 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
         <label>
           电影年份（逗号分隔）
           <input
+            disabled={saving}
             type="text"
             value={douban.movie_years.join(', ')}
             onChange={(event) => patch({ movie_years: event.target.value.split(/[\s,，]+/).filter(Boolean) })}
@@ -190,6 +192,7 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
         <label>
           剧集最低评分（0 不限）
           <input
+            disabled={saving}
             max={10}
             min={0}
             step={0.1}
@@ -207,6 +210,7 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
             <label className={config.mode === mode.key ? 'is-active' : undefined} key={mode.key}>
               <input
                 checked={config.mode === mode.key}
+                disabled={saving}
                 name="subscription-mode"
                 type="radio"
                 value={mode.key}
@@ -226,6 +230,7 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
         <label>
           排除 / 屏蔽标题（换行或逗号分隔；订阅列表里"屏蔽"的条目也会加进来）
           <textarea
+            disabled={saving}
             rows={3}
             value={douban.exclude_titles.join('\n')}
             onChange={(event) => patch({ exclude_titles: event.target.value.split(/[\n,，;；|]+/).map((row) => row.trim()).filter(Boolean) })}
@@ -237,9 +242,6 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
         <button className="tool-link" disabled={saving} type="button" onClick={applyLatestPreset}>
           <RotateCcw aria-hidden="true" size={14} />
           使用最新规则
-        </button>
-        <button className="tool-link" disabled title="实机测试阶段开放；该动作会写入订阅并可能排队后处理" type="button">
-          同步全球日播
         </button>
         <button className="tool-link" disabled={saving} type="button" onClick={save}>
           <Save aria-hidden="true" size={14} />

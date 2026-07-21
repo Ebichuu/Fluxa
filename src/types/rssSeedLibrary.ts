@@ -60,7 +60,7 @@ export interface RssSourceInput {
   name: string;
   feedUrl?: string;
   enabled: boolean;
-  intervalMinutes: 1 | 3 | 5;
+  intervalMinutes: number;
   retentionDays: 3 | 7 | 14;
   allowHttp: boolean;
 }

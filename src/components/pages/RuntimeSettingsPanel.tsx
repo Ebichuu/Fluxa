@@ -41,8 +41,10 @@ export function RuntimeSettingsPanel() {
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [showTechnicalNames, setShowTechnicalNames] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   const load = () => {
+    setLoading(true);
     setError('');
     getRuntimeSettings()
       .then((next) => {
@@ -51,7 +53,8 @@ export function RuntimeSettingsPanel() {
         setDirty(new Set());
         setClearSecrets(new Set());
       })
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '配置加载失败'));
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '配置加载失败'))
+      .finally(() => setLoading(false));
   };
 
   useEffect(load, []);
@@ -151,7 +154,7 @@ export function RuntimeSettingsPanel() {
       <article className="ops-settings-card ops-settings-card--wide runtime-settings runtime-settings--loading">
         <Settings2 aria-hidden="true" size={18} />
         <span>{error || '应用配置加载中…'}</span>
-        {error && <button className="tool-link" type="button" onClick={load}><RotateCcw size={14} />重试</button>}
+        {error && <button className="tool-link" disabled={loading} type="button" onClick={load}><RotateCcw size={14} />{loading ? '重试中…' : '重试'}</button>}
       </article>
     );
   }
@@ -196,6 +199,7 @@ export function RuntimeSettingsPanel() {
               <button
                 aria-expanded={expanded}
                 className="runtime-settings__group-toggle"
+                disabled={Boolean(normalisedQuery) || Boolean(savingGroup)}
                 type="button"
                 onClick={() => toggleGroup(group.id)}
               >
@@ -219,6 +223,7 @@ export function RuntimeSettingsPanel() {
                             <span className="runtime-setting__switch">
                               <input
                                 checked={(values[field.key] ?? 'false') === 'true'}
+                                disabled={Boolean(savingGroup)}
                                 type="checkbox"
                                 onChange={(event) => changeValue(field.key, event.target.checked ? 'true' : 'false')}
                               />
@@ -227,7 +232,7 @@ export function RuntimeSettingsPanel() {
                           ) : (
                             <span className="runtime-setting__control">
                               <input
-                                disabled={markedForClear}
+                                disabled={markedForClear || Boolean(savingGroup)}
                                 inputMode={field.type === 'number' ? 'numeric' : undefined}
                                 placeholder={field.secret && field.hasValue ? '已保存，留空保持原值' : '未设置'}
                                 type={field.secret && !visibleSecrets.has(field.key) ? 'password' : field.type === 'number' ? 'number' : field.type === 'url' ? 'url' : 'text'}
@@ -238,6 +243,7 @@ export function RuntimeSettingsPanel() {
                                 <button
                                   aria-label={visibleSecrets.has(field.key) ? `隐藏${field.label}` : `显示${field.label}`}
                                   className="runtime-setting__icon-button"
+                                  disabled={Boolean(savingGroup)}
                                   title={visibleSecrets.has(field.key) ? '隐藏输入' : '显示输入'}
                                   type="button"
                                   onClick={() => toggleSecretVisibility(field.key)}
@@ -253,6 +259,7 @@ export function RuntimeSettingsPanel() {
                               <input
                                 aria-label={`清除${field.label}`}
                                 checked={markedForClear}
+                                disabled={Boolean(savingGroup)}
                                 type="checkbox"
                                 onChange={() => toggleClearSecret(field.key)}
                               />
@@ -267,7 +274,7 @@ export function RuntimeSettingsPanel() {
                     <span className={messages[group.id]?.includes('失败') ? 'is-error' : ''}>{messages[group.id] || (groupDirty ? '有未保存修改' : '配置已同步')}</span>
                     <button
                       className="tool-link"
-                      disabled={!groupDirty || savingGroup === group.id}
+                      disabled={!groupDirty || Boolean(savingGroup)}
                       type="button"
                       onClick={() => saveGroup(group)}
                     >

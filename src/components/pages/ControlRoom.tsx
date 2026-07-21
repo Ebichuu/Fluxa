@@ -45,8 +45,10 @@ export function ControlRoom() {
   const [embyRefreshBusy, setEmbyRefreshBusy] = useState(false);
   const [embyRefreshConfirm, setEmbyRefreshConfirm] = useState(false);
   const [embyRefreshFeedback, setEmbyRefreshFeedback] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
+  const [servicesRefreshBusy, setServicesRefreshBusy] = useState(false);
+  const [servicesRefreshFeedback, setServicesRefreshFeedback] = useState('');
 
-  const refreshAll = async (signal: AbortSignal) => {
+  const refreshAll = async (signal: AbortSignal, reportResult = false) => {
     const options = { signal };
     const [torraResult, qbResult, symediaResult, embyResult, integrationsResult] = await Promise.allSettled([
       getTorraSummary(options),
@@ -64,6 +66,11 @@ export function ControlRoom() {
       setQb(qbResult.value);
       setSpeedHistory((current) => [...current.slice(-19), qbResult.value.transfer.downloadSpeed]);
     }
+    if (reportResult) {
+      const failedCount = [torraResult, qbResult, symediaResult, embyResult, integrationsResult]
+        .filter((result) => result.status === 'rejected').length;
+      setServicesRefreshFeedback(failedCount > 0 ? `刷新完成，${failedCount} 项服务暂不可用` : '服务状态已更新');
+    }
   };
 
   const loadEmbyRefresh = async (signal: AbortSignal) => {
@@ -75,8 +82,22 @@ export function ControlRoom() {
     }
   };
 
-  const refreshServices = () => void refreshAll(new AbortController().signal);
-  const refreshEmbyStatus = () => void loadEmbyRefresh(new AbortController().signal);
+  const refreshServices = async () => {
+    if (servicesRefreshBusy) return;
+    setServicesRefreshBusy(true);
+    setServicesRefreshFeedback('');
+    try {
+      await refreshAll(new AbortController().signal, true);
+    } finally {
+      setServicesRefreshBusy(false);
+    }
+  };
+  const refreshEmbyStatus = () => loadEmbyRefresh(new AbortController().signal);
+
+  const refreshSelectedService = async () => {
+    await refreshServices();
+    if (focusedService === 'emby') await refreshEmbyStatus();
+  };
 
   usePolling(refreshAll, 15000);
 
@@ -89,12 +110,12 @@ export function ControlRoom() {
       const result = await triggerEmbyRefresh();
       setEmbyRefreshFeedback({ tone: 'success', message: result.message });
       setEmbyRefreshConfirm(false);
-      refreshEmbyStatus();
-      refreshServices();
+      void refreshEmbyStatus();
+      void refreshServices();
     } catch (reason) {
       setEmbyRefreshFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : 'Emby 刷新请求失败' });
       setEmbyRefreshConfirm(false);
-      refreshEmbyStatus();
+      void refreshEmbyStatus();
     } finally {
       setEmbyRefreshBusy(false);
     }
@@ -175,7 +196,8 @@ export function ControlRoom() {
           <div className={warningCount ? 'ops-system-score ops-system-score--warn' : 'ops-system-score'}>
             <small>核心服务</small><strong>{onlineCount} / 4 在线</strong><span>{warningCount ? `${warningCount} 项需检查` : configuredCount ? '已配置服务状态正常' : '等待配置核心服务'}</span>
           </div>
-          <button aria-label="刷新全部服务" className="ops-icon-button" title="刷新全部服务" type="button" onClick={refreshServices}><RefreshCcw aria-hidden="true" size={18} /></button>
+          <button aria-label="刷新全部服务" aria-busy={servicesRefreshBusy} className="ops-icon-button" disabled={servicesRefreshBusy} title="刷新全部服务" type="button" onClick={() => void refreshServices()}><RefreshCcw aria-hidden="true" size={18} /></button>
+          {servicesRefreshFeedback && <small aria-live="polite">{servicesRefreshFeedback}</small>}
         </div>
       </section>
 
@@ -225,11 +247,11 @@ export function ControlRoom() {
             <div className={`ops-inspector-feedback ops-inspector-feedback--${embyRefreshFeedback.tone}`} role="status">{embyRefreshFeedback.message}</div>
           )}
           <div className={selected.id === 'emby' ? 'ops-inspector__actions ops-inspector__actions--three' : 'ops-inspector__actions'}>
-            <button className="ops-action-button" type="button" onClick={() => { refreshServices(); if (selected.id === 'emby') refreshEmbyStatus(); }}><HeartPulse size={15} />重新检查</button>
+            <button className="ops-action-button" disabled={servicesRefreshBusy} type="button" onClick={() => void refreshSelectedService()}><HeartPulse size={15} />{servicesRefreshBusy ? '检查中' : '重新检查'}</button>
             {selected.id === 'emby' && (
               <button
                 className="ops-action-button ops-action-button--primary"
-                disabled={embyRefresh?.state !== 'ready' || !embyRefresh.canRefresh || embyRefreshBusy}
+                disabled={servicesRefreshBusy || embyRefresh?.state !== 'ready' || !embyRefresh.canRefresh || embyRefreshBusy}
                 type="button"
                 onClick={() => setEmbyRefreshConfirm(true)}
               >

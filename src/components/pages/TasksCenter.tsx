@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertTriangle, Download, ExternalLink, HardDrive, Pause, Play, RefreshCcw, Rss, Server } from 'lucide-react';
 import { getActivityLogs, getTaskChain, runQbittorrentAction } from '../../services/api';
 import type { QbittorrentAction } from '../../types/qbittorrent';
@@ -8,6 +8,7 @@ import { usePolling } from '../../hooks/usePolling';
 import { formatSpeed, formatTimeAgo } from '../../utils/formatters';
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
+import type { TaskNavigationTarget } from '../layout/AppTopNav';
 
 type FilterName = '全部' | '进行中' | '等待中' | '卡住' | '已入库' | '尚未接到链路';
 
@@ -85,7 +86,33 @@ function matchesFilter(item: TaskChainItem, filter: FilterName) {
   return item.confidence === 'unlinked';
 }
 
-export function TasksCenter() {
+function normalizeTitle(value: string | undefined) {
+  return (value ?? '').trim().toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+function findTargetTasks(items: TaskChainItem[], target: TaskNavigationTarget) {
+  if (target.subscriptionId) {
+    const bySubscription = items.filter((item) => item.sourceIds.subscriptionId === target.subscriptionId);
+    if (bySubscription.length > 0) return bySubscription;
+  }
+
+  if (target.tmdbId) {
+    const byTmdb = items.filter((item) => (
+      item.tmdbId === target.tmdbId
+      && (target.seasonNumber == null || item.seasonNumber === target.seasonNumber)
+    ));
+    if (byTmdb.length > 0) return byTmdb;
+  }
+
+  const targetTitle = normalizeTitle(target.title);
+  if (!targetTitle) return [];
+  return items.filter((item) => {
+    const itemTitle = normalizeTitle(item.title);
+    return Boolean(itemTitle && (targetTitle === itemTitle || targetTitle.includes(itemTitle) || itemTitle.includes(targetTitle)));
+  });
+}
+
+export function TasksCenter({ target, onClearTarget }: { target: TaskNavigationTarget | null; onClearTarget: () => void }) {
   const [filter, setFilter] = useState<FilterName>('进行中');
   const [chain, setChain] = useState<TaskChainResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -97,6 +124,7 @@ export function TasksCenter() {
   const [activityCategory, setActivityCategory] = useState('');
   const [activities, setActivities] = useState<ActivityLogItem[]>([]);
   const [activityError, setActivityError] = useState('');
+  const taskCardRefs = useRef(new Map<string, HTMLElement>());
 
   const loadChain = async (signal: AbortSignal) => {
     setLoading(true);
@@ -135,7 +163,14 @@ export function TasksCenter() {
 
   const items = chain?.items ?? [];
   const filtered = useMemo(() => items.filter((item) => matchesFilter(item, filter)), [filter, items]);
-  const visible = filtered.slice(0, visibleLimit);
+  const focusedItems = useMemo(
+    () => target ? findTargetTasks(items, target) : [],
+    [items, target]
+  );
+  const focusActive = Boolean(target);
+  const displayedItems = focusActive ? focusedItems : filtered;
+  const visible = focusActive ? displayedItems : displayedItems.slice(0, visibleLimit);
+  const focusedTaskId = focusedItems[0]?.id ?? null;
   const counts = useMemo<Record<FilterName, number>>(() => ({
     全部: items.length,
     进行中: items.filter((item) => matchesFilter(item, '进行中')).length,
@@ -146,6 +181,18 @@ export function TasksCenter() {
   }), [items]);
 
   const completed115 = items.filter((item) => item.steps.find((step) => step.key === 'cloud115')?.status === 'done').length;
+
+  useEffect(() => {
+    if (!target || !focusedTaskId) return;
+    const card = taskCardRefs.current.get(focusedTaskId);
+    if (!card) return;
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const frame = requestAnimationFrame(() => {
+      card.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'center', inline: 'nearest' });
+      card.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusedTaskId, target]);
   const openTool = (url: string) => {
     if (url) window.open(url, '_blank', 'noopener,noreferrer');
   };
@@ -203,6 +250,15 @@ export function TasksCenter() {
       </section>
 
       <section className="ops-panel ops-task-workbench">
+        {focusActive && (
+          <div className="ops-task-focus" role="status">
+            <div>
+              <strong>正在查看{target?.title ? `《${target.title}》` : '目标剧集'}的任务</strong>
+              <span>{focusedItems.length > 0 ? `已匹配 ${focusedItems.length} 条关联任务` : '订阅已保存，但暂未形成关联任务'}</span>
+            </div>
+            <button className="tool-link" type="button" onClick={onClearTarget}>查看全部任务</button>
+          </div>
+        )}
         <header className="ops-task-toolbar">
           <div className="ops-task-tabs" role="tablist" aria-label="任务筛选">
             {filters.map((name) => (
@@ -213,7 +269,10 @@ export function TasksCenter() {
                 role="tab"
                 tabIndex={filter === name ? 0 : -1}
                 type="button"
-                onClick={() => setFilter(name)}
+                onClick={() => {
+                  if (focusActive) onClearTarget();
+                  setFilter(name);
+                }}
                 onKeyDown={handleHorizontalTabKeyDown}
               >
                 {name}<span className={name === '卡住' && counts[name] > 0 ? 'is-alert' : undefined}>{counts[name]}</span>
@@ -222,13 +281,17 @@ export function TasksCenter() {
           </div>
           <div className="ops-task-toolbar__actions">
             <span>{chain ? `${filtered.length} / ${items.length} 条 · ${formatTimeAgo(chain.generatedAt)}` : '正在读取统一任务链'}</span>
-            <button aria-label="刷新任务链" className="ops-icon-button" title="刷新任务链" type="button" onClick={refreshChain}><RefreshCcw aria-hidden="true" size={16} /></button>
+            <button aria-label="刷新任务链" aria-busy={loading} className="ops-icon-button" disabled={loading} title="刷新任务链" type="button" onClick={refreshChain}><RefreshCcw aria-hidden="true" size={16} /></button>
           </div>
         </header>
 
         {loading && !chain && <div className="ops-empty ops-task-empty">正在汇总下载、整理和入库状态…</div>}
         {!loading && error && <div className="ops-empty ops-task-empty">{error}</div>}
-        {!loading && chain && visible.length === 0 && <div className="ops-empty ops-task-empty">这个筛选下暂时没有任务。</div>}
+        {!loading && chain && visible.length === 0 && (
+          <div className="ops-empty ops-task-empty">
+            {focusActive ? '订阅已保存，但暂未形成关联任务。任务产生后会显示在这里。' : '这个筛选下暂时没有任务。'}
+          </div>
+        )}
         {actionFeedback && (
           <div className={`ops-task-action-feedback ops-task-action-feedback--${actionFeedback.tone}`} role="status">
             {actionFeedback.message}
@@ -237,7 +300,15 @@ export function TasksCenter() {
 
         <div className="ops-task-list">
           {visible.map((item) => (
-            <article className={item.state === 'blocked' ? 'ops-task-card ops-task-card--stuck' : 'ops-task-card'} key={item.id}>
+            <article
+              className={`${item.state === 'blocked' ? 'ops-task-card ops-task-card--stuck' : 'ops-task-card'}${focusActive && item.id === focusedTaskId ? ' ops-task-card--focused' : ''}`}
+              key={item.id}
+              ref={(element) => {
+                if (element) taskCardRefs.current.set(item.id, element);
+                else taskCardRefs.current.delete(item.id);
+              }}
+              tabIndex={focusActive && item.id === focusedTaskId ? -1 : undefined}
+            >
               <div className="ops-task-card__head">
                 <span className={stateClass[item.state]}>{stateLabel[item.state]}</span>
                 <div>

@@ -5,6 +5,15 @@ import type { HealthResponse } from '../../types/media';
 export type PageId = 'overview' | 'hall' | 'control' | 'tasks' | 'calendar' | 'discover' | 'subscriptions' | 'subscription-settings' | 'rss-library' | 'settings';
 export type ThemeMode = 'dark' | 'light';
 
+export interface TaskNavigationTarget {
+  subscriptionId?: string;
+  tmdbId?: string;
+  title?: string;
+  seasonNumber?: number | null;
+}
+
+export type AppNavigate = (page: PageId, target?: TaskNavigationTarget) => void;
+
 const navItems: Array<{
   id: PageId;
   label: string;
@@ -22,7 +31,7 @@ const navItems: Array<{
 interface AppTopNavProps {
   activePage: PageId;
   health: HealthResponse | null;
-  onNavigate: (page: PageId) => void;
+  onNavigate: AppNavigate;
   onToggleTheme: () => void;
   showThemeToggle: boolean;
   theme: ThemeMode;

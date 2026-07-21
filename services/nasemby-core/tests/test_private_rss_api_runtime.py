@@ -31,10 +31,11 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             created = client.post("/api/v2/rss-sources", json={
                 "name": "测试站",
                 "feedUrl": "https://tracker.example/rss?passkey=secret-value",
-                "intervalMinutes": 3,
+                "intervalMinutes": 30,
                 "retentionDays": 7,
             })
             self.assertEqual(created.status_code, 201)
+            self.assertEqual(created.get_json()["intervalMinutes"], 30)
             source_id = created.get_json()["id"]
             self.assertNotIn("secret-value", created.get_data(as_text=True))
             detail = client.get(created.headers["Location"])

@@ -1512,6 +1512,16 @@
   backdrop-filter: blur(24px) saturate(1.3);
 }
 
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-task-focus {
+  border-color: rgba(49, 87, 213, 0.24);
+  background: rgba(49, 87, 213, 0.08);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-task-card--focused {
+  border-color: rgba(49, 87, 213, 0.48);
+  box-shadow: 0 0 0 3px rgba(49, 87, 213, 0.12), var(--theme-shadow), inset 0 1px 0 #fff;
+}
+
 .app-shell:not(.app-shell--hall)[data-theme='light'] :is(
   .ops-command:hover,
   .ops-command:focus-visible,

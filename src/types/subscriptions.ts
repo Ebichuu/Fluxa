@@ -59,6 +59,62 @@ export interface SubscriptionItem {
   readOnly?: boolean;
   torraSyncState?: 'current' | 'remote_missing' | 'error' | string;
   torraMappingStatus?: 'mapped' | 'partial' | 'unmapped' | string;
+  scope?: string;
+  missingEpisodes?: string[];
+  torra?: SubscriptionWorkbenchStage & { remoteId?: string };
+  qb?: SubscriptionWorkbenchStage & { hashes?: string[] };
+  cloud115?: SubscriptionWorkbenchStage & { ids?: string[] };
+  library?: SubscriptionWorkbenchStage;
+  blockingReason?: string;
+  chainState?: 'active' | 'blocked' | 'completed' | 'waiting' | string;
+  chainProgress?: number;
+}
+
+export type SubscriptionCapabilityState = 'ready' | 'disabled' | 'error' | 'unknown';
+
+export interface SubscriptionWorkbenchCapability {
+  key: 'local_write' | 'torra_connection' | 'torra_mirror' | 'rss' | 'scheduler';
+  label: string;
+  state: SubscriptionCapabilityState;
+  enabled: boolean;
+  configured: boolean;
+  detail: string;
+  checkedAt: string;
+}
+
+export interface SubscriptionWorkbenchStage {
+  status: string;
+  detail: string;
+}
+
+export interface SubscriptionWorkbenchResponse {
+  ok: boolean;
+  lastReadAt: string;
+  capabilities: SubscriptionWorkbenchCapability[];
+  stats: {
+    total: number;
+    movie: number;
+    tv: number;
+    pending: number;
+    inLibrary: number;
+  };
+  items: SubscriptionItem[];
+  blockedTitles: string[];
+  errors: string[];
+  torraSync: TorraSubscriptionSyncStatus;
+  rss: {
+    enabled: boolean;
+    sources: number;
+    activeSources: number;
+    errorSources: number;
+    items: number;
+    lastSuccessAt: string;
+  };
+  scheduler: {
+    enabled: boolean;
+    taskTime: string;
+    lastRunAt: string;
+  };
 }
 
 export interface TorraSubscriptionSyncStatus {
@@ -322,6 +378,8 @@ export interface SubscriptionDetailResponse {
     tmdbId?: string;
     imdbId?: string;
     year?: string;
+    originalTitle?: string;
+    englishTitle?: string;
     rating?: string;
     overview?: string;
     posterUrl?: string;

@@ -641,6 +641,15 @@
   gap: 9px;
 }
 
+.rss-source-form__interval {
+  display: grid;
+}
+
+.rss-source-form__interval.is-custom {
+  grid-template-columns: minmax(0, 1fr) minmax(72px, 0.7fr);
+  gap: 6px;
+}
+
 .rss-source-form .rss-source-check {
   display: flex;
   align-items: center;

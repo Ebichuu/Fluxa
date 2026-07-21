@@ -245,10 +245,16 @@ class PrivateRssRepository:
             raise ValueError("非标准端口需要明确允许")
         if not existing and len(self.list_sources()) >= 10:
             raise ValueError("第一版最多配置 10 个 RSS 来源")
-        interval = int(payload.get("intervalMinutes", (existing or {}).get("interval_minutes", 5)))
+        interval_value = payload.get("intervalMinutes", (existing or {}).get("interval_minutes", 5))
+        if isinstance(interval_value, bool) or (isinstance(interval_value, float) and not interval_value.is_integer()):
+            raise ValueError("轮询周期必须是整数分钟")
+        try:
+            interval = int(interval_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("轮询周期必须是整数分钟") from exc
         retention = int(payload.get("retentionDays", (existing or {}).get("retention_days", 7)))
-        if interval not in {1, 3, 5}:
-            raise ValueError("轮询周期只允许 1、3、5 分钟")
+        if interval < 1 or interval > 1440:
+            raise ValueError("轮询周期必须在 1 到 1440 分钟之间")
         if retention not in {3, 7, 14}:
             raise ValueError("保留期只允许 3、7、14 天")
         name = str(payload.get("name", (existing or {}).get("name") or _domain(feed_url))).strip()[:80]

@@ -19,10 +19,14 @@ class SQLiteRuntimeTests(unittest.TestCase):
                 foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
                 busy_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
                 version = connection.execute("SELECT schema_version FROM schema_meta WHERE id=1").fetchone()[0]
+                probe = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='__mcc_fts_probe'"
+                ).fetchone()
             self.assertEqual(journal.lower(), "wal")
             self.assertEqual(foreign_keys, 1)
             self.assertEqual(busy_timeout, 5000)
             self.assertEqual(version, 3)
+            self.assertIsNone(probe)
 
     def test_transaction_rolls_back_on_error(self):
         with tempfile.TemporaryDirectory() as directory:

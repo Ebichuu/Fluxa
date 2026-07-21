@@ -31,6 +31,15 @@ import { formatTimeAgo } from '../../utils/formatters';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
 
 type WindowFilter = '' | '1h' | '24h' | '7d';
+const RSS_INTERVAL_PRESETS = [1, 3, 5] as const;
+
+function isPresetInterval(value: number) {
+  return RSS_INTERVAL_PRESETS.some((preset) => preset === value);
+}
+
+function isValidInterval(value: number) {
+  return Number.isInteger(value) && value >= 1 && value <= 1440;
+}
 
 const emptySummary: RssLibrarySummary = {
   enabled: false,
@@ -90,6 +99,7 @@ export function RssSeedLibraryPage() {
   const [editing, setEditing] = useState<RssSource | null>(null);
   const [form, setForm] = useState<RssSourceInput>(defaultForm);
   const [saving, setSaving] = useState(false);
+  const [testingSourceId, setTestingSourceId] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<RssSource | null>(null);
   const itemsRequestRef = useRef<AbortController | null>(null);
   const matchesRequestRef = useRef<AbortController | null>(null);
@@ -228,7 +238,7 @@ export function RssSeedLibraryPage() {
       name: source.name,
       feedUrl: '',
       enabled: source.enabled,
-      intervalMinutes: source.intervalMinutes as 1 | 3 | 5,
+      intervalMinutes: source.intervalMinutes,
       retentionDays: source.retentionDays as 3 | 7 | 14,
       allowHttp: source.allowHttp
     });
@@ -256,6 +266,8 @@ export function RssSeedLibraryPage() {
   };
 
   const runTest = async (source: RssSource) => {
+    if (testingSourceId) return;
+    setTestingSourceId(source.id);
     setFeedback(null);
     try {
       const action = await testRssSource(source.id);
@@ -267,6 +279,8 @@ export function RssSeedLibraryPage() {
       });
     } catch (reason) {
       setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : 'RSS 测试失败' });
+    } finally {
+      setTestingSourceId('');
     }
   };
 
@@ -295,7 +309,7 @@ export function RssSeedLibraryPage() {
           <p className="ops-page-subtitle">在本地汇总和筛选最近发布的种子。</p>
           <p className="ops-deck">集中保存最近发布的 PT RSS 内容，在本地完成搜索和筛选，再由 Torra 判断是否需要下载。</p>
         </div>
-        <button className={summary.enabled ? 'ops-command ops-command--ok' : 'ops-command'} type="button" onClick={refresh}>
+        <button aria-busy={loading} className={summary.enabled ? 'ops-command ops-command--ok' : 'ops-command'} disabled={loading} type="button" onClick={refresh}>
           <Rss aria-hidden="true" size={18} />
           <span>
             <small>RSS 收集</small>
@@ -440,21 +454,52 @@ export function RssSeedLibraryPage() {
         <aside className="rss-source-panel">
           <div className="rss-source-head">
             <div><ServerCog size={17} /><span><small>来源管理</small><strong>{sources.length} 个 RSS</strong></span></div>
-            <button className="ops-link" type="button" onClick={openCreate}><Plus size={14} />添加来源</button>
+            <button className="ops-link" disabled={saving || Boolean(testingSourceId)} type="button" onClick={openCreate}><Plus size={14} />添加来源</button>
           </div>
 
           {formOpen && (
             <div className="rss-source-form">
-              <div className="rss-source-form__title"><strong>{editing ? '编辑来源' : '添加 RSS 来源'}</strong><button aria-label="关闭来源表单" title="关闭来源表单" type="button" onClick={() => setFormOpen(false)}><X aria-hidden="true" size={15} /></button></div>
-              <label>来源名称<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如：主站 RSS" /></label>
-              <label>私人 RSS 地址<input autoComplete="off" className="monospace-text" type="password" value={form.feedUrl || ''} onChange={(event) => setForm({ ...form, feedUrl: event.target.value })} placeholder={editing ? '留空保持原地址' : 'https://…?passkey=…'} /></label>
+              <div className="rss-source-form__title"><strong>{editing ? '编辑来源' : '添加 RSS 来源'}</strong><button aria-label="关闭来源表单" disabled={saving} title="关闭来源表单" type="button" onClick={() => setFormOpen(false)}><X aria-hidden="true" size={15} /></button></div>
+              <label>来源名称<input disabled={saving} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如：主站 RSS" /></label>
+              <label>私人 RSS 地址<input autoComplete="off" className="monospace-text" disabled={saving} type="password" value={form.feedUrl || ''} onChange={(event) => setForm({ ...form, feedUrl: event.target.value })} placeholder={editing ? '留空保持原地址' : 'https://…?passkey=…'} /></label>
               <div className="rss-source-form__pair">
-                <label>轮询周期<select value={form.intervalMinutes} onChange={(event) => setForm({ ...form, intervalMinutes: Number(event.target.value) as 1 | 3 | 5 })}><option value={1}>1 分钟</option><option value={3}>3 分钟</option><option value={5}>5 分钟</option></select></label>
-                <label>保留时间<select value={form.retentionDays} onChange={(event) => setForm({ ...form, retentionDays: Number(event.target.value) as 3 | 7 | 14 })}><option value={3}>3 天</option><option value={7}>7 天</option><option value={14}>14 天</option></select></label>
+                <label>
+                  轮询周期
+                  <div className={isPresetInterval(form.intervalMinutes) ? 'rss-source-form__interval' : 'rss-source-form__interval is-custom'}>
+                    <select
+                      aria-label="轮询周期选项"
+                      disabled={saving}
+                      value={isPresetInterval(form.intervalMinutes) ? String(form.intervalMinutes) : 'custom'}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setForm({ ...form, intervalMinutes: value === 'custom' ? (isPresetInterval(form.intervalMinutes) ? 10 : form.intervalMinutes) : Number(value) });
+                      }}
+                    >
+                      <option value={1}>1 分钟</option>
+                      <option value={3}>3 分钟</option>
+                      <option value={5}>5 分钟</option>
+                      <option value="custom">自定义</option>
+                    </select>
+                  {!isPresetInterval(form.intervalMinutes) && (
+                    <input
+                      aria-label="自定义轮询分钟数"
+                      disabled={saving}
+                      max={1440}
+                      min={1}
+                      placeholder="分钟"
+                      step={1}
+                      type="number"
+                      value={form.intervalMinutes}
+                      onChange={(event) => setForm({ ...form, intervalMinutes: event.currentTarget.valueAsNumber || 0 })}
+                    />
+                  )}
+                  </div>
+                </label>
+                <label>保留时间<select disabled={saving} value={form.retentionDays} onChange={(event) => setForm({ ...form, retentionDays: Number(event.target.value) as 3 | 7 | 14 })}><option value={3}>3 天</option><option value={7}>7 天</option><option value={14}>14 天</option></select></label>
               </div>
-              <label className="rss-source-check"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />启用这个来源</label>
-              <label className="rss-source-check"><input type="checkbox" checked={form.allowHttp} onChange={(event) => setForm({ ...form, allowHttp: event.target.checked })} />允许 HTTP 或非标准端口</label>
-              <button className="ops-action-button ops-action-button--primary" disabled={saving || !form.name.trim() || (!editing && !form.feedUrl?.trim())} type="button" onClick={submitSource}>{saving ? '正在保存' : '保存来源'}</button>
+              <label className="rss-source-check"><input checked={form.enabled} disabled={saving} type="checkbox" onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />启用这个来源</label>
+              <label className="rss-source-check"><input checked={form.allowHttp} disabled={saving} type="checkbox" onChange={(event) => setForm({ ...form, allowHttp: event.target.checked })} />允许 HTTP 或非标准端口</label>
+              <button className="ops-action-button ops-action-button--primary" disabled={saving || !form.name.trim() || !isValidInterval(form.intervalMinutes) || (!editing && !form.feedUrl?.trim())} type="button" onClick={submitSource}>{saving ? '正在保存' : '保存来源'}</button>
               <p>RSS 地址会明文保存在 SQLite，但页面、接口和日志不会回显完整 Passkey。</p>
             </div>
           )}
@@ -474,9 +519,9 @@ export function RssSeedLibraryPage() {
                 </div>
                 {source.lastError && <p>{source.lastError}</p>}
                 <div className="rss-source-card__actions">
-                  <button type="button" onClick={() => runTest(source)}>测试</button>
-                  <button type="button" onClick={() => openEdit(source)}><Edit3 size={12} />编辑</button>
-                  <button className="rss-source-delete" type="button" onClick={() => setDeleteTarget(source)}><Trash2 size={12} />删除</button>
+                  <button disabled={saving || Boolean(testingSourceId)} type="button" onClick={() => void runTest(source)}>{testingSourceId === source.id ? '测试中…' : '测试'}</button>
+                  <button disabled={saving || Boolean(testingSourceId)} type="button" onClick={() => openEdit(source)}><Edit3 size={12} />编辑</button>
+                  <button className="rss-source-delete" disabled={saving || Boolean(testingSourceId)} type="button" onClick={() => setDeleteTarget(source)}><Trash2 size={12} />删除</button>
                 </div>
               </article>
             ))}

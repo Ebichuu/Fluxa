@@ -21,6 +21,7 @@ from app.http_runtime import configure_http_runtime
 from app.mineradio_runtime import register_mineradio
 from app.discover_compat_runtime import register_discover_compat
 from app.subscription_compat_runtime import register_subscription_compat
+from app.subscription_workbench_runtime import register_subscription_workbench
 from app.media_read_runtime import register_emby_reads
 from app.emby_refresh_runtime import register_emby_refresh
 from app.qbittorrent_runtime import register_qbittorrent_read
@@ -1407,6 +1408,7 @@ def create_app(
         subscription_loader=lambda: discover_runtime.load_subscription_items(remove_completed=False),
         config_loader=discover_runtime.load_subscription_config,
     )
+    register_subscription_workbench(application, environment)
     automation_service = subscription_automation_service or SubscriptionAutomationService(
         SubscriptionAutomationDependencies(
             environment,

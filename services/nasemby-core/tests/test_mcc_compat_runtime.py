@@ -246,6 +246,8 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
             "item": {"key": "tv:test:tmdb:202:season:1", "title": "测试剧", "media_type": "tv", "tmdb_id": "202"},
             "detail": {
                 "title": "测试剧",
+                "original_title": "Test Series",
+                "english_title": "Test Series",
                 "tmdb_id": "202",
                 "cast": [{"name": "演员甲", "character": "角色甲", "profile_url": "/profile.jpg", "token": "secret"}],
                 "library_paths": ["/library/test"],
@@ -263,6 +265,8 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
             }],
         })
         self.assertEqual(detail["detail"]["cast"][0]["name"], "演员甲")
+        self.assertEqual(detail["detail"]["originalTitle"], "Test Series")
+        self.assertEqual(detail["detail"]["englishTitle"], "Test Series")
         self.assertEqual(detail["seasons"][0]["episodes"][0]["episodeNumber"], 1)
         self.assertNotIn("secret", json.dumps(detail, ensure_ascii=False))
 

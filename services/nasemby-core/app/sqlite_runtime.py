@@ -61,8 +61,9 @@ class SQLiteRuntime:
                 (SCHEMA_VERSION,),
             )
             try:
-                connection.execute("CREATE VIRTUAL TABLE IF NOT EXISTS __mcc_fts_probe USING fts5(value)")
-                connection.execute("DROP TABLE __mcc_fts_probe")
+                # Probe FTS5 in memory so repeated repository initialization never locks the data file.
+                with closing(sqlite3.connect(":memory:")) as probe:
+                    probe.execute("CREATE VIRTUAL TABLE __mcc_fts_probe USING fts5(value)")
             except sqlite3.OperationalError as exc:
                 raise RuntimeError("当前 SQLite 不支持 FTS5") from exc
         return self.database_path

@@ -7,6 +7,7 @@
 ## 主要功能
 
 - 内容发现、媒体搜索、订阅管理和播出日历。
+- 第一阶段订阅工作台统一展示本地写入、Torra、镜像同步、RSS 和定时任务状态，并将 qB、115 与入库证据关联到每条订阅。
 - Torra 已有订阅单向镜像到本地 SQLite，支持预览、确认导入和状态同步；第一阶段不修改或删除 Torra 订阅。
 - Torra → qBittorrent → 115 → Symedia → Emby 的 PT 任务链观察。
 - 私人 PT RSS 种子库、本地全文搜索和来源管理。
@@ -120,7 +121,7 @@ Vite 会把 `/api` 和 `/mineradio` 代理到 Python。
 ## 本地检查
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 191 项
+python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 196 项
 npm test
 npm run build
 docker compose config --services
