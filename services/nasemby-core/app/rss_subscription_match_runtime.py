@@ -5,6 +5,8 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from app.private_rss_parser import extract_media_identity
+
 
 ACTIVE_WATCH_STATES = {"observing_upgrade", "search_due", "search_running"}
 YEAR_PATTERN = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
@@ -219,6 +221,102 @@ class RssSubscriptionMatchRuntime:
             _subscription_key(item): item
             for item in payload if isinstance(item, dict) and _subscription_key(item)
         }
+
+    @staticmethod
+    def _subscription_season(subscription):
+        for key in ("target_season", "season_number", "current_season", "latest_season", "season"):
+            if subscription.get(key) not in (None, ""):
+                return _int(subscription.get(key))
+        return None
+
+    def _identity_backfill_candidates(self, item, subscriptions):
+        item_type = _media_type(item.get("media_type") or item.get("mediaType"))
+        item_season = item.get("season_number")
+        item_year = _year(item.get("title"))
+        candidates = []
+        for subscription in subscriptions.values():
+            subscription_type = _media_type(subscription.get("media_type") or subscription.get("mediaType"))
+            if not item_type or subscription_type != item_type:
+                continue
+            identity = _identity_match(item, subscription)
+            if identity is None:
+                continue
+            basis, matched_alias, subscription_tmdb = identity
+            if not subscription_tmdb or basis != "standard-title-map":
+                continue
+            if item_type == "tv":
+                subscription_season = self._subscription_season(subscription)
+                if item_season is None or subscription_season is None or _int(item_season) != subscription_season:
+                    continue
+            else:
+                subscription_year = _year(
+                    subscription.get("year"),
+                    subscription.get("release_date"),
+                    subscription.get("first_air_date"),
+                )
+                if not item_year or not subscription_year or item_year != subscription_year:
+                    continue
+            candidates.append({
+                "tmdbId": subscription_tmdb,
+                "subscriptionId": _subscription_key(subscription),
+                "basis": basis,
+                "alias": matched_alias,
+            })
+        return candidates
+
+    def backfill_unidentified_items(self, limit=50):
+        limit = max(1, min(int(limit or 50), 200))
+        rows = self.rss_repository.list_unidentified_items(limit)
+        subscriptions = self._subscriptions()
+        result = {"scanned": len(rows), "identified": 0, "conflicts": 0, "unchanged": 0}
+        with self.rss_repository.runtime.transaction(immediate=True) as connection:
+            for item in rows:
+                explicit = extract_media_identity({
+                    "description": item.get("description"),
+                    "link": item.get("detail_url"),
+                })
+                if explicit.get("identity_status") == "identified":
+                    changed = self.rss_repository.supplement_item_identity(
+                        connection,
+                        item.get("id"),
+                        tmdb_id=explicit.get("tmdb_id"),
+                        imdb_id=explicit.get("imdb_id"),
+                        source=explicit.get("identity_source") or "rss_history",
+                        confidence=explicit.get("identity_confidence") or "explicit",
+                    )
+                    result["identified" if changed else "unchanged"] += 1
+                    continue
+                if explicit.get("identity_status") == "conflict":
+                    changed = self.rss_repository.mark_item_identity_conflict(
+                        connection,
+                        item.get("id"),
+                        source=explicit.get("identity_source") or "rss_history",
+                    )
+                    result["conflicts" if changed else "unchanged"] += 1
+                    continue
+                candidates = self._identity_backfill_candidates(item, subscriptions)
+                candidate_tmdb_ids = {candidate["tmdbId"] for candidate in candidates if candidate["tmdbId"]}
+                if len(candidate_tmdb_ids) == 1:
+                    changed = self.rss_repository.supplement_item_identity(
+                        connection,
+                        item.get("id"),
+                        tmdb_id=next(iter(candidate_tmdb_ids)),
+                        source="subscription_match",
+                        confidence="fallback",
+                    )
+                    result["identified" if changed else "unchanged"] += 1
+                elif len(candidate_tmdb_ids) > 1:
+                    changed = self.rss_repository.mark_item_identity_conflict(
+                        connection,
+                        item.get("id"),
+                        source="subscription_match",
+                    )
+                    result["conflicts" if changed else "unchanged"] += 1
+                else:
+                    result["unchanged"] += 1
+        result["remaining"] = self.rss_repository.count_unidentified_items()
+        result["limit"] = limit
+        return result
 
     @staticmethod
     def _compatible_type(item, subscription, unit):

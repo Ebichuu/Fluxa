@@ -4,11 +4,13 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  CircleHelp,
   Clock3,
   Library,
   ListChecks,
   Radio,
   Search,
+  ShieldCheck,
   X
 } from 'lucide-react';
 import { getSubscriptionCalendarDateDetail, getSubscriptionCalendarSummary } from '../../services/api';
@@ -16,6 +18,7 @@ import type {
   SubscriptionCalendarDayPreview,
   SubscriptionCalendarDaySummary,
   SubscriptionCalendarEntry,
+  SubscriptionCalendarStatus,
   SubscriptionHealthState
 } from '../../types/subscriptions';
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
@@ -29,7 +32,7 @@ interface CalendarPageProps {
 
 type CalendarMediaType = 'all' | 'movie' | 'tv';
 type CalendarView = 'month' | 'week';
-type CalendarStatus = 'all' | 'upcoming' | 'acquiring' | 'library' | 'missing';
+type CalendarStatus = 'all' | SubscriptionCalendarStatus;
 type CalendarPosterItem = Pick<SubscriptionCalendarEntry, 'posterUrl' | 'title'> | Pick<SubscriptionCalendarDayPreview, 'posterUrl' | 'title'>;
 
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
@@ -80,17 +83,18 @@ function entrySeasonNumber(entry: SubscriptionCalendarEntry) {
 }
 
 function entryStatus(entry: SubscriptionCalendarEntry, todayKey: string): Exclude<CalendarStatus, 'all'> {
+  if (entry.status) return entry.status;
   if (entry.libraryAt || entry.inLibrary) return 'library';
   if (entry.acquiredAt) return 'acquiring';
-  return entry.date < todayKey ? 'missing' : 'upcoming';
+  return entry.date < todayKey ? 'unknown' : 'upcoming';
 }
 
 const statusLabel: Record<CalendarStatus, string> = {
-  all: '全部', upcoming: '待播出', acquiring: '正在获取', library: '已入库', missing: '逾期未获取'
+  all: '全部', upcoming: '待播出', acquiring: '正在获取', library: '已入库', protected: '正常保护', missing: '逾期未获取', unknown: '状态未知'
 };
 
 const statusHealth: Record<Exclude<CalendarStatus, 'all'>, SubscriptionHealthState> = {
-  upcoming: 'waiting', acquiring: 'waiting', library: 'normal', missing: 'evidence_insufficient'
+  upcoming: 'waiting', acquiring: 'waiting', library: 'normal', protected: 'protected', missing: 'action_required', unknown: 'evidence_insufficient'
 };
 
 function EntryPoster({ entry }: { entry: CalendarPosterItem }) {
@@ -231,8 +235,10 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     upcoming: result.upcoming + day.statusCounts.upcoming,
     acquiring: result.acquiring + day.statusCounts.acquiring,
     library: result.library + day.statusCounts.library,
-    missing: result.missing + day.statusCounts.missing
-  }), { upcoming: 0, acquiring: 0, library: 0, missing: 0 });
+    protected: result.protected + (day.statusCounts.protected ?? 0),
+    missing: result.missing + day.statusCounts.missing,
+    unknown: result.unknown + (day.statusCounts.unknown ?? 0)
+  }), { upcoming: 0, acquiring: 0, library: 0, protected: 0, missing: 0, unknown: 0 });
   const totalEntries = days.reduce((total, day) => total + day.total, 0);
 
   return (
@@ -248,7 +254,9 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
           <div><Radio size={15} /><span>待播出</span><strong>{counts.upcoming}</strong></div>
           <div><Clock3 size={15} /><span>正在获取</span><strong>{counts.acquiring}</strong></div>
           <div><Library size={15} /><span>已入库</span><strong>{counts.library}</strong></div>
+          <div className="is-protected"><ShieldCheck size={15} /><span>正常保护</span><strong>{counts.protected}</strong></div>
           <div className={counts.missing ? 'is-alert' : undefined}><ListChecks size={15} /><span>逾期未获取</span><strong>{counts.missing}</strong></div>
+          <div className="is-unknown"><CircleHelp size={15} /><span>状态未知</span><strong>{counts.unknown}</strong></div>
         </div>
       </section>
 
@@ -309,7 +317,9 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                       <button aria-label={dateKey + '，共 ' + day.total + ' 条'} className="calendar-cell__mobile-summary" type="button" onClick={() => openDate(dateKey)}>
                         <span className={day.statusCounts.library ? 'is-library' : undefined} />
                         <span className={day.statusCounts.acquiring ? 'is-acquiring' : undefined} />
+                        <span className={day.statusCounts.protected ? 'is-protected' : undefined} />
                         <span className={day.statusCounts.missing ? 'is-missing' : undefined} />
+                        <span className={day.statusCounts.unknown ? 'is-unknown' : undefined} />
                         <b>{day.total}</b>
                       </button>
                     )}
@@ -328,7 +338,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         )}
 
         <footer className="ops-calendar-legend">
-          <span><i className="is-upcoming" />待播出</span><span><i className="is-acquiring" />正在获取</span><span><i className="is-library" />已入库</span><span><i className="is-overdue" />需要排查</span><strong>时区：Asia/Shanghai</strong>
+          <span><i className="is-upcoming" />待播出</span><span><i className="is-acquiring" />正在获取</span><span><i className="is-library" />已入库</span><span><i className="is-protected" />正常保护</span><span><i className="is-overdue" />逾期未获取</span><span><i className="is-unknown" />状态未知</span><strong>时区：Asia/Shanghai</strong>
         </footer>
       </section>
 
@@ -344,7 +354,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
             const currentStatus = entryStatus(entry, todayKey);
             return (
               <article className="calendar-detail-item" key={(entry.key || entry.title) + '-' + entry.episodeLabel}>
-                <header><div><strong>{entry.title}</strong><small>{entry.episodeLabel}{entry.episodeTitle ? ' · ' + entry.episodeTitle : ''}</small></div><HealthBadge state={entry.healthState || statusHealth[currentStatus]} /></header>
+                <header><div><strong>{entry.title}</strong><small>{entry.episodeLabel}{entry.episodeTitle ? ' · ' + entry.episodeTitle : ''}</small></div><HealthBadge state={currentStatus === 'missing' || currentStatus === 'unknown' || currentStatus === 'protected' ? statusHealth[currentStatus] : entry.healthState || statusHealth[currentStatus]} /></header>
                 <div className="calendar-evidence-times">
                   <span><b>播出</b><strong>{entry.date}</strong><small>TMDB 日历</small></span>
                   <span><b>获取</b><strong>{formatEvidenceTime(entry.acquiredAt)}</strong><small>{entry.acquisitionSource || '该集证据不足'}</small></span>

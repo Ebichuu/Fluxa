@@ -1,6 +1,6 @@
 # Fluxa
 
-当前发布版本：`v0.4.1`。
+当前发布版本：`v0.4.2`。
 
 面向 fnOS / NAS 的个人影音中控。生产环境使用一个 Python / Flask / Gunicorn 后端，同时提供 React 页面、Mineradio 影院大厅、订阅中枢和外部服务聚合。
 
@@ -10,8 +10,8 @@
 - 首页只展示今日是否正常、入库、下载中、待处理和真实异常；缺少证据时不显示绿色正常。
 - 第一阶段追更工作台统一展示本地写入、Torra、镜像同步、RSS 和定时任务状态，并将 Fluxa/Torra 对账、qB、115 与入库证据关联到每条追更。
 - Torra 已有订阅单向镜像到本地 SQLite，支持预览、确认导入和状态同步；第一阶段不修改或删除 Torra 订阅。
-- Torra → qBittorrent → 115 → Symedia → Emby 的 PT 任务链观察，并按需要处理、证据不足、等待、正常保护和正常解释原因与下一步。
-- 私人 PT RSS 种子库、本地全文搜索和来源管理。
+- Torra → qBittorrent → 115 → Symedia → Emby 的 PT 任务链观察，同时区分媒体身份、执行状态和用户介入优先级；疑似阻塞不会再被藏进证据不足。
+- 私人 PT RSS 种子库、本地全文搜索、订阅目标精确筛选、TMDB/IMDb 身份与有界历史回填。
 - 按电影或季集隔离的质量观察、人工追更分析和候选下载。
 - MoviePilot 人工备用入口，以及 Emby、qB、Torra、Symedia 服务状态。
 - 深色/浅色工作台与独立 Mineradio 影院大厅。
@@ -122,7 +122,7 @@ Vite 会把 `/api` 和 `/mineradio` 代理到 Python。
 ## 本地检查
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 259 项
+python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 271 项
 npm test
 npm run build
 docker compose config --services

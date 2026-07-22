@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 from app.health_state_runtime import evidence
@@ -12,6 +13,10 @@ PROTECTION_RULES = (
     ("QUALITY_OVERWRITE_SKIPPED", ("不执行覆盖", "不覆盖")),
     ("QUALITY_HIGHER_VERSION_EXISTS", ("已有更高质量版本", "现有版本评分更高", "更高版本", "高分版本")),
     ("DUPLICATE_RESOURCE_SKIPPED", ("重复资源跳过", "重复", "已存在", "跳过")),
+)
+TECHNICAL_REASON_PATTERN = re.compile(
+    r"(?:[a-zA-Z]:\\|/(?:vol|volume|mnt|downloads?)/|https?://|\b[a-f0-9]{32,}\b)",
+    re.IGNORECASE,
 )
 
 
@@ -103,6 +108,26 @@ def _action_text(stage: dict) -> str:
         "cloud115": "检查秒传状态和原始下载文件",
         "library": "查看归档失败原因和保留文件",
     }.get(key, f"查看 {_stage_label(stage)} 的任务证据")
+
+
+def _user_reason_text(stage: dict, state: str, value: str) -> str:
+    text = _text(value)
+    if not text or not TECHNICAL_REASON_PATTERN.search(text):
+        return text
+    key = _text(stage.get("key") or stage.get("stage")).lower()
+    source = _text(stage.get("source")).lower()
+    reason_code = _text(stage.get("reasonCode")).upper()
+    if key in {"library", "symedia"} or "symedia" in source or "SYMEDIA" in reason_code:
+        if any(marker in text for marker in ("未找到", "识别", "TMDB", "媒体信息")):
+            return "Symedia 未找到对应媒体信息"
+        return "Symedia 未完成媒体入库"
+    if key == "cloud115" or source == "115" or "UPLOAD" in reason_code:
+        return "115 处理未完成"
+    if key == "download" or "qbittorrent" in source or "DOWNLOAD" in reason_code:
+        return "qB 下载任务未正常继续"
+    if key in {"resource", "torra"} or "torra" in source:
+        return "Torra 未确认资源处理结果"
+    return "当前阶段没有形成可验证结果" if state != "normal" else "当前阶段已完成"
 
 
 def _outcome(state, reason_code, reason_text, recommended):
@@ -221,15 +246,19 @@ def classify_stage(stage: dict, *, now=None, observed_at="", fresh_until="") -> 
         _planned_retry(stage, current),
     )
     state, reason_code, reason_text, recommended = outcome
+    technical_reason = _text(stage.get("technicalReasonText") or stage.get("reasonText") or stage.get("detail"))
+    user_reason = _user_reason_text(stage, state, reason_text)
     result = evidence(
         state=state,
         source=_text(stage.get("source") or "task-chain"),
         reason_code=reason_code,
-        reason_text=reason_text,
+        reason_text=user_reason,
         observed_at=observed or _iso(current),
         fresh_until=freshness,
     )
     result.update({
+        "userReasonText": user_reason,
+        "technicalReasonText": technical_reason,
         "recommendedAction": recommended,
         "retryEligible": bool(_retry_eligible(stage) and state == "action_required"),
         "plannedRetryAt": _planned_retry(stage, current),
@@ -303,9 +332,55 @@ def _task_protected(item, classified):
     )
 
 
-def _task_outcome(item, classified):
-    if _text(item.get("confidence")).lower() == "unlinked":
+def _identity_state(item):
+    explicit = _text(item.get("identityState")).lower()
+    if explicit in {"unidentified", "linked", "conflict"}:
+        return explicit
+    confidence = _text(item.get("confidence")).lower()
+    reason_code = _text(item.get("reasonCode")).upper()
+    if confidence == "unlinked":
+        return "unidentified"
+    if confidence == "conflict" or "CONFLICT" in reason_code:
+        return "conflict"
+    return "linked"
+
+
+def _execution_state(item, stages, classified, identity_state):
+    action_indexes = [
+        index for index, result in enumerate(classified)
+        if result.get("healthState") == "action_required"
+    ]
+    if action_indexes:
+        if any(_text(stages[index].get("evidence")).lower() == "verified" for index in action_indexes):
+            return "confirmed_failed"
+        return "suspected_blocked" if identity_state == "unidentified" else "action_required"
+    if _text(item.get("state")).lower() == "blocked":
+        return "suspected_blocked" if identity_state == "unidentified" else "action_required"
+    if any(result.get("healthState") == "protected" for result in classified):
+        return "protected"
+    if any(result.get("healthState") == "waiting" for result in classified):
+        return "waiting"
+    if classified and all(result.get("healthState") == "normal" for result in classified):
+        return "normal"
+    return "waiting"
+
+
+def _task_outcome(item, classified, identity_state, execution_state):
+    if execution_state in {"action_required", "confirmed_failed"}:
+        result = _task_action(item, classified)
+        if result:
+            return result
+    if execution_state == "suspected_blocked":
+        return _outcome(
+            "evidence_insufficient",
+            "TASK_SUSPECTED_BLOCKED",
+            "已有处理阶段长时间没有形成后续证据，当前只能判断为疑似阻塞",
+            "补充媒体身份并刷新下游状态",
+        )
+    if identity_state == "unidentified":
         return _outcome("evidence_insufficient", "TASK_IDENTITY_UNLINKED", "任务尚未关联到订阅或媒体身份", "补充媒体身份后重新检查")
+    if identity_state == "conflict":
+        return _outcome("evidence_insufficient", "TASK_IDENTITY_CONFLICT", "任务对应多个媒体候选，当前没有自动绑定", "检查媒体身份冲突")
     for resolver in (_task_action, _task_protected, _task_waiting, _task_evidence):
         result = resolver(item, classified)
         if result:
@@ -323,17 +398,36 @@ def classify_task(item: dict, *, now=None, observed_at="", fresh_until="") -> di
         classify_stage(stage, now=current, observed_at=observed_at, fresh_until=fresh_until)
         for stage in stages
     ]
-    state, reason_code, reason_text, recommended = _task_outcome(item, classified)
+    identity_state = _identity_state(item)
+    execution_state = _execution_state(item, stages, classified, identity_state)
+    state, reason_code, reason_text, recommended = _task_outcome(
+        item, classified, identity_state, execution_state
+    )
+    problem_index = next((
+        index for index, result in enumerate(classified)
+        if result.get("healthState") in {"action_required", "evidence_insufficient"}
+    ), None)
+    problem_stage = stages[problem_index] if problem_index is not None else item
+    technical_reason = _text(
+        item.get("technicalReasonText")
+        or item.get("reasonText")
+        or (classified[problem_index].get("technicalReasonText") if problem_index is not None else "")
+    )
+    user_reason = _user_reason_text(problem_stage, state, reason_text)
     result = evidence(
         state=state,
         source=_text(item.get("source") or "task-chain"),
         reason_code=reason_code,
-        reason_text=reason_text,
+        reason_text=user_reason,
         observed_at=_text(item.get("observedAt") or observed_at) or _iso(current),
         fresh_until=_text(item.get("freshUntil") or fresh_until),
     )
     planned = next((_planned_retry(stage, current) for stage in stages if _planned_retry(stage, current)), "")
     result.update({
+        "identityState": identity_state,
+        "executionState": execution_state,
+        "userReasonText": user_reason,
+        "technicalReasonText": technical_reason,
         "recommendedAction": recommended,
         "retryEligible": bool(state == "action_required" and any(_retry_eligible(stage) for stage in stages)),
         "plannedRetryAt": planned,

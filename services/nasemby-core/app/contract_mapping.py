@@ -280,6 +280,10 @@ def map_calendar_payload(payload):
             "progressText": first_text(entry, "progress_text"),
             "inLibrary": source_boolean(entry.get("in_library")),
             "libraryPaths": string_array(entry.get("library_paths")),
+            "subscriptionCreatedAt": first_text(entry, "subscription_created_at"),
+            "followScopeExplicit": source_boolean(entry.get("follow_scope_explicit")),
+            "includePastEpisodes": source_boolean(entry.get("include_past_episodes")),
+            "allowedDelayHours": integer(entry.get("allowed_delay_hours"), 24),
         })
     stats = record(root.get("stats"))
     error_count = len(root.get("errors") or []) if isinstance(root.get("errors"), list) else 0

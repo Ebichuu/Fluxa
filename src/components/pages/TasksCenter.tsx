@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertTriangle, Braces, CheckCircle2, CircleHelp, Clock3, Copy, Download, ExternalLink, HardDrive, Pause, Play, RefreshCcw, Rss, Server, ShieldCheck } from 'lucide-react';
 import { getActivityLogs, getTaskChainDetailV2, getTaskChainV2, previewQbittorrentAction, runQbittorrentAction } from '../../services/api';
 import type { QbittorrentAction, QbittorrentActionPreview } from '../../types/qbittorrent';
-import type { TaskChainHealthState, TaskChainItem, TaskChainListItem, TaskChainResponse, TaskChainStage, TaskChainState } from '../../types/taskChain';
+import type { TaskChainExecutionState, TaskChainHealthState, TaskChainItem, TaskChainListItem, TaskChainResponse, TaskChainStage, TaskChainState } from '../../types/taskChain';
 import type { ActivityLogItem } from '../../types/operations';
 import { usePolling } from '../../hooks/usePolling';
 import { formatSpeed, formatTimeAgo } from '../../utils/formatters';
@@ -11,9 +11,9 @@ import { ConfirmDialog } from '../layout/ConfirmDialog';
 import type { AppNavigate, TaskNavigationTarget } from '../layout/AppTopNav';
 import { HealthBadge } from '../status/HealthBadge';
 
-type FilterName = '全部' | '需要处理' | '证据不足' | '等待' | '正常保护' | '正常';
+type FilterName = '全部' | '需要处理' | '疑似阻塞' | '证据不足' | '等待' | '正常保护' | '正常';
 
-const filters: FilterName[] = ['全部', '需要处理', '证据不足', '等待', '正常保护', '正常'];
+const filters: FilterName[] = ['全部', '需要处理', '疑似阻塞', '证据不足', '等待', '正常保护', '正常'];
 
 const activityFilters = [
   { key: '', label: '全部' },
@@ -107,13 +107,13 @@ function stageDisplayLabel(stage: TaskChainStage) {
 }
 
 function currentDetail(item: TaskChainListItem | TaskChainItem) {
-  if (item.reasonText) return item.reasonText;
+  if (item.userReasonText || item.reasonText) return item.userReasonText || item.reasonText;
   if (!item.stages?.length && !item.steps?.length) return '展开后查看完整阶段证据';
   const stages = stageItems(item);
   const current = stages.find((stage) => stage.stage === item.currentStep)
     ?? stages.find((stage) => stage.status === 'blocked' || stage.status === 'active')
     ?? stages.at(-1);
-  return item.reasonText || current?.reasonText || '等待下一步证据';
+  return item.userReasonText || item.reasonText || current?.userReasonText || current?.reasonText || '等待下一步证据';
 }
 
 function recommendedAction(item: TaskChainListItem | TaskChainItem, health: TaskChainHealthState) {
@@ -160,6 +160,14 @@ function healthForFilter(filter: FilterName): TaskChainHealthState | undefined {
   return undefined;
 }
 
+function executionForFilter(filter: FilterName): TaskChainExecutionState | undefined {
+  return filter === '疑似阻塞' ? 'suspected_blocked' : undefined;
+}
+
+function executionLabel(value?: TaskChainExecutionState) {
+  return value === 'suspected_blocked' ? '疑似阻塞' : value === 'confirmed_failed' ? '确认失败' : '';
+}
+
 export function TasksCenter({ target, onClearTarget, onNavigate }: { target: TaskNavigationTarget | null; onClearTarget: () => void; onNavigate: AppNavigate }) {
   const [filter, setFilter] = useState<FilterName>('全部');
   const [chain, setChain] = useState<TaskChainResponse | null>(null);
@@ -186,6 +194,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     try {
       const payload = await getTaskChainV2({
         healthState: focusActive ? undefined : healthForFilter(filter),
+        executionState: focusActive ? undefined : executionForFilter(filter),
         chainId: target?.chainId,
         targetKey: target?.targetKey,
         subscriptionId: target?.subscriptionId,
@@ -247,6 +256,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   const counts = useMemo<Record<FilterName, number>>(() => ({
     全部: chain?.counts.total ?? 0,
     需要处理: chain?.healthCounts?.action_required ?? 0,
+    疑似阻塞: chain?.executionCounts?.suspected_blocked ?? 0,
     证据不足: chain?.healthCounts?.evidence_insufficient ?? 0,
     等待: chain?.healthCounts?.waiting ?? 0,
     正常保护: chain?.healthCounts?.protected ?? 0,
@@ -384,7 +394,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
           <p className="ops-deck">订阅、下载、进入 115 和整理入库集中显示；匹配依据和原工具入口放在任务详情中。</p>
         </div>
         <div className="ops-task-hero-status">
-          <span>{counts['需要处理'] > 0 ? `${counts['需要处理']} 项需要处理` : counts['证据不足'] > 0 ? '部分任务证据不足' : counts['等待'] > 0 ? '任务正在处理' : chain ? '当前任务状态正常' : '正在读取任务状态'}</span>
+          <span>{counts['需要处理'] > 0 ? `${counts['需要处理']} 项需要处理` : counts['疑似阻塞'] > 0 ? `${counts['疑似阻塞']} 项疑似阻塞` : counts['证据不足'] > 0 ? '部分任务证据不足' : counts['等待'] > 0 ? '任务正在处理' : chain ? '当前任务状态正常' : '正在读取任务状态'}</span>
           <strong>{chain?.services.qb.connected ? formatSpeed(chain.services.qb.downloadSpeed) : '下载器待连接'}</strong>
           <small>{chain ? `${chain.counts.active} 进行中 · ${chain.counts.blocked} 阻塞 · ${formatTimeAgo(chain.generatedAt)}` : '正在汇总任务证据'}</small>
         </div>
@@ -423,7 +433,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                 }}
                 onKeyDown={handleHorizontalTabKeyDown}
               >
-                {name}<span className={['需要处理', '证据不足'].includes(name) && counts[name] > 0 ? 'is-alert' : undefined}>{counts[name]}</span>
+                {name}<span className={['需要处理', '疑似阻塞', '证据不足'].includes(name) && counts[name] > 0 ? 'is-alert' : undefined}>{counts[name]}</span>
               </button>
             ))}
           </div>
@@ -469,7 +479,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
               <div className="ops-task-card__head">
                 <div className="ops-task-card__status">
                   <HealthBadge state={health} />
-                  <span className="ops-task-state">{stateLabel[item.state]}</span>
+                  <span className="ops-task-state">{executionLabel(item.executionState) || stateLabel[item.state]}</span>
                 </div>
                 <div>
                   <h2>{item.title}</h2>
@@ -487,7 +497,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
               {health !== 'normal' && (
                 <div className={`ops-task-guidance ops-task-guidance--${health.replace('_', '-')}`} role={health === 'action_required' ? 'alert' : 'status'}>
                   {guidanceIcon(health)}
-                  <div><strong>为什么</strong><span>{currentDetail(detail ?? item)}</span></div>
+                    <div><strong>{item.executionState === 'suspected_blocked' ? '疑似阻塞' : '为什么'}</strong><span>{currentDetail(detail ?? item)}</span></div>
                   {nextAction && <div><strong>下一步</strong><span>{nextAction}</span></div>}
                 </div>
               )}
@@ -501,7 +511,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                       <em>{stageStatusLabel[stage.status] || stage.status}</em>
                     </div>
                     <strong>{stageDisplayLabel(stage)}</strong>
-                    <small>{stage.reasonText || stageStatusLabel[stage.status] || '暂无阶段说明'}</small>
+                    <small>{stage.userReasonText || stage.reasonText || stageStatusLabel[stage.status] || '暂无阶段说明'}</small>
                     {stage.recommendedAction && <small className="ops-task-chain__next">下一步：{stage.recommendedAction}</small>}
                     {stage.healthState === 'action_required' && !stage.actions.preview && !stage.actions.retry && (
                       <small className="ops-task-chain__unavailable">当前没有可在 Fluxa 内安全执行的重试，请查看证据或打开原工具。</small>
@@ -536,7 +546,8 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                         ['Torra 来源', detail.sourceIds.torraIds?.join('\n') || detail.sourceIds.torraId || '无'],
                         ['qB 任务', detail.sourceIds.qbHashes.join('\n') || '无'],
                         ['入库记录', detail.sourceIds.symediaIds.join('\n') || '无'],
-                        ['相关文件', detail.artifactKeys?.join('\n') || '无']
+                        ['相关文件', detail.artifactKeys?.join('\n') || '无'],
+                        ['阶段原始原因', detail.stages?.map((stage) => `${stageDisplayLabel(stage)}：${stage.technicalReasonText || '无'}`).join('\n') || '无']
                       ].map(([label, value]) => (
                         <div key={label}>
                           <dt>{label}</dt>

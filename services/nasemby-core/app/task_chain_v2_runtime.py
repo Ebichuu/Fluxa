@@ -25,6 +25,11 @@ EVIDENCE_PRIORITY = {"verified": 0, "inferred": 1, "missing": 2}
 STATUS_PRIORITY = {"blocked": 0, "active": 1, "waiting": 2, "unknown": 3, "done": 4}
 ORIGIN_PRIORITY = {"subscription": 0, "download": 1, "library": 2}
 CONFIDENCE_PRIORITY = {"strong": 0, "fallback": 1, "unlinked": 2}
+IDENTITY_STATES = ("unidentified", "linked", "conflict")
+EXECUTION_STATES = ("normal", "waiting", "protected", "suspected_blocked", "action_required", "confirmed_failed")
+EXECUTION_PRIORITY = {state: index for index, state in enumerate((
+    "confirmed_failed", "action_required", "suspected_blocked", "waiting", "protected", "normal",
+))}
 STAGE_ORDER = {
     name: index
     for index, name in enumerate((
@@ -302,10 +307,21 @@ def adapt_task_chain(chain: dict, *, now: datetime | None = None, health_filter:
         grouped.setdefault(adapted["chainId"], []).append(adapted)
     all_items = [_merge_group(items, observed_at, fresh_until, now_value) for items in grouped.values()]
     all_items.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
-    all_items.sort(key=lambda item: HEALTH_PRIORITY.get(str(item.get("healthState") or ""), len(HEALTH_PRIORITY)))
+    all_items.sort(key=lambda item: (
+        HEALTH_PRIORITY.get(str(item.get("healthState") or ""), len(HEALTH_PRIORITY)),
+        EXECUTION_PRIORITY.get(str(item.get("executionState") or ""), len(EXECUTION_PRIORITY)),
+    ))
     health_counts = {
         state: sum(item.get("healthState") == state for item in all_items)
         for state in HEALTH_PRIORITY
+    }
+    identity_counts = {
+        state: sum(item.get("identityState") == state for item in all_items)
+        for state in IDENTITY_STATES
+    }
+    execution_counts = {
+        state: sum(item.get("executionState") == state for item in all_items)
+        for state in EXECUTION_STATES
     }
     items = [
         item for item in all_items
@@ -321,6 +337,8 @@ def adapt_task_chain(chain: dict, *, now: datetime | None = None, health_filter:
         },
         "stageCounts": _stage_counts(all_items),
         "healthCounts": health_counts,
+        "identityCounts": identity_counts,
+        "executionCounts": execution_counts,
         "generatedAt": str(chain.get("generatedAt") or observed_at),
         "contractVersion": 2,
     }
@@ -332,7 +350,8 @@ def _summary_item(item: dict) -> dict:
         "origin", "origins", "channel", "state", "confidence", "progress", "currentStep",
         "embyIndexed", "qbControl", "acquisition", "updatedAt", "chainId", "mediaKey",
         "targetKey", "subscriptionId", "healthState", "observedAt", "freshUntil", "source",
-        "reasonCode", "reasonText", "recommendedAction", "retryEligible", "plannedRetryAt",
+        "reasonCode", "reasonText", "userReasonText", "recommendedAction", "retryEligible", "plannedRetryAt",
+        "identityState", "executionState",
         "relatedRecords",
     )
     result = {field: item.get(field) for field in fields if field in item}
@@ -349,6 +368,8 @@ def _version(payload: dict) -> str:
     stable = {
         "counts": payload.get("counts") or {},
         "healthCounts": payload.get("healthCounts") or {},
+        "identityCounts": payload.get("identityCounts") or {},
+        "executionCounts": payload.get("executionCounts") or {},
         "originCounts": payload.get("originCounts") or {},
         "stageCounts": payload.get("stageCounts") or {},
         "services": payload.get("services") or {},
@@ -357,6 +378,8 @@ def _version(payload: dict) -> str:
             "updatedAt": item.get("updatedAt"),
             "state": item.get("state"),
             "healthState": item.get("healthState"),
+            "identityState": item.get("identityState"),
+            "executionState": item.get("executionState"),
             "reasonCode": item.get("reasonCode"),
             "artifactKeys": item.get("artifactKeys") or [],
             "episodeEvidence": [{
@@ -377,6 +400,7 @@ def _version(payload: dict) -> str:
                 "evidence": stage.get("evidence"),
                 "reasonCode": stage.get("reasonCode"),
                 "reasonText": stage.get("reasonText"),
+                "userReasonText": stage.get("userReasonText"),
             } for stage in item.get("stages") or []],
         } for item in payload.get("items") or []],
     }
@@ -427,7 +451,7 @@ class TaskChainV2Service:
             key: payload.get(key)
             for key in (
                 "contractVersion", "generatedAt", "version", "counts", "healthCounts",
-                "originCounts", "stageCounts",
+                "identityCounts", "executionCounts", "originCounts", "stageCounts",
                 "services", "ledger",
             )
             if key in payload
@@ -437,6 +461,8 @@ class TaskChainV2Service:
         self,
         *,
         health_state="",
+        identity_state="",
+        execution_state="",
         chain_id_value="",
         target_key_value="",
         subscription_id="",
@@ -452,6 +478,10 @@ class TaskChainV2Service:
         items = payload.get("items") or []
         if health_state:
             items = [item for item in items if item.get("healthState") == health_state]
+        if identity_state:
+            items = [item for item in items if item.get("identityState") == identity_state]
+        if execution_state:
+            items = [item for item in items if item.get("executionState") == execution_state]
         if chain_id_value:
             items = [item for item in items if item.get("chainId") == chain_id_value]
         if target_key_value:
@@ -559,6 +589,12 @@ def register_task_chain_v2(app: Flask, repository=None, clock=None):
         allowed = set(HEALTH_PRIORITY)
         if health_state and health_state not in allowed:
             return _error("TASK_HEALTH_FILTER_INVALID", "健康状态筛选无效", 400)
+        identity_state = str(request.args.get("identityState") or "").strip()
+        if identity_state and identity_state not in IDENTITY_STATES:
+            return _error("TASK_IDENTITY_FILTER_INVALID", "身份状态筛选无效", 400)
+        execution_state = str(request.args.get("executionState") or "").strip()
+        if execution_state and execution_state not in EXECUTION_STATES:
+            return _error("TASK_EXECUTION_FILTER_INVALID", "执行状态筛选无效", 400)
         try:
             offset = _integer_query("offset", 0, 0, 1_000_000)
             limit = _integer_query("limit", 20, 1, 100)
@@ -573,6 +609,8 @@ def register_task_chain_v2(app: Flask, repository=None, clock=None):
         try:
             payload = service.list_items(
                 health_state=health_state,
+                identity_state=identity_state,
+                execution_state=execution_state,
                 chain_id_value=str(request.args.get("chainId") or "").strip(),
                 target_key_value=str(request.args.get("targetKey") or "").strip(),
                 subscription_id=str(request.args.get("subscriptionId") or "").strip(),

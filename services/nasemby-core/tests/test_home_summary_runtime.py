@@ -166,6 +166,25 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertNotIn("/vol/", public_text)
         self.assertNotIn("symedia:private", public_text)
 
+    def test_home_lists_unlinked_inferred_block_as_suspected(self):
+        blocked = item(library_status="blocked")
+        blocked.update({"state": "blocked", "tmdbId": "", "confidence": "unlinked"})
+        blocked["steps"][-1].update({
+            "evidence": "inferred",
+            "detail": "下载完成 501 小时后仍没有 Symedia 记录",
+            "source": "Symedia",
+        })
+        app = self.build_app([blocked], scheduler_enabled=False)
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+
+        self.assertEqual(result["counts"]["suspectedBlocked"], 1)
+        self.assertEqual(result["counts"]["actionRequired"], 0)
+        self.assertEqual(result["counts"]["evidenceInsufficient"], 1)
+        issue = next(value for value in result["issues"] if value["title"] == "测试剧")
+        self.assertEqual(issue["executionState"], "suspected_blocked")
+        self.assertEqual(issue["reasonCode"], "TASK_SUSPECTED_BLOCKED")
+
 
 if __name__ == "__main__":
     unittest.main()

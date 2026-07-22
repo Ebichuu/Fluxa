@@ -98,6 +98,63 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "身份状态"):
                 repository.search_items(identity_status="unknown")
 
+    def test_non_ascii_search_tokens_never_fall_back_to_latest_items(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [
+                {"fingerprint": "anime", "title": "ニャニャゴ S01E01", "media_type": "tv", "season_number": 1},
+                {"fingerprint": "other", "title": "完全无关的种子", "media_type": "movie"},
+            ])
+
+            japanese = repository.search_items(query="ニャニャゴ")
+            self.assertEqual(japanese["total"], 1)
+            self.assertEqual(japanese["items"][0]["title"], "ニャニャゴ S01E01")
+
+            invalid = repository.search_items(query="🦊")
+            self.assertEqual(invalid["total"], 0)
+            self.assertEqual(repository.search_items()["total"], 2)
+
+    def test_targeted_search_prefers_tmdb_identity_and_applies_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [
+                {
+                    "fingerprint": "exact", "title": "English Archive S01E03", "tmdb_id": "279323",
+                    "identity_status": "identified", "media_type": "tv", "season_number": 1,
+                },
+                {
+                    "fingerprint": "wrong", "title": "鬼谜东宫 S01E03", "tmdb_id": "999999",
+                    "identity_status": "identified", "media_type": "tv", "season_number": 1,
+                },
+                {
+                    "fingerprint": "fallback", "title": "Ghost Palace S01E04", "media_type": "tv", "season_number": 1,
+                },
+                {
+                    "fingerprint": "other-season", "title": "Ghost Palace S02E01", "media_type": "tv", "season_number": 2,
+                },
+            ])
+
+            exact = repository.search_items(
+                query="鬼谜东宫", tmdb_id="279323", media_type="tv", season_number=1,
+            )
+            self.assertEqual(exact["total"], 1)
+            self.assertEqual(exact["items"][0]["tmdbId"], "279323")
+            self.assertEqual(exact["items"][0]["matchMethod"], "tmdb_exact")
+
+            fallback = repository.search_items(
+                query="Ghost Palace", tmdb_id="279323", media_type="tv", season_number=1,
+            )
+            self.assertEqual(fallback["total"], 2)
+            self.assertEqual({item["title"] for item in fallback["items"]}, {"English Archive S01E03", "Ghost Palace S01E04"})
+
+            wrong_scope = repository.search_items(
+                query="Ghost Palace", tmdb_id="279323", media_type="tv", season_number=2,
+            )
+            self.assertEqual(wrong_scope["total"], 1)
+            self.assertEqual(wrong_scope["items"][0]["seasonNumber"], 2)
+
     def test_custom_poll_interval_is_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")

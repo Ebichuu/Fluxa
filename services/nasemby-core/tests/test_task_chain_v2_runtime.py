@@ -160,6 +160,33 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(unchanged.status_code, 304)
         self.assertEqual(fake.calls, 1)
 
+    def test_suspected_blocked_is_counted_and_filterable_without_red_failure(self):
+        fake = FakeTaskChain()
+        fake_payload = fake.get_chain()
+        fake_payload["items"][0].update({"tmdbId": "", "confidence": "unlinked"})
+        fake_payload["items"][0]["steps"] = [
+            {"key": "download", "status": "done", "evidence": "verified", "source": "qBittorrent"},
+            {"key": "cloud115", "status": "blocked", "evidence": "inferred", "source": "115", "detail": "长时间没有后续记录"},
+        ]
+        app = Flask(__name__)
+        app.extensions["mcc_task_chain_service"] = FakeTaskChain()
+        app.extensions["mcc_task_chain_service"].get_chain = lambda: fake_payload
+        register_task_chain_v2(app, clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc))
+        client = app.test_client()
+
+        summary = client.get("/api/v2/tasks/summary").get_json()
+        self.assertEqual(summary["executionCounts"]["suspected_blocked"], 1)
+        self.assertEqual(summary["healthCounts"]["action_required"], 0)
+        self.assertEqual(summary["healthCounts"]["evidence_insufficient"], 1)
+        listing = client.get("/api/v2/tasks/chains?executionState=suspected_blocked").get_json()
+        self.assertEqual(listing["page"]["total"], 1)
+        self.assertEqual(listing["items"][0]["identityState"], "unidentified")
+        self.assertEqual(listing["items"][0]["executionState"], "suspected_blocked")
+
+        invalid = client.get("/api/v2/tasks/chains?executionState=invalid")
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(invalid.get_json()["code"], "TASK_EXECUTION_FILTER_INVALID")
+
     def test_route_validates_pagination_and_missing_detail(self):
         app = Flask(__name__)
         app.extensions["mcc_task_chain_service"] = FakeTaskChain()

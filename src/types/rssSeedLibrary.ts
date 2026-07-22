@@ -51,6 +51,8 @@ export interface RssSeedItem {
   identitySource: string;
   identityConfidence: string;
   identityUpdatedAt: string;
+  matchMethod?: 'tmdb_exact' | 'title_media_season' | 'title_media_year' | 'title_scoped' | string;
+  matchConfidence?: 'strong' | 'fallback' | string;
   hasDownload: boolean;
   lastSeenAt: string;
 }
@@ -62,6 +64,16 @@ export interface RssSeedListResponse {
   total: number;
   limit: number;
   offset: number;
+}
+
+export interface RssIdentityBackfillResponse {
+  ok: boolean;
+  scanned: number;
+  identified: number;
+  conflicts: number;
+  unchanged: number;
+  remaining: number;
+  limit: number;
 }
 
 export interface RssSourceInput {

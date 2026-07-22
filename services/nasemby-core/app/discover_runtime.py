@@ -2563,6 +2563,23 @@ def build_subscription_calendar_entries_for_item(item, year, month, media_filter
     source_label = item.get("source_label") or source_def.get("label") or item.get("source") or ""
     poster = item.get("poster_url") or item.get("poster") or ""
     tmdb_id = discover_item_tmdb_id(item, media_type)
+    subscription_created_at = item.get("subscribed_at") or item.get("created_at") or item.get("createdAt") or ""
+    scope_value = item.get("follow_scope_explicit", True)
+    follow_scope_explicit = (
+        scope_value
+        if isinstance(scope_value, bool)
+        else str(scope_value).strip().lower() not in {"0", "false", "off", "no"}
+    )
+    past_value = item.get("include_past_episodes", item.get("backfill", item.get("allow_backfill", False)))
+    include_past_episodes = (
+        past_value
+        if isinstance(past_value, bool)
+        else str(past_value).strip().lower() in {"1", "true", "on", "yes"}
+    )
+    try:
+        allowed_delay_hours = max(0, int(item.get("allowed_delay_hours", item.get("grace_hours", 24))))
+    except (TypeError, ValueError):
+        allowed_delay_hours = 24
     entries = []
 
     if media_type == "movie":
@@ -2579,6 +2596,10 @@ def build_subscription_calendar_entries_for_item(item, year, month, media_filter
                 "episode_label": "电影上映",
                 "progress_text": "1/1" if item.get("in_library") else "0/1",
                 "in_library": bool(item.get("in_library")),
+                "subscription_created_at": subscription_created_at,
+                "follow_scope_explicit": follow_scope_explicit,
+                "include_past_episodes": include_past_episodes,
+                "allowed_delay_hours": allowed_delay_hours,
             })
         return entries, ""
 
@@ -2623,6 +2644,10 @@ def build_subscription_calendar_entries_for_item(item, year, month, media_filter
             "progress_text": progress,
             "in_library": bool(episode_paths),
             "library_paths": episode_paths,
+            "subscription_created_at": subscription_created_at,
+            "follow_scope_explicit": follow_scope_explicit,
+            "include_past_episodes": include_past_episodes,
+            "allowed_delay_hours": allowed_delay_hours,
         })
     if not entries:
         return [], ""

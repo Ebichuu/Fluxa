@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from flask import Flask, Response, jsonify, request
 
@@ -16,6 +16,7 @@ ALLOWED_MEDIA_TYPES = {"all", "movie", "tv"}
 ALLOWED_VIEWS = {"", "summary", "detail"}
 ACQUISITION_STAGES = {"resource", "download", "cloud115"}
 LIBRARY_STAGES = {"symedia", "strm", "library", "emby"}
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 def _text(value) -> str:
@@ -27,6 +28,28 @@ def _integer(value, default=0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _as_datetime(value):
+    text = _text(value)
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        parsed = None
+        for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                parsed = datetime.strptime(text[:19], pattern)
+                break
+            except ValueError:
+                continue
+        if parsed is None:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=BEIJING_TZ)
+    return parsed.astimezone(timezone.utc)
 
 
 def _parse_date(value) -> date | None:
@@ -226,15 +249,36 @@ def _public_task(entry: dict, items: list[dict]) -> dict:
 
 
 def _entry_status(entry: dict, today: str) -> str:
+    current = datetime.now(timezone.utc)
     if entry.get("inLibrary") or entry.get("libraryAt"):
         return "library"
     if entry.get("acquiredAt"):
         return "acquiring"
-    return "missing" if _text(entry.get("date")) < today else "upcoming"
+    if _text(entry.get("healthState")) == "protected" or protection_rule(
+        entry.get("reasonCode"), entry.get("reasonText")
+    ):
+        return "protected"
+    if _text(entry.get("date")) >= today:
+        return "upcoming"
+    if not entry.get("followScopeExplicit"):
+        return "unknown"
+    created_at = _as_datetime(entry.get("subscriptionCreatedAt"))
+    aired_at = _as_datetime(entry.get("airAt")) or _as_datetime(entry.get("date"))
+    if not created_at and not entry.get("includePastEpisodes"):
+        return "unknown"
+    if created_at and aired_at and aired_at < created_at and not entry.get("includePastEpisodes"):
+        return "unknown"
+    fresh_until = _as_datetime(entry.get("freshUntil"))
+    if fresh_until and fresh_until < current:
+        return "unknown"
+    delay_hours = max(0, _integer(entry.get("allowedDelayHours"), 24))
+    if aired_at and current < aired_at + timedelta(hours=delay_hours):
+        return "unknown"
+    return "missing"
 
 
 def _summary_calendar(calendar: dict) -> dict:
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
     grouped = {}
     for entry in calendar.get("entries") or []:
         grouped.setdefault(_text(entry.get("date")), []).append(entry)
@@ -243,7 +287,7 @@ def _summary_calendar(calendar: dict) -> dict:
         entries = grouped[date_key]
         status_counts = {
             state: sum(_entry_status(entry, today) == state for entry in entries)
-            for state in ("upcoming", "acquiring", "library", "missing")
+            for state in ("upcoming", "acquiring", "library", "protected", "missing", "unknown")
         }
         days.append({
             "date": date_key,
@@ -342,6 +386,8 @@ class CalendarTimelineService:
             "airAt": f"{entry.get('date')}T00:00:00+08:00" if entry.get("date") else "",
             **_public_task(entry, task_items),
         } for entry in calendar.get("entries") or []]
+        today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+        entries = [{**entry, "status": _entry_status(entry, today)} for entry in entries]
         calendar = {
             **calendar,
             "timeZone": "Asia/Shanghai",
@@ -352,6 +398,10 @@ class CalendarTimelineService:
                 "acquired": sum(bool(entry.get("acquiredAt")) for entry in entries),
                 "libraryEvidence": sum(bool(entry.get("libraryAt")) for entry in entries),
                 "actionRequired": sum(entry.get("healthState") == "action_required" for entry in entries),
+                "statusCounts": {
+                    state: sum(entry.get("status") == state for entry in entries)
+                    for state in ("upcoming", "acquiring", "library", "protected", "missing", "unknown")
+                },
             },
         }
         if view == "summary":

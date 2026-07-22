@@ -46,7 +46,7 @@ def _step(item: dict, key: str) -> dict:
 
 
 def _item_evidence(item: dict, now: str) -> dict:
-    return evidence(
+    result = evidence(
         state=str(item.get("healthState") or "evidence_insufficient"),
         source=str(item.get("source") or "task-chain"),
         reason_code=str(item.get("reasonCode") or ""),
@@ -54,6 +54,12 @@ def _item_evidence(item: dict, now: str) -> dict:
         observed_at=str(item.get("observedAt") or now),
         fresh_until=str(item.get("freshUntil") or ""),
     )
+    result.update({
+        "identityState": str(item.get("identityState") or "unidentified"),
+        "executionState": str(item.get("executionState") or "waiting"),
+        "userReasonText": str(item.get("userReasonText") or item.get("reasonText") or ""),
+    })
+    return result
 
 
 def _problem_stage(item: dict) -> dict:
@@ -88,6 +94,8 @@ def _safe_issue_copy(item: dict, result: dict) -> tuple[str, str]:
         return f"{label}证据存在冲突", "同一条处理证据对应多个媒体候选，当前没有自动绑定"
     if reason_code == "TASK_IDENTITY_UNLINKED":
         return f"{label}尚未识别", "暂时无法确认这条记录对应的媒体作品"
+    if reason_code == "TASK_SUSPECTED_BLOCKED":
+        return f"{label}疑似阻塞", "已有处理阶段长时间没有形成后续证据"
     if source == "Symedia" or "SYMEDIA" in reason_code or stage.get("stage") == "library":
         if any(marker in raw_reason for marker in ("未找到", "识别", "TMDB", "媒体信息")):
             return f"{label}识别失败", "Symedia 未找到对应媒体信息"
@@ -133,6 +141,9 @@ class HomeSummaryService:
             "waiting": sum(result["healthState"] == "waiting" for _, _, result in item_evidence),
             "evidenceInsufficient": sum(result["healthState"] == "evidence_insufficient" for _, _, result in item_evidence),
             "actionRequired": 0,
+            "suspectedBlocked": sum(
+                result.get("executionState") == "suspected_blocked" for _, _, result in item_evidence
+            ),
             "protected": sum(result["healthState"] == "protected" for _, _, result in item_evidence),
         }
 
@@ -276,6 +287,8 @@ class HomeSummaryService:
 
         if health_state == "action_required":
             headline = f"有 {max(1, counts['actionRequired'])} 项需要处理"
+        elif counts["suspectedBlocked"]:
+            headline = f"有 {counts['suspectedBlocked']} 项疑似阻塞"
         elif health_state == "evidence_insufficient":
             headline = "部分状态缺少证据"
         elif health_state == "waiting":
@@ -284,7 +297,8 @@ class HomeSummaryService:
             headline = "影音中心运行正常"
         detail = (
             f"今日入库 {counts['ingestedToday']} 条 · 下载中 {counts['downloading']} 条 · "
-            f"等待 {counts['waiting']} 条 · 证据不足 {counts['evidenceInsufficient']} 条"
+            f"等待 {counts['waiting']} 条 · 疑似阻塞 {counts['suspectedBlocked']} 条 · "
+            f"证据不足 {counts['evidenceInsufficient']} 条"
         )
         return {
             "ok": True,

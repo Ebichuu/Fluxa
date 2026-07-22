@@ -163,6 +163,59 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(item["identityStatus"], "unidentified")
         self.assertEqual(item["tmdbId"], "")
 
+    def test_bounded_identity_backfill_uses_explicit_ids_and_unique_subscription(self):
+        self.subscriptions.append({
+            "key": "tv:unique:s1",
+            "title": "Unique Show",
+            "media_type": "tv",
+            "tmdb_id": "808",
+            "target_season": 1,
+        })
+        self.rss.upsert_items(self.source["id"], [{
+            "fingerprint": "explicit-imdb",
+            "title": "Archive Movie 2024",
+            "description": "Public metadata: https://www.imdb.com/title/tt1234567/",
+            "media_type": "movie",
+        }, {
+            "fingerprint": "unique-follow",
+            "title": "Unique Show S01E02 1080p",
+            "media_type": "tv",
+            "season_number": 1,
+            "episode_start": 2,
+            "episode_end": 2,
+        }])
+
+        result = self.runtime.backfill_unidentified_items(limit=2)
+
+        self.assertEqual(result["scanned"], 2)
+        self.assertEqual(result["identified"], 2)
+        explicit = self.rss.search_items(query="Archive Movie")["items"][0]
+        unique = self.rss.search_items(query="Unique Show")["items"][0]
+        self.assertEqual(explicit["imdbId"], "tt1234567")
+        self.assertEqual(explicit["identitySource"], "rss_description")
+        self.assertEqual(unique["tmdbId"], "808")
+        self.assertEqual(unique["identitySource"], "subscription_match")
+
+    def test_identity_backfill_marks_multiple_reliable_targets_as_conflict(self):
+        self.subscriptions.extend([{
+            "key": "tv:conflict-a:s1", "title": "Conflict Show", "media_type": "tv",
+            "tmdb_id": "901", "target_season": 1,
+        }, {
+            "key": "tv:conflict-b:s1", "title": "Conflict Show", "media_type": "tv",
+            "tmdb_id": "902", "target_season": 1,
+        }])
+        self.rss.upsert_items(self.source["id"], [{
+            "fingerprint": "conflict-follow", "title": "Conflict Show S01E01",
+            "media_type": "tv", "season_number": 1,
+        }])
+
+        result = self.runtime.backfill_unidentified_items(limit=1)
+
+        self.assertEqual(result["conflicts"], 1)
+        item = self.rss.search_items(query="Conflict Show")["items"][0]
+        self.assertEqual(item["identityStatus"], "conflict")
+        self.assertEqual(item["tmdbId"], "")
+
     def test_expired_and_pre_baseline_items_are_not_backfilled(self):
         self._watch("tv:202:s1", episode=1)
         old = (self.now[0] - timedelta(hours=1)).isoformat().replace("+00:00", "Z")

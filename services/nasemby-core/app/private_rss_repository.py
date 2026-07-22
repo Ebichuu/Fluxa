@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 import uuid
 from contextlib import closing
 from dataclasses import dataclass
@@ -36,9 +37,9 @@ def _source_fingerprint(url):
 
 
 def _search_text(value):
-    text = str(value or "").lower()
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
     tokens = re.findall(r"[a-z0-9][a-z0-9._+-]*", text)
-    for block in re.findall(r"[\u3400-\u9fff]+", text):
+    for block in re.findall(r"[\u3040-\u30ff\u3400-\u9fff]+", text):
         tokens.extend(block)
         tokens.extend(block[index:index + 2] for index in range(max(0, len(block) - 1)))
         tokens.extend(block[index:index + 3] for index in range(max(0, len(block) - 2)))
@@ -427,30 +428,93 @@ class PrivateRssRepository:
             "_match_ids": [str(match.get("id") or "") for match in matches if isinstance(match, dict)],
         }
 
-    def search_items(self, query="", source_id="", window_hours=None, identity_status="", limit=50, offset=0):
+    def search_items(
+        self,
+        query="",
+        source_id="",
+        window_hours=None,
+        identity_status="",
+        limit=50,
+        offset=0,
+        tmdb_id="",
+        media_type="",
+        season_number=None,
+        year="",
+    ):
         limit = max(1, min(int(limit or 50), 100))
         offset = max(0, int(offset or 0))
-        joins = []
-        where = []
-        params = []
-        match = _match_query(query)
-        if match:
-            joins.append("JOIN rss_item_search f ON f.item_id=i.id")
-            where.append("f.search_text MATCH ?")
-            params.append(match)
-        if source_id:
-            where.append("i.source_id=?")
-            params.append(str(source_id))
-        if window_hours:
-            cutoff = _iso(_now() - timedelta(hours=int(window_hours)))
-            where.append("COALESCE(NULLIF(i.published_at, ''), i.created_at) >= ?")
-            params.append(cutoff)
+        query_text = str(query or "").strip()
+        match = _match_query(query_text)
+        target_tmdb_id = str(tmdb_id or "").strip()
+        if target_tmdb_id and (not target_tmdb_id.isdigit() or len(target_tmdb_id) > 24):
+            raise ValueError("TMDB ID 无效")
+        target_media_type = str(media_type or "").strip().lower()
+        if target_media_type and target_media_type not in {"movie", "tv"}:
+            raise ValueError("媒体类型无效")
+        if season_number in (None, ""):
+            target_season = None
+        else:
+            target_season = int(season_number)
+            if target_season < 0 or target_season > 999:
+                raise ValueError("季号无效")
+        target_year = str(year or "").strip()
+        if target_year and not re.fullmatch(r"(?:19|20)\d{2}", target_year):
+            raise ValueError("年份无效")
         identity_status = str(identity_status or "").strip().lower()
         if identity_status and identity_status not in IDENTITY_STATUSES:
             raise ValueError("身份状态无效")
+
+        base_where = []
+        base_params = []
+        if target_media_type:
+            base_where.append("i.media_type=?")
+            base_params.append(target_media_type)
+        if target_season is not None:
+            base_where.append("i.season_number=?")
+            base_params.append(target_season)
+        if source_id:
+            base_where.append("i.source_id=?")
+            base_params.append(str(source_id))
+        if window_hours:
+            cutoff = _iso(_now() - timedelta(hours=int(window_hours)))
+            base_where.append("COALESCE(NULLIF(i.published_at, ''), i.created_at) >= ?")
+            base_params.append(cutoff)
         if identity_status:
-            where.append("i.identity_status=?")
-            params.append(identity_status)
+            base_where.append("i.identity_status=?")
+            base_params.append(identity_status)
+
+        joins = []
+        where = list(base_where)
+        params = list(base_params)
+        if query_text and not match:
+            where.append("0")
+        elif target_tmdb_id and match:
+            base_sql = " AND ".join(base_where) or "1=1"
+            exact_sql = f"SELECT i.id FROM rss_items i WHERE {base_sql} AND i.tmdb_id=?"
+            fallback = [base_sql, "i.tmdb_id=''", "f.search_text MATCH ?"]
+            fallback_params = [*base_params, match]
+            if target_year:
+                fallback.append("i.title LIKE ?")
+                fallback_params.append(f"%{target_year}%")
+            fallback_sql = (
+                "SELECT i.id FROM rss_items i JOIN rss_item_search f ON f.item_id=i.id "
+                f"WHERE {' AND '.join(fallback)}"
+            )
+            where = [f"i.id IN ({exact_sql} UNION {fallback_sql})"]
+            params = [*base_params, target_tmdb_id, *fallback_params]
+        elif target_tmdb_id:
+            where.append("i.tmdb_id=?")
+            params.append(target_tmdb_id)
+        elif match:
+            joins.append("JOIN rss_item_search f ON f.item_id=i.id")
+            where.append("f.search_text MATCH ?")
+            params.append(match)
+            if target_year:
+                where.append("i.title LIKE ?")
+                params.append(f"%{target_year}%")
+        elif target_year:
+            where.append("i.title LIKE ?")
+            params.append(f"%{target_year}%")
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         join_sql = " ".join(joins)
         with closing(self.runtime.connect()) as connection:
@@ -463,7 +527,22 @@ class PrivateRssRepository:
                 "ORDER BY COALESCE(NULLIF(i.published_at, ''), i.created_at) DESC, i.id DESC LIMIT ? OFFSET ?",
                 (*params, limit, offset),
             ).fetchall()
-        return {"items": [self._public_item(row) for row in rows], "total": total, "limit": limit, "offset": offset}
+        items = [self._public_item(row) for row in rows]
+        if target_tmdb_id or target_media_type or target_season is not None or target_year:
+            for item in items:
+                if target_tmdb_id and item["tmdbId"] == target_tmdb_id:
+                    item["matchMethod"] = "tmdb_exact"
+                    item["matchConfidence"] = "strong"
+                elif target_media_type == "tv" and target_season is not None:
+                    item["matchMethod"] = "title_media_season"
+                    item["matchConfidence"] = "fallback"
+                elif target_media_type == "movie" and target_year:
+                    item["matchMethod"] = "title_media_year"
+                    item["matchConfidence"] = "fallback"
+                else:
+                    item["matchMethod"] = "title_scoped"
+                    item["matchConfidence"] = "fallback"
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
 
     def get_item(self, item_id, public=True):
         with closing(self.runtime.connect()) as connection:
@@ -474,6 +553,24 @@ class PrivateRssRepository:
         if not row:
             return None
         return self._public_item(row) if public else dict(row)
+
+    def list_unidentified_items(self, limit=50):
+        limit = max(1, min(int(limit or 50), 200))
+        with closing(self.runtime.connect()) as connection:
+            return [dict(row) for row in connection.execute(
+                "SELECT i.*, s.name AS source_name, s.domain AS source_domain "
+                "FROM rss_items i JOIN rss_sources s ON s.id=i.source_id "
+                "WHERE i.identity_status='unidentified' AND i.tmdb_id='' AND i.imdb_id='' "
+                "ORDER BY COALESCE(NULLIF(i.published_at, ''), i.created_at) DESC, i.id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()]
+
+    def count_unidentified_items(self):
+        with closing(self.runtime.connect()) as connection:
+            return int(connection.execute(
+                "SELECT COUNT(*) AS count FROM rss_items "
+                "WHERE identity_status='unidentified' AND tmdb_id='' AND imdb_id=''"
+            ).fetchone()["count"])
 
     @staticmethod
     def supplement_item_identity(connection, item_id, tmdb_id="", imdb_id="", source="subscription_match", confidence="fallback"):
@@ -486,6 +583,16 @@ class PrivateRssRepository:
             "identity_confidence=?, identity_updated_at=? "
             "WHERE id=? AND identity_status='unidentified' AND tmdb_id='' AND imdb_id=''",
             (tmdb_id, imdb_id, str(source or "")[:160], str(confidence or "")[:40], _iso(), str(item_id)),
+        )
+        return cursor.rowcount > 0
+
+    @staticmethod
+    def mark_item_identity_conflict(connection, item_id, source="subscription_match", confidence="conflict"):
+        cursor = connection.execute(
+            "UPDATE rss_items SET identity_status='conflict', identity_source=?, "
+            "identity_confidence=?, identity_updated_at=? "
+            "WHERE id=? AND identity_status='unidentified' AND tmdb_id='' AND imdb_id=''",
+            (str(source or "")[:160], str(confidence or "")[:40], _iso(), str(item_id)),
         )
         return cursor.rowcount > 0
 

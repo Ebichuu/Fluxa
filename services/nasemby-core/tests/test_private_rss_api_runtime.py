@@ -52,6 +52,17 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             self.assertNotIn("detail_url", item_detail.get_data(as_text=True))
             self.assertEqual(client.get("/api/v2/rss-items?identityStatus=unidentified").get_json()["total"], 1)
             self.assertEqual(client.get("/api/v2/rss-items?identityStatus=invalid").status_code, 422)
+            self.assertEqual(client.post("/api/v2/rss-items/identity-backfills", json={"limit": 201}).status_code, 422)
+            repository.upsert_items(source_id, [{
+                "fingerprint": "history-imdb",
+                "title": "History Movie 2024",
+                "description": "https://www.imdb.com/title/tt7654321/",
+                "media_type": "movie",
+            }])
+            backfill = client.post("/api/v2/rss-items/identity-backfills", json={"limit": 50})
+            self.assertEqual(backfill.status_code, 200)
+            self.assertEqual(backfill.get_json()["identified"], 1)
+            self.assertEqual(repository.search_items(query="History Movie")["items"][0]["imdbId"], "tt7654321")
             repository.create_match(item_id, "tv:202:s1", "tv:202:s1:s1:e1", {"identity": {"basis": "title"}})
             listed_matches = client.get("/api/v2/rss-matches?status=candidate").get_json()
             self.assertEqual(listed_matches["total"], 1)
@@ -67,6 +78,32 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             self.assertEqual(action.get_json()["result"]["items"], 2)
             deleted = client.delete(f"/api/v2/rss-sources/{source_id}")
             self.assertEqual(deleted.status_code, 204)
+
+    def test_rss_items_accept_target_identity_and_scope_filters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            app = create_app(
+                access_environment={"NASEMBY_CORE_WRITE_ENABLED": "true", "MCC_PRIVATE_RSS_ENABLED": "false"},
+                private_rss_repository=repository,
+                private_rss_collector=FakeCollector(),
+                quality_watch_repository=QualityWatchRepository(Path(directory) / "media_control_center.sqlite3"),
+            )
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "target", "title": "Unrelated English Name S01E01", "tmdb_id": "279323",
+                "identity_status": "identified", "media_type": "tv", "season_number": 1,
+            }])
+
+            response = app.test_client().get(
+                "/api/v2/rss-items?query=%E9%AC%BC%E8%B0%9C%E4%B8%9C%E5%AE%AB"
+                "&tmdbId=279323&mediaType=tv&seasonNumber=1&year=2026"
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()["total"], 1)
+            self.assertEqual(response.get_json()["items"][0]["matchMethod"], "tmdb_exact")
+
+            self.assertEqual(app.test_client().get("/api/v2/rss-items?mediaType=invalid").status_code, 422)
+            self.assertEqual(app.test_client().get("/api/v2/rss-items?seasonNumber=bad").status_code, 422)
 
 
 if __name__ == "__main__":

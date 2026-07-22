@@ -26,7 +26,14 @@ export interface SubscriptionCalendarEntry {
   reasonText?: string;
   observedAt?: string;
   freshUntil?: string;
+  subscriptionCreatedAt?: string;
+  followScopeExplicit?: boolean;
+  includePastEpisodes?: boolean;
+  allowedDelayHours?: number;
+  status?: SubscriptionCalendarStatus;
 }
+
+export type SubscriptionCalendarStatus = 'upcoming' | 'acquiring' | 'library' | 'protected' | 'missing' | 'unknown';
 
 export interface SubscriptionCalendarDayPreview {
   key?: string;
@@ -35,7 +42,7 @@ export interface SubscriptionCalendarDayPreview {
   posterUrl: string;
   mediaType: string;
   healthState?: SubscriptionHealthState;
-  status: 'upcoming' | 'acquiring' | 'library' | 'missing';
+  status: SubscriptionCalendarStatus;
 }
 
 export interface SubscriptionCalendarDaySummary {
@@ -45,7 +52,9 @@ export interface SubscriptionCalendarDaySummary {
     upcoming: number;
     acquiring: number;
     library: number;
+    protected: number;
     missing: number;
+    unknown: number;
   };
   preview: SubscriptionCalendarDayPreview[];
   hasMore: boolean;
@@ -63,6 +72,7 @@ export interface SubscriptionCalendar {
     acquired?: number;
     libraryEvidence?: number;
     actionRequired?: number;
+    statusCounts?: Record<SubscriptionCalendarStatus, number>;
   };
   timeZone?: 'Asia/Shanghai' | string;
   mediaType?: string;
@@ -352,6 +362,7 @@ export interface DiscoverResult {
   sourceLabel?: string;
   sourceId?: string;
   tmdbId?: string;
+  seasonNumber?: number;
 }
 
 export interface DiscoverBrowseParams {

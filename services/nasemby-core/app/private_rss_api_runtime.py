@@ -36,11 +36,12 @@ def _error(code, message, status):
 
 
 class PrivateRssService:
-    def __init__(self, repository, action_repository, environment=None, collector=None):
+    def __init__(self, repository, action_repository, environment=None, collector=None, match_runtime=None):
         self.repository = repository
         self.action_repository = action_repository
         self.environment = os.environ if environment is None else environment
         self.collector = collector or PrivateRssCollector(repository)
+        self.match_runtime = match_runtime
 
     def collection_enabled(self):
         return _truthy(self.environment.get("MCC_PRIVATE_RSS_ENABLED"))
@@ -83,6 +84,12 @@ class PrivateRssService:
             )
 
 
+    def backfill_identities(self, limit=50):
+        if not self.match_runtime:
+            raise RuntimeError("RSS identity matcher is not initialized")
+        return self.match_runtime.backfill_unidentified_items(limit)
+
+
 def register_private_rss(
     app,
     database_path,
@@ -117,6 +124,7 @@ def register_private_rss(
             item_matcher=match_runtime.match_inserted_rows,
             match_waker=match_runtime.wake_matches,
         ),
+        match_runtime=match_runtime,
     )
     app.extensions["mcc_private_rss"] = service
 
@@ -190,10 +198,33 @@ def register_private_rss(
                 identity_status=request.args.get("identityStatus") or "",
                 limit=request.args.get("limit") or 50,
                 offset=request.args.get("offset") or 0,
+                tmdb_id=request.args.get("tmdbId") or "",
+                media_type=request.args.get("mediaType") or "",
+                season_number=request.args.get("seasonNumber") or None,
+                year=request.args.get("year") or "",
             )
         except (TypeError, ValueError):
             return _error("RSS_QUERY_INVALID", "种子库查询参数无效", 422)
         return jsonify(payload)
+
+    @app.post("/api/v2/rss-items/identity-backfills")
+    def rss_items_identity_backfill():
+        if not service.config_write_enabled():
+            return _error("RSS_IDENTITY_WRITE_DISABLED", "RSS 身份回填需要开启本地写入", 503)
+        try:
+            raw_limit = (request.get_json(silent=True) or {}).get("limit", 50)
+            if isinstance(raw_limit, bool):
+                raise ValueError
+            limit = int(raw_limit)
+            if limit < 1 or limit > 200:
+                raise ValueError
+            result = service.backfill_identities(limit)
+        except (TypeError, ValueError):
+            return _error("RSS_BACKFILL_INVALID", "身份回填批量必须是 1 到 200", 422)
+        except Exception:
+            return _error("RSS_BACKFILL_FAILED", "RSS 身份回填失败", 500)
+        write_activity("rss", "identity_backfill", "success", "RSS 身份回填完成", **result)
+        return jsonify({"ok": True, **result})
 
     @app.get("/api/v2/rss-items/<item_id>")
     def rss_items_detail(item_id):

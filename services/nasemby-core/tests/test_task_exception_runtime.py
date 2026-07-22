@@ -102,6 +102,37 @@ class TaskExceptionRuntimeTests(unittest.TestCase):
         result = classify_task({"state": "waiting", "confidence": "unlinked", "stages": []}, now=NOW)
         self.assertEqual(result["healthState"], "evidence_insufficient")
         self.assertEqual(result["reasonCode"], "TASK_IDENTITY_UNLINKED")
+        self.assertEqual(result["identityState"], "unidentified")
+        self.assertEqual(result["executionState"], "waiting")
+
+    def test_unlinked_downstream_block_is_exposed_as_suspected_blocked(self):
+        result = classify_task({
+            "state": "blocked",
+            "confidence": "unlinked",
+            "stages": [stage("done"), stage("blocked", key="cloud115", evidence="inferred", source="115", reasonText="等待后续入库证据")],
+        }, now=NOW)
+        self.assertEqual(result["healthState"], "evidence_insufficient")
+        self.assertEqual(result["executionState"], "suspected_blocked")
+        self.assertEqual(result["reasonCode"], "TASK_SUSPECTED_BLOCKED")
+
+    def test_unlinked_verified_failure_remains_action_required(self):
+        result = classify_task({
+            "state": "blocked",
+            "confidence": "unlinked",
+            "stages": [stage("blocked", key="cloud115", evidence="verified", source="115", reasonText="上传失败", reasonCode="UPLOAD_FAILED")],
+        }, now=NOW)
+        self.assertEqual(result["healthState"], "action_required")
+        self.assertEqual(result["executionState"], "confirmed_failed")
+        self.assertEqual(result["reasonCode"], "UPLOAD_FAILED")
+
+    def test_technical_reason_is_kept_separately_from_user_reason(self):
+        result = classify_stage(
+            stage("blocked", key="library", source="Symedia", reasonCode="SYMEDIA_LIBRARY_FAILED", reasonText="/vol/private/file.mkv 未找到媒体信息"),
+            now=NOW,
+        )
+        self.assertEqual(result["userReasonText"], "Symedia 未找到对应媒体信息")
+        self.assertIn("/vol/private/file.mkv", result["technicalReasonText"])
+        self.assertEqual(result["reasonText"], result["userReasonText"])
 
     def test_artifact_identity_conflict_requires_attention(self):
         result = classify_task({

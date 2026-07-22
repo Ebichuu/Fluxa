@@ -18,6 +18,7 @@ import {
   X
 } from 'lucide-react';
 import {
+  backfillRssIdentities,
   deleteRssSource,
   getAutomationAction,
   getRssSeedItem,
@@ -129,6 +130,7 @@ export function RssSeedLibraryPage() {
   const [detailItem, setDetailItem] = useState<RssSeedItem | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
+  const [identityBackfillBusy, setIdentityBackfillBusy] = useState(false);
   const itemsRequestRef = useRef<AbortController | null>(null);
   const matchesRequestRef = useRef<AbortController | null>(null);
   const matchPollRef = useRef<AbortController | null>(null);
@@ -197,6 +199,22 @@ export function RssSeedLibraryPage() {
       setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : '种子库读取失败' });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const runIdentityBackfill = async () => {
+    setIdentityBackfillBusy(true);
+    try {
+      const result = await backfillRssIdentities(50);
+      setFeedback({
+        tone: 'ok',
+        message: `身份回填完成：识别 ${result.identified} 条，冲突 ${result.conflicts} 条，剩余 ${result.remaining} 条`
+      });
+      await Promise.all([loadSources(), loadItems({ offset: 0 })]);
+    } catch (reason) {
+      setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : 'RSS 身份回填失败' });
+    } finally {
+      setIdentityBackfillBusy(false);
     }
   };
 
@@ -414,6 +432,9 @@ export function RssSeedLibraryPage() {
           <div className="rss-index-head">
             <span>{loading || itemsLoading ? '正在读取本地索引' : `找到 ${total} 条内容`}</span>
             <div className="rss-index-filters">
+              <button className="ops-action-button" disabled={identityBackfillBusy} type="button" onClick={() => void runIdentityBackfill()}>
+                <RefreshCcw aria-hidden="true" size={13} />{identityBackfillBusy ? '正在回填' : '补齐身份'}
+              </button>
               <select aria-label="按身份状态筛选" value={identityStatus} onChange={(event) => setIdentityStatus(event.target.value as RssIdentityStatus)}>
                 <option value="">全部身份</option>
                 <option value="identified">已识别</option>

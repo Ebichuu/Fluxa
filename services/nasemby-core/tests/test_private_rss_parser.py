@@ -33,6 +33,12 @@ RSS_IDENTITY_CONFLICT_SAMPLE = b'''<?xml version="1.0" encoding="UTF-8"?>
 <description><![CDATA[TMDB: 12345 / https://www.themoviedb.org/movie/67890]]></description>
 </item></channel></rss>'''
 
+RSS_IMDB_LINK_SAMPLE = b'''<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>IMDb Link</title><item>
+<title>Linked Movie 2026</title><guid>identity-3</guid>
+<description><![CDATA[Public reference: https://www.imdb.com/title/tt7654321/]]></description>
+</item></channel></rss>'''
+
 
 class PrivateRssParserTests(unittest.TestCase):
     def test_parses_identity_episode_and_version_summary(self):
@@ -117,6 +123,12 @@ class PrivateRssParserTests(unittest.TestCase):
         self.assertEqual(conflict["tmdb_id"], "")
         self.assertEqual(conflict["imdb_id"], "")
         self.assertIn("rss_description", conflict["identity_source"])
+
+        imdb_only = parse_private_feed(RSS_IMDB_LINK_SAMPLE)["items"][0]
+        self.assertEqual(imdb_only["tmdb_id"], "")
+        self.assertEqual(imdb_only["imdb_id"], "tt7654321")
+        self.assertEqual(imdb_only["identity_status"], "identified")
+        self.assertIn("rss_description", imdb_only["identity_source"])
 
 
 if __name__ == "__main__":

@@ -115,6 +115,10 @@ def _media_identity(entry):
     }
 
 
+def extract_media_identity(entry):
+    return _media_identity(entry if isinstance(entry, dict) else {})
+
+
 def _season_episode(title):
     text = str(title or "")
     season = episode_start = episode_end = None

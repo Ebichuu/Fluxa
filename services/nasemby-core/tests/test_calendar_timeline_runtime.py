@@ -5,7 +5,7 @@ import json
 
 from flask import Flask
 
-from app.calendar_timeline_runtime import register_calendar_timeline
+from app.calendar_timeline_runtime import _entry_status, register_calendar_timeline
 
 
 class FakeTaskService:
@@ -142,6 +142,32 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
         self.assertEqual(summary.get_json()["calendar"]["days"][0]["statusCounts"]["acquiring"], 1)
         self.assertEqual(len(detail.get_json()["calendar"]["entries"]), 1)
         self.assertEqual(detail.get_json()["calendar"]["view"], "detail")
+
+    def test_past_episode_requires_explicit_follow_scope_before_marking_missing(self):
+        base = {
+            "date": "2001-01-01",
+            "airAt": "2001-01-01T00:00:00+08:00",
+            "subscriptionCreatedAt": "2000-12-01T00:00:00Z",
+            "allowedDelayHours": 24,
+        }
+
+        self.assertEqual(_entry_status(base, "2026-07-23"), "unknown")
+        self.assertEqual(_entry_status({**base, "followScopeExplicit": True}, "2026-07-23"), "missing")
+        self.assertEqual(_entry_status({
+            **base,
+            "followScopeExplicit": True,
+            "subscriptionCreatedAt": "2002-01-01T00:00:00Z",
+        }, "2026-07-23"), "unknown")
+
+    def test_protection_evidence_is_not_counted_as_missing(self):
+        entry = {
+            "date": "2001-01-01",
+            "followScopeExplicit": True,
+            "healthState": "protected",
+            "reasonCode": "QUALITY_LOWER_THAN_TARGET",
+        }
+
+        self.assertEqual(_entry_status(entry, "2026-07-23"), "protected")
 
     def test_month_summary_stays_below_size_target(self):
         def large_loader(year, month, media_type):

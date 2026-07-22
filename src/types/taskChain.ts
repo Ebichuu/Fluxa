@@ -3,6 +3,8 @@ export type TaskChainConfidence = 'strong' | 'fallback' | 'unlinked';
 export type TaskChainStepStatus = 'done' | 'active' | 'blocked' | 'waiting' | 'unknown';
 export type TaskChainEvidence = 'verified' | 'inferred' | 'missing';
 export type TaskChainHealthState = 'normal' | 'waiting' | 'protected' | 'action_required' | 'evidence_insufficient';
+export type TaskChainIdentityState = 'unidentified' | 'linked' | 'conflict';
+export type TaskChainExecutionState = 'normal' | 'waiting' | 'protected' | 'suspected_blocked' | 'action_required' | 'confirmed_failed';
 
 export interface TaskChainStep {
   key: 'subscription' | 'download' | 'cloud115' | 'library';
@@ -25,6 +27,8 @@ export interface TaskChainStage {
   source: string;
   reasonCode: string;
   reasonText: string;
+  userReasonText?: string;
+  technicalReasonText?: string;
   recommendedAction: string;
   retryEligible: boolean;
   plannedRetryAt: string;
@@ -89,6 +93,10 @@ export interface TaskChainItem {
   source?: string;
   reasonCode?: string;
   reasonText?: string;
+  userReasonText?: string;
+  technicalReasonText?: string;
+  identityState?: TaskChainIdentityState;
+  executionState?: TaskChainExecutionState;
   recommendedAction?: string;
   retryEligible?: boolean;
   plannedRetryAt?: string;
@@ -142,6 +150,8 @@ export interface TaskChainResponse {
     emby: { connected: boolean; error: string; indexedMovies: number; indexedSeries: number; webUrl: string };
   };
   healthCounts?: Record<TaskChainHealthState, number>;
+  identityCounts?: Record<TaskChainIdentityState, number>;
+  executionCounts?: Record<TaskChainExecutionState, number>;
   originCounts?: Record<'subscription' | 'download' | 'library', number>;
   stageCounts?: Record<string, Record<string, number>>;
 }
@@ -154,6 +164,8 @@ export type TaskChainSummaryResponse = Omit<TaskChainResponse, 'items' | 'page'>
 
 export interface TaskChainQuery {
   healthState?: TaskChainHealthState;
+  identityState?: TaskChainIdentityState;
+  executionState?: TaskChainExecutionState;
   chainId?: string;
   targetKey?: string;
   subscriptionId?: string;

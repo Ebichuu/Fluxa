@@ -7,6 +7,7 @@ export interface HomeSummaryCounts {
   waiting: number;
   evidenceInsufficient: number;
   actionRequired: number;
+  suspectedBlocked: number;
   protected: number;
 }
 
@@ -21,6 +22,8 @@ export interface HomeSummaryIssue {
   targetKey: string;
   chainId: string;
   title: string;
+  identityState?: 'unidentified' | 'linked' | 'conflict';
+  executionState?: 'normal' | 'waiting' | 'protected' | 'suspected_blocked' | 'action_required' | 'confirmed_failed';
 }
 
 export interface HomeSummaryResponse {

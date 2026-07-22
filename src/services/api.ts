@@ -10,6 +10,7 @@ import type { HomeSummaryResponse } from '../types/homeSummary';
 import type { RuntimeSettingsResponse, RuntimeSettingsUpdate } from '../types/runtimeSettings';
 import type {
   AutomationAction,
+  RssIdentityBackfillResponse,
   RssMatchListResponse,
   RssSeedItem,
   RssSeedListResponse,
@@ -259,6 +260,8 @@ export function getTaskChainV2(query: TaskChainQuery | TaskChainHealthState = {}
   const input = typeof query === 'string' ? { healthState: query } : query;
   const params = new URLSearchParams();
   if (input.healthState) params.set('healthState', input.healthState);
+  if (input.identityState) params.set('identityState', input.identityState);
+  if (input.executionState) params.set('executionState', input.executionState);
   if (input.chainId) params.set('chainId', input.chainId);
   if (input.targetKey) params.set('targetKey', input.targetKey);
   if (input.subscriptionId) params.set('subscriptionId', input.subscriptionId);
@@ -450,6 +453,10 @@ export function getRssSeedItems(input: {
   sourceId?: string;
   window?: '' | '1h' | '24h' | '7d';
   identityStatus?: '' | 'identified' | 'conflict' | 'unidentified';
+  tmdbId?: string;
+  mediaType?: 'movie' | 'tv';
+  seasonNumber?: number;
+  year?: string;
   limit?: number;
   offset?: number;
 } = {}, options?: RequestOptions): Promise<RssSeedListResponse> {
@@ -458,6 +465,10 @@ export function getRssSeedItems(input: {
   if (input.sourceId) query.set('sourceId', input.sourceId);
   if (input.window) query.set('window', input.window);
   if (input.identityStatus) query.set('identityStatus', input.identityStatus);
+  if (input.tmdbId) query.set('tmdbId', input.tmdbId);
+  if (input.mediaType) query.set('mediaType', input.mediaType);
+  if (input.seasonNumber != null) query.set('seasonNumber', String(input.seasonNumber));
+  if (input.year) query.set('year', input.year);
   query.set('limit', String(input.limit ?? 50));
   query.set('offset', String(input.offset ?? 0));
   return readJson<RssSeedListResponse>(`/api/v2/rss-items?${query.toString()}`, options);
@@ -465,6 +476,10 @@ export function getRssSeedItems(input: {
 
 export function getRssSeedItem(id: string, options?: RequestOptions): Promise<RssSeedItem> {
   return readJson<RssSeedItem>(`/api/v2/rss-items/${encodeURIComponent(id)}`, options);
+}
+
+export function backfillRssIdentities(limit = 50): Promise<RssIdentityBackfillResponse> {
+  return postJson<RssIdentityBackfillResponse>('/api/v2/rss-items/identity-backfills', { limit });
 }
 
 export function getRssMatches(input: { status?: string; limit?: number; offset?: number } = {}, options?: RequestOptions): Promise<RssMatchListResponse> {

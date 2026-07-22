@@ -49,6 +49,7 @@ import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
 import type { AppNavigate, TaskNavigationTarget } from '../layout/AppTopNav';
 import { HealthBadge } from '../status/HealthBadge';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
+import { PosterImage } from '../layout/PosterImage';
 
 interface DiscoverPageProps {
   navigationTarget?: TaskNavigationTarget | null;
@@ -1226,7 +1227,15 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
         const resolvedQueries = queries.length > 0 ? queries : [result.title];
         if (!controller.signal.aborted) setResourceQueries(resolvedQueries);
         return Promise.all(resolvedQueries.map((query) => getRssSeedItems(
-          { query, limit: 50, offset: 0 },
+          {
+            query,
+            tmdbId: result.tmdbId,
+            mediaType: result.mediaType,
+            seasonNumber: result.seasonNumber,
+            year: result.year,
+            limit: 50,
+            offset: 0
+          },
           { signal: controller.signal }
         )));
       })
@@ -1261,7 +1270,8 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       source: 'subscription',
       sourceLabel: item.sourceLabel || '我的订阅',
       sourceId: item.id,
-      tmdbId: item.tmdbId
+      tmdbId: item.tmdbId,
+      seasonNumber: item.seasonNumber
     } satisfies DiscoverResult;
     const detailRequest = detailId === item.id && detail?.detail
       ? Promise.resolve(detail)
@@ -1394,7 +1404,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
               })}
               {visibleResources.length === 0 && (
                 <div className="discover-resource-empty">
-                  <span>本地种子箱中没有匹配种子。</span>
+                  <span>{variant === 'subscription' ? '没有找到与该订阅身份和季集相符的种子。' : '本地种子箱中没有匹配种子。'}</span>
                   <small>已搜索：{resourceQueries.join(' / ')}</small>
                 </div>
               )}
@@ -1536,13 +1546,12 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             return (
               <Fragment key={cardKey}>
                 <article className="ops-panel discover-card">
-                  {result.posterUrl ? (
-                    <img alt="" className="discover-card__poster" loading="lazy" src={result.posterUrl} />
-                  ) : (
-                    <span aria-hidden="true" className="discover-card__poster discover-card__poster--fallback">
-                      {result.title.charAt(0)}
-                    </span>
-                  )}
+                  <PosterImage
+                    className="discover-card__poster"
+                    fallbackClassName="discover-card__poster--fallback"
+                    src={result.posterUrl}
+                    title={result.title}
+                  />
                   <div className="discover-card__body">
                     <strong title={result.title}>{result.title}</strong>
                     <small>{resultMeta(result)}</small>
@@ -1831,11 +1840,12 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
               key={item.id ?? item.title}
             >
               <div className="activity-row">
-                {item.posterUrl ? (
-                  <img alt="" aria-hidden="true" className="discover-sub__poster" src={item.posterUrl} />
-                ) : (
-                  <span aria-hidden="true" className="discover-sub__poster discover-sub__poster--fallback">{item.title.charAt(0)}</span>
-                )}
+                <PosterImage
+                  className="discover-sub__poster"
+                  fallbackClassName="discover-sub__poster--fallback"
+                  src={item.posterUrl}
+                  title={item.title}
+                />
                 <button
                   className="activity-row__text discover-sub__open"
                   title={item.mediaType === 'tv' ? '查看季集详情' : '查看详情'}
@@ -2000,7 +2010,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                           <div className="sub-detail__cast">
                             {detailInfo?.cast?.map((person) => (
                               <div key={`${person.name}-${person.character}`}>
-                                {person.profileUrl ? <img alt="" aria-hidden="true" loading="lazy" src={person.profileUrl} /> : <span>{person.name.charAt(0)}</span>}
+                                <PosterImage className="sub-detail__cast-poster" src={person.profileUrl} title={person.name} />
                                 <strong title={person.name}>{person.name}</strong><small title={person.character || '演员'}>{person.character || '演员'}</small>
                               </div>
                             ))}
