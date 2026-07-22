@@ -64,6 +64,7 @@
 | 控制室 | `src/components/pages/ControlRoom.tsx` |
 | 任务中心 | `src/components/pages/TasksCenter.tsx` |
 | 日历 | `src/components/pages/CalendarPage.tsx` |
+| 日历时间线聚合 | `services/nasemby-core/app/calendar_timeline_runtime.py` |
 | 内容发现与我的订阅 | `src/components/pages/DiscoverPage.tsx` |
 | 订阅设置 | `src/components/pages/SubscriptionSettingsPage.tsx` |
 | 种子库 | `src/components/pages/RssSeedLibraryPage.tsx` |

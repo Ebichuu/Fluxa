@@ -13,7 +13,11 @@ from app.task_chain_v2_runtime import TaskChainV2Service, adapt_task_chain, regi
 
 
 class FakeTaskChain:
+    def __init__(self):
+        self.calls = 0
+
     def get_chain(self):
+        self.calls += 1
         return {
             "generatedAt": "2026-07-22T03:00:00Z",
             "items": [{
@@ -79,6 +83,86 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
             self.assertEqual(payload["items"], [])
             self.assertEqual(payload["ledger"]["chains"], 1)
             self.assertEqual(repository.get_chain(expected_chain_id)["health_state"], "action_required")
+
+    def test_duplicate_target_records_are_merged_into_one_chain(self):
+        chain = FakeTaskChain().get_chain()
+        chain["items"].append({
+            "id": "qb:hash-2", "title": "测试剧", "mediaType": "tv", "tmdbId": "101", "seasonNumber": 2,
+            "state": "completed", "confidence": "strong", "origin": "download", "progress": 100,
+            "steps": [{"key": "download", "label": "获取 / 下载", "status": "done", "evidence": "verified", "detail": "下载完成", "source": "qBittorrent"}],
+            "sourceIds": {"subscriptionId": "", "qbHashes": ["hash-2"], "symediaIds": []},
+        })
+
+        payload = adapt_task_chain(chain, now=datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc))
+
+        self.assertEqual(len(payload["items"]), 1)
+        self.assertEqual(payload["counts"]["total"], 1)
+        self.assertEqual(payload["items"][0]["relatedRecords"], 2)
+        self.assertEqual(payload["items"][0]["sourceIds"]["qbHashes"], ["hash-1", "hash-2"])
+        self.assertEqual(payload["items"][0]["artifactKeys"], ["artifact:hash-1", "artifact:hash-2"])
+        self.assertEqual(payload["items"][0]["healthState"], "action_required")
+
+    def test_merged_progress_uses_the_whole_stage_chain(self):
+        chain = FakeTaskChain().get_chain()
+        chain["items"][0]["progress"] = 100
+        chain["items"][0]["steps"] = [
+            {"key": "subscription", "label": "订阅", "status": "unknown", "evidence": "missing"},
+            {"key": "download", "label": "qB 下载", "status": "done", "evidence": "verified"},
+            {"key": "cloud115", "label": "115 接管", "status": "active", "evidence": "inferred"},
+            {"key": "library", "label": "整理与入库", "status": "waiting", "evidence": "missing"},
+        ]
+
+        item = adapt_task_chain(chain, now=datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc))["items"][0]
+
+        self.assertEqual(item["progress"], 38)
+        self.assertNotEqual(item["progress"], chain["items"][0]["progress"])
+
+    def test_list_is_paginated_summary_and_detail_keeps_evidence(self):
+        app = Flask(__name__)
+        fake = FakeTaskChain()
+        app.extensions["mcc_task_chain_service"] = fake
+        register_task_chain_v2(app, clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc))
+        client = app.test_client()
+
+        listing = client.get("/api/v2/tasks/chains?limit=1").get_json()
+        chain_id_value = listing["items"][0]["chainId"]
+        self.assertEqual(listing["page"], {"total": 1, "offset": 0, "limit": 1, "nextOffset": None, "hasMore": False})
+        self.assertNotIn("stages", listing["items"][0])
+        self.assertIn("stageSummary", listing["items"][0])
+
+        detail = client.get(f"/api/v2/tasks/chains/{chain_id_value}").get_json()
+        self.assertEqual(detail["item"]["chainId"], chain_id_value)
+        self.assertTrue(detail["item"]["stages"])
+        self.assertTrue(detail["item"]["artifactKeys"])
+        self.assertEqual(fake.calls, 1)
+
+    def test_summary_and_conditional_list_share_cached_snapshot(self):
+        app = Flask(__name__)
+        fake = FakeTaskChain()
+        app.extensions["mcc_task_chain_service"] = fake
+        register_task_chain_v2(app, clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc))
+        client = app.test_client()
+
+        summary = client.get("/api/v2/tasks/summary")
+        self.assertEqual(summary.status_code, 200)
+        self.assertEqual(summary.get_json()["counts"]["total"], 1)
+        listing = client.get("/api/v2/tasks/chains")
+        unchanged = client.get("/api/v2/tasks/chains", headers={"If-None-Match": listing.headers["ETag"]})
+        self.assertEqual(unchanged.status_code, 304)
+        self.assertEqual(fake.calls, 1)
+
+    def test_route_validates_pagination_and_missing_detail(self):
+        app = Flask(__name__)
+        app.extensions["mcc_task_chain_service"] = FakeTaskChain()
+        register_task_chain_v2(app, clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc))
+        client = app.test_client()
+
+        invalid = client.get("/api/v2/tasks/chains?limit=0")
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(invalid.get_json()["code"], "TASK_PAGINATION_INVALID")
+        missing = client.get("/api/v2/tasks/chains/chain:missing")
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.get_json()["code"], "TASK_CHAIN_NOT_FOUND")
 
 
 if __name__ == "__main__":

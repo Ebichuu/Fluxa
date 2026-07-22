@@ -4,6 +4,8 @@ export interface HomeSummaryCounts {
   ingestedToday: number;
   downloading: number;
   pending: number;
+  waiting: number;
+  evidenceInsufficient: number;
   actionRequired: number;
   protected: number;
 }

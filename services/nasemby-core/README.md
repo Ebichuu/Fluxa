@@ -84,7 +84,13 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/media/*`：影院大厅与 Emby。
 - `/api/qbittorrent/*`、`/api/torra/summary`、`/api/symedia/summary`。
 - `/api/tasks/chain`：订阅到入库的统一证据链。
-- `/api/v2/tasks/chains`：以 `chainId`、`mediaKey`、`targetKey` 和 `artifactKeys` 返回可筛选的任务链 v2；完整快照幂等写入本地资源事件账本，并按需要处理、证据不足、等待、正常保护、正常分类，返回原因、建议和计划重试时间，但不执行外部动作。
+- `/api/v2/tasks/summary`：返回唯一任务链、五态、阶段和服务轻量摘要，支持 ETag 条件读取。
+- `/api/v2/tasks/chains`：按 `chainId/targetKey` 合并重复来源，默认分页返回 20 条摘要；支持健康状态、身份和增量时间筛选。
+- `/api/v2/tasks/chains/:chainId`：按需返回单链阶段证据、artifact、原因和动作资格；完整聚合快照幂等写入本地资源事件账本，但不执行外部动作。
+- `/api/v2/calendar`：只读聚合追更播出日期与任务链的获取、入库证据，使用 `Asia/Shanghai` 并支持 ETag。
+- `/api/v2/subscriptions/capabilities`：返回本地写入、Torra 推送和调度器真实运行状态，发现页据此显示追更确认文案。
+- `/api/qbittorrent/actions/:action/preview`：只读返回暂停/恢复动作资格、实际影响对象、跳过数量、禁止原因、确认要求、幂等键和冷却时间；不会调用 qB 写接口。
+- `/api/qbittorrent/actions/:action`：执行前复查任务状态并校验可选预览幂等键，状态变化时拒绝旧确认；执行结果再次读取 qB，并写入脱敏活动记录。
 - `/api/v2/home/summary`：基于任务链和调度器心跳生成首页今日结论；证据缺失、调度未启动或服务不可验证时不返回绿色正常。
 - `/api/v2/subscriptions/reconciliation`：只读对比 Fluxa 与 Torra，按对账、履约、健康三个维度返回差异，不写入或删除任一台账。
 - `/api/internal/nasemby-core/*`：已认证的只读诊断兼容路由。
@@ -101,7 +107,7 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/v2/integrations/*`、`/api/v2/acquisition/cloud/*` 和云盘策略路由继续保留，当前 React 不调用延期动作。
 - `/mineradio/embed`、`/mineradio/*`。
 
-47 条冻结 v1 契约见项目根 `docs/contracts/http-api-contract-v1.json`；47 条新增能力见 `http-api-contract-v2.json`。浏览器公开响应经过白名单映射；内部诊断路由保留 NasEmby 原始字段，仍受整站认证保护。
+47 条冻结 v1 契约见项目根 `docs/contracts/http-api-contract-v1.json`；51 条新增能力见 `http-api-contract-v2.json`。浏览器公开响应经过白名单映射；内部诊断路由保留 NasEmby 原始字段，仍受整站认证保护。
 
 ## 唯一订阅台账
 
@@ -117,7 +123,7 @@ python -m unittest discover -s tests -v
 
 测试使用临时台账、隔离的临时活动日志和模拟客户端，不连接真实服务执行写操作。保留接口只在模拟测试中显式开启；Mineradio 注入片段继续使用冻结的 SHA-256 快照保护视觉桥接基线。
 
-当前共 227 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘和系统指标测试全部使用临时台账与模拟函数，不连接真实外部服务；确认默认闸门、脱敏、原子迁移、Torra 镜像导入与幂等结果同事务、只读对账、首页证据结论、任务链 v2 身份、资源事件账本与五类异常优先级、RSS 匹配器证据、追更工作台分页、退避、并发上限、冷却、job 状态、按集固定窗口、RSS 活动匹配、主动兜底、公平轮询、截止点和缓存行为。
+当前共 238 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘、日历时间线和系统指标测试全部使用临时台账与模拟函数，不连接真实外部服务；确认默认闸门、脱敏、原子迁移、Torra 镜像导入与幂等结果同事务、只读对账、首页证据结论、任务链 v2 身份、资源事件账本与五类异常优先级、qB 动作预览与旧确认拒绝、RSS 匹配器证据、追更工作台分页、退避、并发上限、冷却、job 状态、按集固定窗口、RSS 活动匹配、主动兜底、公平轮询、截止点和缓存行为。
 
 RSS 解析回归已加入四个真实结构的完全脱敏夹具：M-Team 的 `tests/fixtures/mteam_rss_sanitized.xml`、HDHome 的 `tests/fixtures/hdhome_rss_sanitized.xml`、织梦的 `tests/fixtures/zmpt_rss_sanitized.xml` 和青蛙的 `tests/fixtures/qingwa_rss_sanitized.xml`，覆盖 RSS 2.0、电影/剧集、多版本、单集/整季包、文件大小、`enclosure`、`720p/1080i/1080p/2160p`、Blu-ray/Remux、WEB-DL、H.264/H.265、HDR、Atmos 和 TrueHD 版本摘要。四个夹具还会经过假 HTTP 响应、收集器、临时 SQLite 和公共脱敏查询的完整回归，已满足当前版本；夹具只使用 `tracker.example` 地址，不保存真实签名、UID、详情或下载 URL，也不访问 enclosure。
 

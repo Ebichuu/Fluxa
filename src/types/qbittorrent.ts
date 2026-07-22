@@ -43,6 +43,30 @@ export interface QbittorrentSummary {
 
 export type QbittorrentAction = 'pause' | 'resume';
 
+export interface QbittorrentActionPreview {
+  action: QbittorrentAction;
+  allowed: boolean;
+  reasonCode: string;
+  reasonText: string;
+  supportsPreview: boolean;
+  requiresConfirmation: boolean;
+  idempotencyKey: string;
+  cooldownSeconds: number;
+  affected: {
+    requested: number;
+    eligible: number;
+    skipped: number;
+    missing: number;
+  };
+  targets: Array<{
+    hashPrefix: string;
+    name: string;
+    status: string;
+    state: string;
+    outcome: 'will_change' | 'unchanged' | 'missing';
+  }>;
+}
+
 export interface QbittorrentActionResult {
   action: QbittorrentAction;
   requested: number;
@@ -51,6 +75,7 @@ export interface QbittorrentActionResult {
   failed: number;
   skipped: number;
   confirmed: boolean;
+  idempotencyKey: string;
   tasks: Array<{
     hash: string;
     status: string;

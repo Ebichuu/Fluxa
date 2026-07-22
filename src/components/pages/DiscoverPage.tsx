@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Ban, Check, ChevronLeft, ChevronRight, Database, Download, FileSearch, Pause, Play, Plus, RefreshCcw, RotateCcw, Search, Send, SlidersHorizontal, Trash2, X } from 'lucide-react';
+import { Ban, CalendarDays, Check, ChevronLeft, ChevronRight, Database, Download, FileSearch, Pause, Play, Plus, RefreshCcw, RotateCcw, Search, Send, SlidersHorizontal, Trash2, X } from 'lucide-react';
 import {
   blockSubscription,
   browseDiscover,
@@ -10,6 +10,7 @@ import {
   getSubscriptionQualityWatch,
   getSubscriptionDetail,
   getSubscriptionItems,
+  getSubscriptionCapabilities,
   getSubscriptionWorkbench,
   getTorraSubscriptionSyncStatus,
   getTorraPushPreview,
@@ -37,6 +38,7 @@ import type {
   QualityWatchResponse,
   DiscoverResult,
   SubscriptionDetailResponse,
+  SubscriptionCapabilitiesResponse,
   SubscriptionItem,
   SubscriptionWorkbenchResponse,
   TorraSubscriptionSyncPreview,
@@ -44,10 +46,12 @@ import type {
   TorraPushPreviewResponse
 } from '../../types/subscriptions';
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
-import type { AppNavigate } from '../layout/AppTopNav';
+import type { AppNavigate, TaskNavigationTarget } from '../layout/AppTopNav';
+import { HealthBadge } from '../status/HealthBadge';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
 
 interface DiscoverPageProps {
+  navigationTarget?: TaskNavigationTarget | null;
   onNavigate: AppNavigate;
   view?: 'discover' | 'subscriptions';
 }
@@ -437,17 +441,6 @@ function fulfillmentLabel(item: SubscriptionItem) {
   return item.fulfillmentState ? labels[item.fulfillmentState] : resolvedSubscriptionStatus(item) === 'done' ? '已完成' : '追更中';
 }
 
-function healthLabel(item: SubscriptionItem) {
-  const labels = {
-    normal: '正常',
-    waiting: '等待',
-    protected: '正常保护',
-    action_required: '需要处理',
-    evidence_insufficient: '证据不足'
-  } as const;
-  return item.healthState ? labels[item.healthState] : '尚未确认';
-}
-
 const terminalAutomationStates = new Set(['succeeded', 'failed', 'cancelled']);
 
 function watchStateLabel(state: string) {
@@ -486,7 +479,7 @@ function automationStatusLabel(action: AutomationAction | null) {
   return action.type === 'rewash-download' ? '候选下载执行中' : 'Torra 分析执行中';
 }
 
-export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProps) {
+export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'discover' }: DiscoverPageProps) {
   const subscriptionsOnly = view === 'subscriptions';
   const [filters, setFilters] = useState<DiscoverBrowseParams>(defaultFilters);
   const [query, setQuery] = useState('');
@@ -507,6 +500,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
   const [subsMoreLoading, setSubsMoreLoading] = useState(false);
   const [subsError, setSubsError] = useState('');
   const [workbench, setWorkbench] = useState<SubscriptionWorkbenchResponse | null>(null);
+  const [subscriptionCapabilities, setSubscriptionCapabilities] = useState<SubscriptionCapabilitiesResponse | null>(null);
   const [subscriptionTab, setSubscriptionTab] = useState<SubscriptionTab>('tv');
   const [subscriptionKeyword, setSubscriptionKeyword] = useState('');
   const deferredSubscriptionKeyword = useDeferredValue(subscriptionKeyword);
@@ -610,6 +604,20 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
   useEffect(() => {
     loadSubs();
   }, [loadSubs]);
+
+  useEffect(() => {
+    if (!subscriptionsOnly || !navigationTarget) return;
+    if (navigationTarget.mediaType) setSubscriptionTab(navigationTarget.mediaType);
+    if (navigationTarget.title) setSubscriptionKeyword(navigationTarget.title);
+  }, [navigationTarget, subscriptionsOnly]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getSubscriptionCapabilities({ signal: controller.signal })
+      .then(setSubscriptionCapabilities)
+      .catch(() => setSubscriptionCapabilities(null));
+    return () => controller.abort();
+  }, []);
 
   const loadTorraSyncStatus = useCallback(() => {
     if (!subscriptionsOnly) return;
@@ -726,6 +734,20 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
     inLibrary: subs.filter((item) => item.inLibrary).length
   };
   const reconciliationSummary = workbench?.reconciliation?.summary;
+  const torraPushEnabled = Boolean(subscriptionCapabilities?.torraPush.enabled);
+  const schedulerRunning = Boolean(subscriptionCapabilities?.scheduler.running);
+  const followConfirmationText = !subscriptionCapabilities
+    ? '保存追更意图；实际同步状态将在保存后确认。'
+    : !torraPushEnabled
+      ? '保存追更意图，当前不会自动获取；可稍后预览并手动同步到 Torra。'
+      : !schedulerRunning
+        ? '保存追更意图；Torra 推送已开启，但定时任务未运行，需要手动同步。'
+        : '保存后进入自动追更，系统会按 PT 优先策略继续处理。';
+  const followSuccessText = !subscriptionCapabilities || !torraPushEnabled
+    ? '已保存追更意图，当前不会自动获取'
+    : !schedulerRunning
+      ? '已保存追更意图，等待手动同步到 Torra'
+      : '已保存追更意图，已进入自动追更';
 
   const changeSource = (source: DiscoverSource) => {
     setQuery('');
@@ -793,13 +815,13 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
     setConfirmation({
       signal: '自动订阅',
       title: `订阅《${payload.title}》？`,
-      description: '保存后会按 PT 优先策略自动获取，后续进度会回到任务中心。',
+      description: followConfirmationText,
       confirmLabel: '确认订阅',
       onConfirm: () => {
         setSubscriptionAction(`save:${payload.mediaType}:${payload.tmdbId}`);
         saveSubscription(payload)
           .then(() => {
-            setSweepMessage(`已保存追更意图：${payload.title}，尚未同步到 Torra`);
+            setSweepMessage(`${followSuccessText}：${payload.title}`);
             loadSubs();
           })
           .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '保存订阅失败'))
@@ -1154,6 +1176,21 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
   };
 
   useEffect(() => {
+    if (!subscriptionsOnly || !navigationTarget || detailId) return;
+    const targetItem = subs.find((item) => (
+      (navigationTarget.subscriptionId && item.id === navigationTarget.subscriptionId)
+      || (navigationTarget.tmdbId && String(item.tmdbId || '') === navigationTarget.tmdbId
+        && (!navigationTarget.seasonNumber || item.seasonNumber === navigationTarget.seasonNumber))
+    ));
+    if (!targetItem) return;
+    openDetail(targetItem);
+    window.requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(`[data-subscription-id="${CSS.escape(targetItem.id || '')}"]`)
+        ?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    });
+  }, [detailId, navigationTarget, subscriptionsOnly, subs]);
+
+  useEffect(() => {
     if (!resourceTarget) return undefined;
     const frame = window.requestAnimationFrame(() => {
       const panel = resourcePanelRef.current;
@@ -1380,7 +1417,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
         <div className="ops-discover-policy">
           <span><Database size={15} />默认获取方式</span>
           <strong>PT / Torra</strong>
-          <small><Send size={13} />订阅后自动交给 Torra</small>
+          <small><Send size={13} />{!subscriptionCapabilities ? '正在确认追更能力' : !torraPushEnabled ? '保存意图，暂不自动获取' : !schedulerRunning ? '保存后等待手动同步' : '保存后进入自动追更'}</small>
         </div>
       </section>
 
@@ -1570,6 +1607,10 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
             <RefreshCcw aria-hidden="true" size={14} />
             {subscriptionAction === 'run' ? '更新中' : '更新自动订阅来源'}
           </button>
+          {subscriptionsOnly && <button className="ops-action-button" type="button" onClick={() => onNavigate('calendar')}>
+            <CalendarDays aria-hidden="true" size={14} />
+            日历视图
+          </button>}
         </div>
         <div className="ops-subscription-policy"><strong>PT 优先</strong><span>Torra 推送保持安全开关控制</span></div>
         {subscriptionsOnly && workbench && (
@@ -1784,7 +1825,11 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
             ? item.torraSyncState === 'remote_missing' ? 'Torra 远端已缺失' : 'Torra 已有订阅，只读同步'
             : '由 Fluxa 管理，可检查后推送';
           return (
-            <div className={detailId === item.id ? 'discover-sub discover-sub--open' : 'discover-sub'} key={item.id ?? item.title}>
+            <div
+              className={detailId === item.id ? 'discover-sub discover-sub--open' : 'discover-sub'}
+              data-subscription-id={item.id}
+              key={item.id ?? item.title}
+            >
               <div className="activity-row">
                 {item.posterUrl ? (
                   <img alt="" aria-hidden="true" className="discover-sub__poster" src={item.posterUrl} />
@@ -1853,8 +1898,8 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                   <span className={item.fulfillmentState === 'completed' ? 'is-ok' : item.fulfillmentState === 'blocked' ? 'is-warn' : undefined}>
                     <b>履约状态</b><small>{fulfillmentLabel(item)}</small>
                   </span>
-                  <span className={item.healthState === 'normal' || item.healthState === 'protected' ? 'is-ok' : item.healthState === 'action_required' ? 'is-warn' : undefined}>
-                    <b>健康状态</b><small>{healthLabel(item)}</small>
+                  <span>
+                    <b>健康状态</b><HealthBadge label={item.healthState ? undefined : '尚未确认'} state={item.healthState || 'evidence_insufficient'} />
                   </span>
                   <span><b>范围</b><small>{item.scope || subscriptionScope}</small></span>
                   <span className={(item.missingEpisodes?.length ?? 0) > 0 ? 'is-warn' : undefined}>

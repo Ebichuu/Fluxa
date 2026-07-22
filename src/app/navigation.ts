@@ -40,9 +40,10 @@ export function readNavigation(location: Location = window.location): Navigation
     ?? 'overview';
   const query = new URLSearchParams(location.search);
   const season = Number(query.get('seasonNumber'));
-  const target: TaskNavigationTarget | null = page === 'tasks' && (
+  const target: TaskNavigationTarget | null = ['tasks', 'subscriptions'].includes(page) && (
     query.has('chainId') || query.has('targetKey') || query.has('subscriptionId') || query.has('tmdbId') || query.has('title')
   ) ? {
+    mediaType: query.get('mediaType') === 'movie' ? 'movie' : query.get('mediaType') === 'tv' ? 'tv' : undefined,
     chainId: optionalString(query.get('chainId')),
     targetKey: optionalString(query.get('targetKey')),
     subscriptionId: optionalString(query.get('subscriptionId')),
@@ -62,7 +63,8 @@ export function readNavigation(location: Location = window.location): Navigation
 export function pathForNavigation(page: PageId, target?: TaskNavigationTarget | null) {
   const route = canonicalRoutes[page];
   const query = new URLSearchParams();
-  if (page === 'tasks' && target) {
+  if (['tasks', 'subscriptions'].includes(page) && target) {
+    if (target.mediaType) query.set('mediaType', target.mediaType);
     if (target.chainId) query.set('chainId', target.chainId);
     if (target.targetKey) query.set('targetKey', target.targetKey);
     if (target.subscriptionId) query.set('subscriptionId', target.subscriptionId);

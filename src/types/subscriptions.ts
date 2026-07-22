@@ -14,6 +14,18 @@ export interface SubscriptionCalendarEntry {
   sourceLabel: string;
   progressText?: string;
   libraryPaths?: string[];
+  airAt?: string;
+  acquiredAt?: string;
+  acquisitionSource?: string;
+  libraryAt?: string;
+  librarySource?: string;
+  chainId?: string;
+  targetKey?: string;
+  healthState?: SubscriptionHealthState;
+  reasonCode?: string;
+  reasonText?: string;
+  observedAt?: string;
+  freshUntil?: string;
 }
 
 export interface SubscriptionCalendar {
@@ -25,7 +37,11 @@ export interface SubscriptionCalendar {
     titles: number;
     inLibrary: number;
     pending: number;
+    acquired?: number;
+    libraryEvidence?: number;
+    actionRequired?: number;
   };
+  timeZone?: 'Asia/Shanghai' | string;
   mediaType?: string;
   errors?: string[];
   errorCount?: number;
@@ -34,6 +50,12 @@ export interface SubscriptionCalendar {
 export interface SubscriptionCalendarResponse {
   configured: boolean;
   calendar: SubscriptionCalendar | null;
+}
+
+export interface SubscriptionCalendarTimelineResponse {
+  ok: boolean;
+  version: string;
+  calendar: SubscriptionCalendar;
 }
 
 export interface SubscriptionItem {
@@ -138,6 +160,21 @@ export interface SubscriptionWorkbenchResponse {
     lastError?: string;
   };
   reconciliation?: SubscriptionReconciliationResponse;
+}
+
+export interface SubscriptionCapabilitiesResponse {
+  ok: boolean;
+  checkedAt: string;
+  localWrite: { enabled: boolean };
+  torraPush: { enabled: boolean };
+  scheduler: {
+    configured: boolean;
+    enabled: boolean;
+    started: boolean;
+    running: boolean;
+    lastRunAt: string;
+    lastError: string;
+  };
 }
 
 export type SubscriptionReconciliationState = 'linked' | 'only_fluxa' | 'only_torra' | 'conflict' | 'remote_missing';

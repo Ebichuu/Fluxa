@@ -233,6 +233,26 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         self.assertEqual(response.get_json()["code"], "SUBSCRIPTION_WORKBENCH_READ_FAILED")
         self.assertNotIn("secret", response.get_data(as_text=True))
 
+    def test_capability_route_reports_push_and_runtime_scheduler_separately(self):
+        app = Flask(__name__)
+        registry = SchedulerStatusRegistry(clock=lambda: "2026-07-22T08:00:00Z")
+        registry.register("subscription-task", enabled=True)
+        registry.mark_started("subscription-task")
+        app.extensions["mcc_scheduler_status"] = registry
+        register_subscription_workbench(app, {
+            "NASEMBY_CORE_WRITE_ENABLED": "true",
+            "TORRA_PUSH_ENABLED": "false",
+            "MCC_SUBSCRIPTION_SCHEDULER_ENABLED": "true",
+        })
+
+        response = app.test_client().get("/api/v2/subscriptions/capabilities")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["localWrite"]["enabled"])
+        self.assertFalse(payload["torraPush"]["enabled"])
+        self.assertTrue(payload["scheduler"]["running"])
+
     def test_scheduler_state_uses_global_runtime_gate_instead_of_source_config(self):
         app = Flask(__name__)
         registry = SchedulerStatusRegistry(clock=lambda: "2026-07-22T08:00:00Z")

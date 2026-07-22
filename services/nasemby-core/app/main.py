@@ -42,6 +42,7 @@ from app.task_chain_v2_runtime import register_task_chain_v2
 from app.home_summary_runtime import register_home_summary
 from app.integration_runtime import register_integrations
 from app.cloud_acquisition_runtime import register_cloud_acquisition
+from app.calendar_timeline_runtime import register_calendar_timeline
 from app.system_metrics_runtime import register_system_metrics
 from app.private_rss_api_runtime import register_private_rss
 from app.automation_action_runtime import register_automation_actions
@@ -541,7 +542,11 @@ def start_background_runtime():
 @core_routes.after_request
 def add_no_cache_headers(response):
     _log_user_operation(response)
-    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Cache-Control"] = (
+        "private, no-cache, must-revalidate"
+        if response.get_etag()[0]
+        else "no-store, no-cache, must-revalidate, max-age=0"
+    )
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
     return response
@@ -1385,6 +1390,7 @@ def create_app(
         resource_repository = ResourceTaskRepository(discover_runtime.subscription_database_path())
         application.extensions["mcc_resource_task_repository"] = resource_repository
     register_task_chain_v2(application, repository=resource_repository)
+    register_calendar_timeline(application)
     register_home_summary(application)
     register_integrations(
         application,

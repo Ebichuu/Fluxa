@@ -1,11 +1,12 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { Clapperboard, Download, ExternalLink, HeartPulse, RefreshCcw, Rss, Wrench } from 'lucide-react';
-import { getEmbyOverview, getEmbyRefreshStatus, getIntegrationSummary, getQbittorrentSummary, getSymediaSummary, getTorraSummary, triggerEmbyRefresh } from '../../services/api';
+import { Clapperboard, Download, ExternalLink, HeartPulse, RefreshCcw, Rss, ShieldCheck, Wrench } from 'lucide-react';
+import { getEmbyOverview, getEmbyRefreshStatus, getIntegrationSummary, getQbittorrentSummary, getSubscriptionCapabilities, getSymediaSummary, getTorraSummary, triggerEmbyRefresh } from '../../services/api';
 import type { EmbyOverview, EmbyRefreshStatus } from '../../types/emby';
 import type { QbittorrentSummary } from '../../types/qbittorrent';
 import type { SymediaSummary } from '../../types/symedia';
 import type { TorraSummary } from '../../types/torra';
 import type { IntegrationSummary } from '../../types/integrations';
+import type { SubscriptionCapabilitiesResponse } from '../../types/subscriptions';
 import { usePolling } from '../../hooks/usePolling';
 import { formatSpeed, formatTimeAgo } from '../../utils/formatters';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
@@ -40,6 +41,7 @@ export function ControlRoom() {
   const [torra, setTorra] = useState<TorraSummary | null>(null);
   const [symedia, setSymedia] = useState<SymediaSummary | null>(null);
   const [integrations, setIntegrations] = useState<IntegrationSummary | null>(null);
+  const [subscriptionCapabilities, setSubscriptionCapabilities] = useState<SubscriptionCapabilitiesResponse | null>(null);
   const [speedHistory, setSpeedHistory] = useState<number[]>(Array.from({ length: 20 }, () => 0));
   const [embyRefresh, setEmbyRefresh] = useState<EmbyRefreshStatus | null>(null);
   const [embyRefreshBusy, setEmbyRefreshBusy] = useState(false);
@@ -50,24 +52,26 @@ export function ControlRoom() {
 
   const refreshAll = async (signal: AbortSignal, reportResult = false) => {
     const options = { signal };
-    const [torraResult, qbResult, symediaResult, embyResult, integrationsResult] = await Promise.allSettled([
+    const [torraResult, qbResult, symediaResult, embyResult, integrationsResult, capabilitiesResult] = await Promise.allSettled([
       getTorraSummary(options),
       getQbittorrentSummary(options),
       getSymediaSummary(options),
       getEmbyOverview(options),
-      getIntegrationSummary(false, options)
+      getIntegrationSummary(false, options),
+      getSubscriptionCapabilities(options)
     ]);
     if (signal.aborted) return;
     if (torraResult.status === 'fulfilled') setTorra(torraResult.value);
     if (symediaResult.status === 'fulfilled') setSymedia(symediaResult.value);
     if (embyResult.status === 'fulfilled') setEmby(embyResult.value);
     if (integrationsResult.status === 'fulfilled') setIntegrations(integrationsResult.value);
+    if (capabilitiesResult.status === 'fulfilled') setSubscriptionCapabilities(capabilitiesResult.value);
     if (qbResult.status === 'fulfilled') {
       setQb(qbResult.value);
       setSpeedHistory((current) => [...current.slice(-19), qbResult.value.transfer.downloadSpeed]);
     }
     if (reportResult) {
-      const failedCount = [torraResult, qbResult, symediaResult, embyResult, integrationsResult]
+      const failedCount = [torraResult, qbResult, symediaResult, embyResult, integrationsResult, capabilitiesResult]
         .filter((result) => result.status === 'rejected').length;
       setServicesRefreshFeedback(failedCount > 0 ? `刷新完成，${failedCount} 项服务暂不可用` : '服务状态已更新');
     }
@@ -171,6 +175,7 @@ export function ControlRoom() {
   const onlineCount = services.filter((service) => service.state === 'ok' || service.state === 'warn').length;
   const warningCount = services.filter((service) => service.state === 'warn' || service.state === 'down').length;
   const configuredCount = services.filter((service) => service.state !== 'idle').length;
+  const unconfiguredCount = services.length - configuredCount;
   const points = sparkPoints(speedHistory);
   const moviePilot = integrations?.services.find((service) => service.id === 'moviepilot');
   const moviePilotStatus: { label: string; tone: 'loading' | 'idle' | 'warn' | 'ok' | 'configured' } = !integrations
@@ -182,6 +187,14 @@ export function ControlRoom() {
         : moviePilot.connected === false
           ? { label: '需检查', tone: 'warn' }
           : { label: '已配置', tone: 'configured' };
+  const schedulerStatus = !subscriptionCapabilities
+    ? { label: '证据不足', detail: '调度状态尚未读取', tone: 'loading' as const }
+    : !subscriptionCapabilities.scheduler.configured || !subscriptionCapabilities.scheduler.enabled
+      ? { label: '已关闭', detail: '自动追更调度当前不运行', tone: 'idle' as const }
+      : subscriptionCapabilities.scheduler.running
+        ? { label: '运行中', detail: subscriptionCapabilities.scheduler.lastRunAt ? `上次执行 ${formatTimeAgo(subscriptionCapabilities.scheduler.lastRunAt)}` : '已确认后台运行', tone: 'ok' as const }
+        : { label: '未运行', detail: subscriptionCapabilities.scheduler.lastError || '已开启，但没有读到后台运行证据', tone: 'warn' as const };
+  const torraPushLabel = subscriptionCapabilities?.torraPush.enabled ? '已开启' : '已关闭';
 
   return (
     <main className="work-page ops-page ops-page--control">
@@ -193,8 +206,8 @@ export function ControlRoom() {
           <p className="ops-deck">遇到下载或入库问题时，先在这里找到需要处理的服务，再进入原工具查看详情。</p>
         </div>
         <div className="ops-hero-actions">
-          <div className={warningCount ? 'ops-system-score ops-system-score--warn' : 'ops-system-score'}>
-            <small>核心服务</small><strong>{onlineCount} / 4 在线</strong><span>{warningCount ? `${warningCount} 项需检查` : configuredCount ? '已配置服务状态正常' : '等待配置核心服务'}</span>
+          <div className={warningCount || unconfiguredCount ? 'ops-system-score ops-system-score--warn' : 'ops-system-score'}>
+            <small>核心服务</small><strong>{onlineCount} / 4 在线</strong><span>{warningCount ? `${warningCount} 项需检查` : unconfiguredCount ? `${unconfiguredCount} 项未配置` : '全部服务证据可用'}</span>
           </div>
           <button aria-label="刷新全部服务" aria-busy={servicesRefreshBusy} className="ops-icon-button" disabled={servicesRefreshBusy} title="刷新全部服务" type="button" onClick={() => void refreshServices()}><RefreshCcw aria-hidden="true" size={18} /></button>
           {servicesRefreshFeedback && <small aria-live="polite">{servicesRefreshFeedback}</small>}
@@ -268,16 +281,29 @@ export function ControlRoom() {
             </button>
           </div>
           <p className="ops-inspector__note">{selected.id === 'emby' ? '刷新只在 Symedia 有较新入库证据时启用；提交后不等待后台扫描完成。' : '这里只提供只读状态、连接检查和原工具入口。高风险文件操作不会放进控制室。'}</p>
+          <details className="ops-inspector__diagnostics">
+            <summary>高级诊断</summary>
+            <dl>
+              <div><dt>证据来源</dt><dd>{selected.name}</dd></div>
+              <div><dt>配置状态</dt><dd>{selected.state === 'idle' ? '未配置' : '已配置'}</dd></div>
+              <div><dt>连接证据</dt><dd>{selected.state === 'ok' || selected.state === 'warn' ? '已获取' : '不可用'}</dd></div>
+              <div><dt>业务影响</dt><dd>{selected.state === 'ok' ? '当前未发现服务级异常' : selected.state === 'warn' ? '部分任务需继续观察' : selected.state === 'down' ? '相关任务可能无法继续' : '相关能力不可验证'}</dd></div>
+            </dl>
+            <p>服务地址和凭据只在设置页编辑；这里不回显 Token、Cookie 或密码。</p>
+          </details>
         </aside>
       </section>
 
       <section className="ops-control-foot">
-        <span>自动订阅已启用</span>
-        <strong>Torra 单一主通道</strong>
+        <span className={`ops-control-foot__backup ops-control-foot__backup--${schedulerStatus.tone}`}><ShieldCheck aria-hidden="true" size={12} />追更调度 · {schedulerStatus.label}</span>
+        <strong>{schedulerStatus.detail}</strong>
+        <span className={`ops-control-foot__backup ops-control-foot__backup--${subscriptionCapabilities?.torraPush.enabled ? 'ok' : 'idle'}`}>
+          <Rss aria-hidden="true" size={12} />Torra 推送 · {torraPushLabel}
+        </span>
         <span className={`ops-control-foot__backup ops-control-foot__backup--${moviePilotStatus.tone}`}>
           <Rss aria-hidden="true" size={12} />MoviePilot 备用 · {moviePilotStatus.label}
         </span>
-        <p>Torra 负责 PT、qB 与 115 秒传；MoviePilot 只保留为以后其他 PT 站点补齐能力。</p>
+        <p>连接正常只代表服务可读，不代表整条影音链路已完成；最终结果以任务中心和 Emby 索引证据为准。</p>
       </section>
 
       <ConfirmDialog

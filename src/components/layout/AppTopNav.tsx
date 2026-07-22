@@ -1,11 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Activity, Bookmark, CalendarDays, Compass, Film, Home, ListChecks, Moon, Rss, Search, Settings, Sun } from 'lucide-react';
-import type { HealthResponse } from '../../types/media';
+import type { HomeSummaryResponse } from '../../types/homeSummary';
+import { healthStatusLabel } from '../status/HealthBadge';
 
 export type PageId = 'overview' | 'hall' | 'control' | 'tasks' | 'calendar' | 'discover' | 'subscriptions' | 'subscription-settings' | 'rss-library' | 'settings';
 export type ThemeMode = 'dark' | 'light';
 
 export interface TaskNavigationTarget {
+  mediaType?: 'movie' | 'tv';
   chainId?: string;
   targetKey?: string;
   subscriptionId?: string;
@@ -33,16 +35,24 @@ const navItems: Array<{
 
 interface AppTopNavProps {
   activePage: PageId;
-  health: HealthResponse | null;
+  homeSummary: HomeSummaryResponse | null;
   onNavigate: AppNavigate;
   onToggleTheme: () => void;
   showThemeToggle: boolean;
   theme: ThemeMode;
 }
 
-export function AppTopNav({ activePage, health, onNavigate, onToggleTheme, showThemeToggle, theme }: AppTopNavProps) {
-  const configuredCount = health?.services.filter((service) => service.configured).length ?? 0;
-  const serviceCount = health?.services.length ?? 10;
+export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, showThemeToggle, theme }: AppTopNavProps) {
+  const healthState = homeSummary?.healthState ?? 'evidence_insufficient';
+  const healthLabel = !homeSummary
+    ? '状态读取中'
+    : healthState === 'action_required'
+      ? `${homeSummary.counts.actionRequired} 项需要处理`
+      : healthState === 'waiting'
+        ? '任务处理中'
+        : healthState === 'normal'
+          ? '运行正常'
+          : healthStatusLabel(healthState);
   const navRef = useRef<HTMLElement>(null);
   const itemRefs = useRef(new Map<PageId, HTMLButtonElement>());
   const selectionRef = useRef<HTMLSpanElement>(null);
@@ -218,15 +228,16 @@ export function AppTopNav({ activePage, health, onNavigate, onToggleTheme, showT
           <span>搜索媒体</span>
         </button>
         <button
-          aria-label={`${configuredCount}/${serviceCount} 项服务已配置，打开控制室`}
+          aria-label={`${healthLabel}，打开控制室`}
           className={activePage === 'control' ? 'nav-pill nav-pill--health nav-pill--active' : 'nav-pill nav-pill--health'}
-          title={`${configuredCount}/${serviceCount} 项服务已配置，打开控制室`}
+          data-health={healthState}
+          title={`${healthLabel}，打开控制室`}
           type="button"
           onClick={() => onNavigate('control')}
         >
           <Activity aria-hidden="true" size={15} strokeWidth={1.8} />
           <span>
-            {configuredCount}/{serviceCount} 已配置
+            {healthLabel}
           </span>
         </button>
         {showThemeToggle && (

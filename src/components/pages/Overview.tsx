@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import {
   ArrowRight,
+  CalendarDays,
   CheckCircle2,
+  CircleHelp,
   Clock3,
   Download,
   Library,
@@ -13,24 +15,18 @@ import { usePolling } from '../../hooks/usePolling';
 import { getHomeSummary } from '../../services/api';
 import type { HealthState, HomeSummaryResponse } from '../../types/homeSummary';
 import { formatTimeAgo } from '../../utils/formatters';
-import type { PageId } from '../layout/AppTopNav';
+import type { AppNavigate } from '../layout/AppTopNav';
+import { HealthBadge } from '../status/HealthBadge';
 
 interface OverviewProps {
-  onNavigate: (page: PageId) => void;
+  onNavigate: AppNavigate;
 }
-
-const healthLabels: Record<HealthState, string> = {
-  normal: '运行正常',
-  protected: '正常保护',
-  waiting: '正在处理',
-  evidence_insufficient: '证据不足',
-  action_required: '需要处理'
-};
 
 const metricDefinitions = [
   { key: 'ingestedToday', label: '今日入库', icon: Library },
   { key: 'downloading', label: '下载中', icon: Download },
-  { key: 'pending', label: '待处理', icon: Clock3 },
+  { key: 'waiting', label: '等待', icon: Clock3 },
+  { key: 'evidenceInsufficient', label: '证据不足', icon: CircleHelp },
   { key: 'actionRequired', label: '需要处理', icon: TriangleAlert },
   { key: 'protected', label: '正常保护', icon: ShieldCheck }
 ] as const;
@@ -42,7 +38,7 @@ function emptySummary(): HomeSummaryResponse {
     healthState: 'evidence_insufficient',
     headline: '正在读取影音中心状态',
     detail: '正在汇总下载、入库和调度证据',
-    counts: { ingestedToday: 0, downloading: 0, pending: 0, actionRequired: 0, protected: 0 },
+    counts: { ingestedToday: 0, downloading: 0, pending: 0, waiting: 0, evidenceInsufficient: 0, actionRequired: 0, protected: 0 },
     issues: []
   };
 }
@@ -96,6 +92,9 @@ export function Overview({ onNavigate }: OverviewProps) {
           >
             <RefreshCw aria-hidden="true" className={refreshing ? 'is-spinning' : ''} size={18} />
           </button>
+          <button className="home-primary-action" type="button" onClick={() => onNavigate('calendar')}>
+            <CalendarDays aria-hidden="true" size={16} />今日更新
+          </button>
           <button className="home-primary-action" type="button" onClick={() => onNavigate('tasks')}>
             查看任务中心 <ArrowRight aria-hidden="true" size={16} />
           </button>
@@ -118,7 +117,7 @@ export function Overview({ onNavigate }: OverviewProps) {
             <p className="ops-eyebrow">下一步</p>
             <h2 id="home-issues-title">{issues.length > 0 ? '需要关注' : '当前没有明确异常'}</h2>
           </div>
-          <span className={`home-health-label home-health-label--${status}`}>{healthLabels[status]}</span>
+          <HealthBadge label={status === 'normal' ? '运行正常' : status === 'waiting' ? '正在处理' : undefined} state={status} />
         </header>
 
         {issues.length === 0 ? (
@@ -137,14 +136,18 @@ export function Overview({ onNavigate }: OverviewProps) {
                 className={`home-issue home-issue--${issue.healthState}`}
                 type="button"
                 key={`${issue.source}:${issue.reasonCode}:${issue.chainId || index}`}
-                onClick={() => onNavigate('tasks')}
+                onClick={() => onNavigate('tasks', issue.chainId || issue.targetKey ? {
+                  chainId: issue.chainId || undefined,
+                  targetKey: issue.targetKey || undefined,
+                  title: issue.title
+                } : undefined)}
               >
                 <span className="home-issue__marker" aria-hidden="true" />
                 <span className="home-issue__copy">
                   <strong>{issue.reasonText || issue.title}</strong>
                   <small>{issue.title} · {issue.observedAt ? formatTimeAgo(issue.observedAt) : '时间未知'}</small>
                 </span>
-                <span className={`home-health-label home-health-label--${issue.healthState}`}>{healthLabels[issue.healthState]}</span>
+                <HealthBadge state={issue.healthState} />
                 <ArrowRight aria-hidden="true" size={16} />
               </button>
             ))}

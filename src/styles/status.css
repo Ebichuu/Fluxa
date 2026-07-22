@@ -1,0 +1,58 @@
+.ops-health-badge {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid rgba(157, 184, 207, 0.2);
+  border-radius: 999px;
+  background: rgba(157, 184, 207, 0.07);
+  color: var(--theme-accent);
+  font-size: 8.5px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.ops-health-badge--normal {
+  border-color: rgba(122, 215, 194, 0.26);
+  background: rgba(122, 215, 194, 0.08);
+  color: var(--theme-success);
+}
+
+.ops-health-badge--waiting {
+  border-color: rgba(215, 163, 78, 0.28);
+  background: rgba(215, 163, 78, 0.09);
+  color: var(--theme-warning);
+}
+
+.ops-health-badge--protected {
+  border-color: rgba(116, 152, 207, 0.28);
+  background: rgba(116, 152, 207, 0.09);
+  color: #9cbbe4;
+}
+
+.ops-health-badge--evidence_insufficient {
+  border-color: rgba(157, 169, 181, 0.24);
+  background: rgba(157, 169, 181, 0.07);
+  color: var(--theme-muted);
+}
+
+.ops-health-badge--action_required {
+  border-color: rgba(255, 83, 103, 0.28);
+  background: rgba(255, 83, 103, 0.08);
+  color: var(--theme-danger);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-health-badge--protected {
+  border-color: rgba(44, 92, 156, 0.24);
+  background: rgba(44, 92, 156, 0.08);
+  color: #2c5c9c;
+}
+
+.discover-sub__chain .ops-health-badge {
+  justify-self: start;
+  min-height: 20px;
+  padding: 0 6px;
+  font-size: 8px;
+}

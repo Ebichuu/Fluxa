@@ -101,6 +101,38 @@ class QbittorrentActionRuntimeContractTests(unittest.TestCase):
         self.assertNotIn(HASH_A, activity_text)
         self.assertNotIn(HASH_B, activity_text)
 
+    def test_preview_reports_eligibility_without_writing(self):
+        from app.qbittorrent_action_runtime import QbittorrentActionService
+
+        client = FakeActionClient([summary([
+            {**task(HASH_A, "downloading", "downloading"), "name": "测试任务 A"},
+            {**task(HASH_B, "pausedDL", "paused"), "name": "测试任务 B"},
+        ])])
+        service = QbittorrentActionService(client, activity_writer=lambda *args, **kwargs: None)
+
+        result = service.preview("pause", {"hashes": [HASH_A, HASH_B]})
+
+        self.assertTrue(result["allowed"])
+        self.assertTrue(result["supportsPreview"])
+        self.assertTrue(result["requiresConfirmation"])
+        self.assertEqual(result["affected"], {"requested": 2, "eligible": 1, "skipped": 1, "missing": 0})
+        self.assertTrue(result["idempotencyKey"].startswith("qb:"))
+        self.assertEqual([target["outcome"] for target in result["targets"]], ["will_change", "unchanged"])
+        self.assertEqual(client.actions, [])
+
+    def test_execute_rejects_stale_preview_key_without_writing(self):
+        from app.qbittorrent_action_runtime import QbittorrentActionError, QbittorrentActionService
+
+        client = FakeActionClient([summary([task(HASH_A, "downloading", "downloading")])])
+        service = QbittorrentActionService(client, activity_writer=lambda *args, **kwargs: None)
+
+        with self.assertRaises(QbittorrentActionError) as raised:
+            service.execute("pause", {"hashes": [HASH_A], "idempotencyKey": "qb:stale"})
+
+        self.assertEqual(raised.exception.status, 409)
+        self.assertEqual(raised.exception.code, "QB_PREVIEW_STALE")
+        self.assertEqual(client.actions, [])
+
     def test_missing_hash_rejects_entire_request_without_writing(self):
         from app.qbittorrent_action_runtime import (
             QbittorrentActionError,

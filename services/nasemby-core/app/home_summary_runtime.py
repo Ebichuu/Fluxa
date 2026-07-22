@@ -6,6 +6,7 @@ from flask import Flask, jsonify
 
 from app.health_state_runtime import combine_health, evidence
 from app.http_runtime import current_request_id
+from app.resource_identity_runtime import target_key as resource_target_key
 from app.task_chain_v2_runtime import adapt_task_chain
 
 
@@ -16,11 +17,12 @@ def _iso(value: datetime) -> str:
 
 
 def _target_key(item: dict) -> str:
-    identity = str(item.get("tmdbId") or item.get("title") or item.get("id") or "unknown").strip().lower()
-    return ":".join((
-        str(item.get("mediaType") or "unknown"),
-        identity,
-        str(item.get("seasonNumber") or 0),
+    return str(item.get("targetKey") or resource_target_key(
+        item.get("mediaType"),
+        item.get("tmdbId"),
+        item.get("title") or item.get("id"),
+        item.get("seasonNumber", 0),
+        item.get("episodeNumber"),
     ))
 
 
@@ -62,10 +64,11 @@ class HomeSummaryService:
     def snapshot(self) -> dict:
         now_value = self.clock()
         now = _iso(now_value)
+        chain_v2_service = self.app.extensions.get("mcc_task_chain_v2_service")
         chain_service = self.app.extensions.get("mcc_task_chain_service")
-        if not chain_service:
+        if not chain_v2_service and not chain_service:
             raise RuntimeError("任务链尚未注册")
-        chain = adapt_task_chain(chain_service.get_chain(), now=now_value)
+        chain = chain_v2_service.full_snapshot() if chain_v2_service else adapt_task_chain(chain_service.get_chain(), now=now_value)
         unique_items = {}
         for item in chain.get("items") or []:
             if isinstance(item, dict):
@@ -84,6 +87,8 @@ class HomeSummaryService:
                 for item in unique_items.values()
             ),
             "pending": sum(result["healthState"] in {"waiting", "evidence_insufficient"} for _, _, result in item_evidence),
+            "waiting": sum(result["healthState"] == "waiting" for _, _, result in item_evidence),
+            "evidenceInsufficient": sum(result["healthState"] == "evidence_insufficient" for _, _, result in item_evidence),
             "actionRequired": 0,
             "protected": sum(result["healthState"] == "protected" for _, _, result in item_evidence),
         }
@@ -233,7 +238,7 @@ class HomeSummaryService:
             headline = "影音中心运行正常"
         detail = (
             f"今日入库 {counts['ingestedToday']} 条 · 下载中 {counts['downloading']} 条 · "
-            f"待处理 {counts['pending']} 条"
+            f"等待 {counts['waiting']} 条 · 证据不足 {counts['evidenceInsufficient']} 条"
         )
         return {
             "ok": True,

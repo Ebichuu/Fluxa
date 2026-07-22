@@ -133,6 +133,20 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["counts"]["protected"], 1)
         self.assertEqual(result["counts"]["actionRequired"], 0)
 
+    def test_issue_uses_standard_task_identity_and_splits_pending_states(self):
+        blocked = item(library_status="blocked")
+        blocked["state"] = "blocked"
+        blocked["steps"][-1].update({"detail": "归档失败", "source": "Symedia"})
+        app = self.build_app([blocked], scheduler_enabled=False)
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+
+        issue = next(value for value in result["issues"] if value["title"] == "测试剧")
+        self.assertEqual(issue["targetKey"], "tv:tmdb:123:season:1")
+        self.assertTrue(issue["chainId"].startswith("chain:"))
+        self.assertEqual(result["counts"]["waiting"], 0)
+        self.assertEqual(result["counts"]["evidenceInsufficient"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

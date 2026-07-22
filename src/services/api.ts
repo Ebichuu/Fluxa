@@ -1,9 +1,9 @@
 import type { HealthResponse, HomeMediaResponse } from '../types/media';
 import type { EmbyOverview, EmbyRefreshResult, EmbyRefreshStatus } from '../types/emby';
-import type { QbittorrentAction, QbittorrentActionResult, QbittorrentSummary } from '../types/qbittorrent';
+import type { QbittorrentAction, QbittorrentActionPreview, QbittorrentActionResult, QbittorrentSummary } from '../types/qbittorrent';
 import type { SymediaSummary } from '../types/symedia';
 import type { TorraSummary } from '../types/torra';
-import type { TaskChainResponse } from '../types/taskChain';
+import type { TaskChainDetailResponse, TaskChainHealthState, TaskChainQuery, TaskChainResponse, TaskChainSummaryResponse } from '../types/taskChain';
 import type { IntegrationSummary } from '../types/integrations';
 import type { ActivityLogResponse, SystemMetricsResponse } from '../types/operations';
 import type { HomeSummaryResponse } from '../types/homeSummary';
@@ -22,11 +22,13 @@ import type {
   DiscoverResult,
   DiscoverResponse,
   SubscriptionCalendarResponse,
+  SubscriptionCalendarTimelineResponse,
   SubscriptionConfigResponse,
   SubscriptionDetailResponse,
   SubscriptionHubConfig,
   SubscriptionListResponse,
   SubscriptionPushPreview,
+  SubscriptionCapabilitiesResponse,
   SubscriptionWorkbenchResponse,
   SubscriptionReconciliationResponse,
   TorraSubscriptionSyncPreview,
@@ -55,6 +57,7 @@ export interface RequestOptions {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
+const conditionalJsonCache = new Map<string, { etag: string; payload: unknown }>();
 
 function requestSignal(signal: AbortSignal | undefined, timeoutMs: number) {
   const controller = new AbortController();
@@ -102,6 +105,31 @@ async function requestJson<T>(path: string, init: RequestInit = {}, options: Req
 
 async function readJson<T>(path: string, options?: RequestOptions): Promise<T> {
   return requestJson<T>(path, { headers: { Accept: 'application/json' } }, options);
+}
+
+async function readConditionalJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const cached = conditionalJsonCache.get(path);
+  const request = requestSignal(options.signal, options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(path, {
+      signal: request.signal,
+      headers: {
+        Accept: 'application/json',
+        ...(cached?.etag ? { 'If-None-Match': cached.etag } : {})
+      }
+    });
+    if (response.status === 304 && cached) return cached.payload as T;
+    const body = await response.json().catch(() => ({})) as T & { error?: string };
+    if (!response.ok) throw new Error(body.error || `请求失败：${response.status}`);
+    const etag = response.headers.get('ETag') ?? '';
+    if (etag) conditionalJsonCache.set(path, { etag, payload: body });
+    return body;
+  } catch (reason) {
+    if (request.timedOut()) throw new Error('请求超时，请稍后重试');
+    throw reason;
+  } finally {
+    request.cleanup();
+  }
 }
 
 export function getHomeMedia(libraryId?: string, options?: RequestOptions): Promise<HomeMediaResponse> {
@@ -157,6 +185,7 @@ export async function runQbittorrentAction(input: {
   hashes: string[];
   taskId: string;
   title: string;
+  idempotencyKey?: string;
 }): Promise<QbittorrentActionResult> {
   const response = await fetch(`/api/qbittorrent/actions/${input.action}`, {
     method: 'POST',
@@ -164,13 +193,29 @@ export async function runQbittorrentAction(input: {
       Accept: 'application/json',
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ hashes: input.hashes, taskId: input.taskId, title: input.title })
+    body: JSON.stringify({ hashes: input.hashes, taskId: input.taskId, title: input.title, idempotencyKey: input.idempotencyKey })
   });
   const body = await response.json().catch(() => ({})) as QbittorrentActionResult & { error?: string };
   if (!response.ok) {
     throw new Error(body.error || `qBittorrent 操作失败：${response.status}`);
   }
   return body;
+}
+
+export function previewQbittorrentAction(input: {
+  action: QbittorrentAction;
+  hashes: string[];
+  taskId: string;
+  title: string;
+}): Promise<QbittorrentActionPreview> {
+  return requestJson<QbittorrentActionPreview>(`/api/qbittorrent/actions/${input.action}/preview`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ hashes: input.hashes, taskId: input.taskId, title: input.title })
+  });
 }
 
 export function getTorraSummary(options?: RequestOptions): Promise<TorraSummary> {
@@ -205,9 +250,30 @@ export function getTaskChain(options?: RequestOptions): Promise<TaskChainRespons
   return readJson<TaskChainResponse>('/api/tasks/chain', options);
 }
 
-export function getTaskChainV2(health = '', options?: RequestOptions): Promise<TaskChainResponse> {
-  const query = health ? `?health=${encodeURIComponent(health)}` : '';
-  return readJson<TaskChainResponse>(`/api/v2/tasks/chains${query}`, options);
+export function getTaskSummaryV2(options?: RequestOptions): Promise<TaskChainSummaryResponse> {
+  return readConditionalJson<TaskChainSummaryResponse>('/api/v2/tasks/summary', options);
+}
+
+export function getTaskChainV2(query: TaskChainQuery | TaskChainHealthState = {}, options?: RequestOptions): Promise<TaskChainResponse> {
+  const input = typeof query === 'string' ? { healthState: query } : query;
+  const params = new URLSearchParams();
+  if (input.healthState) params.set('healthState', input.healthState);
+  if (input.chainId) params.set('chainId', input.chainId);
+  if (input.targetKey) params.set('targetKey', input.targetKey);
+  if (input.subscriptionId) params.set('subscriptionId', input.subscriptionId);
+  if (input.tmdbId) params.set('tmdbId', input.tmdbId);
+  if (input.title) params.set('title', input.title);
+  if (input.seasonNumber != null) params.set('seasonNumber', String(input.seasonNumber));
+  if (input.updatedAfter) params.set('updatedAfter', input.updatedAfter);
+  if (input.offset != null) params.set('offset', String(input.offset));
+  if (input.limit != null) params.set('limit', String(input.limit));
+  if (input.refresh) params.set('refresh', '1');
+  const suffix = params.size ? `?${params.toString()}` : '';
+  return readConditionalJson<TaskChainResponse>(`/api/v2/tasks/chains${suffix}`, options);
+}
+
+export function getTaskChainDetailV2(chainId: string, options?: RequestOptions): Promise<TaskChainDetailResponse> {
+  return readConditionalJson<TaskChainDetailResponse>(`/api/v2/tasks/chains/${encodeURIComponent(chainId)}`, options);
 }
 
 export function getSystemMetrics(options?: RequestOptions): Promise<SystemMetricsResponse> {
@@ -232,6 +298,18 @@ export function getSubscriptionCalendar(
   );
 }
 
+export function getSubscriptionCalendarTimeline(
+  year: number,
+  month: number,
+  mediaType: 'all' | 'movie' | 'tv' = 'all',
+  options?: RequestOptions
+): Promise<SubscriptionCalendarTimelineResponse> {
+  return readConditionalJson<SubscriptionCalendarTimelineResponse>(
+    `/api/v2/calendar?year=${year}&month=${month}&type=${mediaType}`,
+    options
+  );
+}
+
 export function getSubscriptionItems(includeProgress = false, options?: RequestOptions): Promise<SubscriptionListResponse> {
   return readJson<SubscriptionListResponse>(
     includeProgress ? '/api/subscriptions/items?include_progress=1' : '/api/subscriptions/items',
@@ -252,6 +330,10 @@ export function getSubscriptionWorkbench(input: {
   if (input.mediaType) query.set('mediaType', input.mediaType);
   if (input.query) query.set('query', input.query);
   return readJson<SubscriptionWorkbenchResponse>(`/api/v2/subscriptions/workbench?${query.toString()}`, options);
+}
+
+export function getSubscriptionCapabilities(options?: RequestOptions): Promise<SubscriptionCapabilitiesResponse> {
+  return readJson<SubscriptionCapabilitiesResponse>('/api/v2/subscriptions/capabilities', options);
 }
 
 export function getSubscriptionReconciliation(options?: RequestOptions): Promise<SubscriptionReconciliationResponse> {

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 
 from flask import Flask, jsonify, request
@@ -54,6 +56,19 @@ def _safe_title(value) -> str:
     return title[:120] or "未命名媒体任务"
 
 
+def _idempotency_key(action: str, hashes: list[str], tasks: dict[str, dict]) -> str:
+    evidence = {
+        "action": action,
+        "tasks": [{
+            "hash": hash_value,
+            "state": str(tasks[hash_value].get("state") or ""),
+            "status": str(tasks[hash_value].get("status") or ""),
+        } for hash_value in hashes],
+    }
+    content = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return f"qb:{hashlib.sha256(content.encode('utf-8')).hexdigest()[:24]}"
+
+
 class QbittorrentActionService:
     def __init__(self, client, activity_writer=None):
         self.client = client
@@ -61,6 +76,84 @@ class QbittorrentActionService:
 
     def _activity(self, action: str, status: str, message: str):
         self.activity_writer("qbittorrent", action, status, message)
+
+    def preview(self, action: str, input_data: dict) -> dict:
+        if action not in {"pause", "resume"}:
+            raise QbittorrentActionError(
+                "不支持的 qBittorrent 动作",
+                400,
+                "QB_ACTION_INVALID",
+            )
+        hashes = validate_action_hashes(input_data.get("hashes"))
+        before = self.client.summary()
+        base = {
+            "action": action,
+            "allowed": False,
+            "supportsPreview": True,
+            "requiresConfirmation": True,
+            "cooldownSeconds": 0,
+            "idempotencyKey": "",
+            "affected": {"requested": len(hashes), "eligible": 0, "skipped": 0, "missing": 0},
+            "targets": [],
+        }
+        if not before.get("configured"):
+            return {**base, "reasonCode": "QB_NOT_CONFIGURED", "reasonText": "qBittorrent 尚未配置"}
+        if not before.get("connected"):
+            return {
+                **base,
+                "reasonCode": "QB_UNAVAILABLE",
+                "reasonText": before.get("error") or "qBittorrent 当前不可用",
+            }
+
+        before_by_hash = {
+            str(task.get("hash") or "").lower(): task
+            for task in before.get("tasks") or []
+        }
+        missing = [hash_value for hash_value in hashes if hash_value not in before_by_hash]
+        targets = [{
+            "hashPrefix": hash_value[:8],
+            "name": _safe_title(before_by_hash.get(hash_value, {}).get("name")),
+            "state": str(before_by_hash.get(hash_value, {}).get("state") or ""),
+            "status": str(before_by_hash.get(hash_value, {}).get("status") or ""),
+            "outcome": "missing" if hash_value in missing else "unchanged",
+        } for hash_value in hashes]
+        if missing:
+            return {
+                **base,
+                "reasonCode": "QB_TASK_NOT_FOUND",
+                "reasonText": "部分 qBittorrent 任务已不存在，请刷新任务链后重试",
+                "affected": {"requested": len(hashes), "eligible": 0, "skipped": 0, "missing": len(missing)},
+                "targets": targets,
+            }
+
+        eligible = [
+            hash_value
+            for hash_value in hashes
+            if (_is_paused(before_by_hash[hash_value])) == (action == "resume")
+        ]
+        skipped = [hash_value for hash_value in hashes if hash_value not in eligible]
+        for target, hash_value in zip(targets, hashes):
+            target["outcome"] = "will_change" if hash_value in eligible else "unchanged"
+        verb = "暂停" if action == "pause" else "恢复"
+        key = _idempotency_key(action, hashes, before_by_hash)
+        if not eligible:
+            return {
+                **base,
+                "reasonCode": "QB_ALREADY_TARGET_STATE",
+                "reasonText": f"关联下载已全部处于{verb}状态",
+                "idempotencyKey": key,
+                "affected": {"requested": len(hashes), "eligible": 0, "skipped": len(skipped), "missing": 0},
+                "targets": targets,
+            }
+        return {
+            **base,
+            "allowed": True,
+            "reasonCode": "QB_ACTION_ALLOWED",
+            "reasonText": f"将{verb} {len(eligible)} 个关联下载",
+            "idempotencyKey": key,
+            "affected": {"requested": len(hashes), "eligible": len(eligible), "skipped": len(skipped), "missing": 0},
+            "targets": targets,
+        }
 
     def execute(self, action: str, input_data: dict) -> dict:
         if action not in {"pause", "resume"}:
@@ -103,6 +196,14 @@ class QbittorrentActionService:
             if (_is_paused(before_by_hash[hash_value])) == (action == "resume")
         ]
         skipped = [hash_value for hash_value in hashes if hash_value not in eligible]
+        idempotency_key = _idempotency_key(action, hashes, before_by_hash)
+        supplied_key = str(input_data.get("idempotencyKey") or "").strip()
+        if supplied_key and supplied_key != idempotency_key:
+            raise QbittorrentActionError(
+                "qBittorrent 任务状态已变化，请重新预览后确认",
+                409,
+                "QB_PREVIEW_STALE",
+            )
         if not eligible:
             self._activity(
                 action,
@@ -117,6 +218,7 @@ class QbittorrentActionService:
                 "failed": 0,
                 "skipped": len(skipped),
                 "confirmed": True,
+                "idempotencyKey": idempotency_key,
                 "tasks": [
                     {
                         "hash": hash_value,
@@ -154,6 +256,7 @@ class QbittorrentActionService:
                 "failed": len(eligible),
                 "skipped": len(skipped),
                 "confirmed": False,
+                "idempotencyKey": idempotency_key,
                 "tasks": [
                     {
                         "hash": hash_value,
@@ -199,6 +302,7 @@ class QbittorrentActionService:
             "failed": failed,
             "skipped": len(skipped),
             "confirmed": confirmed,
+            "idempotencyKey": idempotency_key,
             "tasks": tasks,
         }
 
@@ -209,6 +313,7 @@ def register_qbittorrent_actions(app: Flask, client, activity_writer=None):
 
     for action in ("pause", "resume"):
         endpoint = f"qbittorrent_{action}"
+        preview_endpoint = f"qbittorrent_{action}_preview"
 
         def action_route(selected_action=action):
             try:
@@ -224,6 +329,22 @@ def register_qbittorrent_actions(app: Flask, client, activity_writer=None):
             f"/api/qbittorrent/actions/{action}",
             endpoint,
             action_route,
+            methods=["POST"],
+        )
+
+        def preview_route(selected_action=action):
+            try:
+                return jsonify(service.preview(
+                    selected_action,
+                    request.get_json(silent=True) or {},
+                ))
+            except QbittorrentActionError as exc:
+                return jsonify({"code": exc.code, "error": str(exc)}), exc.status
+
+        app.add_url_rule(
+            f"/api/qbittorrent/actions/{action}/preview",
+            preview_endpoint,
+            preview_route,
             methods=["POST"],
         )
     return service

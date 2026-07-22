@@ -421,44 +421,6 @@
   white-space: nowrap;
 }
 
-.ops-task-health {
-  display: inline-flex;
-  align-items: center;
-  min-height: 24px;
-  padding: 0 8px;
-  border: 1px solid var(--ops-hair);
-  border-radius: 999px;
-  background: rgba(157, 184, 207, 0.05);
-  color: var(--ops-muted);
-  font-size: 8.5px;
-  font-weight: 650;
-  white-space: nowrap;
-}
-
-.ops-task-health--action-required {
-  border-color: rgba(255, 83, 103, 0.26);
-  background: rgba(255, 83, 103, 0.07);
-  color: var(--ops-rose);
-}
-
-.ops-task-health--evidence-insufficient {
-  border-color: rgba(213, 161, 74, 0.3);
-  background: rgba(213, 161, 74, 0.07);
-  color: #d5a14a;
-}
-
-.ops-task-health--protected {
-  border-color: rgba(36, 66, 255, 0.24);
-  background: rgba(36, 66, 255, 0.07);
-  color: var(--ops-steel);
-}
-
-.ops-task-health--normal {
-  border-color: rgba(109, 179, 142, 0.24);
-  background: rgba(109, 179, 142, 0.07);
-  color: #79b994;
-}
-
 .ops-task-state--active {
   border-color: rgba(36, 66, 255, 0.24);
   background: rgba(36, 66, 255, 0.1);
@@ -612,6 +574,13 @@
   font-weight: 600;
 }
 
+.ops-task-chain__step .ops-task-chain__unavailable {
+  padding: 6px 7px;
+  border-left: 2px solid rgba(255, 83, 103, 0.48);
+  background: rgba(255, 83, 103, 0.045);
+  color: var(--ops-muted);
+}
+
 .ops-task-chain__meta {
   display: flex;
   align-items: flex-end;
@@ -669,6 +638,58 @@
 
 .ops-task-chain__step.is-protected .ops-task-chain__evidence > span {
   color: var(--ops-steel);
+}
+
+.ops-task-technical {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding-top: 12px;
+}
+
+.ops-task-technical__list {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  border-top: 1px solid var(--ops-hair);
+}
+
+.ops-task-technical__list > div {
+  position: relative;
+  min-width: 0;
+  padding: 9px 36px 9px 0;
+  border-bottom: 1px solid var(--ops-hair);
+}
+
+.ops-task-technical__list > div:nth-child(even) {
+  padding-left: 16px;
+}
+
+.ops-task-technical__list dt {
+  color: var(--ops-faint);
+  font-size: 8px;
+}
+
+.ops-task-technical__list dd {
+  margin: 4px 0 0;
+}
+
+.ops-task-technical__list code {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--ops-muted);
+  font-size: 8.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.ops-task-technical__copy {
+  position: absolute;
+  top: 8px;
+  right: 4px;
+  width: 26px;
+  height: 26px;
 }
 
 .ops-task-progress {
@@ -743,6 +764,35 @@
 
 @media (max-width: 640px) {
 
+  .ops-task-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ops-task-summary > div {
+    grid-template-columns: 24px minmax(0, 1fr);
+    min-height: 68px;
+    padding: 10px 12px;
+  }
+
+  .ops-task-summary > div + div {
+    border-left: 0;
+  }
+
+  .ops-task-summary > div:nth-child(even) {
+    border-left: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .ops-task-summary > div:nth-child(n + 3) {
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .ops-task-summary strong {
+    overflow: visible;
+    line-height: 1.35;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
   .ops-task-guidance {
     grid-template-columns: 20px minmax(0, 1fr);
   }
@@ -793,6 +843,16 @@
     grid-template-columns: auto minmax(0, 1fr);
   }
 
+  .ops-task-card__head h2 {
+    display: -webkit-box;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    line-height: 1.35;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
   .ops-task-card__head > strong {
     grid-column: 2;
     font-size: 17px;
@@ -801,16 +861,26 @@
   .ops-task-card__identity {
     display: grid;
   }
+
+  .ops-task-technical {
+    display: grid;
+  }
+
+  .ops-task-technical__list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ops-task-technical__list > div:nth-child(even) {
+    padding-left: 0;
+  }
 }
 
-.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-task-health--evidence-insufficient,
 .app-shell:not(.app-shell--hall)[data-theme='light'] .ops-task-alert--evidence,
 .app-shell:not(.app-shell--hall)[data-theme='light'] .ops-task-guidance--evidence-insufficient,
 .app-shell:not(.app-shell--hall)[data-theme='light'] .ops-task-chain__step.is-unknown .ops-task-chain__evidence > span {
   color: #865a0a;
 }
 
-.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-task-health--normal,
 .app-shell:not(.app-shell--hall)[data-theme='light'] .ops-task-chain__step.is-done .ops-task-chain__evidence > span {
   color: #2f7651;
 }

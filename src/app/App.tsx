@@ -9,8 +9,9 @@ import { SettingsPage } from '../components/pages/SettingsPage';
 import { SubscriptionSettingsPage } from '../components/pages/SubscriptionSettingsPage';
 import { TasksCenter } from '../components/pages/TasksCenter';
 import { RssSeedLibraryPage } from '../components/pages/RssSeedLibraryPage';
-import { getHealth } from '../services/api';
-import type { HealthResponse } from '../types/media';
+import { usePolling } from '../hooks/usePolling';
+import { getHomeSummary } from '../services/api';
+import type { HomeSummaryResponse } from '../types/homeSummary';
 import { defaultVisualFx, normalizeVisualFx } from '../types/visualFx';
 import { pathForNavigation, readNavigation } from './navigation';
 
@@ -31,9 +32,9 @@ function initialTheme(): ThemeMode {
 export function App() {
   const [navigation] = useState(readNavigation);
   const [page, setPage] = useState<PageId>(navigation.page);
-  const [taskNavigationTarget, setTaskNavigationTarget] = useState<TaskNavigationTarget | null>(navigation.target);
+  const [navigationTarget, setNavigationTarget] = useState<TaskNavigationTarget | null>(navigation.target);
   const [theme, setTheme] = useState<ThemeMode>(initialTheme);
-  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [homeSummary, setHomeSummary] = useState<HomeSummaryResponse | null>(null);
   const [visualFx, setVisualFx] = useState(() => {
     try {
       const saved = window.localStorage.getItem('hallVisualFx');
@@ -66,25 +67,16 @@ export function App() {
     });
   });
 
-  useEffect(() => {
-    let cancelled = false;
+  const loadHomeSummary = async (signal: AbortSignal) => {
+    try {
+      const summary = await getHomeSummary({ signal });
+      if (!signal.aborted) setHomeSummary(summary);
+    } catch {
+      if (!signal.aborted) setHomeSummary(null);
+    }
+  };
 
-    getHealth()
-      .then((nextHealth) => {
-        if (!cancelled) {
-          setHealth(nextHealth);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setHealth(null);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  usePolling(loadHomeSummary, 30_000);
 
   useEffect(() => {
     window.localStorage.setItem('hallVisualFx', JSON.stringify(visualFx));
@@ -121,7 +113,7 @@ export function App() {
     const handlePopState = () => {
       const next = readNavigation();
       setPage(next.page);
-      setTaskNavigationTarget(next.page === 'tasks' ? next.target : null);
+      setNavigationTarget(['tasks', 'subscriptions'].includes(next.page) ? next.target : null);
     };
     window.addEventListener('popstate', handlePopState);
     if (!navigation.canonical) {
@@ -133,8 +125,8 @@ export function App() {
 
   const navigate: AppNavigate = (nextPage, target) => {
     setPage(nextPage);
-    const nextTarget = nextPage === 'tasks' ? target ?? null : null;
-    setTaskNavigationTarget(nextTarget);
+    const nextTarget = ['tasks', 'subscriptions'].includes(nextPage) ? target ?? null : null;
+    setNavigationTarget(nextTarget);
     window.history.pushState({}, '', pathForNavigation(nextPage, nextTarget));
   };
 
@@ -142,7 +134,7 @@ export function App() {
     <div className={`app-shell app-shell--${page}`} data-theme={page === 'hall' ? undefined : theme}>
       <AppTopNav
         activePage={page}
-        health={health}
+        homeSummary={homeSummary}
         onNavigate={navigate}
         onToggleTheme={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')}
         showThemeToggle={page !== 'hall'}
@@ -158,10 +150,14 @@ export function App() {
         />
       )}
       {page === 'control' && <ControlRoom />}
-      {page === 'tasks' && <TasksCenter target={taskNavigationTarget} onClearTarget={() => setTaskNavigationTarget(null)} />}
+      {page === 'tasks' && <TasksCenter target={navigationTarget} onClearTarget={() => setNavigationTarget(null)} />}
       {page === 'calendar' && <CalendarPage onNavigate={navigate} />}
       {(page === 'discover' || page === 'subscriptions') && (
-        <DiscoverPage onNavigate={navigate} view={page === 'subscriptions' ? 'subscriptions' : 'discover'} />
+        <DiscoverPage
+          navigationTarget={page === 'subscriptions' ? navigationTarget : null}
+          onNavigate={navigate}
+          view={page === 'subscriptions' ? 'subscriptions' : 'discover'}
+        />
       )}
       {page === 'subscription-settings' && <SubscriptionSettingsPage onNavigate={navigate} />}
       {page === 'rss-library' && <RssSeedLibraryPage />}

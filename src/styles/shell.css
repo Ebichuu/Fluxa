@@ -279,6 +279,22 @@
   color: rgba(122, 215, 194, 0.9);
 }
 
+.nav-pill--health[data-health='action_required'] {
+  color: var(--theme-danger);
+}
+
+.nav-pill--health[data-health='evidence_insufficient'] {
+  color: var(--theme-faint);
+}
+
+.nav-pill--health[data-health='waiting'] {
+  color: var(--theme-warning);
+}
+
+.nav-pill--health[data-health='protected'] {
+  color: #7f9fd1;
+}
+
 .nav-pill--active {
   color: #fff;
   background: rgba(122, 215, 194, 0.11);
@@ -389,6 +405,22 @@
   color: var(--theme-success);
 }
 
+.app-shell:not(.app-shell--hall)[data-theme='light'] .nav-pill--health[data-health='action_required'] {
+  color: var(--theme-danger);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .nav-pill--health[data-health='evidence_insufficient'] {
+  color: var(--theme-faint);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .nav-pill--health[data-health='waiting'] {
+  color: var(--theme-warning);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .nav-pill--health[data-health='protected'] {
+  color: #426da8;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .app-shell:not(.app-shell--hall) :is(.nav-item, .nav-pill, .segmented-tabs__item, .settings-button) {
     transform: none !important;
@@ -463,36 +495,37 @@
 @media (max-width: 760px) {
   .app-top-nav {
     top: 18px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: flex-start;
     gap: 10px;
   }
 
   .nav-left-group {
+    grid-column: 1 / -1;
     align-items: flex-start;
-    flex: 1 1 auto;
     flex-direction: column;
-    overflow: hidden;
+    width: 100%;
+    overflow: visible;
   }
 
   .primary-nav {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     width: 100%;
-    max-width: calc(100vw - 36px);
-    justify-content: flex-start;
-    overscroll-behavior-inline: contain;
-    scrollbar-width: none;
-  }
-
-  .primary-nav::-webkit-scrollbar {
-    display: none;
+    max-width: none;
+    overflow: visible;
   }
 
   .app-shell:not(.app-shell--hall) .primary-nav .nav-item {
-    flex: 0 0 auto;
-    scroll-snap-align: center;
+    width: 100%;
+    padding: 0 4px;
   }
 
   .nav-actions {
-    flex: 0 0 auto;
+    position: absolute;
+    top: 0;
+    right: 0;
   }
 
   .nav-pill {

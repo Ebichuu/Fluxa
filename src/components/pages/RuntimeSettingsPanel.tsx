@@ -16,7 +16,7 @@ import type {
   RuntimeSettingsResponse
 } from '../../types/runtimeSettings';
 
-const initiallyOpen = new Set(['emby', 'qbittorrent', 'torra', 'symedia', 'tmdb', 'automation']);
+const initiallyOpen = new Set(['emby']);
 
 function valuesFrom(payload: RuntimeSettingsResponse) {
   return Object.fromEntries(
@@ -171,7 +171,7 @@ export function RuntimeSettingsPanel() {
           <Search aria-hidden="true" size={15} />
           <input
             aria-label="搜索配置项"
-            placeholder="搜索软件、配置名称或环境变量"
+            placeholder="搜索服务、连接或功能开关"
             type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}

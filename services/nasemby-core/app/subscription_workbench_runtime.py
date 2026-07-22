@@ -128,6 +128,33 @@ class SubscriptionWorkbenchService:
         self.app = app
         self.environment = environment if environment is not None else {}
 
+    def capability_snapshot(self):
+        checked_at = _now()
+        registry = self.app.extensions.get("mcc_scheduler_status")
+        scheduler = registry.snapshot("subscription-task") if registry else {}
+        scheduler_configured = "MCC_SUBSCRIPTION_SCHEDULER_ENABLED" in self.environment
+        scheduler_enabled = _truthy(self.environment.get("MCC_SUBSCRIPTION_SCHEDULER_ENABLED"))
+        scheduler_started = bool(scheduler.get("started"))
+        scheduler_error = str(scheduler.get("lastError") or "")
+        return {
+            "ok": True,
+            "checkedAt": checked_at,
+            "localWrite": {
+                "enabled": _truthy(self.environment.get("NASEMBY_CORE_WRITE_ENABLED")),
+            },
+            "torraPush": {
+                "enabled": _truthy(self.environment.get("TORRA_PUSH_ENABLED")),
+            },
+            "scheduler": {
+                "configured": scheduler_configured,
+                "enabled": scheduler_enabled,
+                "started": scheduler_started,
+                "running": bool(scheduler_enabled and scheduler_started and not scheduler_error),
+                "lastRunAt": str(scheduler.get("lastRunAt") or ""),
+                "lastError": scheduler_error,
+            },
+        }
+
     def snapshot(self, *, limit=None, offset=0, media_type="", query=""):
         checked_at = _now()
         raw = discover_runtime.load_subscription_items(
@@ -344,6 +371,10 @@ class SubscriptionWorkbenchService:
 def register_subscription_workbench(app: Flask, environment=None):
     service = SubscriptionWorkbenchService(app, environment=environment)
     app.extensions["mcc_subscription_workbench"] = service
+
+    @app.get("/api/v2/subscriptions/capabilities")
+    def subscription_capabilities():
+        return jsonify(service.capability_snapshot())
 
     @app.get("/api/v2/subscriptions/workbench")
     def subscription_workbench():

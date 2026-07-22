@@ -367,7 +367,7 @@
 
 .ops-control-foot {
   display: grid;
-  grid-template-columns: auto auto auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(180px, auto) auto auto minmax(220px, 1fr);
   gap: 13px;
   align-items: center;
   padding: 13px 16px;
@@ -379,12 +379,9 @@
 }
 
 .ops-control-foot strong {
-  border: 1px solid rgba(36, 66, 255, 0.24);
-  border-radius: 999px;
-  padding: 5px 9px;
-  background: rgba(36, 66, 255, 0.1);
   color: rgba(232, 236, 239, 0.9);
-  font-size: 9px;
+  font-size: 10px;
+  font-weight: 550;
 }
 
 .ops-control-foot__backup {
@@ -419,10 +416,52 @@
   opacity: 0.72;
 }
 
+.ops-control-foot__backup--idle {
+  border-color: rgba(157, 184, 207, 0.14);
+  color: var(--ops-muted);
+}
+
 .ops-control-foot p {
   margin: 0;
   color: var(--ops-faint);
   font-size: 10px;
+}
+
+.ops-inspector__diagnostics {
+  border-top: 1px solid rgba(157, 184, 207, 0.1);
+  padding-top: 11px;
+}
+
+.ops-inspector__diagnostics summary {
+  color: var(--ops-muted);
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.ops-inspector__diagnostics dl {
+  display: grid;
+  gap: 7px;
+  margin: 11px 0;
+}
+
+.ops-inspector__diagnostics dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.ops-inspector__diagnostics dt,
+.ops-inspector__diagnostics dd,
+.ops-inspector__diagnostics p {
+  margin: 0;
+  color: var(--ops-muted);
+  font-size: 8.5px;
+  line-height: 1.5;
+}
+
+.ops-inspector__diagnostics dd {
+  color: var(--ops-ink-strong);
+  text-align: right;
 }
 
 @media (max-width: 900px) {
