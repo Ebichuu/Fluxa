@@ -163,6 +163,7 @@ export interface SubscriptionWorkbenchResponse {
     inLibrary: number;
   };
   items: SubscriptionItem[];
+  posterBackfillIds?: string[];
   page: {
     total: number;
     limit: number;
@@ -195,6 +196,19 @@ export interface SubscriptionWorkbenchResponse {
     lastError?: string;
   };
   reconciliation?: SubscriptionReconciliationResponse;
+}
+
+export interface SubscriptionVisualBackfillResponse {
+  ok: boolean;
+  scanned: number;
+  updated: number;
+  unchanged: number;
+  items: Array<{
+    id: string;
+    posterUrl: string;
+    backdropUrl?: string;
+  }>;
+  errors: string[];
 }
 
 export interface SubscriptionCapabilitiesResponse {

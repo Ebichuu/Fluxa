@@ -195,6 +195,10 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(explicit["identitySource"], "rss_description")
         self.assertEqual(unique["tmdbId"], "808")
         self.assertEqual(unique["identitySource"], "subscription_match")
+        summary = self.rss.summary(enabled=True)
+        self.assertTrue(summary["identityBackfillRan"])
+        self.assertEqual(summary["lastIdentityBackfillScanned"], 2)
+        self.assertEqual(summary["lastIdentityBackfillIdentified"], 2)
 
     def test_identity_backfill_marks_multiple_reliable_targets_as_conflict(self):
         self.subscriptions.extend([{

@@ -155,8 +155,94 @@ class SubscriptionWorkbenchService:
             },
         }
 
+    @staticmethod
+    def _requested_visual_ids(item_ids):
+        requested = []
+        for value in item_ids or []:
+            key = str(value or "").strip()
+            if key and key not in requested:
+                requested.append(key)
+        return requested[:100]
+
+    def _visual_rows_by_key(self):
+        write_enabled = _truthy(self.environment.get("NASEMBY_CORE_WRITE_ENABLED"))
+        raw = discover_runtime.load_subscription_items(
+            with_progress=False,
+            remove_completed=False,
+            persist_progress=False,
+        )
+        rows = [
+            {**row, "_visual_read_only": not write_enabled}
+            for row in (raw.get("items") or [])
+            if isinstance(row, dict)
+        ]
+        by_key = {
+            str(discover_runtime.get_subscription_item_key(row) or ""): row
+            for row in rows
+            if discover_runtime.get_subscription_item_key(row)
+        }
+        reconciliation_service = self.app.extensions.get("mcc_subscription_reconciliation")
+        if reconciliation_service:
+            try:
+                reconciliation = reconciliation_service.snapshot() or {}
+            except Exception:
+                reconciliation = {}
+            for row in reconciliation.get("items") or []:
+                if not isinstance(row, dict) or row.get("reconciliationState") != "only_torra":
+                    continue
+                key = str(row.get("id") or "").strip()
+                if not key:
+                    continue
+                by_key[key] = {
+                    "title": row.get("title") or "",
+                    "media_type": row.get("mediaType") or "unknown",
+                    "tmdb_id": row.get("tmdbId") or "",
+                    "_visual_read_only": True,
+                }
+        return by_key
+
+    @staticmethod
+    def _visual_response_item(key, visuals, mapped=None):
+        mapped = mapped or {}
+        return {
+            "id": mapped.get("id") or key,
+            "posterUrl": mapped.get("posterUrl") or visuals.get("poster_url") or "",
+            "backdropUrl": mapped.get("backdropUrl") or visuals.get("backdrop_url") or "",
+        }
+
+    def _backfill_visual(self, key, row):
+        visuals = discover_runtime.resolve_subscription_visuals(row, fetch=True)
+        if not visuals.get("poster_url"):
+            return "unchanged", None
+        if row.get("_visual_read_only"):
+            return "updated", self._visual_response_item(key, visuals)
+        saved = discover_runtime.supplement_subscription_visuals(key, visuals)
+        if not saved:
+            return "unchanged", None
+        return "updated", self._visual_response_item(key, visuals, map_subscription_item(saved) or {})
+
+    def backfill_visuals(self, item_ids):
+        requested = self._requested_visual_ids(item_ids)
+        by_key = self._visual_rows_by_key()
+        result = {"ok": True, "scanned": 0, "updated": 0, "unchanged": 0, "items": [], "errors": []}
+        for key in requested:
+            row = by_key.get(key)
+            if not row:
+                continue
+            result["scanned"] += 1
+            try:
+                status, item = self._backfill_visual(key, row)
+            except Exception:
+                result["errors"].append(key)
+                continue
+            result[status] += 1
+            if item:
+                result["items"].append(item)
+        return result
+
     def snapshot(self, *, limit=None, offset=0, media_type="", query=""):
         checked_at = _now()
+        write_enabled = _truthy(self.environment.get("NASEMBY_CORE_WRITE_ENABLED"))
         raw = discover_runtime.load_subscription_items(
             with_progress=False,
             remove_completed=False,
@@ -191,9 +277,20 @@ class SubscriptionWorkbenchService:
             if isinstance(item, dict) and item.get("localId")
         }
         mapped_items = []
-        for row in rows:
+        for source_row in rows:
+            row = dict(source_row)
+            poster_missing = not str(row.get("poster_url") or row.get("poster") or "").strip()
+            visuals = discover_runtime.resolve_subscription_visuals(row, fetch=False)
+            if visuals:
+                row.update(visuals)
             mapped = _item_snapshot(row, _chain_item_for_row(row, chain))
             local_key = str(mapped.get("id") or discover_runtime.get_subscription_item_key(row) or "")
+            if (
+                poster_missing
+                and local_key
+                and str(mapped.get("tmdbId") or "").isdigit()
+            ):
+                mapped["_posterBackfillId"] = local_key
             recon = reconciliation_items.get(local_key)
             if recon:
                 mapped.update({
@@ -210,14 +307,19 @@ class SubscriptionWorkbenchService:
         for recon in (reconciliation or {}).get("items", []):
             if not isinstance(recon, dict) or recon.get("localId") or recon.get("reconciliationState") != "only_torra":
                 continue
-            mapped_items.append({
+            remote_visuals = discover_runtime.resolve_subscription_visuals({
+                "title": recon.get("title") or "",
+                "media_type": recon.get("mediaType") or "unknown",
+                "tmdb_id": recon.get("tmdbId") or "",
+            }, fetch=False)
+            remote_item = {
                 "id": recon.get("id"),
                 "title": recon.get("title") or "未命名订阅",
                 "seasonName": f"第 {recon.get('seasonNumber', 0)} 季" if recon.get("mediaType") == "tv" else "",
                 "seasonNumber": recon.get("seasonNumber"),
                 "mediaType": recon.get("mediaType") or "unknown",
                 "tmdbId": recon.get("tmdbId") or "",
-                "posterUrl": "",
+                "posterUrl": remote_visuals.get("poster_url") or "",
                 "progressText": "Torra 已有订阅，待建立本地镜像",
                 "inLibrary": False,
                 "updatedAt": recon.get("observedAt") or checked_at,
@@ -235,7 +337,13 @@ class SubscriptionWorkbenchService:
                 "reasonText": recon.get("reasonText"),
                 "observedAt": recon.get("observedAt"),
                 "freshUntil": recon.get("freshUntil"),
-            })
+            }
+            if (
+                not remote_item["posterUrl"]
+                and str(remote_item.get("tmdbId") or "").isdigit()
+            ):
+                remote_item["_posterBackfillId"] = str(remote_item.get("id") or "")
+            mapped_items.append(remote_item)
         stats = {
             "total": len(mapped_items),
             "movie": sum(item.get("mediaType") == "movie" for item in mapped_items),
@@ -260,6 +368,11 @@ class SubscriptionWorkbenchService:
         page_offset = max(0, int(offset or 0))
         page_limit = max(1, min(100, int(limit))) if limit is not None else max(1, page_total or 1)
         paged_items = filtered_items[page_offset:page_offset + page_limit] if limit is not None else filtered_items
+        poster_backfill_ids = [
+            str(item.pop("_posterBackfillId"))
+            for item in paged_items
+            if item.get("_posterBackfillId")
+        ]
         next_offset = page_offset + len(paged_items)
 
         torra_sync = self.app.extensions.get("mcc_torra_subscription_sync")
@@ -285,7 +398,6 @@ class SubscriptionWorkbenchService:
         config = discover_runtime.load_subscription_config() or {}
         douban = config.get("douban") if isinstance(config, dict) else {}
         douban = douban if isinstance(douban, dict) else {}
-        write_enabled = _truthy(self.environment.get("NASEMBY_CORE_WRITE_ENABLED"))
         source_scheduler_enabled = bool(douban.get("enabled") and douban.get("task_enabled"))
         global_scheduler_configured = "MCC_SUBSCRIPTION_SCHEDULER_ENABLED" in self.environment
         global_scheduler_enabled = _truthy(self.environment.get("MCC_SUBSCRIPTION_SCHEDULER_ENABLED"))
@@ -341,6 +453,7 @@ class SubscriptionWorkbenchService:
             "capabilities": capabilities,
             "stats": stats,
             "items": paged_items,
+            "posterBackfillIds": poster_backfill_ids,
             "page": {
                 "total": page_total,
                 "limit": page_limit,
@@ -397,5 +510,23 @@ def register_subscription_workbench(app: Flask, environment=None):
             ))
         except Exception:
             return jsonify({"code": "SUBSCRIPTION_WORKBENCH_READ_FAILED", "error": "订阅工作台读取失败", "request_id": current_request_id()}), 502
+
+    @app.post("/api/v2/subscriptions/visual-backfills")
+    def subscription_visual_backfills():
+        item_ids = (request.get_json(silent=True) or {}).get("ids")
+        if not isinstance(item_ids, list) or len(item_ids) > 100:
+            return jsonify({
+                "code": "SUBSCRIPTION_VISUAL_BACKFILL_INVALID",
+                "error": "订阅海报补齐目标无效",
+                "request_id": current_request_id(),
+            }), 422
+        try:
+            return jsonify(service.backfill_visuals(item_ids))
+        except Exception:
+            return jsonify({
+                "code": "SUBSCRIPTION_VISUAL_BACKFILL_FAILED",
+                "error": "订阅海报补齐失败",
+                "request_id": current_request_id(),
+            }), 500
 
     return service

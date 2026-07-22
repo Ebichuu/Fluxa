@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Ban, CalendarDays, Check, ChevronLeft, ChevronRight, Database, Download, FileSearch, Pause, Play, Plus, RefreshCcw, RotateCcw, Search, Send, SlidersHorizontal, Trash2, X } from 'lucide-react';
 import {
+  backfillSubscriptionVisuals,
   blockSubscription,
   browseDiscover,
   deleteSubscription,
@@ -330,6 +331,7 @@ function mapRssSeedsToResources(
       title: item.title,
       subtitle: [
         rssEpisodeLabel(item),
+        item.seasonScopeState === 'unknown' ? '季号待确认' : '',
         item.hasDownload ? '已保留下载信息' : '仅保存种子元数据'
       ].filter(Boolean).join(' · '),
       quality: item.versionSummary,
@@ -542,6 +544,26 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   const resourceRequestRef = useRef<AbortController | null>(null);
   const resourcePanelRef = useRef<HTMLElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const posterBackfillAttemptedRef = useRef(new Set<string>());
+
+  const requestPosterBackfills = useCallback((ids: string[] = []) => {
+    const pending = ids.filter((id) => id && !posterBackfillAttemptedRef.current.has(id));
+    if (pending.length === 0) return;
+    pending.forEach((id) => posterBackfillAttemptedRef.current.add(id));
+    void backfillSubscriptionVisuals(pending)
+      .then((result) => {
+        result.errors.forEach((id) => posterBackfillAttemptedRef.current.delete(id));
+        if (result.items.length === 0) return;
+        const visuals = new Map(result.items.map((item) => [item.id, item]));
+        const applyVisuals = (items: SubscriptionItem[]) => items.map((item) => {
+          const visual = item.id ? visuals.get(item.id) : undefined;
+          return visual ? { ...item, posterUrl: visual.posterUrl, backdropUrl: visual.backdropUrl } : item;
+        });
+        setSubs(applyVisuals);
+        setWorkbench((current) => current ? { ...current, items: applyVisuals(current.items) } : current);
+      })
+      .catch(() => pending.forEach((id) => posterBackfillAttemptedRef.current.delete(id)));
+  }, []);
 
   const loadSubs = useCallback(() => {
     setSubsLoading(true);
@@ -561,6 +583,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
           setSubs(payload.items);
           setBlockedTitles(payload.blockedTitles ?? []);
           setTorraSyncStatus(payload.torraSync);
+          requestPosterBackfills(payload.posterBackfillIds);
           return;
         }
         if (payload.subscriptions) {
@@ -570,7 +593,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       })
       .catch((reason: unknown) => setSubsError(reason instanceof Error ? reason.message : '订阅工作台当前不可用'))
       .finally(() => setSubsLoading(false));
-  }, [deferredSubscriptionKeyword, subscriptionTab, subscriptionsOnly]);
+  }, [deferredSubscriptionKeyword, requestPosterBackfills, subscriptionTab, subscriptionsOnly]);
 
   const loadMoreSubs = useCallback(() => {
     const page = workbench?.page;
@@ -585,6 +608,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     })
       .then((payload) => {
         setWorkbench(payload);
+        requestPosterBackfills(payload.posterBackfillIds);
         setSubs((current) => {
           const seen = new Set(current.map((item) => item.id || `${item.mediaType}:${item.tmdbId}:${item.seasonNumber ?? 0}:${item.title}`));
           return [
@@ -600,7 +624,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       })
       .catch((reason: unknown) => setSubsError(reason instanceof Error ? reason.message : '更多追更读取失败'))
       .finally(() => setSubsMoreLoading(false));
-  }, [deferredSubscriptionKeyword, subsMoreLoading, subscriptionTab, subscriptionsOnly, workbench]);
+  }, [deferredSubscriptionKeyword, requestPosterBackfills, subsMoreLoading, subscriptionTab, subscriptionsOnly, workbench]);
 
   useEffect(() => {
     loadSubs();

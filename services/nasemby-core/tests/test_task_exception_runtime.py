@@ -59,6 +59,27 @@ class TaskExceptionRuntimeTests(unittest.TestCase):
         self.assertEqual(result["recommendedAction"], "已保留低分源文件，可进入存储清理")
         self.assertFalse(result["retryEligible"])
 
+    def test_legacy_blocked_task_keeps_protected_execution_state(self):
+        result = classify_task({
+            "state": "blocked",
+            "confidence": "strong",
+            "reasonCode": "TASK_IDENTITY_UNLINKED",
+            "reasonText": "入库证据尚未关联到媒体目标",
+            "stages": [stage(
+                "blocked",
+                key="library",
+                source="Symedia",
+                reasonCode="QUALITY_SCORE_LOWER",
+                reasonText="源文件评分低于目标文件，取消覆盖",
+            )],
+        }, now=NOW)
+
+        self.assertEqual(result["identityState"], "linked")
+        self.assertEqual(result["executionState"], "protected")
+        self.assertEqual(result["healthState"], "protected")
+        self.assertEqual(result["reasonCode"], "QUALITY_SCORE_LOWER")
+        self.assertEqual(result["reasonText"], "源文件评分低于目标文件，取消覆盖")
+
     def test_legacy_protection_messages_map_to_structured_rules(self):
         cases = {
             "源文件评分低于目标文件，取消覆盖": "QUALITY_SCORE_LOWER",
@@ -130,9 +151,26 @@ class TaskExceptionRuntimeTests(unittest.TestCase):
             stage("blocked", key="library", source="Symedia", reasonCode="SYMEDIA_LIBRARY_FAILED", reasonText="/vol/private/file.mkv 未找到媒体信息"),
             now=NOW,
         )
-        self.assertEqual(result["userReasonText"], "Symedia 未找到对应媒体信息")
+        self.assertEqual(result["userReasonText"], "Symedia 未查询到对应媒体信息")
         self.assertIn("/vol/private/file.mkv", result["technicalReasonText"])
         self.assertEqual(result["reasonText"], result["userReasonText"])
+
+    def test_structured_user_reason_hides_unlisted_absolute_path(self):
+        result = classify_stage(
+            stage(
+                "blocked",
+                key="library",
+                source="Symedia",
+                reasonCode="SYMEDIA_LIBRARY_FAILED",
+                reasonText="/storage/cloud/云月大陆/S01E05.mkv 未查询到媒体信息",
+            ),
+            now=NOW,
+        )
+
+        self.assertEqual(result["reasonText"], "Symedia 未查询到对应媒体信息")
+        self.assertEqual(result["userReasonText"], result["reasonText"])
+        self.assertNotIn("/storage/", result["userReasonText"])
+        self.assertIn("/storage/cloud/", result["technicalReasonText"])
 
     def test_artifact_identity_conflict_requires_attention(self):
         result = classify_task({

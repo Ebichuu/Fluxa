@@ -51,6 +51,84 @@ def _match_query(value):
     return " AND ".join(f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens[:12])
 
 
+def _title_seasons(value):
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    seasons = {
+        int(match)
+        for pattern in (
+            r"(?i)\bS(?:eason)?[ ._-]?(\d{1,3})\b",
+            r"(?i)\bSeason[ ._-]?(\d{1,3})\b",
+            r"第\s*(\d{1,3})\s*季",
+        )
+        for match in re.findall(pattern, text)
+    }
+    return seasons
+
+
+def _tv_target_match(item, season_number):
+    item_season = item.get("seasonNumber")
+    if item_season is not None:
+        if season_number is not None and int(item_season) != season_number:
+            return None
+        return {
+            "matchMethod": "title_media_season",
+            "matchConfidence": "fallback",
+            "seasonScopeState": "confirmed",
+        }
+    title_seasons = _title_seasons(item.get("title"))
+    if season_number is not None and title_seasons and season_number not in title_seasons:
+        return None
+    return {
+        "matchMethod": "title_media_scope",
+        "matchConfidence": "fallback",
+        "seasonScopeState": "unknown",
+    }
+
+
+def _movie_target_match(item, year):
+    if not year or year not in str(item.get("title") or ""):
+        return None
+    return {
+        "matchMethod": "title_media_year",
+        "matchConfidence": "fallback",
+        "seasonScopeState": "not_applicable",
+    }
+
+
+def _target_match(item, *, tmdb_id="", media_type="", season_number=None, year=""):
+    item_tmdb = str(item.get("tmdbId") or "")
+    item_type = str(item.get("mediaType") or "")
+    item_season = item.get("seasonNumber")
+
+    if item_tmdb:
+        if not tmdb_id or item_tmdb != tmdb_id:
+            return None
+        if media_type and item_type and item_type != media_type:
+            return None
+        if media_type == "tv" and season_number is not None and item_season is not None:
+            if int(item_season) != season_number:
+                return None
+        return {
+            "matchMethod": "tmdb_exact",
+            "matchConfidence": "strong",
+            "seasonScopeState": "confirmed" if item_season is not None else "unknown",
+        }
+
+    if item.get("imdbId") or str(item.get("identityStatus") or "unidentified") != "unidentified":
+        return None
+    if media_type and item_type and item_type != media_type:
+        return None
+    if media_type == "tv":
+        return _tv_target_match(item, season_number)
+    if media_type == "movie":
+        return _movie_target_match(item, year)
+    return {
+        "matchMethod": "title_scoped",
+        "matchConfidence": "fallback",
+        "seasonScopeState": "unknown",
+    }
+
+
 def _json_dump(value):
     return json.dumps(value if value is not None else {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -173,6 +251,13 @@ class PrivateRssRepository:
                 "CREATE TABLE IF NOT EXISTS rss_match_runs ("
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, status TEXT NOT NULL, scanned_count INTEGER NOT NULL DEFAULT 0, "
                 "match_count INTEGER NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS rss_identity_backfill_runs ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, status TEXT NOT NULL, scanned_count INTEGER NOT NULL DEFAULT 0, "
+                "identified_count INTEGER NOT NULL DEFAULT 0, conflict_count INTEGER NOT NULL DEFAULT 0, "
+                "unchanged_count INTEGER NOT NULL DEFAULT 0, remaining_count INTEGER NOT NULL DEFAULT 0, "
+                "batch_limit INTEGER NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)"
             )
             source_columns = {row["name"] for row in connection.execute("PRAGMA table_info(rss_sources)").fetchall()}
             if "failure_count" not in source_columns:
@@ -464,14 +549,11 @@ class PrivateRssRepository:
         if identity_status and identity_status not in IDENTITY_STATUSES:
             raise ValueError("身份状态无效")
 
+        if query_text and not match:
+            return {"items": [], "total": 0, "limit": limit, "offset": offset}
+
         base_where = []
         base_params = []
-        if target_media_type:
-            base_where.append("i.media_type=?")
-            base_params.append(target_media_type)
-        if target_season is not None:
-            base_where.append("i.season_number=?")
-            base_params.append(target_season)
         if source_id:
             base_where.append("i.source_id=?")
             base_params.append(str(source_id))
@@ -483,41 +565,71 @@ class PrivateRssRepository:
             base_where.append("i.identity_status=?")
             base_params.append(identity_status)
 
-        joins = []
-        where = list(base_where)
-        params = list(base_params)
-        if query_text and not match:
-            where.append("0")
-        elif target_tmdb_id and match:
-            base_sql = " AND ".join(base_where) or "1=1"
-            exact_sql = f"SELECT i.id FROM rss_items i WHERE {base_sql} AND i.tmdb_id=?"
-            fallback = [base_sql, "i.tmdb_id=''", "f.search_text MATCH ?"]
-            fallback_params = [*base_params, match]
-            if target_year:
-                fallback.append("i.title LIKE ?")
-                fallback_params.append(f"%{target_year}%")
-            fallback_sql = (
-                "SELECT i.id FROM rss_items i JOIN rss_item_search f ON f.item_id=i.id "
-                f"WHERE {' AND '.join(fallback)}"
-            )
-            where = [f"i.id IN ({exact_sql} UNION {fallback_sql})"]
-            params = [*base_params, target_tmdb_id, *fallback_params]
-        elif target_tmdb_id:
-            where.append("i.tmdb_id=?")
-            params.append(target_tmdb_id)
-        elif match:
-            joins.append("JOIN rss_item_search f ON f.item_id=i.id")
-            where.append("f.search_text MATCH ?")
-            params.append(match)
+        targeted = bool(target_tmdb_id or (query_text and (target_media_type or target_season is not None or target_year)))
+        with closing(self.runtime.connect()) as connection:
+            if targeted:
+                rows_by_id = {}
+
+                def add_candidates(extra_joins, extra_where, extra_params):
+                    where = [*base_where, *extra_where]
+                    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+                    rows = connection.execute(
+                        "SELECT i.*, s.name AS source_name, s.domain AS source_domain FROM rss_items i "
+                        f"JOIN rss_sources s ON s.id=i.source_id {' '.join(extra_joins)} {where_sql} "
+                        "ORDER BY COALESCE(NULLIF(i.published_at, ''), i.created_at) DESC, i.id DESC",
+                        (*base_params, *extra_params),
+                    ).fetchall()
+                    for row in rows:
+                        rows_by_id[str(row["id"])] = row
+
+                if target_tmdb_id:
+                    add_candidates([], ["i.tmdb_id=?"], [target_tmdb_id])
+                if match:
+                    add_candidates(
+                        ["JOIN rss_item_search f ON f.item_id=i.id"],
+                        ["i.tmdb_id=''", "i.imdb_id=''", "i.identity_status='unidentified'", "f.search_text MATCH ?"],
+                        [match],
+                    )
+
+                items = []
+                for row in rows_by_id.values():
+                    item = self._public_item(row)
+                    matched = _target_match(
+                        item,
+                        tmdb_id=target_tmdb_id,
+                        media_type=target_media_type,
+                        season_number=target_season,
+                        year=target_year,
+                    )
+                    if matched:
+                        item.update(matched)
+                        items.append(item)
+                items.sort(
+                    key=lambda item: str(item.get("publishedAt") or item.get("lastSeenAt") or ""),
+                    reverse=True,
+                )
+                items.sort(key=lambda item: 0 if item.get("matchMethod") == "tmdb_exact" else 1)
+                total = len(items)
+                return {"items": items[offset:offset + limit], "total": total, "limit": limit, "offset": offset}
+
+            joins = []
+            where = list(base_where)
+            params = list(base_params)
+            if target_media_type:
+                where.append("i.media_type=?")
+                params.append(target_media_type)
+            if target_season is not None:
+                where.append("i.season_number=?")
+                params.append(target_season)
+            if match:
+                joins.append("JOIN rss_item_search f ON f.item_id=i.id")
+                where.append("f.search_text MATCH ?")
+                params.append(match)
             if target_year:
                 where.append("i.title LIKE ?")
                 params.append(f"%{target_year}%")
-        elif target_year:
-            where.append("i.title LIKE ?")
-            params.append(f"%{target_year}%")
-        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
-        join_sql = " ".join(joins)
-        with closing(self.runtime.connect()) as connection:
+            where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+            join_sql = " ".join(joins)
             total = int(connection.execute(
                 f"SELECT COUNT(DISTINCT i.id) AS count FROM rss_items i {join_sql} {where_sql}", params
             ).fetchone()["count"])
@@ -528,12 +640,9 @@ class PrivateRssRepository:
                 (*params, limit, offset),
             ).fetchall()
         items = [self._public_item(row) for row in rows]
-        if target_tmdb_id or target_media_type or target_season is not None or target_year:
+        if target_media_type or target_season is not None or target_year:
             for item in items:
-                if target_tmdb_id and item["tmdbId"] == target_tmdb_id:
-                    item["matchMethod"] = "tmdb_exact"
-                    item["matchConfidence"] = "strong"
-                elif target_media_type == "tv" and target_season is not None:
+                if target_media_type == "tv" and target_season is not None:
                     item["matchMethod"] = "title_media_season"
                     item["matchConfidence"] = "fallback"
                 elif target_media_type == "movie" and target_year:
@@ -778,6 +887,26 @@ class PrivateRssRepository:
             with self.runtime.transaction(immediate=True) as target:
                 insert(target)
 
+    def record_identity_backfill_run(self, result, status="success", message=""):
+        values = (
+            str(status or "success"),
+            max(0, int(result.get("scanned") or 0)),
+            max(0, int(result.get("identified") or 0)),
+            max(0, int(result.get("conflicts") or 0)),
+            max(0, int(result.get("unchanged") or 0)),
+            max(0, int(result.get("remaining") or 0)),
+            max(0, int(result.get("limit") or 0)),
+            str(message or "")[:240],
+            _iso(),
+        )
+        with self.runtime.transaction(immediate=True) as connection:
+            connection.execute(
+                "INSERT INTO rss_identity_backfill_runs ("
+                "status, scanned_count, identified_count, conflict_count, unchanged_count, remaining_count, "
+                "batch_limit, message, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                values,
+            )
+
     def summary(self, enabled=False):
         with closing(self.runtime.connect()) as connection:
             row = connection.execute(
@@ -788,6 +917,10 @@ class PrivateRssRepository:
             match_count = int(connection.execute("SELECT COUNT(*) AS count FROM rss_subscription_matches").fetchone()["count"])
             match_run = connection.execute(
                 "SELECT status, scanned_count, match_count, message, created_at FROM rss_match_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            identity_run = connection.execute(
+                "SELECT status, scanned_count, identified_count, conflict_count, unchanged_count, remaining_count, "
+                "batch_limit, message, created_at FROM rss_identity_backfill_runs ORDER BY id DESC LIMIT 1"
             ).fetchone()
         return {
             "enabled": bool(enabled),
@@ -802,4 +935,13 @@ class PrivateRssRepository:
             "lastMatchStatus": match_run["status"] if match_run else "not_run",
             "lastMatchScanned": int(match_run["scanned_count"] or 0) if match_run else 0,
             "lastMatchCreated": int(match_run["match_count"] or 0) if match_run else 0,
+            "identityBackfillRan": bool(identity_run),
+            "lastIdentityBackfillAt": identity_run["created_at"] if identity_run else "",
+            "lastIdentityBackfillStatus": identity_run["status"] if identity_run else "not_run",
+            "lastIdentityBackfillScanned": int(identity_run["scanned_count"] or 0) if identity_run else 0,
+            "lastIdentityBackfillIdentified": int(identity_run["identified_count"] or 0) if identity_run else 0,
+            "lastIdentityBackfillConflicts": int(identity_run["conflict_count"] or 0) if identity_run else 0,
+            "lastIdentityBackfillUnchanged": int(identity_run["unchanged_count"] or 0) if identity_run else 0,
+            "lastIdentityBackfillRemaining": int(identity_run["remaining_count"] or 0) if identity_run else item_count,
+            "lastIdentityBackfillLimit": int(identity_run["batch_limit"] or 0) if identity_run else 0,
         }

@@ -222,6 +222,34 @@ class SubscriptionRepository:
                 replaced = False
         return replaced, row
 
+    def supplement_item_visuals(self, key, poster_url="", backdrop_url=""):
+        key = str(key or "").strip()
+        poster_url = str(poster_url or "").strip()
+        backdrop_url = str(backdrop_url or "").strip()
+        if not key or (not poster_url and not backdrop_url):
+            return None
+        with self.runtime.transaction(immediate=True) as connection:
+            stored = connection.execute(
+                "SELECT payload_json FROM subscriptions WHERE subscription_key=?",
+                (key,),
+            ).fetchone()
+            if not stored:
+                return None
+            item = _json_load(stored["payload_json"], {})
+            changed = False
+            if poster_url and not str(item.get("poster_url") or item.get("poster") or "").strip():
+                item["poster_url"] = poster_url
+                changed = True
+            if backdrop_url and not str(item.get("backdrop_url") or "").strip():
+                item["backdrop_url"] = backdrop_url
+                changed = True
+            if changed:
+                connection.execute(
+                    "UPDATE subscriptions SET payload_json=?, version=version+1 WHERE subscription_key=?",
+                    (_json_dump(item), key),
+                )
+        return item if changed else None
+
     def mutate_item(self, key, updater, key_resolver):
         key = str(key or "").strip()
         with self.runtime.transaction(immediate=True) as connection:

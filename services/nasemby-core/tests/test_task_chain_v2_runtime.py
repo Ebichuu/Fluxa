@@ -187,6 +187,27 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(invalid.status_code, 400)
         self.assertEqual(invalid.get_json()["code"], "TASK_EXECUTION_FILTER_INVALID")
 
+    def test_stage_exposes_safe_user_reason_and_keeps_technical_reason(self):
+        chain = FakeTaskChain().get_chain()
+        chain["items"][0]["steps"] = [{
+            "key": "library",
+            "label": "整理与入库",
+            "status": "blocked",
+            "evidence": "verified",
+            "source": "Symedia",
+            "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+            "detail": "/storage/cloud/云月大陆/S01E05.mkv 未查询到媒体信息",
+        }]
+
+        stage = adapt_task_chain(
+            chain,
+            now=datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+        )["items"][0]["stages"][0]
+
+        self.assertEqual(stage["reasonText"], "Symedia 未查询到对应媒体信息")
+        self.assertEqual(stage["userReasonText"], stage["reasonText"])
+        self.assertIn("/storage/cloud/", stage["technicalReasonText"])
+
     def test_route_validates_pagination_and_missing_detail(self):
         app = Flask(__name__)
         app.extensions["mcc_task_chain_service"] = FakeTaskChain()

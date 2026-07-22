@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 
 from flask import Flask, jsonify
@@ -8,6 +9,9 @@ from app.health_state_runtime import combine_health, evidence
 from app.http_runtime import current_request_id
 from app.resource_identity_runtime import target_key as resource_target_key
 from app.task_chain_v2_runtime import adapt_task_chain
+
+
+TARGET_SCOPE_PATTERN = re.compile(r":season:(\d+)(?::episode:(\d+))?$")
 
 
 def _iso(value: datetime) -> str:
@@ -71,40 +75,108 @@ def _problem_stage(item: dict) -> dict:
     ), next((row for row in stages if row.get("healthState") == "evidence_insufficient"), {}))
 
 
-def _episode_label(item: dict) -> str:
+def _integer(value):
     try:
-        season = int(item.get("seasonNumber") or 0)
-        episode = item.get("episodeNumber")
-        if episode is not None:
-            return f"S{season:02d}E{int(episode):02d}"
-        return f"第 {season} 季" if season else ""
+        return int(value) if value not in {None, ""} else None
     except (TypeError, ValueError):
+        return None
+
+
+def _problem_episode_evidence(item: dict, stage: dict) -> dict:
+    rows = [row for row in item.get("episodeEvidence") or [] if isinstance(row, dict)]
+    if not rows:
+        return {}
+    stage_name = str(stage.get("stage") or stage.get("key") or "")
+    reason_code = str(stage.get("reasonCode") or "")
+    matching_stage = [row for row in rows if stage_name and str(row.get("stage") or "") == stage_name]
+    candidates = matching_stage or rows
+    matching_reason = [row for row in candidates if reason_code and str(row.get("reasonCode") or "") == reason_code]
+    candidates = matching_reason or candidates
+    return max(candidates, key=lambda row: str(row.get("observedAt") or ""))
+
+
+def _issue_scope(item: dict, stage: dict) -> tuple[int | None, int | None, int | None]:
+    episode_evidence = _problem_episode_evidence(item, stage)
+    season = _integer(episode_evidence.get("seasonNumber"))
+    episode = _integer(episode_evidence.get("episodeStart"))
+    episode_end = _integer(episode_evidence.get("episodeEnd"))
+    if season is not None and episode is not None:
+        return season, episode, episode_end
+
+    season = _integer(stage.get("seasonNumber"))
+    episode = _integer(stage.get("episodeNumber") or stage.get("episodeStart"))
+    episode_end = _integer(stage.get("episodeEnd"))
+    if season is not None and episode is not None:
+        return season, episode, episode_end
+
+    target_match = TARGET_SCOPE_PATTERN.search(str(item.get("targetKey") or ""))
+    if target_match:
+        season = _integer(target_match.group(1))
+        episode = _integer(target_match.group(2))
+        if episode is not None:
+            return season, episode, episode
+
+    return _integer(item.get("seasonNumber")), _integer(item.get("episodeNumber")), None
+
+
+def _episode_label(season: int | None, episode: int | None, episode_end: int | None = None) -> str:
+    if season is None:
         return ""
+    if episode is None:
+        return f"第 {season} 季" if season else ""
+    suffix = f"-E{episode_end:02d}" if episode_end is not None and episode_end != episode else ""
+    return f"S{season:02d}E{episode:02d}{suffix}"
 
 
-def _safe_issue_copy(item: dict, result: dict) -> tuple[str, str]:
+def _secondary_issue_reason(result: dict) -> str:
+    identity_state = str(result.get("identityState") or "")
+    if identity_state == "unidentified":
+        return "任务尚未关联到可靠媒体身份"
+    if identity_state == "conflict":
+        return "任务对应多个媒体身份候选"
+    return ""
+
+
+def _safe_issue_copy(item: dict, result: dict) -> dict:
     title = str(item.get("title") or "未命名媒体").strip()
-    episode = _episode_label(item)
     stage = _problem_stage(item)
+    season, episode, episode_end = _issue_scope(item, stage)
+    episode_label = _episode_label(season, episode, episode_end)
     source = str(stage.get("source") or result.get("source") or "").strip()
-    raw_reason = str(stage.get("reasonText") or stage.get("detail") or result.get("reasonText") or "")
-    reason_code = str(result.get("reasonCode") or stage.get("reasonCode") or "")
-    label = f"《{title}》{episode}"
-    if reason_code == "EVIDENCE_OWNER_CONFLICT":
-        return f"{label}证据存在冲突", "同一条处理证据对应多个媒体候选，当前没有自动绑定"
-    if reason_code == "TASK_IDENTITY_UNLINKED":
-        return f"{label}尚未识别", "暂时无法确认这条记录对应的媒体作品"
-    if reason_code == "TASK_SUSPECTED_BLOCKED":
-        return f"{label}疑似阻塞", "已有处理阶段长时间没有形成后续证据"
-    if source == "Symedia" or "SYMEDIA" in reason_code or stage.get("stage") == "library":
-        if any(marker in raw_reason for marker in ("未找到", "识别", "TMDB", "媒体信息")):
-            return f"{label}识别失败", "Symedia 未找到对应媒体信息"
-        return f"{label}入库失败", "Symedia 未完成媒体入库"
+    raw_reason = str(
+        stage.get("technicalReasonText")
+        or stage.get("reasonText")
+        or stage.get("detail")
+        or result.get("reasonText")
+        or ""
+    )
+    result_reason_code = str(result.get("reasonCode") or "")
+    stage_reason_code = str(stage.get("reasonCode") or "")
+    reason_code = stage_reason_code or result_reason_code
+    label = f"《{title}》{episode_label}"
+    display_title = f"{title} {episode_label}".strip()
+    base = {
+        "displayTitle": display_title,
+        "seasonNumber": season,
+        "episodeNumber": episode,
+        "secondaryReasonText": _secondary_issue_reason(result),
+    }
+    if result_reason_code == "EVIDENCE_OWNER_CONFLICT":
+        return {**base, "headline": f"{label}证据存在冲突", "reasonText": "同一条处理证据对应多个媒体候选，当前没有自动绑定"}
+    if result.get("executionState") == "suspected_blocked" or result_reason_code == "TASK_SUSPECTED_BLOCKED":
+        return {**base, "headline": f"{label}疑似阻塞", "reasonText": "已有处理阶段长时间没有形成后续证据"}
+    if source.casefold() == "symedia" or "SYMEDIA" in reason_code or stage.get("stage") == "library":
+        if any(marker in raw_reason for marker in ("未找到", "未查询到", "识别", "TMDB", "媒体信息")):
+            return {**base, "headline": f"{label}识别失败", "reasonText": "Symedia 未查询到对应媒体信息"}
+        if result.get("healthState") == "action_required":
+            return {**base, "headline": f"{label}入库失败", "reasonText": "Symedia 未完成媒体入库"}
+    if result_reason_code == "TASK_IDENTITY_UNLINKED":
+        return {**base, "headline": f"{label}尚未识别", "reasonText": "暂时无法确认这条记录对应的媒体作品"}
     if source == "qBittorrent" or "DOWNLOAD" in reason_code:
-        return f"{label}下载需要检查", "qB 下载任务没有正常继续"
+        return {**base, "headline": f"{label}下载需要检查", "reasonText": "qB 下载任务没有正常继续"}
     if source == "Torra":
-        return f"{label}获取需要检查", "Torra 未能确认资源处理状态"
-    return f"{label}需要检查", "当前步骤没有形成可验证结果"
+        return {**base, "headline": f"{label}获取需要检查", "reasonText": "Torra 未能确认资源处理状态"}
+    return {**base, "headline": f"{label}需要检查", "reasonText": "当前步骤没有形成可验证结果"}
 
 
 class HomeSummaryService:
@@ -268,11 +340,10 @@ class HomeSummaryService:
         issues = []
         for target_key, item, result in item_evidence:
             if result["healthState"] in {"action_required", "evidence_insufficient"}:
-                headline, reason_text = _safe_issue_copy(item, result)
+                issue_copy = _safe_issue_copy(item, result)
                 issues.append({
                     **result,
-                    "headline": headline,
-                    "reasonText": reason_text,
+                    **issue_copy,
                     "targetKey": target_key,
                     "chainId": str(item.get("chainId") or item.get("id") or ""),
                     "title": str(item.get("title") or "未命名媒体"),

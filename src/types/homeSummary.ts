@@ -13,6 +13,7 @@ export interface HomeSummaryCounts {
 
 export interface HomeSummaryIssue {
   headline?: string;
+  displayTitle?: string;
   healthState: HealthState;
   observedAt: string;
   freshUntil: string;
@@ -22,6 +23,9 @@ export interface HomeSummaryIssue {
   targetKey: string;
   chainId: string;
   title: string;
+  seasonNumber?: number;
+  episodeNumber?: number;
+  secondaryReasonText?: string;
   identityState?: 'unidentified' | 'linked' | 'conflict';
   executionState?: 'normal' | 'waiting' | 'protected' | 'suspected_blocked' | 'action_required' | 'confirmed_failed';
 }

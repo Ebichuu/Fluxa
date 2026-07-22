@@ -14,6 +14,7 @@
 - 115、Telegram、HDHive / pansou 和 MoviePilot 的 v2 细分接口继续保留；MoviePilot 阶段 7 已增加默认关闭的人工备用预览/推送，其他能力延期。
 - Emby、qBittorrent、Torra、Symedia 的服务端适配和凭据隔离。
 - 统一任务链、qB 暂停/恢复和证据驱动的 Emby 刷新。
+- 按明确 TMDB 身份补充本地追更海报，并保持仅 Torra 条目只读。
 - 单一 `data/`、`db/`、`upload/` 持久边界。
 
 React、影院大厅、顶部导航和媒体队列不属于本模块的视觉实现范围。
@@ -93,13 +94,15 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/qbittorrent/actions/:action`：执行前复查任务状态并校验可选预览幂等键，状态变化时拒绝旧确认；执行结果再次读取 qB，并写入脱敏活动记录。
 - `/api/v2/home/summary`：基于任务链和调度器心跳生成首页今日结论；证据缺失、调度未启动或服务不可验证时不返回绿色正常。
 - `/api/v2/subscriptions/reconciliation`：只读对比 Fluxa 与 Torra，按对账、履约、健康三个维度返回差异，不写入或删除任一台账。
+- `/api/v2/subscriptions/workbench`：分页返回追更工作台、五项能力状态、对账摘要和可选海报补齐目标。
+- `/api/v2/subscriptions/visual-backfills`：最多处理 100 个订阅 ID，只按明确 TMDB 身份补充空缺海报/背景；本地写入关闭时只返回视觉结果，开启时才补充已有本地记录；不创建仅 Torra 镜像。
 - `/api/internal/nasemby-core/*`：已认证的只读诊断兼容路由。
 - `/api/v2/subscriptions/:id/torra-push-*`：固定目标 Torra 的预览和受保护推送。
 - `/api/v2/torra/subscription-sync/*`：Torra 已有订阅状态、只读预览、幂等确认导入和手动状态同步。
 - `/api/v2/activity/logs`：读取或经确认清空统一脱敏活动日志；React 任务中心使用读取接口。
 - `/api/v2/system/metrics`：缓存、白名单映射的系统指标。
-- `/api/v2/rss-sources`、`/api/v2/rss-items`：私人 RSS 来源和本地种子库；支持订阅身份/类型/季号/年份精确筛选，读取响应不含完整 RSS/下载地址。
-- `/api/v2/rss-items/identity-backfills`：管理员显式触发的本地有界身份回填，每批最多 200 条，不访问 PT 详情页或执行下载。
+- `/api/v2/rss-sources`、`/api/v2/rss-items`：私人 RSS 来源和本地种子库；支持订阅身份/类型/季号/年份精确筛选，电视剧标题候选不强制年份，未知季号只作为人工候选，读取响应不含完整 RSS/下载地址。
+- `/api/v2/rss-items/identity-backfills`：管理员显式触发的本地有界身份回填，每批最多 200 条，不访问 PT 详情页或执行下载；摘要保留最近扫描、识别、冲突、未变化和剩余数量。
 - `/api/v2/rss-matches`：只读本地 `candidate` 与后续状态；双闸门开启时后台可创建一次性 Torra 分析动作，但不把标题匹配当作版本质量结论，也不自动下载候选。
 - `/api/v2/subscription-automation/settings`、`/api/v2/subscriptions/:id/quality-watch`：追更洗版全局与单条观察设置、暂停和恢复。
 - `/api/v2/subscriptions/:id/torra-rewash-analyses`、`/api/v2/subscriptions/:id/torra-rewashes`、`/api/v2/rss-matches/:id/torra-rewash-analyses`：人工异步分析与候选下载；服务端从观察单元和已完成分析动作读取 Torra ID/候选，不接受浏览器映射。
@@ -108,7 +111,7 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/v2/integrations/*`、`/api/v2/acquisition/cloud/*` 和云盘策略路由继续保留，当前 React 不调用延期动作。
 - `/mineradio/embed`、`/mineradio/*`。
 
-47 条冻结 v1 契约见项目根 `docs/contracts/http-api-contract-v1.json`；52 条新增能力见 `http-api-contract-v2.json`。浏览器公开响应经过白名单映射；内部诊断路由保留 NasEmby 原始字段，仍受整站认证保护。
+47 条冻结 v1 契约见项目根 `docs/contracts/http-api-contract-v1.json`；53 条新增能力见 `http-api-contract-v2.json`。浏览器公开响应经过白名单映射；内部诊断路由保留 NasEmby 原始字段，仍受整站认证保护。
 
 ## 唯一订阅台账
 
@@ -124,7 +127,9 @@ python -m unittest discover -s tests -v
 
 测试使用临时台账、隔离的临时活动日志和模拟客户端，不连接真实服务执行写操作。保留接口只在模拟测试中显式开启；Mineradio 注入片段继续使用冻结的 SHA-256 快照保护视觉桥接基线。
 
-当前共 271 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘、日历时间线和系统指标测试全部使用临时台账与模拟函数，不连接真实外部服务；覆盖默认闸门、脱敏、原子迁移、Torra 镜像幂等、任务身份/执行状态拆分、用户/技术原因分层、日历未知/逾期判定、RSS 精确搜索与身份回填、qB 安全动作和自动化窗口。
+当前共 285 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘、日历时间线和系统指标测试全部使用临时台账与模拟函数，不连接真实外部服务；覆盖默认闸门、脱敏、原子迁移、Torra 镜像幂等、任务身份/执行状态拆分、正常保护一致性、用户/技术原因分层、首页季集定位、日历未知/逾期判定、RSS 精确搜索与身份回填、追更海报补齐、qB 安全动作和自动化窗口。
+
+RSS 身份端到端验收使用临时 SQLite 覆盖结构化 TMDB、简介 IMDb 链接、唯一追更匹配和多候选冲突四类固定样本，不写入正式 RSS 台账。
 
 RSS 解析回归已加入四个真实结构的完全脱敏夹具：M-Team 的 `tests/fixtures/mteam_rss_sanitized.xml`、HDHome 的 `tests/fixtures/hdhome_rss_sanitized.xml`、织梦的 `tests/fixtures/zmpt_rss_sanitized.xml` 和青蛙的 `tests/fixtures/qingwa_rss_sanitized.xml`，覆盖 RSS 2.0、电影/剧集、多版本、单集/整季包、文件大小、`enclosure`、`720p/1080i/1080p/2160p`、Blu-ray/Remux、WEB-DL、H.264/H.265、HDR、Atmos 和 TrueHD 版本摘要。四个夹具还会经过假 HTTP 响应、收集器、临时 SQLite 和公共脱敏查询的完整回归，已满足当前版本；夹具只使用 `tracker.example` 地址，不保存真实签名、UID、详情或下载 URL，也不访问 enclosure。
 

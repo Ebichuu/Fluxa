@@ -15,7 +15,7 @@ PROTECTION_RULES = (
     ("DUPLICATE_RESOURCE_SKIPPED", ("重复资源跳过", "重复", "已存在", "跳过")),
 )
 TECHNICAL_REASON_PATTERN = re.compile(
-    r"(?:[a-zA-Z]:\\|/(?:vol|volume|mnt|downloads?)/|https?://|\b[a-f0-9]{32,}\b)",
+    r"(?:[a-zA-Z]:[\\/]|\\\\[^\\\s]+\\|/(?:[^/\s]+/)+|https?://|\b[a-f0-9]{32,}\b)",
     re.IGNORECASE,
 )
 
@@ -112,21 +112,34 @@ def _action_text(stage: dict) -> str:
 
 def _user_reason_text(stage: dict, state: str, value: str) -> str:
     text = _text(value)
-    if not text or not TECHNICAL_REASON_PATTERN.search(text):
+    if not text:
         return text
     key = _text(stage.get("key") or stage.get("stage")).lower()
     source = _text(stage.get("source")).lower()
     reason_code = _text(stage.get("reasonCode")).upper()
-    if key in {"library", "symedia"} or "symedia" in source or "SYMEDIA" in reason_code:
-        if any(marker in text for marker in ("未找到", "识别", "TMDB", "媒体信息")):
-            return "Symedia 未找到对应媒体信息"
+
+    if state == "protected":
+        return "版本被正常保护，未覆盖已有资源" if TECHNICAL_REASON_PATTERN.search(text) else text
+    if state in {"action_required", "evidence_insufficient"} and (
+        key in {"library", "symedia"} or "symedia" in source or "SYMEDIA" in reason_code
+    ):
+        if any(marker in text for marker in ("未找到", "未查询到", "识别", "TMDB", "媒体信息")):
+            return "Symedia 未查询到对应媒体信息"
         return "Symedia 未完成媒体入库"
-    if key == "cloud115" or source == "115" or "UPLOAD" in reason_code:
+    if state in {"action_required", "evidence_insufficient"} and (
+        key == "cloud115" or source == "115" or "UPLOAD" in reason_code
+    ):
         return "115 处理未完成"
-    if key == "download" or "qbittorrent" in source or "DOWNLOAD" in reason_code:
+    if state in {"action_required", "evidence_insufficient"} and (
+        key == "download" or "qbittorrent" in source or "DOWNLOAD" in reason_code
+    ):
         return "qB 下载任务未正常继续"
-    if key in {"resource", "torra"} or "torra" in source:
+    if state in {"action_required", "evidence_insufficient"} and (
+        key in {"resource", "torra"} or "torra" in source
+    ):
         return "Torra 未确认资源处理结果"
+    if not TECHNICAL_REASON_PATTERN.search(text):
+        return text
     return "当前阶段没有形成可验证结果" if state != "normal" else "当前阶段已完成"
 
 
@@ -326,8 +339,8 @@ def _task_protected(item, classified):
     result = _first_result(classified, "protected")
     return _outcome(
         "protected",
-        _text(item.get("reasonCode")) or result.get("reasonCode") or "QUALITY_PROTECTED",
-        _text(item.get("reasonText")) or result.get("reasonText") or "版本被正常保护，未覆盖已有资源",
+        result.get("reasonCode") or _text(item.get("reasonCode")) or "QUALITY_PROTECTED",
+        result.get("reasonText") or _text(item.get("reasonText")) or "版本被正常保护，未覆盖已有资源",
         "已保留低分源文件，可进入存储清理",
     )
 
@@ -354,12 +367,12 @@ def _execution_state(item, stages, classified, identity_state):
         if any(_text(stages[index].get("evidence")).lower() == "verified" for index in action_indexes):
             return "confirmed_failed"
         return "suspected_blocked" if identity_state == "unidentified" else "action_required"
-    if _text(item.get("state")).lower() == "blocked":
-        return "suspected_blocked" if identity_state == "unidentified" else "action_required"
     if any(result.get("healthState") == "protected" for result in classified):
         return "protected"
     if any(result.get("healthState") == "waiting" for result in classified):
         return "waiting"
+    if _text(item.get("state")).lower() == "blocked":
+        return "suspected_blocked" if identity_state == "unidentified" else "action_required"
     if classified and all(result.get("healthState") == "normal" for result in classified):
         return "normal"
     return "waiting"
@@ -377,6 +390,10 @@ def _task_outcome(item, classified, identity_state, execution_state):
             "已有处理阶段长时间没有形成后续证据，当前只能判断为疑似阻塞",
             "补充媒体身份并刷新下游状态",
         )
+    if execution_state == "protected":
+        result = _task_protected(item, classified)
+        if result:
+            return result
     if identity_state == "unidentified":
         return _outcome("evidence_insufficient", "TASK_IDENTITY_UNLINKED", "任务尚未关联到订阅或媒体身份", "补充媒体身份后重新检查")
     if identity_state == "conflict":
@@ -406,12 +423,15 @@ def classify_task(item: dict, *, now=None, observed_at="", fresh_until="") -> di
     problem_index = next((
         index for index, result in enumerate(classified)
         if result.get("healthState") in {"action_required", "evidence_insufficient"}
-    ), None)
+    ), next((
+        index for index, result in enumerate(classified)
+        if result.get("healthState") in {"protected", "waiting"}
+    ), None))
     problem_stage = stages[problem_index] if problem_index is not None else item
     technical_reason = _text(
         item.get("technicalReasonText")
-        or item.get("reasonText")
         or (classified[problem_index].get("technicalReasonText") if problem_index is not None else "")
+        or item.get("reasonText")
     )
     user_reason = _user_reason_text(problem_stage, state, reason_text)
     result = evidence(

@@ -59,6 +59,15 @@
   color: var(--ops-rose) !important;
 }
 
+.rss-identity-run {
+  margin: 0;
+  padding: 10px 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.055);
+  color: var(--ops-muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
 .rss-feedback {
   display: flex;
   align-items: center;

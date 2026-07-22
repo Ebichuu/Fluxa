@@ -31,6 +31,7 @@ import type {
   SubscriptionListResponse,
   SubscriptionPushPreview,
   SubscriptionCapabilitiesResponse,
+  SubscriptionVisualBackfillResponse,
   SubscriptionWorkbenchResponse,
   SubscriptionReconciliationResponse,
   TorraSubscriptionSyncPreview,
@@ -357,6 +358,10 @@ export function getSubscriptionWorkbench(input: {
   if (input.mediaType) query.set('mediaType', input.mediaType);
   if (input.query) query.set('query', input.query);
   return readJson<SubscriptionWorkbenchResponse>(`/api/v2/subscriptions/workbench?${query.toString()}`, options);
+}
+
+export function backfillSubscriptionVisuals(ids: string[]): Promise<SubscriptionVisualBackfillResponse> {
+  return postJson<SubscriptionVisualBackfillResponse>('/api/v2/subscriptions/visual-backfills', { ids }, { timeoutMs: 60_000 });
 }
 
 export function getSubscriptionCapabilities(options?: RequestOptions): Promise<SubscriptionCapabilitiesResponse> {

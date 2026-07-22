@@ -165,7 +165,13 @@ function executionForFilter(filter: FilterName): TaskChainExecutionState | undef
 }
 
 function executionLabel(value?: TaskChainExecutionState) {
-  return value === 'suspected_blocked' ? '疑似阻塞' : value === 'confirmed_failed' ? '确认失败' : '';
+  if (value === 'normal') return '正常';
+  if (value === 'waiting') return '等待中';
+  if (value === 'protected') return '正常保护';
+  if (value === 'suspected_blocked') return '疑似阻塞';
+  if (value === 'action_required') return '需要处理';
+  if (value === 'confirmed_failed') return '确认失败';
+  return '';
 }
 
 export function TasksCenter({ target, onClearTarget, onNavigate }: { target: TaskNavigationTarget | null; onClearTarget: () => void; onNavigate: AppNavigate }) {

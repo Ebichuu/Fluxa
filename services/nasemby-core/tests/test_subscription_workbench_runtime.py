@@ -292,6 +292,170 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         self.assertEqual(second["items"][0]["title"], "测试剧二")
         self.assertFalse(second["page"]["hasMore"])
 
+    def test_snapshot_uses_cached_poster_and_requests_local_visual_backfill(self):
+        app = Flask(__name__)
+        service = SubscriptionWorkbenchService(app, {"NASEMBY_CORE_WRITE_ENABLED": "true"})
+        rows = [{
+            "subscription_key": "tv:poster:tmdb:101:season:1",
+            "title": "海报测试剧",
+            "media_type": "tv",
+            "tmdb_id": "101",
+            "target_season": 1,
+            "poster_url": "",
+        }]
+        with patch.object(discover_runtime, "load_subscription_items", return_value={"items": rows, "errors": []}), patch.object(
+            discover_runtime,
+            "resolve_subscription_visuals",
+            return_value={"poster_url": "https://image.tmdb.org/t/p/w342/poster.jpg"},
+        ) as resolve_visuals, patch.object(
+            discover_runtime, "load_subscription_config", return_value={}
+        ), patch.object(discover_runtime, "subscription_blocked_titles", return_value=[]):
+            snapshot = service.snapshot(limit=24)
+
+        self.assertEqual(snapshot["items"][0]["posterUrl"], "https://image.tmdb.org/t/p/w342/poster.jpg")
+        self.assertEqual(snapshot["posterBackfillIds"], ["tv:poster:tmdb:101:season:1"])
+        resolve_visuals.assert_called_once()
+        self.assertEqual(resolve_visuals.call_args.args[0]["tmdb_id"], "101")
+        self.assertFalse(resolve_visuals.call_args.kwargs["fetch"])
+
+    def test_snapshot_requests_response_only_visual_backfill_for_remote_torra_item(self):
+        app = Flask(__name__)
+        app.extensions["mcc_subscription_reconciliation"] = type("Reconciliation", (), {
+            "snapshot": lambda _self: {
+                "items": [{
+                    "id": "torra:remote-only",
+                    "localId": "",
+                    "title": "Torra 只读剧",
+                    "mediaType": "tv",
+                    "tmdbId": "202",
+                    "seasonNumber": 1,
+                    "reconciliationState": "only_torra",
+                }],
+            },
+        })()
+        service = SubscriptionWorkbenchService(app, {"NASEMBY_CORE_WRITE_ENABLED": "true"})
+        with patch.object(discover_runtime, "load_subscription_items", return_value={"items": [], "errors": []}), patch.object(
+            discover_runtime, "resolve_subscription_visuals", return_value={}
+        ), patch.object(discover_runtime, "load_subscription_config", return_value={}), patch.object(
+            discover_runtime, "subscription_blocked_titles", return_value=[]
+        ):
+            snapshot = service.snapshot(limit=24)
+
+        self.assertEqual(snapshot["items"][0]["id"], "torra:remote-only")
+        self.assertTrue(snapshot["items"][0]["readOnly"])
+        self.assertEqual(snapshot["posterBackfillIds"], ["torra:remote-only"])
+
+    def test_visual_backfill_updates_only_local_rows_with_exact_tmdb_identity(self):
+        app = Flask(__name__)
+        service = SubscriptionWorkbenchService(app, {"NASEMBY_CORE_WRITE_ENABLED": "true"})
+        rows = [{
+            "subscription_key": "tv:poster:tmdb:101:season:1",
+            "title": "海报测试剧",
+            "media_type": "tv",
+            "tmdb_id": "101",
+            "poster_url": "",
+        }, {
+            "subscription_key": "tv:no-identity",
+            "title": "没有身份",
+            "media_type": "tv",
+            "poster_url": "",
+        }]
+        with patch.object(discover_runtime, "load_subscription_items", return_value={"items": rows, "errors": []}), patch.object(
+            discover_runtime,
+            "resolve_subscription_visuals",
+            side_effect=lambda row, fetch=False: (
+                {"poster_url": "https://image.tmdb.org/t/p/w342/poster.jpg"}
+                if fetch and row.get("tmdb_id") == "101" else {}
+            ),
+        ), patch.object(
+            discover_runtime,
+            "supplement_subscription_visuals",
+            return_value={**rows[0], "poster_url": "https://image.tmdb.org/t/p/w342/poster.jpg"},
+        ) as supplement:
+            result = service.backfill_visuals([
+                "tv:poster:tmdb:101:season:1",
+                "tv:no-identity",
+                "torra:remote-only",
+            ])
+
+        self.assertEqual(result["scanned"], 2)
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["items"][0]["posterUrl"], "https://image.tmdb.org/t/p/w342/poster.jpg")
+        supplement.assert_called_once()
+
+    def test_visual_backfill_returns_remote_only_poster_without_persisting_local_row(self):
+        app = Flask(__name__)
+        service = SubscriptionWorkbenchService(app, {"NASEMBY_CORE_WRITE_ENABLED": "true"})
+        app.extensions["mcc_subscription_reconciliation"] = type("Reconciliation", (), {
+            "snapshot": lambda _self: {
+                "items": [{
+                    "id": "torra:remote-only",
+                    "title": "Torra 只读剧",
+                    "mediaType": "tv",
+                    "tmdbId": "202",
+                    "reconciliationState": "only_torra",
+                }],
+            },
+        })()
+        with patch.object(discover_runtime, "load_subscription_items", return_value={"items": [], "errors": []}), patch.object(
+            discover_runtime,
+            "resolve_subscription_visuals",
+            return_value={"poster_url": "https://image.tmdb.org/t/p/w342/remote.jpg"},
+        ) as resolve_visuals, patch.object(
+            discover_runtime,
+            "supplement_subscription_visuals",
+        ) as supplement:
+            result = service.backfill_visuals(["torra:remote-only"])
+
+        self.assertEqual(result["scanned"], 1)
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["items"], [{
+            "id": "torra:remote-only",
+            "posterUrl": "https://image.tmdb.org/t/p/w342/remote.jpg",
+            "backdropUrl": "",
+        }])
+        self.assertEqual(resolve_visuals.call_args.args[0]["tmdb_id"], "202")
+        self.assertTrue(resolve_visuals.call_args.kwargs["fetch"])
+        supplement.assert_not_called()
+
+    def test_visual_backfill_route_allows_response_only_when_local_write_is_disabled(self):
+        app = Flask(__name__)
+        service = register_subscription_workbench(app, {"NASEMBY_CORE_WRITE_ENABLED": "false"})
+
+        with patch.object(service, "backfill_visuals", return_value={
+            "ok": True,
+            "scanned": 1,
+            "updated": 1,
+            "unchanged": 0,
+            "items": [{"id": "tv:1", "posterUrl": "https://image.tmdb.org/poster.jpg"}],
+            "errors": [],
+        }):
+            response = app.test_client().post("/api/v2/subscriptions/visual-backfills", json={"ids": ["tv:1"]})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["updated"], 1)
+
+    def test_visual_backfill_does_not_persist_local_row_when_write_is_disabled(self):
+        app = Flask(__name__)
+        service = SubscriptionWorkbenchService(app, {"NASEMBY_CORE_WRITE_ENABLED": "false"})
+        rows = [{
+            "subscription_key": "tv:poster:tmdb:101:season:1",
+            "title": "海报测试剧",
+            "media_type": "tv",
+            "tmdb_id": "101",
+            "poster_url": "",
+        }]
+        with patch.object(discover_runtime, "load_subscription_items", return_value={"items": rows, "errors": []}), patch.object(
+            discover_runtime,
+            "resolve_subscription_visuals",
+            return_value={"poster_url": "https://image.tmdb.org/t/p/w342/poster.jpg"},
+        ), patch.object(discover_runtime, "supplement_subscription_visuals") as supplement:
+            result = service.backfill_visuals(["tv:poster:tmdb:101:season:1"])
+
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["items"][0]["posterUrl"], "https://image.tmdb.org/t/p/w342/poster.jpg")
+        supplement.assert_not_called()
+
     def test_route_rejects_invalid_pagination(self):
         app = Flask(__name__)
         register_subscription_workbench(app, {})

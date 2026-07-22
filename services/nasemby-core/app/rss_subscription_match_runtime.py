@@ -316,6 +316,7 @@ class RssSubscriptionMatchRuntime:
                     result["unchanged"] += 1
         result["remaining"] = self.rss_repository.count_unidentified_items()
         result["limit"] = limit
+        self.rss_repository.record_identity_backfill_run(result)
         return result
 
     @staticmethod

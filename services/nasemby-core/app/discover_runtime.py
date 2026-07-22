@@ -5163,6 +5163,48 @@ def merge_cached_discover_item(item):
     return merged
 
 
+def resolve_subscription_visuals(item, fetch=False):
+    if not isinstance(item, dict):
+        return {}
+    poster = str(item.get("poster_url") or item.get("poster") or "").strip()
+    backdrop = str(item.get("backdrop_url") or "").strip()
+    if poster:
+        return {"poster_url": poster, "backdrop_url": backdrop}
+    media_type = discover_item_media_type(item)
+    tmdb_id = discover_item_tmdb_id(item, media_type)
+    if media_type not in {"movie", "tv"} or not str(tmdb_id or "").isdigit():
+        return {}
+    try:
+        cached = get_cached_discover_item({
+            "media_type": media_type,
+            "tmdb_id": str(tmdb_id),
+            "id": str(tmdb_id),
+            "title": item.get("title") or item.get("name") or "",
+        }) or {}
+        poster = str(cached.get("poster_url") or cached.get("poster") or "").strip()
+        backdrop = str(cached.get("backdrop_url") or "").strip()
+        if not poster:
+            detail = get_cached_tmdb_detail(media_type, tmdb_id, fetch=bool(fetch))
+            poster = tmdb_image(detail.get("poster_path"), "w342") if detail else ""
+            backdrop = backdrop or (tmdb_image(detail.get("backdrop_path"), "w780") if detail else "")
+        return {
+            key: value
+            for key, value in {"poster_url": poster, "backdrop_url": backdrop}.items()
+            if value
+        }
+    except Exception:
+        return {}
+
+
+def supplement_subscription_visuals(key, visuals):
+    values = visuals if isinstance(visuals, dict) else {}
+    return subscription_repository().supplement_item_visuals(
+        key,
+        poster_url=values.get("poster_url"),
+        backdrop_url=values.get("backdrop_url"),
+    )
+
+
 def cache_discover_items_from_payload(category, payload):
     if category == "discover_item" or not isinstance(payload, dict):
         return

@@ -23,6 +23,15 @@ export interface RssLibrarySummary {
   errorSources: number;
   items: number;
   lastSuccessAt: string;
+  identityBackfillRan?: boolean;
+  lastIdentityBackfillAt?: string;
+  lastIdentityBackfillStatus?: string;
+  lastIdentityBackfillScanned?: number;
+  lastIdentityBackfillIdentified?: number;
+  lastIdentityBackfillConflicts?: number;
+  lastIdentityBackfillUnchanged?: number;
+  lastIdentityBackfillRemaining?: number;
+  lastIdentityBackfillLimit?: number;
 }
 
 export interface RssSourceListResponse {
@@ -53,6 +62,7 @@ export interface RssSeedItem {
   identityUpdatedAt: string;
   matchMethod?: 'tmdb_exact' | 'title_media_season' | 'title_media_year' | 'title_scoped' | string;
   matchConfidence?: 'strong' | 'fallback' | string;
+  seasonScopeState?: 'confirmed' | 'unknown' | 'not_applicable' | string;
   hasDownload: boolean;
   lastSeenAt: string;
 }

@@ -102,6 +102,20 @@ function exactTimeLabel(value: string) {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString('zh-CN', { hour12: false });
 }
 
+function identityBackfillLabel(summary: RssLibrarySummary) {
+  if (!summary.identityBackfillRan) {
+    return `身份回填尚未运行；当前 ${summary.items} 条种子尚不能证明识别链路已处理。`;
+  }
+  return [
+    `最近回填 ${summary.lastIdentityBackfillAt ? formatTimeAgo(summary.lastIdentityBackfillAt) : '时间未知'}`,
+    `扫描 ${summary.lastIdentityBackfillScanned ?? 0} 条`,
+    `识别 ${summary.lastIdentityBackfillIdentified ?? 0} 条`,
+    `冲突 ${summary.lastIdentityBackfillConflicts ?? 0} 条`,
+    `未变化 ${summary.lastIdentityBackfillUnchanged ?? 0} 条`,
+    `剩余 ${summary.lastIdentityBackfillRemaining ?? summary.items} 条`
+  ].join(' · ');
+}
+
 export function RssSeedLibraryPage() {
   const [sources, setSources] = useState<RssSource[]>([]);
   const [summary, setSummary] = useState<RssLibrarySummary>(emptySummary);
@@ -447,6 +461,7 @@ export function RssSeedLibraryPage() {
               </select>
             </div>
           </div>
+          <p className="rss-identity-run" role="status">{identityBackfillLabel(summary)}</p>
 
           <div className="rss-timeline">
             {!loading && timeline.length === 0 && (

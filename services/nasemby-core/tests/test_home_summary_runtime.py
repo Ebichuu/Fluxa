@@ -161,10 +161,44 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         issue = next(value for value in HomeSummaryService(app, clock=lambda: NOW).snapshot()["issues"] if value["source"] == "task-chain")
 
         self.assertEqual(issue["headline"], "《测试剧》S01E05识别失败")
-        self.assertEqual(issue["reasonText"], "Symedia 未找到对应媒体信息")
+        self.assertEqual(issue["displayTitle"], "测试剧 S01E05")
+        self.assertEqual(issue["seasonNumber"], 1)
+        self.assertEqual(issue["episodeNumber"], 5)
+        self.assertEqual(issue["reasonText"], "Symedia 未查询到对应媒体信息")
         public_text = f"{issue['headline']} {issue['reasonText']}"
         self.assertNotIn("/vol/", public_text)
         self.assertNotIn("symedia:private", public_text)
+
+    def test_home_issue_uses_episode_evidence_and_keeps_identity_as_secondary_reason(self):
+        blocked = item(item_id="symedia:episode-evidence", library_status="blocked")
+        blocked.update({"state": "blocked", "tmdbId": "", "confidence": "unlinked"})
+        blocked["steps"][-1].update({
+            "detail": "/storage/cloud/云月大陆/S01E05.mkv 未查询到媒体信息",
+            "source": "Symedia",
+            "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+        })
+        blocked["episodeEvidence"] = [{
+            "seasonNumber": 1,
+            "episodeStart": 5,
+            "episodeEnd": 5,
+            "stage": "library",
+            "status": "blocked",
+            "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+            "observedAt": "2026-07-22T01:00:00Z",
+        }]
+        app = self.build_app([blocked], scheduler_enabled=False)
+
+        issue = next(
+            value
+            for value in HomeSummaryService(app, clock=lambda: NOW).snapshot()["issues"]
+            if value["source"] == "task-chain"
+        )
+
+        self.assertEqual(issue["displayTitle"], "测试剧 S01E05")
+        self.assertEqual(issue["headline"], "《测试剧》S01E05识别失败")
+        self.assertEqual(issue["reasonText"], "Symedia 未查询到对应媒体信息")
+        self.assertEqual(issue["secondaryReasonText"], "任务尚未关联到可靠媒体身份")
+        self.assertNotIn("/storage/", f"{issue['headline']} {issue['reasonText']} {issue['secondaryReasonText']}")
 
     def test_home_lists_unlinked_inferred_block_as_suspected(self):
         blocked = item(library_status="blocked")

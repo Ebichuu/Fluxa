@@ -68,6 +68,7 @@ def _health(item: dict, observed_at: str, fresh_until: str, now=None) -> dict:
 
 def _stage(step: dict, observed_at: str, fresh_until: str, now=None) -> dict:
     status = str(step.get("status") or "unknown")
+    technical_reason = str(step.get("technicalReasonText") or step.get("detail") or step.get("reasonText") or "")
     result = {
         "stage": str(step.get("key") or step.get("stage") or "unknown"),
         "label": str(step.get("label") or "未命名阶段"),
@@ -78,7 +79,8 @@ def _stage(step: dict, observed_at: str, fresh_until: str, now=None) -> dict:
         "freshUntil": str(step.get("freshUntil") or fresh_until),
         "source": str(step.get("source") or ""),
         "reasonCode": str(step.get("reasonCode") or f"{str(step.get('key') or step.get('stage') or 'task').upper()}_{status.upper()}"),
-        "reasonText": str(step.get("detail") or step.get("reasonText") or ""),
+        "reasonText": str(step.get("detail") or step.get("reasonText") or step.get("userReasonText") or ""),
+        "technicalReasonText": technical_reason,
         "matchedProtectionRule": str(step.get("matchedProtectionRule") or ""),
         "protectionRules": list(step.get("protectionRules") or []),
         "actions": {"preview": False, "retry": False},

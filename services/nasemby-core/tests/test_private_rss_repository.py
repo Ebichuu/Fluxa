@@ -24,6 +24,30 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             self.assertEqual(after["lastMatchCreated"], 0)
             self.assertEqual(after["lastMatchStatus"], "success")
 
+    def test_summary_records_identity_backfill_outcome(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+
+            before = repository.summary(enabled=True)
+            self.assertFalse(before["identityBackfillRan"])
+
+            repository.record_identity_backfill_run({
+                "scanned": 50,
+                "identified": 3,
+                "conflicts": 1,
+                "unchanged": 46,
+                "remaining": 600,
+                "limit": 50,
+            })
+            after = repository.summary(enabled=True)
+
+            self.assertTrue(after["identityBackfillRan"])
+            self.assertEqual(after["lastIdentityBackfillScanned"], 50)
+            self.assertEqual(after["lastIdentityBackfillIdentified"], 3)
+            self.assertEqual(after["lastIdentityBackfillConflicts"], 1)
+            self.assertEqual(after["lastIdentityBackfillUnchanged"], 46)
+            self.assertEqual(after["lastIdentityBackfillRemaining"], 600)
+
     def test_source_urls_stay_internal_and_items_are_searchable(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
@@ -154,6 +178,78 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             )
             self.assertEqual(wrong_scope["total"], 1)
             self.assertEqual(wrong_scope["items"][0]["seasonNumber"], 2)
+
+    def test_tv_targeted_search_allows_no_year_and_unknown_season_without_conflicts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "known-season",
+                "title": "清醒点，桃子 S01E02 1080p",
+                "media_type": "tv",
+                "season_number": 1,
+            }, {
+                "fingerprint": "unknown-season",
+                "title": "清醒点，桃子 E03 2160p",
+                "media_type": "tv",
+            }, {
+                "fingerprint": "unknown-type",
+                "title": "清醒点，桃子 E04 WEB-DL",
+            }, {
+                "fingerprint": "wrong-season",
+                "title": "清醒点，桃子 S02E01",
+                "media_type": "tv",
+                "season_number": 2,
+            }, {
+                "fingerprint": "wrong-tmdb",
+                "title": "清醒点，桃子 S01E05",
+                "media_type": "tv",
+                "season_number": 1,
+                "tmdb_id": "999999",
+                "identity_status": "identified",
+            }])
+
+            result = repository.search_items(
+                query="清醒点，桃子",
+                tmdb_id="777777",
+                media_type="tv",
+                season_number=1,
+                year="2026",
+            )
+
+            self.assertEqual(result["total"], 3)
+            self.assertEqual(
+                {item["title"] for item in result["items"]},
+                {"清醒点，桃子 S01E02 1080p", "清醒点，桃子 E03 2160p", "清醒点，桃子 E04 WEB-DL"},
+            )
+            unknown = next(item for item in result["items"] if item["title"] == "清醒点，桃子 E03 2160p")
+            self.assertEqual(unknown["matchMethod"], "title_media_scope")
+            self.assertEqual(unknown["seasonScopeState"], "unknown")
+
+    def test_movie_targeted_fallback_still_requires_year(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "right-year", "title": "Archive Movie 2026 2160p", "media_type": "movie",
+            }, {
+                "fingerprint": "wrong-year", "title": "Archive Movie 2025 2160p", "media_type": "movie",
+            }, {
+                "fingerprint": "no-year", "title": "Archive Movie 2160p", "media_type": "movie",
+            }])
+
+            result = repository.search_items(
+                query="Archive Movie", tmdb_id="123456", media_type="movie", year="2026",
+            )
+
+            self.assertEqual(result["total"], 1)
+            self.assertEqual(result["items"][0]["title"], "Archive Movie 2026 2160p")
+            self.assertEqual(result["items"][0]["matchMethod"], "title_media_year")
+
+            without_year = repository.search_items(
+                query="Archive Movie", tmdb_id="123456", media_type="movie",
+            )
+            self.assertEqual(without_year["total"], 0)
 
     def test_custom_poll_interval_is_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
