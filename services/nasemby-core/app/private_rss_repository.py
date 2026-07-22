@@ -13,6 +13,7 @@ from app.sqlite_runtime import SQLiteRuntime
 
 
 MATCH_STATUSES = {"candidate", "ignored", "triggered", "confirmed", "expired"}
+IDENTITY_STATUSES = {"identified", "conflict", "unidentified"}
 
 
 def _now():
@@ -152,6 +153,9 @@ class PrivateRssRepository:
                 "published_at TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '', size_bytes INTEGER NOT NULL DEFAULT 0, "
                 "detail_url TEXT NOT NULL DEFAULT '', download_url TEXT NOT NULL DEFAULT '', media_type TEXT NOT NULL DEFAULT '', "
                 "season_number INTEGER, episode_start INTEGER, episode_end INTEGER, version_summary TEXT NOT NULL DEFAULT '', "
+                "tmdb_id TEXT NOT NULL DEFAULT '', imdb_id TEXT NOT NULL DEFAULT '', "
+                "identity_status TEXT NOT NULL DEFAULT 'unidentified', identity_source TEXT NOT NULL DEFAULT '', "
+                "identity_confidence TEXT NOT NULL DEFAULT '', identity_updated_at TEXT NOT NULL DEFAULT '', "
                 "created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, expires_at TEXT NOT NULL, UNIQUE(source_id, fingerprint))"
             )
             connection.execute("CREATE INDEX IF NOT EXISTS idx_rss_items_time ON rss_items(published_at DESC, created_at DESC)")
@@ -177,6 +181,25 @@ class PrivateRssRepository:
             run_columns = {row["name"] for row in connection.execute("PRAGMA table_info(rss_fetch_runs)").fetchall()}
             if "http_status" not in run_columns:
                 connection.execute("ALTER TABLE rss_fetch_runs ADD COLUMN http_status INTEGER NOT NULL DEFAULT 0")
+            item_columns = {row["name"] for row in connection.execute("PRAGMA table_info(rss_items)").fetchall()}
+            if "tmdb_id" not in item_columns:
+                connection.execute("ALTER TABLE rss_items ADD COLUMN tmdb_id TEXT NOT NULL DEFAULT ''")
+            if "imdb_id" not in item_columns:
+                connection.execute("ALTER TABLE rss_items ADD COLUMN imdb_id TEXT NOT NULL DEFAULT ''")
+            if "identity_status" not in item_columns:
+                connection.execute(
+                    "ALTER TABLE rss_items ADD COLUMN identity_status TEXT NOT NULL DEFAULT 'unidentified'"
+                )
+            if "identity_source" not in item_columns:
+                connection.execute("ALTER TABLE rss_items ADD COLUMN identity_source TEXT NOT NULL DEFAULT ''")
+            if "identity_confidence" not in item_columns:
+                connection.execute("ALTER TABLE rss_items ADD COLUMN identity_confidence TEXT NOT NULL DEFAULT ''")
+            if "identity_updated_at" not in item_columns:
+                connection.execute("ALTER TABLE rss_items ADD COLUMN identity_updated_at TEXT NOT NULL DEFAULT ''")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rss_items_identity "
+                "ON rss_items(identity_status, published_at DESC, created_at DESC)"
+            )
             _initialize_match_table(connection)
 
     @staticmethod
@@ -216,6 +239,12 @@ class PrivateRssRepository:
             "episodeStart": row["episode_start"],
             "episodeEnd": row["episode_end"],
             "versionSummary": row["version_summary"],
+            "tmdbId": row["tmdb_id"],
+            "imdbId": row["imdb_id"],
+            "identityStatus": row["identity_status"],
+            "identitySource": row["identity_source"],
+            "identityConfidence": row["identity_confidence"],
+            "identityUpdatedAt": row["identity_updated_at"],
             "hasDownload": bool(row["download_url"]),
             "lastSeenAt": row["last_seen_at"],
         }
@@ -304,9 +333,30 @@ class PrivateRssRepository:
         fingerprint = item["fingerprint"]
         title = item["title"]
         existing = connection.execute(
-            "SELECT id FROM rss_items WHERE source_id=? AND fingerprint=?", (source_id, fingerprint)
+            "SELECT * FROM rss_items WHERE source_id=? AND fingerprint=?", (source_id, fingerprint)
         ).fetchone()
         item_id = existing["id"] if existing else uuid.uuid4().hex
+        identity_status = str(item.get("identity_status") or "unidentified").strip().lower()
+        if identity_status not in IDENTITY_STATUSES:
+            identity_status = "unidentified"
+        preserve_identity = bool(
+            existing
+            and identity_status == "unidentified"
+            and str(existing["identity_status"] or "unidentified") != "unidentified"
+        )
+        if preserve_identity:
+            tmdb_id = str(existing["tmdb_id"] or "")
+            imdb_id = str(existing["imdb_id"] or "")
+            identity_status = str(existing["identity_status"] or "unidentified")
+            identity_source = str(existing["identity_source"] or "")
+            identity_confidence = str(existing["identity_confidence"] or "")
+            identity_updated_at = str(existing["identity_updated_at"] or "")
+        else:
+            tmdb_id = str(item.get("tmdb_id") or "").strip()[:24]
+            imdb_id = str(item.get("imdb_id") or "").strip().lower()[:24]
+            identity_source = str(item.get("identity_source") or "").strip()[:160]
+            identity_confidence = str(item.get("identity_confidence") or "").strip()[:40]
+            identity_updated_at = _iso(now)
         values = (
             item_id, source_id, fingerprint, str(item.get("guid") or ""), title[:500],
             str(item.get("description") or "")[:2000], str(item.get("published_at") or ""),
@@ -314,17 +364,22 @@ class PrivateRssRepository:
             str(item.get("detail_url") or "")[:4096], str(item.get("download_url") or "")[:4096],
             str(item.get("media_type") or ""), item.get("season_number"), item.get("episode_start"),
             item.get("episode_end"), str(item.get("version_summary") or "")[:300],
+            tmdb_id, imdb_id, identity_status, identity_source, identity_confidence, identity_updated_at,
             _iso(now), _iso(now), expires,
         )
         connection.execute(
             "INSERT INTO rss_items (id, source_id, fingerprint, guid, title, description, published_at, category, "
             "size_bytes, detail_url, download_url, media_type, season_number, episode_start, episode_end, "
-            "version_summary, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source_id, fingerprint) DO UPDATE SET title=excluded.title, "
+            "version_summary, tmdb_id, imdb_id, identity_status, identity_source, identity_confidence, "
+            "identity_updated_at, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source_id, fingerprint) DO UPDATE SET title=excluded.title, "
             "description=excluded.description, published_at=excluded.published_at, category=excluded.category, "
             "size_bytes=excluded.size_bytes, detail_url=excluded.detail_url, download_url=excluded.download_url, "
             "media_type=excluded.media_type, season_number=excluded.season_number, episode_start=excluded.episode_start, "
             "episode_end=excluded.episode_end, version_summary=excluded.version_summary, "
+            "tmdb_id=excluded.tmdb_id, imdb_id=excluded.imdb_id, identity_status=excluded.identity_status, "
+            "identity_source=excluded.identity_source, identity_confidence=excluded.identity_confidence, "
+            "identity_updated_at=excluded.identity_updated_at, "
             "last_seen_at=excluded.last_seen_at, expires_at=excluded.expires_at",
             values,
         )
@@ -372,7 +427,7 @@ class PrivateRssRepository:
             "_match_ids": [str(match.get("id") or "") for match in matches if isinstance(match, dict)],
         }
 
-    def search_items(self, query="", source_id="", window_hours=None, limit=50, offset=0):
+    def search_items(self, query="", source_id="", window_hours=None, identity_status="", limit=50, offset=0):
         limit = max(1, min(int(limit or 50), 100))
         offset = max(0, int(offset or 0))
         joins = []
@@ -390,6 +445,12 @@ class PrivateRssRepository:
             cutoff = _iso(_now() - timedelta(hours=int(window_hours)))
             where.append("COALESCE(NULLIF(i.published_at, ''), i.created_at) >= ?")
             params.append(cutoff)
+        identity_status = str(identity_status or "").strip().lower()
+        if identity_status and identity_status not in IDENTITY_STATUSES:
+            raise ValueError("身份状态无效")
+        if identity_status:
+            where.append("i.identity_status=?")
+            params.append(identity_status)
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         join_sql = " ".join(joins)
         with closing(self.runtime.connect()) as connection:
@@ -413,6 +474,20 @@ class PrivateRssRepository:
         if not row:
             return None
         return self._public_item(row) if public else dict(row)
+
+    @staticmethod
+    def supplement_item_identity(connection, item_id, tmdb_id="", imdb_id="", source="subscription_match", confidence="fallback"):
+        tmdb_id = str(tmdb_id or "").strip()[:24]
+        imdb_id = str(imdb_id or "").strip().lower()[:24]
+        if not tmdb_id and not imdb_id:
+            return False
+        cursor = connection.execute(
+            "UPDATE rss_items SET tmdb_id=?, imdb_id=?, identity_status='identified', identity_source=?, "
+            "identity_confidence=?, identity_updated_at=? "
+            "WHERE id=? AND identity_status='unidentified' AND tmdb_id='' AND imdb_id=''",
+            (tmdb_id, imdb_id, str(source or "")[:160], str(confidence or "")[:40], _iso(), str(item_id)),
+        )
+        return cursor.rowcount > 0
 
     @staticmethod
     def _match(row):

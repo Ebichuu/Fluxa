@@ -12,6 +12,7 @@ import { createPortal } from 'react-dom';
 interface ConfirmDialogProps {
   busy?: boolean;
   children: ReactNode;
+  className?: string;
   describedBy?: string;
   labelledBy: string;
   open: boolean;
@@ -38,7 +39,7 @@ function reducedMotionEnabled() {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
-export function ConfirmDialog({ busy = false, children, describedBy, labelledBy, open, onClose }: ConfirmDialogProps) {
+export function ConfirmDialog({ busy = false, children, className = '', describedBy, labelledBy, open, onClose }: ConfirmDialogProps) {
   const dialogRef = useRef<HTMLElement>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
   const pointerStartRef = useRef<{ id: number; x: number; y: number } | null>(null);
@@ -153,7 +154,7 @@ export function ConfirmDialog({ busy = false, children, describedBy, labelledBy,
         aria-describedby={describedBy}
         aria-labelledby={labelledBy}
         aria-modal="true"
-        className="ops-confirm-dialog"
+        className={`ops-confirm-dialog ${className}`.trim()}
         ref={dialogRef}
         role="dialog"
         tabIndex={-1}

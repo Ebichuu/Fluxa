@@ -8,7 +8,7 @@ import { usePolling } from '../../hooks/usePolling';
 import { formatSpeed, formatTimeAgo } from '../../utils/formatters';
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
-import type { TaskNavigationTarget } from '../layout/AppTopNav';
+import type { AppNavigate, TaskNavigationTarget } from '../layout/AppTopNav';
 import { HealthBadge } from '../status/HealthBadge';
 
 type FilterName = '全部' | '需要处理' | '证据不足' | '等待' | '正常保护' | '正常';
@@ -160,7 +160,7 @@ function healthForFilter(filter: FilterName): TaskChainHealthState | undefined {
   return undefined;
 }
 
-export function TasksCenter({ target, onClearTarget }: { target: TaskNavigationTarget | null; onClearTarget: () => void }) {
+export function TasksCenter({ target, onClearTarget, onNavigate }: { target: TaskNavigationTarget | null; onClearTarget: () => void; onNavigate: AppNavigate }) {
   const [filter, setFilter] = useState<FilterName>('全部');
   const [chain, setChain] = useState<TaskChainResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -429,6 +429,7 @@ export function TasksCenter({ target, onClearTarget }: { target: TaskNavigationT
           </div>
           <div className="ops-task-toolbar__actions">
             <span>{chain ? `已显示 ${items.length} / ${chain.page?.total ?? chain.counts.total} 条 · ${formatTimeAgo(chain.generatedAt)}` : '正在读取统一任务链'}</span>
+            <button className="tool-link ops-task-advanced-link" type="button" onClick={() => onNavigate('rss-library')}><Rss aria-hidden="true" size={14} />种子库</button>
             <button aria-label="刷新任务链" aria-busy={loading} className="ops-icon-button" disabled={loading} title="刷新任务链" type="button" onClick={refreshChain}><RefreshCcw aria-hidden="true" size={16} /></button>
           </div>
         </header>

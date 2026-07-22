@@ -11,6 +11,7 @@ export interface HomeSummaryCounts {
 }
 
 export interface HomeSummaryIssue {
+  headline?: string;
   healthState: HealthState;
   observedAt: string;
   freshUntil: string;

@@ -196,6 +196,7 @@
 .brand-lockup:focus-visible,
 .nav-item:focus-visible,
 .nav-pill:focus-visible,
+.nav-hall-entry:focus-visible,
 .settings-button:focus-visible,
 .theme-toggle:focus-visible {
   outline: 2px solid var(--theme-focus);
@@ -511,7 +512,7 @@
 
   .primary-nav {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     width: 100%;
     max-width: none;
     overflow: visible;
@@ -519,7 +520,13 @@
 
   .app-shell:not(.app-shell--hall) .primary-nav .nav-item {
     width: 100%;
-    padding: 0 4px;
+    gap: 3px;
+    padding: 0 2px;
+    font-size: 10px;
+  }
+
+  .app-shell:not(.app-shell--hall) .primary-nav .nav-item--active {
+    font-size: 10.5px;
   }
 
   .nav-actions {
@@ -533,6 +540,10 @@
   }
 
   .nav-pill.nav-pill--health {
+    display: none;
+  }
+
+  .nav-hall-entry {
     display: none;
   }
 

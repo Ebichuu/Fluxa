@@ -107,6 +107,10 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
         self.assertEqual(item["state"], "completed")
         self.assertTrue(item["embyIndexed"])
         self.assertEqual([step["status"] for step in item["steps"]], ["done"] * 4)
+        self.assertEqual(
+            [(row["seasonNumber"], row["episodeStart"], row["stage"]) for row in item["episodeEvidence"]],
+            [(1, 1, "download"), (1, 1, "download"), (1, 1, "library")],
+        )
 
     def test_completed_download_without_symedia_over_six_hours_is_inferred_block(self):
         from app.task_chain_runtime import build_task_chain

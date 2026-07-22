@@ -45,9 +45,17 @@ export interface RssSeedItem {
   episodeStart: number | null;
   episodeEnd: number | null;
   versionSummary: string;
+  tmdbId: string;
+  imdbId: string;
+  identityStatus: 'identified' | 'conflict' | 'unidentified';
+  identitySource: string;
+  identityConfidence: string;
+  identityUpdatedAt: string;
   hasDownload: boolean;
   lastSeenAt: string;
 }
+
+export type RssIdentityStatus = '' | RssSeedItem['identityStatus'];
 
 export interface RssSeedListResponse {
   items: RssSeedItem[];

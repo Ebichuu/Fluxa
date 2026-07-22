@@ -132,6 +132,10 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         matches = self.rss.list_matches()["items"]
         self.assertEqual({match["unitId"] for match in matches}, {first["unit_key"], second["unit_key"]})
         self.assertEqual({match["status"] for match in matches}, {"candidate"})
+        seed = self.rss.search_items(query="测试剧")["items"][0]
+        self.assertEqual(seed["tmdbId"], "202")
+        self.assertEqual(seed["identitySource"], "subscription_match")
+        self.assertEqual(seed["identityConfidence"], "fallback")
         repeated = self._insert("[Group] 测试剧.S01E03-E04.2160p", start=3, end=4)
         self.assertEqual(repeated["inserted"], 0)
         self.assertEqual(self.rss.list_matches()["total"], 2)
@@ -150,6 +154,14 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
 
         self._insert("测试剧 S01E01", media_type="movie", season=None)
         self.assertEqual(self.rss.list_matches()["total"], 2)
+
+    def test_alias_match_does_not_reverse_write_subscription_identity(self):
+        self._watch("tv:alias", tmdb_id="303", episode=1, aliases=["Alias Show"], title="主标题")
+        self._insert("[制作组] Alias.Show.S01E01.1080p")
+
+        item = self.rss.search_items(query="Alias Show")["items"][0]
+        self.assertEqual(item["identityStatus"], "unidentified")
+        self.assertEqual(item["tmdbId"], "")
 
     def test_expired_and_pre_baseline_items_are_not_backfilled(self):
         self._watch("tv:202:s1", episode=1)

@@ -187,6 +187,7 @@ def register_private_rss(
                 query=request.args.get("query") or "",
                 source_id=request.args.get("sourceId") or "",
                 window_hours=window_hours,
+                identity_status=request.args.get("identityStatus") or "",
                 limit=request.args.get("limit") or 50,
                 offset=request.args.get("offset") or 0,
             )

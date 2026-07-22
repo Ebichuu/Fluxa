@@ -28,6 +28,29 @@ export interface SubscriptionCalendarEntry {
   freshUntil?: string;
 }
 
+export interface SubscriptionCalendarDayPreview {
+  key?: string;
+  title: string;
+  episodeLabel: string;
+  posterUrl: string;
+  mediaType: string;
+  healthState?: SubscriptionHealthState;
+  status: 'upcoming' | 'acquiring' | 'library' | 'missing';
+}
+
+export interface SubscriptionCalendarDaySummary {
+  date: string;
+  total: number;
+  statusCounts: {
+    upcoming: number;
+    acquiring: number;
+    library: number;
+    missing: number;
+  };
+  preview: SubscriptionCalendarDayPreview[];
+  hasMore: boolean;
+}
+
 export interface SubscriptionCalendar {
   year: number;
   month: number;
@@ -45,6 +68,8 @@ export interface SubscriptionCalendar {
   mediaType?: string;
   errors?: string[];
   errorCount?: number;
+  view?: 'legacy' | 'summary' | 'detail';
+  days?: SubscriptionCalendarDaySummary[];
 }
 
 export interface SubscriptionCalendarResponse {

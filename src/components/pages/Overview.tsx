@@ -144,8 +144,8 @@ export function Overview({ onNavigate }: OverviewProps) {
               >
                 <span className="home-issue__marker" aria-hidden="true" />
                 <span className="home-issue__copy">
-                  <strong>{issue.reasonText || issue.title}</strong>
-                  <small>{issue.title} · {issue.observedAt ? formatTimeAgo(issue.observedAt) : '时间未知'}</small>
+                  <strong>{issue.headline || issue.title}</strong>
+                  <small>{issue.reasonText || '查看任务详情'} · {issue.observedAt ? formatTimeAgo(issue.observedAt) : '时间未知'}</small>
                 </span>
                 <HealthBadge state={issue.healthState} />
                 <ArrowRight aria-hidden="true" size={16} />

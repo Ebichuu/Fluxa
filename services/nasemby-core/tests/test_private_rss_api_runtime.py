@@ -45,6 +45,13 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             self.assertEqual(client.get("/api/v2/rss-sources").get_json()["summary"]["sources"], 1)
             repository.upsert_items(source_id, [{"fingerprint": "match-one", "title": "测试条目"}])
             item_id = repository.search_items()["items"][0]["id"]
+            item_detail = client.get(f"/api/v2/rss-items/{item_id}")
+            self.assertEqual(item_detail.status_code, 200)
+            self.assertEqual(item_detail.get_json()["identityStatus"], "unidentified")
+            self.assertNotIn("download_url", item_detail.get_data(as_text=True))
+            self.assertNotIn("detail_url", item_detail.get_data(as_text=True))
+            self.assertEqual(client.get("/api/v2/rss-items?identityStatus=unidentified").get_json()["total"], 1)
+            self.assertEqual(client.get("/api/v2/rss-items?identityStatus=invalid").status_code, 422)
             repository.create_match(item_id, "tv:202:s1", "tv:202:s1:s1:e1", {"identity": {"basis": "title"}})
             listed_matches = client.get("/api/v2/rss-matches?status=candidate").get_json()
             self.assertEqual(listed_matches["total"], 1)

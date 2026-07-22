@@ -281,7 +281,26 @@ class RssSubscriptionMatchRuntime:
         created = []
         rows = rows if isinstance(rows, list) else []
         for item in rows:
-            for candidate in self._candidates_for_item(item, subscriptions, active_units):
+            candidates = self._candidates_for_item(item, subscriptions, active_units)
+            identity_candidates = {
+                str(candidate.get("reason", {}).get("identity", {}).get("tmdbId") or "")
+                for candidate in candidates
+                if candidate.get("reason", {}).get("identity", {}).get("basis") == "standard-title-map"
+            }
+            identity_units = {
+                str(candidate.get("unit", {}).get("subscription_key") or "")
+                for candidate in candidates
+                if candidate.get("reason", {}).get("identity", {}).get("basis") == "standard-title-map"
+            }
+            if len(identity_candidates) == 1 and identity_candidates != {""} and len(identity_units) == 1:
+                self.rss_repository.supplement_item_identity(
+                    connection,
+                    item.get("id"),
+                    tmdb_id=next(iter(identity_candidates)),
+                    source="subscription_match",
+                    confidence="fallback",
+                )
+            for candidate in candidates:
                 match = self.rss_repository.create_match(
                     item["id"],
                     candidate["unit"]["subscription_key"],

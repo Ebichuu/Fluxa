@@ -5,6 +5,16 @@ from datetime import datetime, timezone
 from app.health_state_runtime import evidence
 
 
+PROTECTION_RULES = (
+    ("QUALITY_SCORE_LOWER", ("评分低于目标", "源文件评分低于", "低分")),
+    ("QUALITY_WEIGHT_NOT_HIGHER", ("权重低于或等于", "权重不高于")),
+    ("QUALITY_OVERWRITE_CANCELLED", ("取消覆盖",)),
+    ("QUALITY_OVERWRITE_SKIPPED", ("不执行覆盖", "不覆盖")),
+    ("QUALITY_HIGHER_VERSION_EXISTS", ("已有更高质量版本", "现有版本评分更高", "更高版本", "高分版本")),
+    ("DUPLICATE_RESOURCE_SKIPPED", ("重复资源跳过", "重复", "已存在", "跳过")),
+)
+
+
 def _text(value) -> str:
     return str(value or "").strip()
 
@@ -29,23 +39,28 @@ def _now(value=None) -> datetime:
     return parsed or datetime.now(timezone.utc)
 
 
-def _contains_protection(*values) -> bool:
+def protection_rule(*values) -> str:
     text = " ".join(_text(value).lower() for value in values)
-    markers = (
-        "低分",
-        "评分更高",
-        "更高版本",
-        "高分版本",
-        "正常保护",
-        "重复",
-        "已存在",
-        "跳过",
-        "low score",
-        "higher quality",
-        "duplicate",
-        "skipped",
-    )
-    return any(marker in text for marker in markers)
+    reason_code = next((
+        _text(value)
+        for value in values
+        if _text(value).startswith(("QUALITY_", "DUPLICATE_"))
+    ), "")
+    if reason_code:
+        return reason_code
+    english_rules = {
+        "QUALITY_SCORE_LOWER": ("low score",),
+        "QUALITY_HIGHER_VERSION_EXISTS": ("higher quality",),
+        "DUPLICATE_RESOURCE_SKIPPED": ("duplicate", "skipped"),
+    }
+    for code, markers in (*PROTECTION_RULES, *english_rules.items()):
+        if any(marker in text for marker in markers):
+            return code
+    return ""
+
+
+def _contains_protection(*values) -> bool:
+    return bool(protection_rule(*values))
 
 
 def _planned_retry(value: dict, current: datetime) -> str:
@@ -95,7 +110,7 @@ def _outcome(state, reason_code, reason_text, recommended):
 
 
 def _protected_stage(stage, _status, _evidence_state, _expired, _planned_at):
-    protected = _contains_protection(
+    protected = protection_rule(
         stage.get("reasonCode"),
         stage.get("reasonText"),
         stage.get("detail"),
@@ -219,6 +234,13 @@ def classify_stage(stage: dict, *, now=None, observed_at="", fresh_until="") -> 
         "retryEligible": bool(_retry_eligible(stage) and state == "action_required"),
         "plannedRetryAt": _planned_retry(stage, current),
     })
+    matched_rule = protection_rule(
+        stage.get("reasonCode"),
+        stage.get("reasonText"),
+        stage.get("detail"),
+    )
+    if matched_rule:
+        result["matchedProtectionRule"] = matched_rule
     return result
 
 
@@ -284,7 +306,7 @@ def _task_protected(item, classified):
 def _task_outcome(item, classified):
     if _text(item.get("confidence")).lower() == "unlinked":
         return _outcome("evidence_insufficient", "TASK_IDENTITY_UNLINKED", "任务尚未关联到订阅或媒体身份", "补充媒体身份后重新检查")
-    for resolver in (_task_action, _task_evidence, _task_waiting, _task_protected):
+    for resolver in (_task_action, _task_protected, _task_waiting, _task_evidence):
         result = resolver(item, classified)
         if result:
             return result

@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Activity, Bookmark, CalendarDays, Compass, Film, Home, ListChecks, Moon, Rss, Search, Settings, Sun } from 'lucide-react';
+import { Activity, Bookmark, CalendarDays, Compass, Film, Home, ListChecks, Moon, Search, Settings, Sun } from 'lucide-react';
 import type { HomeSummaryResponse } from '../../types/homeSummary';
 import { healthStatusLabel } from '../status/HealthBadge';
 
@@ -25,12 +25,10 @@ const navItems: Array<{
   mobileHidden?: boolean;
 }> = [
   { id: 'overview', label: '首页', icon: Home },
-  { id: 'hall', label: '影院大厅', icon: Film, mobileHidden: true },
   { id: 'discover', label: '发现', icon: Compass },
   { id: 'subscriptions', label: '追更', icon: Bookmark },
-  { id: 'rss-library', label: '种子库', icon: Rss, mobileHidden: true },
   { id: 'tasks', label: '任务中心', icon: ListChecks },
-  { id: 'calendar', label: '日历', icon: CalendarDays, mobileHidden: true }
+  { id: 'calendar', label: '日历', icon: CalendarDays }
 ];
 
 interface AppTopNavProps {
@@ -214,6 +212,15 @@ export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, 
       </div>
 
       <div className="nav-actions">
+        <button
+          aria-label="进入影院大厅"
+          className={activePage === 'hall' ? 'settings-button nav-hall-entry settings-button--active' : 'settings-button nav-hall-entry'}
+          title="进入影院大厅"
+          type="button"
+          onClick={() => onNavigate('hall')}
+        >
+          <Film aria-hidden="true" size={18} strokeWidth={1.8} />
+        </button>
         <button
           aria-label="搜索媒体"
           className="nav-pill"

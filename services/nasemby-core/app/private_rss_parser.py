@@ -10,6 +10,10 @@ import feedparser
 
 
 MAX_FEED_BYTES = 2 * 1024 * 1024
+TMDB_URL_PATTERN = re.compile(r"(?i)themoviedb\.org/(?:movie|tv)/(\d{1,10})")
+TMDB_LABEL_PATTERN = re.compile(r"(?i)\btmdb(?:[_\s-]*id)?\b[^0-9]{0,12}(\d{1,10})")
+IMDB_URL_PATTERN = re.compile(r"(?i)imdb\.com/title/(tt\d{5,12})")
+IMDB_LABEL_PATTERN = re.compile(r"(?i)\bimdb(?:[_\s-]*id)?\b[^a-z0-9]{0,12}(tt\d{5,12})")
 
 
 def _text(value):
@@ -30,6 +34,85 @@ def _number(value):
         return max(0, int(value))
     except (TypeError, ValueError):
         return 0
+
+
+def _flatten_strings(value):
+    if isinstance(value, dict):
+        for nested in value.values():
+            yield from _flatten_strings(nested)
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            yield from _flatten_strings(nested)
+    elif value is not None:
+        yield str(value)
+
+
+def _add_identity_candidates(candidates, value, source, structured_kind=""):
+    text = " ".join(_flatten_strings(value))
+    if not text:
+        return
+    if structured_kind == "tmdb":
+        matches = re.findall(r"(?<!\d)\d{1,10}(?!\d)", text)
+        for candidate in matches:
+            candidates["tmdb"].setdefault(candidate, set()).add(source)
+        return
+    if structured_kind == "imdb":
+        matches = re.findall(r"(?i)\btt\d{5,12}\b", text)
+        for candidate in matches:
+            candidates["imdb"].setdefault(candidate.lower(), set()).add(source)
+        return
+    for pattern, kind in (
+        (TMDB_URL_PATTERN, "tmdb"),
+        (TMDB_LABEL_PATTERN, "tmdb"),
+        (IMDB_URL_PATTERN, "imdb"),
+        (IMDB_LABEL_PATTERN, "imdb"),
+    ):
+        for candidate in pattern.findall(text):
+            candidates[kind].setdefault(str(candidate).lower(), set()).add(source)
+
+
+def _media_identity(entry):
+    candidates = {"tmdb": {}, "imdb": {}}
+    narrative_keys = {"title", "summary", "description", "content", "link", "links", "enclosures"}
+    for key, value in entry.items():
+        normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        if key in narrative_keys:
+            continue
+        if "tmdb" in normalized_key:
+            _add_identity_candidates(candidates, value, "rss_field", "tmdb")
+        elif "imdb" in normalized_key:
+            _add_identity_candidates(candidates, value, "rss_field", "imdb")
+
+    descriptions = [entry.get("summary"), entry.get("description"), entry.get("content")]
+    _add_identity_candidates(candidates, descriptions, "rss_description")
+    links = [entry.get("link"), entry.get("links")]
+    _add_identity_candidates(candidates, links, "rss_link")
+
+    conflict = any(len(values) > 1 for values in candidates.values())
+    identified = any(values for values in candidates.values())
+    sources = sorted({
+        source
+        for values in candidates.values()
+        for candidate_sources in values.values()
+        for source in candidate_sources
+    })
+    if conflict:
+        return {
+            "tmdb_id": "",
+            "imdb_id": "",
+            "identity_status": "conflict",
+            "identity_source": ",".join(sources),
+            "identity_confidence": "conflict",
+        }
+    tmdb_ids = list(candidates["tmdb"])
+    imdb_ids = list(candidates["imdb"])
+    return {
+        "tmdb_id": tmdb_ids[0] if tmdb_ids else "",
+        "imdb_id": imdb_ids[0] if imdb_ids else "",
+        "identity_status": "identified" if identified else "unidentified",
+        "identity_source": ",".join(sources),
+        "identity_confidence": "strong" if "rss_field" in sources or "rss_link" in sources else "explicit" if identified else "",
+    }
 
 
 def _season_episode(title):
@@ -92,6 +175,7 @@ def parse_private_feed(content):
         guid = str(entry.get("id") or entry.get("guid") or download_url or detail_url).strip()
         categories = [str(value.get("term") or "").strip() for value in (entry.get("tags") or []) if value.get("term")]
         media_type, season, episode_start, episode_end = _season_episode(title)
+        identity = _media_identity(entry)
         fingerprint_source = guid or "|".join((title, _published(entry), download_url, detail_url))
         items.append({
             "fingerprint": hashlib.sha256(fingerprint_source.encode("utf-8", errors="ignore")).hexdigest(),
@@ -108,6 +192,7 @@ def parse_private_feed(content):
             "episode_start": episode_start,
             "episode_end": episode_end,
             "version_summary": _version_summary(title),
+            **identity,
         })
     return {
         "title": _text(parsed.feed.get("title")),

@@ -56,6 +56,49 @@ def _item_evidence(item: dict, now: str) -> dict:
     )
 
 
+def _problem_stage(item: dict) -> dict:
+    stages = [row for row in item.get("stages") or [] if isinstance(row, dict)]
+    return next((
+        row
+        for row in stages
+        if row.get("healthState") == "action_required" or row.get("status") == "blocked"
+    ), next((row for row in stages if row.get("healthState") == "evidence_insufficient"), {}))
+
+
+def _episode_label(item: dict) -> str:
+    try:
+        season = int(item.get("seasonNumber") or 0)
+        episode = item.get("episodeNumber")
+        if episode is not None:
+            return f"S{season:02d}E{int(episode):02d}"
+        return f"第 {season} 季" if season else ""
+    except (TypeError, ValueError):
+        return ""
+
+
+def _safe_issue_copy(item: dict, result: dict) -> tuple[str, str]:
+    title = str(item.get("title") or "未命名媒体").strip()
+    episode = _episode_label(item)
+    stage = _problem_stage(item)
+    source = str(stage.get("source") or result.get("source") or "").strip()
+    raw_reason = str(stage.get("reasonText") or stage.get("detail") or result.get("reasonText") or "")
+    reason_code = str(result.get("reasonCode") or stage.get("reasonCode") or "")
+    label = f"《{title}》{episode}"
+    if reason_code == "EVIDENCE_OWNER_CONFLICT":
+        return f"{label}证据存在冲突", "同一条处理证据对应多个媒体候选，当前没有自动绑定"
+    if reason_code == "TASK_IDENTITY_UNLINKED":
+        return f"{label}尚未识别", "暂时无法确认这条记录对应的媒体作品"
+    if source == "Symedia" or "SYMEDIA" in reason_code or stage.get("stage") == "library":
+        if any(marker in raw_reason for marker in ("未找到", "识别", "TMDB", "媒体信息")):
+            return f"{label}识别失败", "Symedia 未找到对应媒体信息"
+        return f"{label}入库失败", "Symedia 未完成媒体入库"
+    if source == "qBittorrent" or "DOWNLOAD" in reason_code:
+        return f"{label}下载需要检查", "qB 下载任务没有正常继续"
+    if source == "Torra":
+        return f"{label}获取需要检查", "Torra 未能确认资源处理状态"
+    return f"{label}需要检查", "当前步骤没有形成可验证结果"
+
+
 class HomeSummaryService:
     def __init__(self, app: Flask, clock=None):
         self.app = app
@@ -155,7 +198,7 @@ class HomeSummaryService:
                     state="action_required",
                     source=name,
                     reason_code=f"{str(name).upper()}_UNAVAILABLE",
-                    reason_text=str(status.get("error") or f"{name} 当前不可用"),
+                    reason_text=f"{name} 当前不可用",
                     observed_at=now,
                     fresh_until=_fresh_until(now_value),
                 ))
@@ -214,8 +257,11 @@ class HomeSummaryService:
         issues = []
         for target_key, item, result in item_evidence:
             if result["healthState"] in {"action_required", "evidence_insufficient"}:
+                headline, reason_text = _safe_issue_copy(item, result)
                 issues.append({
                     **result,
+                    "headline": headline,
+                    "reasonText": reason_text,
                     "targetKey": target_key,
                     "chainId": str(item.get("chainId") or item.get("id") or ""),
                     "title": str(item.get("title") or "未命名媒体"),

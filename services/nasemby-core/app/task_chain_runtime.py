@@ -9,6 +9,9 @@ from datetime import datetime, timezone
 from flask import Flask, jsonify
 
 from app import discover_runtime
+from app.evidence_ownership_runtime import adjudicate_task_evidence, compare_legacy_ownership
+from app.episode_evidence_runtime import build_episode_evidence
+from app.task_exception_runtime import protection_rule
 
 
 CLOUD_STUCK_HOURS = 6
@@ -45,15 +48,6 @@ def _flatten_strings(value) -> list[str]:
     return []
 
 
-def _compact(value) -> str:
-    return discover_runtime.compact_match_text(value)
-
-
-def _file_key(value: str) -> str:
-    basename = os.path.basename(value.replace("\\", "/"))
-    return _compact(re.sub(r"\.[A-Za-z0-9]{2,5}$", "", basename, flags=re.IGNORECASE))
-
-
 def _season_from_text(value: str) -> int:
     match = re.search(r"(?:^|[.\s_-])S(?:eason)?[.\s_-]*0*(\d{1,2})(?:[.\s_-]|$)", value, re.IGNORECASE)
     return int(match.group(1)) if match else 0
@@ -85,85 +79,11 @@ def _torra_has_download_evidence(row: dict | None) -> bool:
     )
 
 
-def _same_season(expected, actual) -> bool:
-    expected_number = _number(expected)
-    actual_number = _number(actual)
-    return expected is None or expected_number == 0 or actual_number == 0 or expected_number == actual_number
-
-
-def _match_torra(subscription: dict, rows: list[dict]):
-    exact = next((
-        row
-        for row in rows
-        if _string(row.get("tmdb_id")) == subscription["tmdbId"]
-        and _torra_media_type(row) == subscription["mediaType"]
-        and _same_season(subscription.get("seasonNumber"), row.get("season_number"))
-    ), None)
-    if exact:
-        return exact
-    title = _compact(subscription["title"])
-    return next((
-        row
-        for row in rows
-        if _torra_media_type(row) == subscription["mediaType"]
-        and _same_season(subscription.get("seasonNumber"), row.get("season_number"))
-        and title
-        and (candidate := _compact(row.get("name") or row.get("keyword")))
-        and (candidate in title or title in candidate)
-    ), None)
-
-
 def _symedia_season(row: dict) -> int:
     if _number(row.get("season")):
         return int(_number(row.get("season")))
     match = re.search(r"S0*(\d{1,2})", _string(row.get("season_episode")), re.IGNORECASE)
     return int(match.group(1)) if match else 0
-
-
-def _match_symedia(subscription: dict, rows: list[dict]) -> list[dict]:
-    exact = [
-        row
-        for row in rows
-        if _string(row.get("tmdbid")) == subscription["tmdbId"]
-        and _same_season(subscription.get("seasonNumber"), _symedia_season(row))
-    ]
-    if exact:
-        return exact
-    title = _compact(subscription["title"])
-    return [
-        row
-        for row in rows
-        if _same_season(subscription.get("seasonNumber"), _symedia_season(row))
-        and title
-        and (candidate := _compact(row.get("title")))
-        and (candidate in title or title in candidate)
-    ]
-
-
-def _task_matches_title(task: dict, title: str, season_number) -> bool:
-    task_title = _compact(task.get("name"))
-    wanted = _compact(title)
-    if not task_title or not wanted or wanted not in task_title:
-        return False
-    return _same_season(season_number, _season_from_text(_string(task.get("name"))))
-
-
-def _match_qb(subscription: dict, torra: dict | None, tasks: list[dict]):
-    evidence_keys = [key for key in map(_file_key, _torra_files(torra)) if len(key) >= 8]
-    by_file = [
-        task
-        for task in tasks
-        if (task_key := _file_key(_string(task.get("name"))))
-        and any(task_key in key or key in task_key for key in evidence_keys)
-    ]
-    if by_file:
-        return by_file, "strong"
-    by_title = [
-        task
-        for task in tasks
-        if _task_matches_title(task, subscription["title"], subscription.get("seasonNumber"))
-    ]
-    return by_title, "fallback" if by_title else "strong"
 
 
 def _iso_datetime(value: datetime) -> str:
@@ -300,11 +220,25 @@ def _library_step(rows: list[dict], emby_indexed: bool) -> dict:
     success = len(rows) - len(failed)
     timestamp = _newest(row.get("date") for row in rows)
     if failed:
-        reason = _string(failed[0].get("errmsg")) or "Symedia 返回失败"
+        classified = [
+            (row, protection_rule(row.get("reasonCode"), row.get("errmsg")))
+            for row in failed
+        ]
+        real_failures = [row for row, rule in classified if not rule]
+        protected_rules = sorted({rule for _, rule in classified if rule})
+        selected = real_failures[0] if real_failures else failed[0]
+        reason = _string(selected.get("errmsg")) or "Symedia 返回失败"
+        reason_code = (
+            _string(selected.get("reasonCode")) or "SYMEDIA_LIBRARY_FAILED"
+            if real_failures
+            else protected_rules[0]
+        )
         return {
             "key": "library", "label": "入库", "status": "blocked", "evidence": "verified",
             "detail": f"{success} 成功 / {len(failed)} 失败 · {reason}",
-            "timestamp": timestamp, "source": "Symedia",
+            "timestamp": timestamp, "source": "Symedia", "reasonCode": reason_code,
+            "matchedProtectionRule": protected_rules[0] if protected_rules and not real_failures else "",
+            "protectionRules": protected_rules if not real_failures else [],
         }
     detail = f"{success} 条 Symedia 成功 · Emby {'已索引' if emby_indexed else '尚未确认'}"
     return {
@@ -390,10 +324,19 @@ def _acquisition_state(subscription, torra, qb_tasks, symedia_rows, indexed, pol
     }
 
 
-def _build_subscription_item(subscription, torra_rows, qb_tasks, symedia_rows, emby_index, urls, source, now, cloud_policy):
-    torra = _match_torra(subscription, torra_rows)
-    matched_symedia = _match_symedia(subscription, symedia_rows)
-    matched_qb, qb_confidence = _match_qb(subscription, torra, qb_tasks)
+def _build_subscription_item(
+    subscription,
+    torra,
+    matched_qb,
+    matched_symedia,
+    ownership_records,
+    episode_evidence,
+    emby_index,
+    urls,
+    source,
+    now,
+    cloud_policy,
+):
     subscription_step = {
         "key": "subscription", "label": "订阅", "status": "done", "evidence": "verified",
         "detail": f"{source} 与 Torra 订阅已关联" if torra else f"{source} 订阅存在，Torra 尚未关联",
@@ -405,10 +348,14 @@ def _build_subscription_item(subscription, torra_rows, qb_tasks, symedia_rows, e
     indexed = _emby_has(emby_index, subscription["mediaType"], subscription["tmdbId"])
     library = _library_step(matched_symedia, indexed)
     steps = [subscription_step, download, cloud, library]
-    confidence = "strong" if (
-        torra
-        or any(_string(row.get("tmdbid")) == subscription["tmdbId"] for row in matched_symedia)
-    ) else qb_confidence
+    record_confidences = {str(record.get("confidence") or "") for record in ownership_records}
+    confidence = (
+        "strong"
+        if "strong" in record_confidences or subscription["tmdbId"]
+        else "fallback"
+        if "fallback" in record_confidences
+        else "unlinked"
+    )
     item = {
         "id": f"subscription:{subscription['id']}",
         "title": subscription["title"],
@@ -432,6 +379,8 @@ def _build_subscription_item(subscription, torra_rows, qb_tasks, symedia_rows, e
             "qbHashes": [_string(task.get("hash")) for task in matched_qb],
             "symediaIds": [_string(row.get("id") or f"{row.get('date')}:{row.get('src')}") for row in matched_symedia],
         },
+        "evidenceOwnership": ownership_records,
+        "episodeEvidence": episode_evidence,
         "updatedAt": _newest([subscription["updatedAt"], *(step["timestamp"] for step in steps)]),
         "acquisition": _acquisition_state(
             subscription,
@@ -446,7 +395,7 @@ def _build_subscription_item(subscription, torra_rows, qb_tasks, symedia_rows, e
     return item, matched_qb, matched_symedia
 
 
-def _orphan_qb_item(task: dict, urls: dict, now: datetime) -> dict:
+def _orphan_qb_item(task: dict, ownership: dict, urls: dict, now: datetime) -> dict:
     subscription = {
         "key": "subscription", "label": "订阅", "status": "unknown", "evidence": "missing",
         "detail": "未关联订阅中枢", "timestamp": "", "source": "",
@@ -455,19 +404,30 @@ def _orphan_qb_item(task: dict, urls: dict, now: datetime) -> dict:
     cloud = _cloud_step(download, [], now)
     library = _library_step([], False)
     steps = [subscription, download, cloud, library]
+    episode_evidence = build_episode_evidence(qb_pairs=[(task, ownership)])
+    episode_number = (
+        episode_evidence[0]["episodeStart"]
+        if len(episode_evidence) == 1 and episode_evidence[0]["episodeStart"] == episode_evidence[0]["episodeEnd"]
+        else None
+    )
     return {
         "id": f"qb:{_string(task.get('hash'))}", "title": _string(task.get("name")),
         "mediaType": "unknown", "tmdbId": "", "seasonNumber": _season_from_text(_string(task.get("name"))),
+        "episodeNumber": episode_number,
         "posterUrl": "", "origin": "download", "channel": "PT", "state": _item_state(steps),
-        "confidence": "unlinked", "progress": round(_number(task.get("progress")) * 100),
+        "confidence": ownership.get("confidence") or "unlinked", "progress": round(_number(task.get("progress")) * 100),
         "currentStep": _current_step(steps), "steps": steps, "embyIndexed": False,
         "suggestion": _suggestion(steps, urls), "qbControl": _qb_control([task]),
         "sourceIds": {"subscriptionId": "", "torraId": "", "qbHashes": [_string(task.get("hash"))], "symediaIds": []},
+        "evidenceOwnership": [ownership],
+        "episodeEvidence": episode_evidence,
+        "reasonCode": "EVIDENCE_OWNER_CONFLICT" if ownership.get("confidence") == "conflict" else "TASK_IDENTITY_UNLINKED",
+        "reasonText": "下载证据存在多个媒体候选，暂未绑定" if ownership.get("confidence") == "conflict" else "下载证据尚未关联到媒体目标",
         "updatedAt": _newest([_iso_from_seconds(task.get("completionOn")), _iso_from_seconds(task.get("addedOn"))]),
     }
 
 
-def _orphan_symedia_item(row: dict, urls: dict) -> dict:
+def _orphan_symedia_item(row: dict, ownership: dict, urls: dict) -> dict:
     subscription = {
         "key": "subscription", "label": "订阅", "status": "unknown", "evidence": "missing",
         "detail": "未关联订阅中枢", "timestamp": "", "source": "",
@@ -484,17 +444,80 @@ def _orphan_symedia_item(row: dict, urls: dict) -> dict:
     steps = [subscription, download, cloud, library]
     row_id = _string(row.get("id") or f"{row.get('date')}:{row.get('src')}")
     media_type = _string(row.get("type"))
+    episode_evidence = build_episode_evidence(symedia_pairs=[(row, ownership)])
+    episode_number = (
+        episode_evidence[0]["episodeStart"]
+        if len(episode_evidence) == 1 and episode_evidence[0]["episodeStart"] == episode_evidence[0]["episodeEnd"]
+        else None
+    )
     return {
         "id": f"symedia:{row_id}",
         "title": _string(row.get("title")) or os.path.basename(_string(row.get("src"))) or "未识别入库记录",
         "mediaType": media_type if media_type in {"movie", "tv"} else "unknown",
         "tmdbId": _string(row.get("tmdbid")), "seasonNumber": _symedia_season(row),
+        "episodeNumber": episode_number,
         "posterUrl": "", "origin": "library", "channel": "PT", "state": _item_state(steps),
-        "confidence": "unlinked", "progress": 100 if library["status"] == "done" else 0,
+        "confidence": ownership.get("confidence") or "unlinked", "progress": 100 if library["status"] == "done" else 0,
         "currentStep": _current_step(steps), "steps": steps, "embyIndexed": False,
         "suggestion": _suggestion(steps, urls), "qbControl": _qb_control([]),
         "sourceIds": {"subscriptionId": "", "torraId": "", "qbHashes": [], "symediaIds": [row_id]},
+        "evidenceOwnership": [ownership],
+        "episodeEvidence": episode_evidence,
+        "reasonCode": "EVIDENCE_OWNER_CONFLICT" if ownership.get("confidence") == "conflict" else "TASK_IDENTITY_UNLINKED",
+        "reasonText": "入库证据存在多个媒体候选，暂未绑定" if ownership.get("confidence") == "conflict" else "入库证据尚未关联到媒体目标",
         "updatedAt": _string(row.get("date")),
+    }
+
+
+def _orphan_torra_item(row: dict, ownership: dict, urls: dict) -> dict:
+    has_download = _torra_has_download_evidence(row)
+    subscription = {
+        "key": "subscription", "label": "订阅", "status": "done", "evidence": "verified",
+        "detail": "Torra 订阅存在，但尚未关联 Fluxa 目标", "timestamp": "", "source": "Torra",
+    }
+    download = {
+        "key": "download", "label": "获取 / 下载", "status": "done" if has_download else "waiting",
+        "evidence": "verified", "detail": "Torra 保留有下载记录" if has_download else "Torra 尚无下载记录",
+        "timestamp": "", "source": "Torra",
+    }
+    cloud = _cloud_step(download, [], datetime.now(timezone.utc))
+    library = _library_step([], False)
+    steps = [subscription, download, cloud, library]
+    episode_evidence = build_episode_evidence(torra_pairs=[(row, ownership)])
+    episode_number = (
+        episode_evidence[0]["episodeStart"]
+        if len(episode_evidence) == 1 and episode_evidence[0]["episodeStart"] == episode_evidence[0]["episodeEnd"]
+        else None
+    )
+    return {
+        "id": f"torra:{_string(row.get('id')) or ownership.get('artifactKey')}",
+        "title": _string(row.get("name") or row.get("keyword")) or "未识别 Torra 订阅",
+        "mediaType": _torra_media_type(row),
+        "tmdbId": _string(row.get("tmdb_id")),
+        "seasonNumber": int(_number(row.get("season_number"))),
+        "episodeNumber": episode_number,
+        "posterUrl": "",
+        "origin": "subscription",
+        "channel": "PT",
+        "state": _item_state(steps),
+        "confidence": ownership.get("confidence") or "unlinked",
+        "progress": 0,
+        "currentStep": _current_step(steps),
+        "steps": steps,
+        "embyIndexed": False,
+        "suggestion": _suggestion(steps, urls),
+        "qbControl": _qb_control([]),
+        "sourceIds": {
+            "subscriptionId": "",
+            "torraId": _string(row.get("id")),
+            "qbHashes": [],
+            "symediaIds": [],
+        },
+        "evidenceOwnership": [ownership],
+        "episodeEvidence": episode_evidence,
+        "reasonCode": "EVIDENCE_OWNER_CONFLICT" if ownership.get("confidence") == "conflict" else "TASK_IDENTITY_UNLINKED",
+        "reasonText": "Torra 证据存在多个媒体候选，暂未绑定" if ownership.get("confidence") == "conflict" else "Torra 证据尚未关联到媒体目标",
+        "updatedAt": _string(row.get("updated_at") or row.get("created_at")),
     }
 
 
@@ -502,15 +525,44 @@ def build_task_chain(input_data: dict) -> dict:
     now = input_data.get("now") or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
-    used_qb = set()
-    used_symedia = set()
+    ownership = adjudicate_task_evidence(
+        input_data["subscriptions"],
+        input_data["torraRows"],
+        input_data["qb"]["tasks"],
+        input_data["symediaRows"],
+    )
+    ownership_comparison = compare_legacy_ownership(
+        input_data["subscriptions"],
+        input_data["torraRows"],
+        input_data["qb"]["tasks"],
+        input_data["symediaRows"],
+        ownership,
+    )
     subscription_items = []
     for subscription in input_data["subscriptions"]:
+        target = ownership["subscriptionTargets"].get(str(subscription.get("id") or ""))
+        bucket = ownership["owned"].get(target) or {"torra": [], "qb": [], "symedia": [], "records": []}
+        torra_candidates = sorted(
+            bucket["torra"],
+            key=lambda value: (
+                0 if value[1].get("matchMethod") == "tmdb_exact" else 1,
+                str(value[1].get("artifactKey") or ""),
+            ),
+        )
+        torra = torra_candidates[0][0] if torra_candidates else None
+        qb_tasks = [row for row, _ in bucket["qb"]]
+        symedia_rows = [row for row, _ in bucket["symedia"]]
         item, qb_tasks, symedia_rows = _build_subscription_item(
             subscription,
-            input_data["torraRows"],
-            input_data["qb"]["tasks"],
-            input_data["symediaRows"],
+            torra,
+            qb_tasks,
+            symedia_rows,
+            bucket["records"],
+            build_episode_evidence(
+                torra_pairs=bucket["torra"],
+                qb_pairs=bucket["qb"],
+                symedia_pairs=bucket["symedia"],
+            ),
             input_data.get("embyIndex"),
             input_data["urls"],
             input_data.get("subscriptionSource") or "中控",
@@ -518,19 +570,19 @@ def build_task_chain(input_data: dict) -> dict:
             input_data.get("cloudPolicy") or {},
         )
         subscription_items.append(item)
-        used_qb.update(_string(task.get("hash")) for task in qb_tasks)
-        used_symedia.update(id(row) for row in symedia_rows)
     orphan_qb = [
-        _orphan_qb_item(task, input_data["urls"], now)
-        for task in input_data["qb"]["tasks"]
-        if _string(task.get("hash")) not in used_qb
+        _orphan_qb_item(row, record, input_data["urls"], now)
+        for row, record in ownership["unowned"]["qb"]
     ]
     orphan_symedia = [
-        _orphan_symedia_item(row, input_data["urls"])
-        for row in input_data["symediaRows"]
-        if id(row) not in used_symedia
+        _orphan_symedia_item(row, record, input_data["urls"])
+        for row, record in ownership["unowned"]["symedia"]
     ][:50]
-    items = [*subscription_items, *orphan_qb, *orphan_symedia]
+    orphan_torra = [
+        _orphan_torra_item(row, record, input_data["urls"])
+        for row, record in ownership["unowned"]["torra"]
+    ][:50]
+    items = [*subscription_items, *orphan_qb, *orphan_symedia, *orphan_torra]
     items.sort(key=lambda item: item["updatedAt"], reverse=True)
     items.sort(key=lambda item: STATE_PRIORITY[item["state"]])
     errors = input_data.get("serviceErrors") or {}
@@ -539,6 +591,11 @@ def build_task_chain(input_data: dict) -> dict:
     urls = input_data["urls"]
     return {
         "generatedAt": _iso_datetime(now),
+        "evidenceOwnership": {
+            "summary": ownership["summary"],
+            "records": ownership["records"],
+        },
+        "ownershipComparison": ownership_comparison,
         "items": items,
         "counts": {
             "total": len(items),

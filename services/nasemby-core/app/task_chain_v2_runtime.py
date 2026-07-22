@@ -74,6 +74,8 @@ def _stage(step: dict, observed_at: str, fresh_until: str, now=None) -> dict:
         "source": str(step.get("source") or ""),
         "reasonCode": str(step.get("reasonCode") or f"{str(step.get('key') or step.get('stage') or 'task').upper()}_{status.upper()}"),
         "reasonText": str(step.get("detail") or step.get("reasonText") or ""),
+        "matchedProtectionRule": str(step.get("matchedProtectionRule") or ""),
+        "protectionRules": list(step.get("protectionRules") or []),
         "actions": {"preview": False, "retry": False},
     }
     result.update(classify_stage(result, now=now, observed_at=observed_at, fresh_until=fresh_until))
@@ -158,6 +160,26 @@ def _source_ids(items: list[dict]) -> dict:
     }
 
 
+def _episode_evidence(items: list[dict]) -> list[dict]:
+    merged = {}
+    for item in items:
+        for row in item.get("episodeEvidence") or []:
+            if not isinstance(row, dict):
+                continue
+            key = (
+                int(row.get("seasonNumber") or 0),
+                int(row.get("episodeStart") or 0),
+                int(row.get("episodeEnd") or 0),
+                str(row.get("numberingScheme") or ""),
+                str(row.get("stage") or ""),
+                str(row.get("artifactKey") or ""),
+            )
+            current = merged.get(key)
+            if current is None or str(row.get("observedAt") or "") >= str(current.get("observedAt") or ""):
+                merged[key] = dict(row)
+    return [merged[key] for key in sorted(merged)]
+
+
 def _primary_item(items: list[dict]) -> dict:
     return min(
         items,
@@ -212,6 +234,7 @@ def _merge_group(items: list[dict], observed_at: str, fresh_until: str, now_valu
         for _, candidates in sorted(stage_groups.items(), key=lambda row: (STAGE_ORDER.get(row[0], 100), row[0]))
     ]
     artifacts = _dedupe(value for item in items for value in item.get("artifactKeys") or [])
+    episode_evidence = _episode_evidence(items)
     state = _merged_state(stages)
     confidence = min(
         (str(item.get("confidence") or "unlinked") for item in items),
@@ -227,6 +250,7 @@ def _merge_group(items: list[dict], observed_at: str, fresh_until: str, now_valu
         "sourceIds": source_ids,
         "subscriptionId": source_ids["subscriptionId"],
         "artifactKeys": artifacts,
+        "episodeEvidence": episode_evidence,
         "origins": _dedupe(item.get("origin") for item in items),
         "relatedRecords": len(items),
         "updatedAt": max((str(item.get("updatedAt") or "") for item in items), default=""),
@@ -335,6 +359,17 @@ def _version(payload: dict) -> str:
             "healthState": item.get("healthState"),
             "reasonCode": item.get("reasonCode"),
             "artifactKeys": item.get("artifactKeys") or [],
+            "episodeEvidence": [{
+                "seasonNumber": row.get("seasonNumber"),
+                "episodeStart": row.get("episodeStart"),
+                "episodeEnd": row.get("episodeEnd"),
+                "numberingScheme": row.get("numberingScheme"),
+                "stage": row.get("stage"),
+                "artifactKey": row.get("artifactKey"),
+                "status": row.get("status"),
+                "reasonCode": row.get("reasonCode"),
+                "observedAt": row.get("observedAt"),
+            } for row in item.get("episodeEvidence") or []],
             "stages": [{
                 "stage": stage.get("stage"),
                 "status": stage.get("status"),

@@ -150,7 +150,7 @@ export function App() {
         />
       )}
       {page === 'control' && <ControlRoom />}
-      {page === 'tasks' && <TasksCenter target={navigationTarget} onClearTarget={() => setNavigationTarget(null)} />}
+      {page === 'tasks' && <TasksCenter target={navigationTarget} onClearTarget={() => setNavigationTarget(null)} onNavigate={navigate} />}
       {page === 'calendar' && <CalendarPage onNavigate={navigate} />}
       {(page === 'discover' || page === 'subscriptions') && (
         <DiscoverPage

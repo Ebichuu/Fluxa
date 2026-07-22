@@ -147,6 +147,25 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["counts"]["waiting"], 0)
         self.assertEqual(result["counts"]["evidenceInsufficient"], 0)
 
+    def test_home_issue_uses_episode_copy_without_paths_or_internal_ids(self):
+        blocked = item(item_id="symedia:private", library_status="blocked")
+        blocked["state"] = "blocked"
+        blocked["episodeNumber"] = 5
+        blocked["steps"][-1].update({
+            "detail": "0 成功 / 1 失败 · /vol/private/云月大陆.S01E05.mkv 未找到媒体信息",
+            "source": "Symedia",
+            "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+        })
+        app = self.build_app([blocked], scheduler_enabled=False)
+
+        issue = next(value for value in HomeSummaryService(app, clock=lambda: NOW).snapshot()["issues"] if value["source"] == "task-chain")
+
+        self.assertEqual(issue["headline"], "《测试剧》S01E05识别失败")
+        self.assertEqual(issue["reasonText"], "Symedia 未找到对应媒体信息")
+        public_text = f"{issue['headline']} {issue['reasonText']}"
+        self.assertNotIn("/vol/", public_text)
+        self.assertNotIn("symedia:private", public_text)
+
 
 if __name__ == "__main__":
     unittest.main()

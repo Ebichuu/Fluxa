@@ -8,6 +8,7 @@ import {
   Database,
   Edit3,
   Plus,
+  PanelRightOpen,
   RefreshCcw,
   Rss,
   Search,
@@ -19,6 +20,7 @@ import {
 import {
   deleteRssSource,
   getAutomationAction,
+  getRssSeedItem,
   getRssSeedItems,
   getRssMatches,
   getRssSources,
@@ -26,7 +28,7 @@ import {
   startRssMatchAnalysis,
   testRssSource
 } from '../../services/api';
-import type { AutomationAction, RssLibrarySummary, RssMatch, RssSeedItem, RssSource, RssSourceInput } from '../../types/rssSeedLibrary';
+import type { AutomationAction, RssIdentityStatus, RssLibrarySummary, RssMatch, RssSeedItem, RssSource, RssSourceInput } from '../../types/rssSeedLibrary';
 import { formatTimeAgo } from '../../utils/formatters';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
 
@@ -77,6 +79,28 @@ function episodeLabel(item: RssSeedItem) {
   return `${season}${episodes}` || '剧集';
 }
 
+function identityLabel(status: RssSeedItem['identityStatus']) {
+  if (status === 'identified') return '已识别';
+  if (status === 'conflict') return '候选冲突';
+  return '未识别';
+}
+
+function identitySourceLabel(value: string) {
+  const labels: Record<string, string> = {
+    rss_field: 'RSS 结构化字段',
+    rss_description: 'RSS 简介',
+    rss_link: 'RSS 公开链接',
+    subscription_match: '唯一追更匹配'
+  };
+  return value.split(',').filter(Boolean).map((source) => labels[source] || source).join('、') || '暂无可靠来源';
+}
+
+function exactTimeLabel(value: string) {
+  if (!value) return '未知';
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString('zh-CN', { hour12: false });
+}
+
 export function RssSeedLibraryPage() {
   const [sources, setSources] = useState<RssSource[]>([]);
   const [summary, setSummary] = useState<RssLibrarySummary>(emptySummary);
@@ -90,6 +114,7 @@ export function RssSeedLibraryPage() {
   const [matchBusy, setMatchBusy] = useState('');
   const [query, setQuery] = useState('');
   const [sourceId, setSourceId] = useState('');
+  const [identityStatus, setIdentityStatus] = useState<RssIdentityStatus>('');
   const [windowFilter, setWindowFilter] = useState<WindowFilter>('24h');
   const [offset, setOffset] = useState(0);
   const [itemsLoading, setItemsLoading] = useState(false);
@@ -101,9 +126,13 @@ export function RssSeedLibraryPage() {
   const [saving, setSaving] = useState(false);
   const [testingSourceId, setTestingSourceId] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<RssSource | null>(null);
+  const [detailItem, setDetailItem] = useState<RssSeedItem | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
   const itemsRequestRef = useRef<AbortController | null>(null);
   const matchesRequestRef = useRef<AbortController | null>(null);
   const matchPollRef = useRef<AbortController | null>(null);
+  const detailRequestRef = useRef<AbortController | null>(null);
   const pageSize = 50;
 
   const loadSources = () => getRssSources().then((payload) => {
@@ -122,6 +151,7 @@ export function RssSeedLibraryPage() {
           query: input.query ?? query,
           sourceId,
           window: windowFilter,
+          identityStatus,
           limit: pageSize,
           offset: input.offset ?? offset
         },
@@ -173,13 +203,38 @@ export function RssSeedLibraryPage() {
   useEffect(() => {
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceId, windowFilter]);
+  }, [sourceId, windowFilter, identityStatus]);
 
   useEffect(() => () => {
     itemsRequestRef.current?.abort();
     matchesRequestRef.current?.abort();
     matchPollRef.current?.abort();
+    detailRequestRef.current?.abort();
   }, []);
+
+  const openItemDetail = async (item: RssSeedItem) => {
+    detailRequestRef.current?.abort();
+    const controller = new AbortController();
+    detailRequestRef.current = controller;
+    setDetailItem(item);
+    setDetailError('');
+    setDetailLoading(true);
+    try {
+      const detail = await getRssSeedItem(item.id, { signal: controller.signal });
+      if (!controller.signal.aborted) setDetailItem(detail);
+    } catch (reason) {
+      if (!controller.signal.aborted) setDetailError(reason instanceof Error ? reason.message : '种子详情读取失败');
+    } finally {
+      if (!controller.signal.aborted) setDetailLoading(false);
+    }
+  };
+
+  const closeItemDetail = () => {
+    detailRequestRef.current?.abort();
+    setDetailItem(null);
+    setDetailError('');
+    setDetailLoading(false);
+  };
 
   const pollMatchAction = async (matchId: string, actionId: string) => {
     matchPollRef.current?.abort();
@@ -358,10 +413,18 @@ export function RssSeedLibraryPage() {
 
           <div className="rss-index-head">
             <span>{loading || itemsLoading ? '正在读取本地索引' : `找到 ${total} 条内容`}</span>
-            <select aria-label="按 RSS 来源筛选" value={sourceId} onChange={(event) => setSourceId(event.target.value)}>
-              <option value="">全部来源</option>
-              {sources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}
-            </select>
+            <div className="rss-index-filters">
+              <select aria-label="按身份状态筛选" value={identityStatus} onChange={(event) => setIdentityStatus(event.target.value as RssIdentityStatus)}>
+                <option value="">全部身份</option>
+                <option value="identified">已识别</option>
+                <option value="conflict">候选冲突</option>
+                <option value="unidentified">未识别</option>
+              </select>
+              <select aria-label="按 RSS 来源筛选" value={sourceId} onChange={(event) => setSourceId(event.target.value)}>
+                <option value="">全部来源</option>
+                {sources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}
+              </select>
+            </div>
           </div>
 
           <div className="rss-timeline">
@@ -390,7 +453,11 @@ export function RssSeedLibraryPage() {
                 </div>
                 <div className="rss-seed-state">
                   <span className={item.hasDownload ? 'state-chip state-chip--ok' : 'state-chip'}>{item.hasDownload ? '可交给 Torra' : '仅详情'}</span>
+                  <span className={`rss-identity-chip rss-identity-chip--${item.identityStatus}`}>{identityLabel(item.identityStatus)}</span>
                   <small>{item.sourceDomain}</small>
+                  <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}>
+                    <PanelRightOpen aria-hidden="true" size={13} />详情
+                  </button>
                 </div>
               </article>
             ))}
@@ -537,6 +604,42 @@ export function RssSeedLibraryPage() {
           <p id="rss-delete-description">这会删除该来源在 Fluxa 内保存的种子索引，不会修改 PT 站点上的任何数据。</p>
           <div className="ops-confirm-dialog__meta"><span>来源</span><strong>{deleteTarget.domain}</strong><span>影响</span><strong>本地索引</strong></div>
           <div className="ops-confirm-dialog__actions"><button className="ops-action-button" disabled={saving} type="button" onClick={() => setDeleteTarget(null)}>取消</button><button className="ops-action-button ops-action-button--primary" data-dialog-initial-focus disabled={saving} type="button" onClick={confirmDelete}>{saving ? '正在删除' : '确认删除'}</button></div>
+          </>
+        )}
+      </ConfirmDialog>
+
+      <ConfirmDialog className="rss-detail-dialog" labelledBy="rss-detail-title" describedBy="rss-detail-description" open={Boolean(detailItem)} onClose={closeItemDetail}>
+        {detailItem && (
+          <>
+            <header className="rss-detail-head">
+              <div>
+                <span>本地种子详情</span>
+                <h2 id="rss-detail-title">{detailItem.title}</h2>
+              </div>
+              <button aria-label="关闭种子详情" data-dialog-initial-focus title="关闭" type="button" onClick={closeItemDetail}><X aria-hidden="true" size={18} /></button>
+            </header>
+            {detailLoading && <div className="rss-detail-notice"><RefreshCcw className="rss-spin" size={14} />正在读取完整信息</div>}
+            {detailError && <div className="rss-detail-notice rss-detail-notice--error"><AlertTriangle size={14} />{detailError}</div>}
+            <div className="rss-detail-grid">
+              <span>来源</span><strong>{detailItem.sourceName}</strong>
+              <span>发布时间</span><strong>{exactTimeLabel(detailItem.publishedAt)}</strong>
+              <span>类型与范围</span><strong>{episodeLabel(detailItem)}</strong>
+              <span>大小</span><strong>{sizeLabel(detailItem.sizeBytes)}</strong>
+              <span>分类</span><strong>{detailItem.category || '未提供'}</strong>
+              <span>版本</span><strong>{detailItem.versionSummary || '未提取'}</strong>
+              <span>TMDB</span><strong>{detailItem.tmdbId || '未识别'}</strong>
+              <span>IMDb</span><strong>{detailItem.imdbId || '未识别'}</strong>
+              <span>身份状态</span><strong className={`rss-detail-status rss-detail-status--${detailItem.identityStatus}`}>{identityLabel(detailItem.identityStatus)}</strong>
+              <span>身份来源</span><strong>{identitySourceLabel(detailItem.identitySource)}</strong>
+              <span>置信度</span><strong>{detailItem.identityConfidence || '暂无'}</strong>
+              <span>最近确认</span><strong>{exactTimeLabel(detailItem.identityUpdatedAt)}</strong>
+              <span>可交给 Torra</span><strong>{detailItem.hasDownload ? '是' : '否'}</strong>
+            </div>
+            <section className="rss-detail-description" aria-labelledby="rss-detail-description-title">
+              <h3 id="rss-detail-description-title">RSS 简介</h3>
+              <p id="rss-detail-description">{detailItem.description || '该 RSS 条目没有提供简介。'}</p>
+            </section>
+            <p className="rss-detail-security">出于安全考虑，Fluxa 不向浏览器返回下载地址、详情地址或 Passkey。</p>
           </>
         )}
       </ConfirmDialog>

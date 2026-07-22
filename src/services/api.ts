@@ -11,6 +11,7 @@ import type { RuntimeSettingsResponse, RuntimeSettingsUpdate } from '../types/ru
 import type {
   AutomationAction,
   RssMatchListResponse,
+  RssSeedItem,
   RssSeedListResponse,
   RssSource,
   RssSourceInput,
@@ -310,6 +311,29 @@ export function getSubscriptionCalendarTimeline(
   );
 }
 
+export function getSubscriptionCalendarSummary(
+  year: number,
+  month: number,
+  mediaType: 'all' | 'movie' | 'tv' = 'all',
+  options?: RequestOptions
+): Promise<SubscriptionCalendarTimelineResponse> {
+  return readConditionalJson<SubscriptionCalendarTimelineResponse>(
+    `/api/v2/calendar?year=${year}&month=${month}&type=${mediaType}&view=summary`,
+    options
+  );
+}
+
+export function getSubscriptionCalendarDateDetail(
+  date: string,
+  mediaType: 'all' | 'movie' | 'tv' = 'all',
+  options?: RequestOptions
+): Promise<SubscriptionCalendarTimelineResponse> {
+  return readConditionalJson<SubscriptionCalendarTimelineResponse>(
+    `/api/v2/calendar?date=${encodeURIComponent(date)}&type=${mediaType}&view=detail`,
+    options
+  );
+}
+
 export function getSubscriptionItems(includeProgress = false, options?: RequestOptions): Promise<SubscriptionListResponse> {
   return readJson<SubscriptionListResponse>(
     includeProgress ? '/api/subscriptions/items?include_progress=1' : '/api/subscriptions/items',
@@ -425,6 +449,7 @@ export function getRssSeedItems(input: {
   query?: string;
   sourceId?: string;
   window?: '' | '1h' | '24h' | '7d';
+  identityStatus?: '' | 'identified' | 'conflict' | 'unidentified';
   limit?: number;
   offset?: number;
 } = {}, options?: RequestOptions): Promise<RssSeedListResponse> {
@@ -432,9 +457,14 @@ export function getRssSeedItems(input: {
   if (input.query) query.set('query', input.query);
   if (input.sourceId) query.set('sourceId', input.sourceId);
   if (input.window) query.set('window', input.window);
+  if (input.identityStatus) query.set('identityStatus', input.identityStatus);
   query.set('limit', String(input.limit ?? 50));
   query.set('offset', String(input.offset ?? 0));
   return readJson<RssSeedListResponse>(`/api/v2/rss-items?${query.toString()}`, options);
+}
+
+export function getRssSeedItem(id: string, options?: RequestOptions): Promise<RssSeedItem> {
+  return readJson<RssSeedItem>(`/api/v2/rss-items/${encodeURIComponent(id)}`, options);
 }
 
 export function getRssMatches(input: { status?: string; limit?: number; offset?: number } = {}, options?: RequestOptions): Promise<RssMatchListResponse> {

@@ -20,6 +20,19 @@ RSS_SAMPLE = b'''<?xml version="1.0" encoding="UTF-8"?>
 <enclosure url="https://tracker.example/download.php?id=1&amp;passkey=secret" length="123456" type="application/x-bittorrent" />
 <category>TV</category></item></channel></rss>'''
 
+RSS_IDENTITY_SAMPLE = b'''<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:media="https://example.invalid/media"><channel><title>Identity</title>
+<item><title>Known Movie 2026</title><guid>identity-1</guid>
+<media:tmdb_id>12345</media:tmdb_id>
+<description><![CDATA[TMDB: 12345<br><a href="https://www.imdb.com/title/tt1234567/">IMDb</a>]]></description>
+</item></channel></rss>'''
+
+RSS_IDENTITY_CONFLICT_SAMPLE = b'''<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Conflict</title><item>
+<title>Conflicting Movie 2026</title><guid>identity-2</guid>
+<description><![CDATA[TMDB: 12345 / https://www.themoviedb.org/movie/67890]]></description>
+</item></channel></rss>'''
+
 
 class PrivateRssParserTests(unittest.TestCase):
     def test_parses_identity_episode_and_version_summary(self):
@@ -90,6 +103,20 @@ class PrivateRssParserTests(unittest.TestCase):
     def test_rejects_oversized_payload(self):
         with self.assertRaises(ValueError):
             parse_private_feed(b"x" * (2 * 1024 * 1024 + 1))
+
+    def test_extracts_explicit_media_identity_and_marks_conflicts(self):
+        identified = parse_private_feed(RSS_IDENTITY_SAMPLE)["items"][0]
+        self.assertEqual(identified["tmdb_id"], "12345")
+        self.assertEqual(identified["imdb_id"], "tt1234567")
+        self.assertEqual(identified["identity_status"], "identified")
+        self.assertIn("rss_field", identified["identity_source"])
+        self.assertEqual(identified["identity_confidence"], "strong")
+
+        conflict = parse_private_feed(RSS_IDENTITY_CONFLICT_SAMPLE)["items"][0]
+        self.assertEqual(conflict["identity_status"], "conflict")
+        self.assertEqual(conflict["tmdb_id"], "")
+        self.assertEqual(conflict["imdb_id"], "")
+        self.assertIn("rss_description", conflict["identity_source"])
 
 
 if __name__ == "__main__":

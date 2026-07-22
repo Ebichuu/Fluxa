@@ -54,6 +54,50 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             self.assertNotIn("secret-value", str(result))
             self.assertTrue(result["items"][0]["hasDownload"])
 
+    def test_identity_columns_migrate_filter_and_preserve_reliable_supplement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "media_control_center.sqlite3"
+            repository = PrivateRssRepository(database_path)
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "identified",
+                "title": "明确身份 2026",
+                "tmdb_id": "12345",
+                "identity_status": "identified",
+                "identity_source": "rss_description",
+                "identity_confidence": "strong",
+            }, {
+                "fingerprint": "supplemented",
+                "title": "追更补充 S01E01",
+            }])
+            items = repository.search_items(identity_status="identified")
+            self.assertEqual(items["total"], 1)
+            self.assertEqual(items["items"][0]["tmdbId"], "12345")
+
+            supplemented_id = repository.search_items(query="追更补充")["items"][0]["id"]
+            with repository.runtime.transaction(immediate=True) as connection:
+                changed = repository.supplement_item_identity(
+                    connection,
+                    supplemented_id,
+                    tmdb_id="98765",
+                    source="subscription_match",
+                    confidence="fallback",
+                )
+            self.assertTrue(changed)
+            supplemented = repository.get_item(supplemented_id)
+            self.assertEqual(supplemented["identityStatus"], "identified")
+            self.assertEqual(supplemented["identitySource"], "subscription_match")
+
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "supplemented",
+                "title": "追更补充 S01E01",
+                "identity_status": "unidentified",
+            }])
+            self.assertEqual(repository.get_item(supplemented_id)["tmdbId"], "98765")
+
+            with self.assertRaisesRegex(ValueError, "身份状态"):
+                repository.search_items(identity_status="unknown")
+
     def test_custom_poll_interval_is_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")

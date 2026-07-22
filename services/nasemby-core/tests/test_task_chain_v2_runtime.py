@@ -25,6 +25,13 @@ class FakeTaskChain:
                 "state": "blocked", "confidence": "strong",
                 "steps": [{"key": "download", "label": "获取 / 下载", "status": "blocked", "evidence": "verified", "detail": "qB 卡住", "source": "qBittorrent"}],
                 "sourceIds": {"subscriptionId": "sub-1", "qbHashes": ["hash-1"], "symediaIds": []},
+                "episodeEvidence": [{
+                    "seasonNumber": 2, "episodeStart": 3, "episodeEnd": 3,
+                    "numberingScheme": "season_episode", "stage": "download",
+                    "artifactKey": "artifact:hash-1", "source": "qBittorrent",
+                    "observedAt": "2026-07-22T01:00:00Z", "matchMethod": "artifact_exact",
+                    "status": "blocked", "reasonCode": "DOWNLOAD_STALLED", "reasonText": "qB 卡住",
+                }],
             }],
             "services": {},
         }
@@ -128,12 +135,14 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         chain_id_value = listing["items"][0]["chainId"]
         self.assertEqual(listing["page"], {"total": 1, "offset": 0, "limit": 1, "nextOffset": None, "hasMore": False})
         self.assertNotIn("stages", listing["items"][0])
+        self.assertNotIn("episodeEvidence", listing["items"][0])
         self.assertIn("stageSummary", listing["items"][0])
 
         detail = client.get(f"/api/v2/tasks/chains/{chain_id_value}").get_json()
         self.assertEqual(detail["item"]["chainId"], chain_id_value)
         self.assertTrue(detail["item"]["stages"])
         self.assertTrue(detail["item"]["artifactKeys"])
+        self.assertEqual(detail["item"]["episodeEvidence"][0]["episodeStart"], 3)
         self.assertEqual(fake.calls, 1)
 
     def test_summary_and_conditional_list_share_cached_snapshot(self):

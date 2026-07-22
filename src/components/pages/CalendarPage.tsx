@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CalendarDays,
   Check,
@@ -11,8 +11,13 @@ import {
   Search,
   X
 } from 'lucide-react';
-import { getSubscriptionCalendarTimeline } from '../../services/api';
-import type { SubscriptionCalendarEntry, SubscriptionHealthState } from '../../types/subscriptions';
+import { getSubscriptionCalendarDateDetail, getSubscriptionCalendarSummary } from '../../services/api';
+import type {
+  SubscriptionCalendarDayPreview,
+  SubscriptionCalendarDaySummary,
+  SubscriptionCalendarEntry,
+  SubscriptionHealthState
+} from '../../types/subscriptions';
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
 import type { AppNavigate } from '../layout/AppTopNav';
@@ -25,11 +30,12 @@ interface CalendarPageProps {
 type CalendarMediaType = 'all' | 'movie' | 'tv';
 type CalendarView = 'month' | 'week';
 type CalendarStatus = 'all' | 'upcoming' | 'acquiring' | 'library' | 'missing';
+type CalendarPosterItem = Pick<SubscriptionCalendarEntry, 'posterUrl' | 'title'> | Pick<SubscriptionCalendarDayPreview, 'posterUrl' | 'title'>;
 
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
 
 function toDateKey(year: number, month: number, day: number) {
-  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  return String(year).padStart(4, '0') + '-' + String(month).padStart(2, '0') + '-' + String(day).padStart(2, '0');
 }
 
 function dateParts(key: string) {
@@ -64,7 +70,7 @@ function shanghaiDateKey(value: Date) {
     timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
   }).formatToParts(value);
   const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value || '';
-  return `${part('year')}-${part('month')}-${part('day')}`;
+  return part('year') + '-' + part('month') + '-' + part('day');
 }
 
 function entrySeasonNumber(entry: SubscriptionCalendarEntry) {
@@ -73,7 +79,7 @@ function entrySeasonNumber(entry: SubscriptionCalendarEntry) {
   return match ? Number(match[1]) : null;
 }
 
-function entryStatus(entry: SubscriptionCalendarEntry, todayKey: string): CalendarStatus {
+function entryStatus(entry: SubscriptionCalendarEntry, todayKey: string): Exclude<CalendarStatus, 'all'> {
   if (entry.libraryAt || entry.inLibrary) return 'library';
   if (entry.acquiredAt) return 'acquiring';
   return entry.date < todayKey ? 'missing' : 'upcoming';
@@ -84,10 +90,10 @@ const statusLabel: Record<CalendarStatus, string> = {
 };
 
 const statusHealth: Record<Exclude<CalendarStatus, 'all'>, SubscriptionHealthState> = {
-  upcoming: 'waiting', acquiring: 'waiting', library: 'normal', missing: 'action_required'
+  upcoming: 'waiting', acquiring: 'waiting', library: 'normal', missing: 'evidence_insufficient'
 };
 
-function EntryPoster({ entry }: { entry: SubscriptionCalendarEntry }) {
+function EntryPoster({ entry }: { entry: CalendarPosterItem }) {
   const [imageFailed, setImageFailed] = useState(false);
   useEffect(() => setImageFailed(false), [entry.posterUrl]);
   if (entry.posterUrl && !imageFailed) {
@@ -102,7 +108,8 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
   const today = dateParts(todayKey);
   const [year, setYear] = useState(today.year);
   const [month, setMonth] = useState(today.month);
-  const [entries, setEntries] = useState<SubscriptionCalendarEntry[]>([]);
+  const [days, setDays] = useState<SubscriptionCalendarDaySummary[]>([]);
+  const [detailEntries, setDetailEntries] = useState<SubscriptionCalendarEntry[]>([]);
   const [mediaType, setMediaType] = useState<CalendarMediaType>('all');
   const [calendarView, setCalendarView] = useState<CalendarView>('month');
   const [status, setStatus] = useState<CalendarStatus>('all');
@@ -110,45 +117,48 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
   const [selectedDate, setSelectedDate] = useState(todayKey);
   const [detailDate, setDetailDate] = useState('');
   const [mode, setMode] = useState<'loading' | 'live' | 'error'>('loading');
+  const [detailMode, setDetailMode] = useState<'idle' | 'loading' | 'live' | 'error'>('idle');
   const [calendarErrors, setCalendarErrors] = useState<string[]>([]);
+  const detailRequestRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
     setMode('loading');
     setCalendarErrors([]);
-    getSubscriptionCalendarTimeline(year, month, mediaType, { signal: controller.signal })
+    getSubscriptionCalendarSummary(year, month, mediaType, { signal: controller.signal })
       .then((payload) => {
-        setEntries(payload.calendar.entries);
+        setDays(payload.calendar.days ?? []);
         setCalendarErrors(payload.calendar.errors ?? []);
         setMode('live');
       })
       .catch(() => {
         if (!controller.signal.aborted) {
-          setEntries([]);
+          setDays([]);
           setMode('error');
         }
       });
     return () => controller.abort();
   }, [mediaType, month, year]);
 
-  const filteredEntries = useMemo(() => entries.filter((entry) => {
-    const matchesStatus = status === 'all' || entryStatus(entry, todayKey) === status;
-    const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN');
-    return matchesStatus && (!normalizedQuery || `${entry.title} ${entry.episodeLabel}`.toLocaleLowerCase('zh-CN').includes(normalizedQuery));
-  }), [entries, query, status, todayKey]);
+  useEffect(() => () => detailRequestRef.current?.abort(), []);
 
-  const entriesByDate = useMemo(() => {
-    const result = new Map<string, SubscriptionCalendarEntry[]>();
-    for (const entry of filteredEntries) result.set(entry.date, [...(result.get(entry.date) ?? []), entry]);
-    return result;
-  }, [filteredEntries]);
+  const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN');
+  const visibleDays = useMemo(() => days.filter((day) => {
+    const matchesStatus = status === 'all' || day.statusCounts[status] > 0;
+    const matchesQuery = !normalizedQuery || day.preview.some((entry) => (
+      (entry.title + ' ' + entry.episodeLabel).toLocaleLowerCase('zh-CN').includes(normalizedQuery)
+    ));
+    return matchesStatus && matchesQuery;
+  }), [days, normalizedQuery, status]);
+
+  const daysByDate = useMemo(() => new Map(visibleDays.map((day) => [day.date, day])), [visibleDays]);
 
   const monthCells = useMemo(() => {
     const firstOffset = (new Date(Date.UTC(year, month - 1, 1)).getUTCDay() + 6) % 7;
-    const days = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const count = new Date(Date.UTC(year, month, 0)).getUTCDate();
     const cells: Array<string | null> = [
       ...Array.from({ length: firstOffset }, () => null),
-      ...Array.from({ length: days }, (_, index) => toDateKey(year, month, index + 1))
+      ...Array.from({ length: count }, (_, index) => toDateKey(year, month, index + 1))
     ];
     while (cells.length % 7) cells.push(null);
     return cells;
@@ -182,13 +192,48 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     setSelectedDate(todayKey);
   };
 
-  const selectedEntries = detailDate ? entriesByDate.get(detailDate) ?? [] : [];
-  const counts = {
-    upcoming: entries.filter((entry) => entryStatus(entry, todayKey) === 'upcoming').length,
-    acquiring: entries.filter((entry) => entryStatus(entry, todayKey) === 'acquiring').length,
-    library: entries.filter((entry) => entryStatus(entry, todayKey) === 'library').length,
-    missing: entries.filter((entry) => entryStatus(entry, todayKey) === 'missing').length
+  const openDate = (dateKey: string) => {
+    detailRequestRef.current?.abort();
+    const controller = new AbortController();
+    detailRequestRef.current = controller;
+    setSelectedDate(dateKey);
+    setDetailDate(dateKey);
+    setDetailEntries([]);
+    setDetailMode('loading');
+    getSubscriptionCalendarDateDetail(dateKey, mediaType, { signal: controller.signal })
+      .then((payload) => {
+        if (controller.signal.aborted) return;
+        setDetailEntries(payload.calendar.entries);
+        setDetailMode('live');
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setDetailMode('error');
+      });
   };
+
+  const closeDetail = () => {
+    detailRequestRef.current?.abort();
+    setDetailDate('');
+    setDetailEntries([]);
+    setDetailMode('idle');
+  };
+
+  const selectedEntries = useMemo(() => detailEntries.filter((entry) => {
+    const currentStatus = entryStatus(entry, todayKey);
+    const matchesStatus = status === 'all' || currentStatus === status;
+    const matchesQuery = !normalizedQuery || (
+      entry.title + ' ' + entry.episodeLabel
+    ).toLocaleLowerCase('zh-CN').includes(normalizedQuery);
+    return matchesStatus && matchesQuery;
+  }), [detailEntries, normalizedQuery, status, todayKey]);
+
+  const counts = days.reduce((result, day) => ({
+    upcoming: result.upcoming + day.statusCounts.upcoming,
+    acquiring: result.acquiring + day.statusCounts.acquiring,
+    library: result.library + day.statusCounts.library,
+    missing: result.missing + day.statusCounts.missing
+  }), { upcoming: 0, acquiring: 0, library: 0, missing: 0 });
+  const totalEntries = days.reduce((total, day) => total + day.total, 0);
 
   return (
     <main className="work-page work-page--fill ops-page ops-page--calendar">
@@ -197,7 +242,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
           <p className="ops-eyebrow">播出 · 获取 · 入库</p>
           <h1>日历</h1>
           <p className="ops-page-subtitle">什么时候播、何时开始获取、何时真正可看。</p>
-          <p className="ops-deck">时间来自追更日历与统一任务证据；缺少证据时保持未知，不推断为成功。</p>
+          <p className="ops-deck">只有明确到具体季集的证据才会改变状态；季包完成不会批量标记单集。</p>
         </div>
         <div className="ops-calendar-stats" aria-label="本月追更统计">
           <div><Radio size={15} /><span>待播出</span><strong>{counts.upcoming}</strong></div>
@@ -222,12 +267,12 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
             <button aria-label="上一周期" className="ops-icon-button" title="上一周期" type="button" onClick={() => shiftPeriod(-1)}><ChevronLeft aria-hidden="true" size={14} /></button>
             <button className="tool-link" type="button" onClick={goToday}>今天</button>
             <button aria-label="下一周期" className="ops-icon-button" title="下一周期" type="button" onClick={() => shiftPeriod(1)}><ChevronRight aria-hidden="true" size={14} /></button>
-            <span className="ops-calendar-mode">{mode === 'loading' ? '加载中…' : mode === 'error' ? '日历不可用' : `${entries.length} 条真实记录`}</span>
+            <span className="ops-calendar-mode">{mode === 'loading' ? '加载中…' : mode === 'error' ? '日历不可用' : totalEntries + ' 条真实记录'}</span>
           </div>
         </header>
 
         <div className="calendar-filterbar">
-          <label className="calendar-search"><Search aria-hidden="true" size={14} /><input aria-label="搜索日历作品" placeholder="搜索作品或季集" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
+          <label className="calendar-search"><Search aria-hidden="true" size={14} /><input aria-label="搜索日历作品" placeholder="搜索本月预览作品" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
           <div className="ops-calendar-type" role="tablist" aria-label="媒体类型">
             {([['all', '全部'], ['tv', '电视剧'], ['movie', '电影']] as const).map(([value, label]) => (
               <button aria-selected={mediaType === value} className={mediaType === value ? 'is-active' : undefined} key={value} role="tab" tabIndex={mediaType === value ? 0 : -1} type="button" onClick={() => setMediaType(value)} onKeyDown={handleHorizontalTabKeyDown}>{label}</button>
@@ -242,29 +287,39 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
 
         {calendarErrors.length > 0 && <p className="ops-calendar-error">部分追更缺少播出日期，当前只显示可验证记录。</p>}
         {mode === 'error' && <p className="ops-calendar-error">日历与任务证据暂时无法读取，没有显示缓存或示例数据。</p>}
-        {mode === 'live' && entries.length === 0 && <div className="calendar-empty"><CalendarDays size={22} /><strong>当前月份没有追更日历</strong><span>切换月份或前往发现页添加追更。</span></div>}
+        {mode === 'live' && days.length === 0 && <div className="calendar-empty"><CalendarDays size={22} /><strong>当前月份没有追更日历</strong><span>切换月份或前往发现页添加追更。</span></div>}
 
-        {entries.length > 0 && (
+        {days.length > 0 && (
           <div className="ops-calendar-scroll">
-            <div aria-label={`${year} 年 ${month} 月追更日历`} className={calendarView === 'week' ? 'calendar-grid calendar-grid--week' : 'calendar-grid'} role="grid">
+            <div aria-label={year + ' 年 ' + month + ' 月追更日历'} className={calendarView === 'week' ? 'calendar-grid calendar-grid--week' : 'calendar-grid'} role="grid">
               {weekdays.map((day) => <div className="calendar-grid__weekday" key={day} role="columnheader">{day}</div>)}
               {visibleCells.map((dateKey, index) => {
-                if (!dateKey) return <div aria-hidden="true" className="calendar-cell calendar-cell--empty" key={`empty-${index}`} />;
-                const dayEntries = entriesByDate.get(dateKey) ?? [];
+                if (!dateKey) return <div aria-hidden="true" className="calendar-cell calendar-cell--empty" key={'empty-' + index} />;
+                const day = daysByDate.get(dateKey);
+                const preview = (day?.preview ?? []).filter((entry) => (
+                  (status === 'all' || entry.status === status)
+                  && (!normalizedQuery || (entry.title + ' ' + entry.episodeLabel).toLocaleLowerCase('zh-CN').includes(normalizedQuery))
+                ));
                 const outsideMonth = dateParts(dateKey).month !== month;
+                const cellClass = (dateKey === todayKey ? 'calendar-cell calendar-cell--today' : 'calendar-cell') + (outsideMonth ? ' calendar-cell--outside' : '');
                 return (
-                  <div className={`${dateKey === todayKey ? 'calendar-cell calendar-cell--today' : 'calendar-cell'}${outsideMonth ? ' calendar-cell--outside' : ''}`} key={dateKey} role="gridcell">
-                    <button className="calendar-cell__date" type="button" onClick={() => { setSelectedDate(dateKey); setDetailDate(dateKey); }}>{dateParts(dateKey).day}</button>
-                    {dayEntries.slice(0, 3).map((entry) => {
-                      const currentStatus = entryStatus(entry, todayKey) as Exclude<CalendarStatus, 'all'>;
-                      return (
-                        <button className={`calendar-entry calendar-entry--${currentStatus}`} key={`${entry.key}-${entry.episodeLabel}`} type="button" onClick={() => { setSelectedDate(dateKey); setDetailDate(dateKey); }}>
-                          <EntryPoster entry={entry} />
-                          <span className="calendar-entry__text"><strong>{currentStatus === 'library' && <Check aria-hidden="true" size={11} />}{entry.title}</strong><small>{entry.episodeLabel} · {statusLabel[currentStatus]}</small></span>
-                        </button>
-                      );
-                    })}
-                    {dayEntries.length > 3 && <button className="calendar-cell__more" type="button" onClick={() => { setSelectedDate(dateKey); setDetailDate(dateKey); }}>另有 {dayEntries.length - 3} 条</button>}
+                  <div className={cellClass} key={dateKey} role="gridcell">
+                    <button className="calendar-cell__date" type="button" onClick={() => openDate(dateKey)}>{dateParts(dateKey).day}</button>
+                    {day && (
+                      <button aria-label={dateKey + '，共 ' + day.total + ' 条'} className="calendar-cell__mobile-summary" type="button" onClick={() => openDate(dateKey)}>
+                        <span className={day.statusCounts.library ? 'is-library' : undefined} />
+                        <span className={day.statusCounts.acquiring ? 'is-acquiring' : undefined} />
+                        <span className={day.statusCounts.missing ? 'is-missing' : undefined} />
+                        <b>{day.total}</b>
+                      </button>
+                    )}
+                    {preview.slice(0, 3).map((entry) => (
+                      <button className={'calendar-entry calendar-entry--' + entry.status} key={(entry.key || entry.title) + '-' + entry.episodeLabel} type="button" onClick={() => openDate(dateKey)}>
+                        <EntryPoster entry={entry} />
+                        <span className="calendar-entry__text"><strong>{entry.status === 'library' && <Check aria-hidden="true" size={11} />}{entry.title}</strong><small>{entry.episodeLabel} · {statusLabel[entry.status]}</small></span>
+                      </button>
+                    ))}
+                    {day && day.total > preview.slice(0, 3).length && <button className="calendar-cell__more" type="button" onClick={() => openDate(dateKey)}>查看 {day.total} 条</button>}
                   </div>
                 );
               })}
@@ -277,21 +332,23 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         </footer>
       </section>
 
-      <ConfirmDialog labelledBy="calendar-detail-title" open={Boolean(detailDate)} onClose={() => setDetailDate('')}>
+      <ConfirmDialog labelledBy="calendar-detail-title" open={Boolean(detailDate)} onClose={closeDetail}>
         <div className="ops-confirm-dialog__signal"><CalendarDays aria-hidden="true" size={18} /></div>
-        <button aria-label="关闭当日详情" className="calendar-detail__close" title="关闭" type="button" onClick={() => setDetailDate('')}><X size={16} /></button>
-        <h2 id="calendar-detail-title">{detailDate || '当日'} · {selectedEntries.length} 条</h2>
-        <p>每条记录分别展示播出、获取证据和入库证据；没有证据的步骤保持未知。</p>
+        <button aria-label="关闭当日详情" className="calendar-detail__close" title="关闭" type="button" onClick={closeDetail}><X size={16} /></button>
+        <h2 id="calendar-detail-title">{detailDate || '当日'} · {detailMode === 'live' ? selectedEntries.length + ' 条' : '读取中'}</h2>
+        <p>每条记录分别展示播出、获取和入库证据；季级完成不会替代单集证据。</p>
         <div className="calendar-detail-list">
-          {selectedEntries.map((entry) => {
-            const currentStatus = entryStatus(entry, todayKey) as Exclude<CalendarStatus, 'all'>;
+          {detailMode === 'loading' && <div className="calendar-empty"><strong>正在读取当日详情</strong></div>}
+          {detailMode === 'error' && <div className="calendar-empty"><strong>当日详情读取失败</strong><span>关闭后重新打开该日期。</span></div>}
+          {detailMode === 'live' && selectedEntries.map((entry) => {
+            const currentStatus = entryStatus(entry, todayKey);
             return (
-              <article className="calendar-detail-item" key={`${entry.key}-${entry.episodeLabel}`}>
-                <header><div><strong>{entry.title}</strong><small>{entry.episodeLabel}{entry.episodeTitle ? ` · ${entry.episodeTitle}` : ''}</small></div><HealthBadge state={entry.healthState || statusHealth[currentStatus]} /></header>
+              <article className="calendar-detail-item" key={(entry.key || entry.title) + '-' + entry.episodeLabel}>
+                <header><div><strong>{entry.title}</strong><small>{entry.episodeLabel}{entry.episodeTitle ? ' · ' + entry.episodeTitle : ''}</small></div><HealthBadge state={entry.healthState || statusHealth[currentStatus]} /></header>
                 <div className="calendar-evidence-times">
                   <span><b>播出</b><strong>{entry.date}</strong><small>TMDB 日历</small></span>
-                  <span><b>获取</b><strong>{formatEvidenceTime(entry.acquiredAt)}</strong><small>{entry.acquisitionSource || '任务证据不足'}</small></span>
-                  <span><b>入库</b><strong>{formatEvidenceTime(entry.libraryAt)}</strong><small>{entry.librarySource || '尚无完成证据'}</small></span>
+                  <span><b>获取</b><strong>{formatEvidenceTime(entry.acquiredAt)}</strong><small>{entry.acquisitionSource || '该集证据不足'}</small></span>
+                  <span><b>入库</b><strong>{formatEvidenceTime(entry.libraryAt)}</strong><small>{entry.librarySource || (entry.inLibrary ? '媒体库文件' : '尚无该集证据')}</small></span>
                 </div>
                 {entry.reasonText && <p className="calendar-detail-item__reason">{entry.reasonText}</p>}
                 <footer>
@@ -301,7 +358,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
               </article>
             );
           })}
-          {selectedEntries.length === 0 && <div className="calendar-empty"><strong>当天没有符合筛选的记录</strong><span>清除状态或作品筛选后再查看。</span></div>}
+          {detailMode === 'live' && selectedEntries.length === 0 && <div className="calendar-empty"><strong>当天没有符合筛选的记录</strong><span>清除状态或作品筛选后再查看。</span></div>}
         </div>
       </ConfirmDialog>
     </main>

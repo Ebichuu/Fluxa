@@ -1,6 +1,6 @@
 # Fluxa
 
-当前发布版本：`v0.4.0`。
+当前发布版本：`v0.4.1`。
 
 面向 fnOS / NAS 的个人影音中控。生产环境使用一个 Python / Flask / Gunicorn 后端，同时提供 React 页面、Mineradio 影院大厅、订阅中枢和外部服务聚合。
 
@@ -122,7 +122,7 @@ Vite 会把 `/api` 和 `/mineradio` 代理到 Python。
 ## 本地检查
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 238 项
+python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 259 项
 npm test
 npm run build
 docker compose config --services
@@ -182,4 +182,5 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - [实现来源](docs/IMPLEMENTATION_SOURCES.md)
 - [管理员认证](docs/AUTHENTICATION.md)
 - [前端 UI 改造实施计划](docs/Fluxa-前端UI改造实施计划.md)
+- [产品设计基线](docs/PRODUCT_DESIGN.md)
 - [未完成能力路线图](docs/ROADMAP.md)
