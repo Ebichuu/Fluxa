@@ -1643,6 +1643,7 @@
   .tool-link:hover,
   .discover-filter-chip:hover,
   .discover-filter-chip--active,
+  .discover-sub-filter-row button.is-active,
   .discover-sub-tab--active,
   .discover-resource-tab--active,
   .rss-window-tab:hover,

@@ -59,6 +59,13 @@ export interface SubscriptionItem {
   readOnly?: boolean;
   torraSyncState?: 'current' | 'remote_missing' | 'error' | string;
   torraMappingStatus?: 'mapped' | 'partial' | 'unmapped' | string;
+  reconciliationState?: SubscriptionReconciliationState;
+  fulfillmentState?: SubscriptionFulfillmentState;
+  healthState?: SubscriptionHealthState;
+  reasonCode?: string;
+  reasonText?: string;
+  observedAt?: string;
+  freshUntil?: string;
   scope?: string;
   missingEpisodes?: string[];
   torra?: SubscriptionWorkbenchStage & { remoteId?: string };
@@ -99,6 +106,13 @@ export interface SubscriptionWorkbenchResponse {
     inLibrary: number;
   };
   items: SubscriptionItem[];
+  page: {
+    total: number;
+    limit: number;
+    offset: number;
+    nextOffset: number | null;
+    hasMore: boolean;
+  };
   blockedTitles: string[];
   errors: string[];
   torraSync: TorraSubscriptionSyncStatus;
@@ -109,12 +123,61 @@ export interface SubscriptionWorkbenchResponse {
     errorSources: number;
     items: number;
     lastSuccessAt: string;
+    matches?: number;
+    matcherRan?: boolean;
+    lastMatchAt?: string;
+    lastMatchStatus?: string;
+    lastMatchScanned?: number;
+    lastMatchCreated?: number;
   };
   scheduler: {
     enabled: boolean;
+    state?: SubscriptionCapabilityState;
     taskTime: string;
     lastRunAt: string;
+    lastError?: string;
   };
+  reconciliation?: SubscriptionReconciliationResponse;
+}
+
+export type SubscriptionReconciliationState = 'linked' | 'only_fluxa' | 'only_torra' | 'conflict' | 'remote_missing';
+export type SubscriptionFulfillmentState = 'pending_sync' | 'following' | 'completed' | 'paused' | 'blocked';
+export type SubscriptionHealthState = 'normal' | 'waiting' | 'protected' | 'action_required' | 'evidence_insufficient';
+
+export interface SubscriptionReconciliationItem {
+  id: string;
+  localId: string;
+  remoteRef: string;
+  title: string;
+  mediaType: 'movie' | 'tv' | 'unknown';
+  tmdbId: string;
+  seasonNumber: number;
+  reconciliationState: SubscriptionReconciliationState;
+  fulfillmentState: SubscriptionFulfillmentState;
+  healthState: SubscriptionHealthState;
+  observedAt: string;
+  freshUntil: string;
+  source: string;
+  reasonCode: string;
+  reasonText: string;
+  local: { present: boolean; readOnly: boolean; sourceLabel: string };
+  torra: { present: boolean; enabled: boolean; completed: boolean; mappingStatus: string };
+}
+
+export interface SubscriptionReconciliationResponse {
+  ok: boolean;
+  configured: boolean;
+  sourceError: string;
+  observedAt: string;
+  freshUntil: string;
+  summary: {
+    localTotal: number;
+    remoteTotal: number;
+    reconciliation: Record<SubscriptionReconciliationState, number>;
+    fulfillment: Record<SubscriptionFulfillmentState, number>;
+    health: Record<SubscriptionHealthState, number>;
+  };
+  items: SubscriptionReconciliationItem[];
 }
 
 export interface TorraSubscriptionSyncStatus {

@@ -4,7 +4,7 @@
 路由数量：47  
 运行实现：Python / Flask
 
-新增能力使用真正的 URL 版本契约：`docs/contracts/http-api-contract-v2.json`，当前共 43 条。v1 的 47 条冻结路径和历史状态码不变。
+新增能力使用真正的 URL 版本契约：`docs/contracts/http-api-contract-v2.json`，当前共 47 条。v1 的 47 条冻结路径和历史状态码不变。
 
 ## 1. 版本规则
 
@@ -62,7 +62,10 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `POST /api/media/emby/refresh` | 无正文，必须有较新 Symedia 证据 |
 | `POST /api/qbittorrent/actions/:action` | `hashes`、`taskId`、`title`，最多 20 个 hash |
 | `GET /api/subscriptions/items` | 可选 `include_progress=1` |
-| `GET /api/v2/subscriptions/workbench` | 无参数；聚合五项能力状态、订阅统计和 Torra/qB/115/入库链路，只读访问外部服务 |
+| `GET /api/v2/home/summary` | 无参数；按任务链、调度器心跳和服务证据返回今日结论，证据不足不得报告绿色正常 |
+| `GET /api/v2/subscriptions/workbench` | 可选 `limit`（1–100，默认 24）、`offset`（默认 0）、`mediaType`（`movie`/`tv`）和 `query`；返回五项能力状态、全量统计、当前页订阅和 `page.nextOffset`，只读访问外部服务 |
+| `GET /api/v2/subscriptions/reconciliation` | 无参数；只读对比 Fluxa 与 Torra，独立返回对账、履约、健康状态，不修改或删除任一台账 |
+| `GET /api/v2/tasks/chains` | 可选 `health`；先将完整快照幂等写入本地资源事件账本，再按五类健康状态过滤响应；每条任务和阶段返回 `recommendedAction`、`retryEligible`、`plannedRetryAt`，不触发外部写操作 |
 | `POST /api/subscriptions/save` | 标题、TMDB ID、媒体类型和可选元数据 |
 | `PATCH /api/subscriptions/:id/category` | 八分类 key 或 `null` |
 | `GET /api/subscriptions/detail` | 必填 `id`，可选 `season` |
@@ -90,13 +93,15 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 
 公开订阅、详情、日历、发现和资源响应通过 `contract_mapping.py` 白名单映射。浏览器不会收到原始上游包络、未知内部字段、Cookie、Token 或异常正文。
 
+任务链健康状态固定为 `action_required`、`evidence_insufficient`、`waiting`、`protected`、`normal`，优先级依次降低。缺失或过期证据不得返回 `normal`；已有计划重试返回 `waiting`；低分、重复或已有更高版本返回 `protected`，并且不会通过该读取接口开放重试动作。
+
 内部诊断路由仍受会话保护，只用于核对同一 Python 进程中的 NasEmby 数据，不表示存在第二个服务。
 
 集合边界：
 
 - 发现和资源搜索使用分页或固定上限。
 - 活动日志最多返回 1000 条。
-- 订阅列表沿用 v1 全量契约，未来增加分页必须通过兼容版本完成。
+- v1 订阅列表继续保持全量兼容；v2 追更工作台按 `limit + offset + nextOffset` 分页，媒体类型和关键词过滤在分页前执行。
 
 ## 6. 状态码
 

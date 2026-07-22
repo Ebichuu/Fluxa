@@ -6,6 +6,7 @@ import type { TorraSummary } from '../types/torra';
 import type { TaskChainResponse } from '../types/taskChain';
 import type { IntegrationSummary } from '../types/integrations';
 import type { ActivityLogResponse, SystemMetricsResponse } from '../types/operations';
+import type { HomeSummaryResponse } from '../types/homeSummary';
 import type { RuntimeSettingsResponse, RuntimeSettingsUpdate } from '../types/runtimeSettings';
 import type {
   AutomationAction,
@@ -27,6 +28,7 @@ import type {
   SubscriptionListResponse,
   SubscriptionPushPreview,
   SubscriptionWorkbenchResponse,
+  SubscriptionReconciliationResponse,
   TorraSubscriptionSyncPreview,
   TorraSubscriptionSyncResult,
   TorraSubscriptionSyncStatus,
@@ -109,6 +111,10 @@ export function getHomeMedia(libraryId?: string, options?: RequestOptions): Prom
 
 export function getHealth(options?: RequestOptions): Promise<HealthResponse> {
   return readJson<HealthResponse>('/api/health', options);
+}
+
+export function getHomeSummary(options?: RequestOptions): Promise<HomeSummaryResponse> {
+  return readJson<HomeSummaryResponse>('/api/v2/home/summary', options);
 }
 
 export function getIntegrationSummary(probe = false, options?: RequestOptions): Promise<IntegrationSummary> {
@@ -199,6 +205,11 @@ export function getTaskChain(options?: RequestOptions): Promise<TaskChainRespons
   return readJson<TaskChainResponse>('/api/tasks/chain', options);
 }
 
+export function getTaskChainV2(health = '', options?: RequestOptions): Promise<TaskChainResponse> {
+  const query = health ? `?health=${encodeURIComponent(health)}` : '';
+  return readJson<TaskChainResponse>(`/api/v2/tasks/chains${query}`, options);
+}
+
 export function getSystemMetrics(options?: RequestOptions): Promise<SystemMetricsResponse> {
   return readJson<SystemMetricsResponse>('/api/v2/system/metrics', options);
 }
@@ -228,8 +239,23 @@ export function getSubscriptionItems(includeProgress = false, options?: RequestO
   );
 }
 
-export function getSubscriptionWorkbench(options?: RequestOptions): Promise<SubscriptionWorkbenchResponse> {
-  return readJson<SubscriptionWorkbenchResponse>('/api/v2/subscriptions/workbench', options);
+export function getSubscriptionWorkbench(input: {
+  limit?: number;
+  offset?: number;
+  mediaType?: 'movie' | 'tv';
+  query?: string;
+} = {}, options?: RequestOptions): Promise<SubscriptionWorkbenchResponse> {
+  const query = new URLSearchParams({
+    limit: String(input.limit ?? 24),
+    offset: String(input.offset ?? 0)
+  });
+  if (input.mediaType) query.set('mediaType', input.mediaType);
+  if (input.query) query.set('query', input.query);
+  return readJson<SubscriptionWorkbenchResponse>(`/api/v2/subscriptions/workbench?${query.toString()}`, options);
+}
+
+export function getSubscriptionReconciliation(options?: RequestOptions): Promise<SubscriptionReconciliationResponse> {
+  return readJson<SubscriptionReconciliationResponse>('/api/v2/subscriptions/reconciliation', options);
 }
 
 export function getDiscoverTrending(type: 'movie' | 'tv'): Promise<DiscoverResponse> {

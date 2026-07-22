@@ -2,6 +2,7 @@ export type TaskChainState = 'active' | 'blocked' | 'completed' | 'waiting';
 export type TaskChainConfidence = 'strong' | 'fallback' | 'unlinked';
 export type TaskChainStepStatus = 'done' | 'active' | 'blocked' | 'waiting' | 'unknown';
 export type TaskChainEvidence = 'verified' | 'inferred' | 'missing';
+export type TaskChainHealthState = 'normal' | 'waiting' | 'protected' | 'action_required' | 'evidence_insufficient';
 
 export interface TaskChainStep {
   key: 'subscription' | 'download' | 'cloud115' | 'library';
@@ -11,6 +12,23 @@ export interface TaskChainStep {
   detail: string;
   timestamp: string;
   source: string;
+}
+
+export interface TaskChainStage {
+  stage: string;
+  label: string;
+  status: TaskChainStepStatus | string;
+  healthState: TaskChainHealthState | string;
+  evidence: TaskChainEvidence | string;
+  observedAt: string;
+  freshUntil: string;
+  source: string;
+  reasonCode: string;
+  reasonText: string;
+  recommendedAction: string;
+  retryEligible: boolean;
+  plannedRetryAt: string;
+  actions: { preview: boolean; retry: boolean };
 }
 
 export interface TaskChainItem {
@@ -51,11 +69,35 @@ export interface TaskChainItem {
     manualActionsEnabled: boolean;
   };
   updatedAt: string;
+  chainId?: string;
+  mediaKey?: string;
+  targetKey?: string;
+  artifactKeys?: string[];
+  subscriptionId?: string;
+  healthState?: TaskChainHealthState;
+  observedAt?: string;
+  freshUntil?: string;
+  source?: string;
+  reasonCode?: string;
+  reasonText?: string;
+  recommendedAction?: string;
+  retryEligible?: boolean;
+  plannedRetryAt?: string;
+  stages?: TaskChainStage[];
 }
 
 export interface TaskChainResponse {
+  contractVersion?: number;
   generatedAt: string;
   items: TaskChainItem[];
+  ledger?: {
+    persisted: boolean;
+    chains: number;
+    artifacts: number;
+    events: number;
+    artifactConflicts: number;
+    observedAt: string;
+  };
   counts: {
     total: number;
     active: number;
@@ -70,4 +112,5 @@ export interface TaskChainResponse {
     symedia: { connected: boolean; error: string; total: number; sampled: number; webUrl: string };
     emby: { connected: boolean; error: string; indexedMovies: number; indexedSeries: number; webUrl: string };
   };
+  healthCounts?: Record<TaskChainHealthState, number>;
 }

@@ -1,0 +1,138 @@
+from __future__ import annotations
+
+import unittest
+from datetime import datetime, timezone
+
+from flask import Flask
+
+from app.health_state_runtime import SchedulerStatusRegistry
+from app.home_summary_runtime import HomeSummaryService, register_home_summary
+
+
+NOW = datetime(2026, 7, 22, 2, 0, tzinfo=timezone.utc)
+
+
+class FakeTaskChainService:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def get_chain(self):
+        return self.payload
+
+
+class FakeRssRepository:
+    def summary(self, enabled):
+        return {"enabled": enabled, "items": 347, "matches": 0, "matcherRan": False, "errorSources": 0, "lastSuccessAt": "2026-07-22T01:55:00Z"}
+
+
+class FakeRssService:
+    repository = FakeRssRepository()
+
+    def collection_enabled(self):
+        return True
+
+
+def item(*, item_id="chain-1", updated_at="2026-07-22T01:00:00Z", library_status="done", library_time="2026-07-22T01:00:00Z"):
+    return {
+        "id": item_id,
+        "title": "测试剧",
+        "mediaType": "tv",
+        "tmdbId": "123",
+        "seasonNumber": 1,
+        "state": "completed" if library_status == "done" else "waiting",
+        "updatedAt": updated_at,
+        "steps": [
+            {"key": "download", "status": "done", "evidence": "verified"},
+            {"key": "library", "status": library_status, "evidence": "verified", "timestamp": library_time},
+        ],
+    }
+
+
+def protected_item():
+    value = item(library_status="blocked")
+    value["state"] = "blocked"
+    value["steps"][-1].update({
+        "detail": "现有版本评分更高，跳过归档",
+        "source": "Symedia",
+    })
+    return value
+
+
+def chain_payload(items):
+    return {
+        "generatedAt": "2026-07-22T02:00:00Z",
+        "items": items,
+        "services": {
+            name: {"connected": True, "error": ""}
+            for name in ("torra", "qb", "symedia", "emby")
+        },
+    }
+
+
+class HomeSummaryRuntimeTests(unittest.TestCase):
+    def build_app(self, items, *, scheduler_enabled=False, scheduler_started=False):
+        app = Flask(__name__)
+        app.extensions["mcc_task_chain_service"] = FakeTaskChainService(chain_payload(items))
+        registry = SchedulerStatusRegistry(clock=lambda: "2026-07-22T02:00:00Z")
+        registry.register("subscription-task", enabled=scheduler_enabled)
+        if scheduler_started:
+            registry.mark_started("subscription-task")
+        app.extensions["mcc_scheduler_status"] = registry
+        return app
+
+    def test_today_ingest_uses_library_evidence_and_deduplicates_target(self):
+        app = self.build_app([
+            item(item_id="old", updated_at="2026-07-22T00:30:00Z", library_time="2026-07-21T23:00:00Z"),
+            item(item_id="new", updated_at="2026-07-22T01:30:00Z"),
+        ])
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+
+        self.assertEqual(result["counts"]["ingestedToday"], 1)
+        self.assertEqual(result["counts"]["pending"], 0)
+
+    def test_enabled_scheduler_without_runtime_is_not_reported_normal(self):
+        app = self.build_app([item()], scheduler_enabled=True)
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+
+        self.assertEqual(result["healthState"], "evidence_insufficient")
+        scheduler_issue = next(issue for issue in result["issues"] if issue["source"] == "subscription-scheduler")
+        self.assertEqual(scheduler_issue["reasonCode"], "SCHEDULER_NOT_STARTED")
+
+    def test_endpoint_returns_actionable_service_failure(self):
+        app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)
+        app.extensions["mcc_task_chain_service"].payload["services"]["symedia"] = {
+            "connected": False,
+            "error": "连接超时",
+        }
+        register_home_summary(app, clock=lambda: NOW)
+
+        payload = app.test_client().get("/api/v2/home/summary").get_json()
+
+        self.assertEqual(payload["healthState"], "action_required")
+        self.assertEqual(payload["counts"]["actionRequired"], 1)
+        self.assertTrue(any(issue["source"] == "symedia" for issue in payload["issues"]))
+
+    def test_collected_rss_without_matcher_run_is_insufficient_evidence(self):
+        app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)
+        app.extensions["mcc_private_rss"] = FakeRssService()
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+
+        self.assertEqual(result["healthState"], "evidence_insufficient")
+        rss_issue = next(issue for issue in result["issues"] if issue["source"] == "private-rss")
+        self.assertEqual(rss_issue["reasonCode"], "RSS_MATCHER_NOT_RUN")
+
+    def test_home_reuses_task_v2_protection_classification(self):
+        app = self.build_app([protected_item()], scheduler_enabled=True, scheduler_started=True)
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+
+        self.assertEqual(result["healthState"], "protected")
+        self.assertEqual(result["counts"]["protected"], 1)
+        self.assertEqual(result["counts"]["actionRequired"], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

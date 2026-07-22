@@ -6,6 +6,8 @@ export type PageId = 'overview' | 'hall' | 'control' | 'tasks' | 'calendar' | 'd
 export type ThemeMode = 'dark' | 'light';
 
 export interface TaskNavigationTarget {
+  chainId?: string;
+  targetKey?: string;
   subscriptionId?: string;
   tmdbId?: string;
   title?: string;
@@ -18,14 +20,15 @@ const navItems: Array<{
   id: PageId;
   label: string;
   icon: typeof Home;
+  mobileHidden?: boolean;
 }> = [
-  { id: 'overview', label: '总览', icon: Home },
-  { id: 'hall', label: '影院大厅', icon: Film },
+  { id: 'overview', label: '首页', icon: Home },
+  { id: 'hall', label: '影院大厅', icon: Film, mobileHidden: true },
   { id: 'discover', label: '发现', icon: Compass },
-  { id: 'subscriptions', label: '订阅', icon: Bookmark },
-  { id: 'rss-library', label: '种子库', icon: Rss },
+  { id: 'subscriptions', label: '追更', icon: Bookmark },
+  { id: 'rss-library', label: '种子库', icon: Rss, mobileHidden: true },
   { id: 'tasks', label: '任务中心', icon: ListChecks },
-  { id: 'calendar', label: '日历', icon: CalendarDays }
+  { id: 'calendar', label: '日历', icon: CalendarDays, mobileHidden: true }
 ];
 
 interface AppTopNavProps {
@@ -46,9 +49,22 @@ export function AppTopNav({ activePage, health, onNavigate, onToggleTheme, showT
   const selectionAnimationRef = useRef<Animation | null>(null);
   const selectionStartRectRef = useRef<{ left: number; width: number } | null>(null);
   const selectionTargetRef = useRef<{ left: number; width: number } | null>(null);
+  const managementRef = useRef<HTMLDivElement>(null);
   const activeNavId = activePage === 'subscription-settings' ? 'subscriptions' : navItems.some((item) => item.id === activePage) ? activePage : null;
   const [selection, setSelection] = useState({ left: 0, width: 0, visible: false });
   const [isScrolled, setIsScrolled] = useState(false);
+  const [managementOpen, setManagementOpen] = useState(false);
+
+  useEffect(() => setManagementOpen(false), [activePage]);
+
+  useEffect(() => {
+    if (!managementOpen) return undefined;
+    const close = (event: PointerEvent) => {
+      if (!managementRef.current?.contains(event.target as Node)) setManagementOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [managementOpen]);
 
   useEffect(() => {
     if (!showThemeToggle) {
@@ -170,6 +186,7 @@ export function AppTopNav({ activePage, health, onNavigate, onToggleTheme, showT
               <button
                 aria-current={isActive ? 'page' : undefined}
                 className={isActive ? 'nav-item nav-item--active' : 'nav-item'}
+                data-mobile-hidden={item.mobileHidden || undefined}
                 key={item.id}
                 ref={(element) => {
                   if (element) itemRefs.current.set(item.id, element);
@@ -227,15 +244,34 @@ export function AppTopNav({ activePage, health, onNavigate, onToggleTheme, showT
             <span className="sr-only">当前为{theme === 'dark' ? '夜间' : '白天'}模式</span>
           </button>
         )}
-        <button
-          aria-label="设置"
-          className={activePage === 'settings' ? 'settings-button settings-button--active' : 'settings-button'}
-          title="设置"
-          type="button"
-          onClick={() => onNavigate('settings')}
-        >
-          <Settings aria-hidden="true" size={18} strokeWidth={1.8} />
-        </button>
+        <div className="nav-management" ref={managementRef}>
+          <button
+            aria-expanded={managementOpen}
+            aria-haspopup="menu"
+            aria-label="管理菜单"
+            className={activePage === 'settings' || activePage === 'control' ? 'settings-button settings-button--active' : 'settings-button'}
+            title="设置"
+            type="button"
+            onClick={() => {
+              if (window.matchMedia('(max-width: 760px)').matches) setManagementOpen((current) => !current);
+              else onNavigate('settings');
+            }}
+          >
+            <Settings aria-hidden="true" size={18} strokeWidth={1.8} />
+          </button>
+          {managementOpen && (
+            <div className="nav-management__menu" role="menu">
+              <button role="menuitem" type="button" onClick={() => onNavigate('control')}>
+                <Activity aria-hidden="true" size={16} />
+                <span><strong>控制室</strong><small>连接、能力与诊断</small></span>
+              </button>
+              <button role="menuitem" type="button" onClick={() => onNavigate('settings')}>
+                <Settings aria-hidden="true" size={16} />
+                <span><strong>设置</strong><small>偏好与通知</small></span>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </header>
   );

@@ -112,7 +112,7 @@ docker compose ps
 docker compose logs --tail=100 fluxa
 ```
 
-Compose 会从 `.env` 读取全部服务配置，并拉取 `ghcr.io/ebichuu/fluxa:latest`。正式镜像统一由 GitHub Actions 构建并推送到 GHCR；`main` 更新会自动覆盖 `latest`，无需修改 Compose 版本号。
+Compose 会从 `.env` 读取全部服务配置，并拉取 `ghcr.io/ebichuu/fluxa:latest`。正式镜像统一由 GitHub Actions 构建并推送到 GHCR；每次发布先推送不可变版本/SHA 镜像，容器冒烟通过后才更新 `latest`，无需修改 Compose 版本号。
 
 访问：
 
@@ -218,7 +218,7 @@ upload/
 旧候选镜像 `media-control-center:v2-pt-rc-bde3eba` 使用 JSON 订阅台账。2026-07-18 已完成 SQLite/RSS 第一版候选 `media-control-center:sqlite-rss-preview`，并在收集器和迁移硬化后重建 `media-control-center:sqlite-rss-hardened`。用户已确认 fnOS 没有需要保留的旧订阅或配置数据，本次首次部署使用空 SQLite，不执行真实 JSON 差异迁移：
 
 1. 为 `MCC_DATA_ROOT` 准备空的、可写的持久目录，并在启动前备份该目录的初始状态。
-2. 首次启动由当前源码直接创建 `db/media_control_center.sqlite3` schema version 3；确认 WAL、FTS5 和健康状态正常。
+2. 首次启动由当前源码直接创建 `db/media_control_center.sqlite3` schema version 4；确认 WAL、FTS5、资源事件表和健康状态正常。
 3. 启动后只写 SQLite，不创建或双写旧订阅 JSON。
 4. 如果以后确实出现需要保留的旧 JSON，再使用已经通过模拟演练的临时 SQLite 原子迁移、逐字段校验和差异报告流程；迁移失败不得发布临时库。
 5. Torra 追更洗版、订阅调度和全部外部写闸门继续默认关闭。
@@ -254,8 +254,8 @@ fnOS 首次部署新镜像时只执行空库初始化和只读状态检查。真
 
 ### 当前源码验收记录
 
-- 当前源码使用 SQLite schema version 3，包含质量观察、provider 动作、调度状态和私人 RSS 种子索引。
-- 191 项 Python 回归和前端类型检查通过；RSS 活动匹配、有限主动兜底和 HTTP API 使用脱敏夹具验证，真实 Torra/RSS 写动作保持关闭。
+- 当前源码使用 SQLite schema version 4，包含质量观察、provider 动作、调度状态、私人 RSS 种子索引和资源事件账本。
+- 227 项 Python 回归和前端类型检查通过；资源身份/事件幂等、RSS 活动匹配、有限主动兜底和 HTTP API 使用脱敏夹具验证，真实 Torra/RSS 写动作保持关闭。
 - Torra 分析、下载和 job 查询测试全部使用假 session；质量观察与调度使用假任务链证据、假 Torra/qB 客户端和临时 SQLite，覆盖双闸门、并发 1、批量 2、公平游标、限额、截止点与租约恢复，没有连接真实外部服务。
 - 阶段 6 的 GET/PATCH/POST 契约、202 + Location、错误状态映射、跨匹配幂等冲突和独立下载闸门已通过模拟 API 测试；候选下载不会因分析闸门开启而自动执行。
-- 正式 GHCR 镜像只由 GitHub Actions 在推送 `main` 后构建并同时更新版本标签与 `latest`；部署后仍需重复只读、重启和 schema 验收。
+- 正式 GHCR 镜像只由 GitHub Actions 构建；版本标签和 SHA 镜像保持不可变，容器冒烟成功后才将同一 digest 提升为 `latest`。部署后仍需重复只读、重启和 schema 验收。

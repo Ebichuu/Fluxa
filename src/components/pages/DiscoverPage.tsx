@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Ban, Check, ChevronLeft, ChevronRight, Database, Download, FileSearch, Pause, Play, Plus, RefreshCcw, RotateCcw, Search, Send, SlidersHorizontal, Trash2, X } from 'lucide-react';
 import {
   blockSubscription,
@@ -415,6 +415,39 @@ function subscriptionReadAtLabel(value: string) {
   })}`;
 }
 
+function reconciliationLabel(item: SubscriptionItem) {
+  const labels = {
+    linked: '已关联',
+    only_fluxa: '仅 Fluxa',
+    only_torra: '仅 Torra',
+    conflict: '存在冲突',
+    remote_missing: '远端已消失'
+  } as const;
+  return item.reconciliationState ? labels[item.reconciliationState] : item.torra?.status === 'linked' ? '已关联' : '尚未对账';
+}
+
+function fulfillmentLabel(item: SubscriptionItem) {
+  const labels = {
+    pending_sync: '待同步',
+    following: '追更中',
+    completed: '已完成',
+    paused: '已暂停',
+    blocked: '被阻塞'
+  } as const;
+  return item.fulfillmentState ? labels[item.fulfillmentState] : resolvedSubscriptionStatus(item) === 'done' ? '已完成' : '追更中';
+}
+
+function healthLabel(item: SubscriptionItem) {
+  const labels = {
+    normal: '正常',
+    waiting: '等待',
+    protected: '正常保护',
+    action_required: '需要处理',
+    evidence_insufficient: '证据不足'
+  } as const;
+  return item.healthState ? labels[item.healthState] : '尚未确认';
+}
+
 const terminalAutomationStates = new Set(['succeeded', 'failed', 'cancelled']);
 
 function watchStateLabel(state: string) {
@@ -471,10 +504,12 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
   const [subs, setSubs] = useState<SubscriptionItem[]>([]);
   const [blockedTitles, setBlockedTitles] = useState<string[]>([]);
   const [subsLoading, setSubsLoading] = useState(true);
+  const [subsMoreLoading, setSubsMoreLoading] = useState(false);
   const [subsError, setSubsError] = useState('');
   const [workbench, setWorkbench] = useState<SubscriptionWorkbenchResponse | null>(null);
   const [subscriptionTab, setSubscriptionTab] = useState<SubscriptionTab>('tv');
   const [subscriptionKeyword, setSubscriptionKeyword] = useState('');
+  const deferredSubscriptionKeyword = useDeferredValue(subscriptionKeyword);
   const [subscriptionYear, setSubscriptionYear] = useState('all');
   const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatusFilter>('all');
   const [subscriptionUpdate, setSubscriptionUpdate] = useState<SubscriptionUpdateFilter>('all');
@@ -516,7 +551,14 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
   const loadSubs = useCallback(() => {
     setSubsLoading(true);
     setSubsError('');
-    const request = subscriptionsOnly ? getSubscriptionWorkbench() : getSubscriptionItems(true);
+    const request = subscriptionsOnly
+      ? getSubscriptionWorkbench({
+          limit: 24,
+          offset: 0,
+          mediaType: subscriptionTab === 'blocked' ? undefined : subscriptionTab,
+          query: deferredSubscriptionKeyword
+        })
+      : getSubscriptionItems(true);
     request
       .then((payload) => {
         if ('items' in payload) {
@@ -533,7 +575,37 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
       })
       .catch((reason: unknown) => setSubsError(reason instanceof Error ? reason.message : '订阅工作台当前不可用'))
       .finally(() => setSubsLoading(false));
-  }, [subscriptionsOnly]);
+  }, [deferredSubscriptionKeyword, subscriptionTab, subscriptionsOnly]);
+
+  const loadMoreSubs = useCallback(() => {
+    const page = workbench?.page;
+    const nextOffset = page?.nextOffset;
+    if (!subscriptionsOnly || subscriptionTab === 'blocked' || !page || nextOffset == null || subsMoreLoading) return;
+    setSubsMoreLoading(true);
+    getSubscriptionWorkbench({
+      limit: page.limit,
+      offset: nextOffset,
+      mediaType: subscriptionTab,
+      query: deferredSubscriptionKeyword
+    })
+      .then((payload) => {
+        setWorkbench(payload);
+        setSubs((current) => {
+          const seen = new Set(current.map((item) => item.id || `${item.mediaType}:${item.tmdbId}:${item.seasonNumber ?? 0}:${item.title}`));
+          return [
+            ...current,
+            ...payload.items.filter((item) => {
+              const key = item.id || `${item.mediaType}:${item.tmdbId}:${item.seasonNumber ?? 0}:${item.title}`;
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            })
+          ];
+        });
+      })
+      .catch((reason: unknown) => setSubsError(reason instanceof Error ? reason.message : '更多追更读取失败'))
+      .finally(() => setSubsMoreLoading(false));
+  }, [deferredSubscriptionKeyword, subsMoreLoading, subscriptionTab, subscriptionsOnly, workbench]);
 
   useEffect(() => {
     loadSubs();
@@ -653,6 +725,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
     pending: subs.filter((item) => !item.inLibrary).length,
     inLibrary: subs.filter((item) => item.inLibrary).length
   };
+  const reconciliationSummary = workbench?.reconciliation?.summary;
 
   const changeSource = (source: DiscoverSource) => {
     setQuery('');
@@ -726,7 +799,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
         setSubscriptionAction(`save:${payload.mediaType}:${payload.tmdbId}`);
         saveSubscription(payload)
           .then(() => {
-            setSweepMessage(`已保存订阅：${payload.title}`);
+            setSweepMessage(`已保存追更意图：${payload.title}，尚未同步到 Torra`);
             loadSubs();
           })
           .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '保存订阅失败'))
@@ -1484,7 +1557,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
       <aside className={subscriptionsOnly ? 'ops-inspector ops-subscription-console discover-subs discover-subs--full' : 'ops-inspector ops-subscription-console discover-subs'} aria-label="我的订阅">
         <div className="activity-panel__head">
           <div><small>自动获取</small><h2>我的订阅</h2></div>
-          <span className="queue-count">{subs.length} 条</span>
+          <span className="queue-count">{subscriptionsOnly ? (workbench?.page.total ?? workbenchStats.total) : subs.length} 条</span>
           <button className="ops-action-button" type="button" onClick={() => onNavigate('subscription-settings')}>
             <SlidersHorizontal aria-hidden="true" size={14} />
             订阅设置
@@ -1522,16 +1595,29 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
         {subscriptionsOnly && (
           <section className="torra-sync-panel" aria-label="Torra 订阅同步">
             <header>
-              <div><small>Torra 单向镜像</small><strong>{torraSyncStatus?.linked ?? 0} 条已关联</strong></div>
+              <div>
+                <small>Fluxa / Torra 只读对账</small>
+                <strong>{reconciliationSummary ? `${reconciliationSummary.localTotal} 条本地 · ${reconciliationSummary.remoteTotal} 条 Torra` : `${torraSyncStatus?.linked ?? 0} 条已关联`}</strong>
+              </div>
               <span className={torraSyncStatus?.enabled ? 'is-enabled' : undefined}>
-                {torraSyncStatus?.enabled ? '同步已开启' : '同步未开启'}
+                {torraSyncStatus?.enabled ? '镜像同步已开启' : '当前只读'}
               </span>
             </header>
-            <div className="torra-sync-panel__status">
-              <span><b>{torraSyncStatus?.current ?? 0}</b>当前有效</span>
-              <span><b>{torraSyncStatus?.remoteMissing ?? 0}</b>远端缺失</span>
-              <span><b>{torraSyncStatus?.lastSyncedAt ? subscriptionUpdateLabel(torraSyncStatus.lastSyncedAt) : '尚未'}</b>最近同步</span>
-            </div>
+            {reconciliationSummary ? (
+              <div className="torra-sync-panel__status torra-sync-panel__status--reconciliation">
+                <span><b>{reconciliationSummary.reconciliation.linked}</b>已关联</span>
+                <span><b>{reconciliationSummary.reconciliation.only_fluxa}</b>仅 Fluxa</span>
+                <span><b>{reconciliationSummary.reconciliation.only_torra}</b>仅 Torra</span>
+                <span><b>{reconciliationSummary.reconciliation.conflict}</b>存在冲突</span>
+                <span><b>{reconciliationSummary.reconciliation.remote_missing}</b>远端已消失</span>
+              </div>
+            ) : (
+              <div className="torra-sync-panel__status">
+                <span><b>{torraSyncStatus?.current ?? 0}</b>当前有效</span>
+                <span><b>{torraSyncStatus?.remoteMissing ?? 0}</b>远端缺失</span>
+                <span><b>{torraSyncStatus?.lastSyncedAt ? subscriptionUpdateLabel(torraSyncStatus.lastSyncedAt) : '尚未'}</b>最近同步</span>
+              </div>
+            )}
             {torraSyncPreview && (
               <div className="torra-sync-panel__preview">
                 <span>远端 <b>{torraSyncPreview.summary.total}</b></span>
@@ -1541,9 +1627,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                 <span>无法识别 <b>{torraSyncPreview.summary.unmapped}</b></span>
               </div>
             )}
-            {!torraSyncStatus?.enabled && (
-              <p>先在设置中开启“Torra 订阅状态同步”，预览本身不会写入 Torra。</p>
-            )}
+            {!torraSyncStatus?.enabled && <p>对账为只读；未确认导入前，不会修改 Fluxa 台账或 Torra 远端订阅。</p>}
             {torraSyncMessage && <p role="status">{torraSyncMessage}</p>}
             <footer>
               <button className="ops-action-button" disabled={Boolean(torraSyncBusy)} type="button" onClick={previewTorraMirror}>
@@ -1568,8 +1652,8 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
         )}
         <div className="discover-sub-tabs" role="tablist" aria-label="订阅类型">
           {([
-            ['movie', '电影订阅', subs.filter((item) => item.mediaType === 'movie').length],
-            ['tv', '电视剧订阅', subs.filter((item) => item.mediaType === 'tv').length],
+            ['movie', '电影订阅', subscriptionsOnly ? workbenchStats.movie : subs.filter((item) => item.mediaType === 'movie').length],
+            ['tv', '电视剧订阅', subscriptionsOnly ? workbenchStats.tv : subs.filter((item) => item.mediaType === 'tv').length],
             ['blocked', '被屏蔽', blockedTitles.length]
           ] as const).map(([key, label, count]) => (
             <button
@@ -1763,12 +1847,24 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
 
               {subscriptionsOnly && (
                 <div className="discover-sub__chain" aria-label={`${item.title} 处理状态`}>
+                  <span className={item.reconciliationState === 'linked' ? 'is-ok' : ['conflict', 'remote_missing'].includes(item.reconciliationState ?? '') ? 'is-warn' : undefined} title={item.reasonText}>
+                    <b>对账状态</b><small>{reconciliationLabel(item)}</small>
+                  </span>
+                  <span className={item.fulfillmentState === 'completed' ? 'is-ok' : item.fulfillmentState === 'blocked' ? 'is-warn' : undefined}>
+                    <b>履约状态</b><small>{fulfillmentLabel(item)}</small>
+                  </span>
+                  <span className={item.healthState === 'normal' || item.healthState === 'protected' ? 'is-ok' : item.healthState === 'action_required' ? 'is-warn' : undefined}>
+                    <b>健康状态</b><small>{healthLabel(item)}</small>
+                  </span>
                   <span><b>范围</b><small>{item.scope || subscriptionScope}</small></span>
                   <span className={(item.missingEpisodes?.length ?? 0) > 0 ? 'is-warn' : undefined}>
                     <b>缺集</b><small>{item.missingEpisodes?.length ? item.missingEpisodes.join('、') : item.inLibrary ? '无' : '尚未确认'}</small>
                   </span>
-                  <span className={item.torra?.status === 'linked' ? 'is-ok' : undefined} title={item.torra?.detail}>
-                    <b>Torra</b><small>{item.torra?.status === 'linked' ? '已关联' : '未关联'}</small>
+                  <span
+                    className={item.reconciliationState === 'linked' ? 'is-ok' : ['conflict', 'remote_missing'].includes(item.reconciliationState ?? '') ? 'is-warn' : undefined}
+                    title={item.reasonText || item.torra?.detail}
+                  >
+                    <b>对账</b><small>{reconciliationLabel(item)}</small>
                   </span>
                   <span className={item.qb?.status === 'blocked' ? 'is-warn' : item.qb?.status === 'done' || item.qb?.status === 'active' ? 'is-ok' : undefined} title={item.qb?.detail}>
                     <b>qB</b><small>{item.qb?.detail || '未接入'}</small>
@@ -1779,7 +1875,7 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
                   <span className={item.library?.status === 'done' || item.inLibrary ? 'is-ok' : item.library?.status === 'blocked' ? 'is-warn' : undefined} title={item.library?.detail}>
                     <b>入库</b><small>{item.library?.detail || (item.inLibrary ? '已入库' : '等待中')}</small>
                   </span>
-                  {item.blockingReason && <p><strong>当前阻塞</strong>{item.blockingReason}</p>}
+                  {(item.blockingReason || item.reasonText) && <p><strong>当前状态</strong>{item.blockingReason || item.reasonText}</p>}
                 </div>
               )}
 
@@ -2050,6 +2146,15 @@ export function DiscoverPage({ onNavigate, view = 'discover' }: DiscoverPageProp
             </div>
           );
         })}
+        {subscriptionsOnly && subscriptionTab !== 'blocked' && workbench?.page.hasMore && (
+          <div className="subscription-page-more">
+            <span>已读取 {subs.length} / {workbench.page.total} 条</span>
+            <button className="ops-action-button" disabled={subsMoreLoading} type="button" onClick={loadMoreSubs}>
+              <RefreshCcw aria-hidden="true" size={14} />
+              {subsMoreLoading ? '读取中' : '加载更多追更'}
+            </button>
+          </div>
+        )}
       </aside>
       </div>
       <ConfirmDialog

@@ -7,6 +7,7 @@ from unittest.mock import patch
 from flask import Flask
 
 from app import discover_runtime
+from app.health_state_runtime import SchedulerStatusRegistry
 from app.subscription_workbench_runtime import SubscriptionWorkbenchService, register_subscription_workbench
 
 
@@ -65,6 +66,9 @@ class FakeRssRepository:
             "errorSources": 0,
             "items": 36,
             "lastSuccessAt": "2026-07-21T07:50:00Z",
+            "matches": 3,
+            "matcherRan": True,
+            "lastMatchAt": "2026-07-21T07:50:01Z",
         }
 
 
@@ -228,6 +232,52 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 502)
         self.assertEqual(response.get_json()["code"], "SUBSCRIPTION_WORKBENCH_READ_FAILED")
         self.assertNotIn("secret", response.get_data(as_text=True))
+
+    def test_scheduler_state_uses_global_runtime_gate_instead_of_source_config(self):
+        app = Flask(__name__)
+        registry = SchedulerStatusRegistry(clock=lambda: "2026-07-22T08:00:00Z")
+        registry.register("subscription-task", enabled=False)
+        app.extensions["mcc_scheduler_status"] = registry
+        service = SubscriptionWorkbenchService(app, {
+            "MCC_SUBSCRIPTION_SCHEDULER_ENABLED": "false",
+        })
+        config = {"douban": {"enabled": True, "task_enabled": True, "task_time": "08:30"}}
+        with patch.object(discover_runtime, "load_subscription_items", return_value={"items": [], "errors": []}), patch.object(
+            discover_runtime, "load_subscription_config", return_value=config
+        ), patch.object(discover_runtime, "subscription_blocked_titles", return_value=[]):
+            snapshot = service.snapshot()
+
+        scheduler = next(item for item in snapshot["capabilities"] if item["key"] == "scheduler")
+        self.assertEqual(scheduler["state"], "disabled")
+        self.assertEqual(scheduler["detail"], "系统定时任务总开关已关闭")
+        self.assertFalse(snapshot["scheduler"]["enabled"])
+
+    def test_snapshot_paginates_after_media_type_and_query_filters(self):
+        app = Flask(__name__)
+        service = SubscriptionWorkbenchService(app, {})
+        rows = [
+            {"subscription_key": "tv:1", "title": "测试剧一", "media_type": "tv", "tmdb_id": "1"},
+            {"subscription_key": "movie:2", "title": "测试电影", "media_type": "movie", "tmdb_id": "2"},
+            {"subscription_key": "tv:3", "title": "测试剧二", "media_type": "tv", "tmdb_id": "3"},
+        ]
+        with patch.object(discover_runtime, "load_subscription_items", return_value={"items": rows, "errors": []}), patch.object(
+            discover_runtime, "load_subscription_config", return_value={}
+        ), patch.object(discover_runtime, "subscription_blocked_titles", return_value=[]):
+            first = service.snapshot(limit=1, offset=0, media_type="tv", query="测试剧")
+            second = service.snapshot(limit=1, offset=1, media_type="tv", query="测试剧")
+
+        self.assertEqual(first["stats"]["total"], 3)
+        self.assertEqual(first["page"], {"total": 2, "limit": 1, "offset": 0, "nextOffset": 1, "hasMore": True})
+        self.assertEqual(first["items"][0]["title"], "测试剧一")
+        self.assertEqual(second["items"][0]["title"], "测试剧二")
+        self.assertFalse(second["page"]["hasMore"])
+
+    def test_route_rejects_invalid_pagination(self):
+        app = Flask(__name__)
+        register_subscription_workbench(app, {})
+        response = app.test_client().get("/api/v2/subscriptions/workbench?limit=500")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["code"], "SUBSCRIPTION_PAGE_INVALID")
 
 
 if __name__ == "__main__":

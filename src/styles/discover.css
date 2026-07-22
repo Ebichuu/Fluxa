@@ -507,9 +507,10 @@
 .discover-sub__open em {
   display: block;
   margin-top: 3px;
-  color: rgba(157, 184, 207, 0.42);
-  font-size: 8px;
+  color: rgba(174, 183, 192, 0.82);
+  font-size: 10px;
   font-style: normal;
+  line-height: 1.3;
 }
 
 .discover-sub__open:hover strong {
@@ -987,6 +988,20 @@
   border-radius: 10px;
   background: linear-gradient(115deg, rgba(255, 91, 133, 0.055), rgba(0, 0, 0, 0.12));
   animation: ops-disclosure-enter 220ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+.subscription-page-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 12px 10px 4px;
+  color: var(--ops-muted);
+  font-size: 10px;
+}
+
+.subscription-page-more .ops-action-button {
+  min-height: 32px;
 }
 
 .torra-push-panel.is-ready {
@@ -1705,6 +1720,11 @@
   background: rgba(4, 7, 11, 0.52);
 }
 
+.discover-sub__chain > span:nth-child(-n + 3) {
+  grid-column: span 2;
+  background: rgba(12, 19, 28, 0.72);
+}
+
 .discover-sub__chain b {
   color: var(--ops-faint);
   font-size: 7px;
@@ -1753,6 +1773,35 @@
 
 .app-shell:not(.app-shell--hall)[data-theme='light'] :is(.subscription-capability strong, .subscription-workbench-summary b, .subscription-empty-guide strong, .discover-sub__chain b) {
   color: var(--theme-text-strong);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .discover-sub .activity-row {
+  border-color: var(--theme-border);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .discover-sub .activity-row__text strong {
+  color: var(--theme-text-strong);
+  font-weight: 560;
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .discover-sub .activity-row__text small {
+  color: var(--theme-muted);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .discover-sub .discover-sub__open em {
+  color: var(--theme-text);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .discover-sub .discover-sub__open:hover strong,
+.app-shell:not(.app-shell--hall)[data-theme='light'] .discover-sub .discover-sub__open:focus-visible strong {
+  color: var(--theme-accent);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .discover-sub__poster--fallback {
+  background: rgba(var(--theme-accent-rgb), 0.07);
+  color: var(--theme-muted);
 }
 
 @media (max-width: 1180px) {
@@ -1867,6 +1916,10 @@
   grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
+.torra-sync-panel__status--reconciliation {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
 .torra-sync-panel > p {
   margin: 0;
   line-height: 1.55;
@@ -1891,7 +1944,8 @@
 }
 
 @media (max-width: 700px) {
-  .torra-sync-panel__preview {
+  .torra-sync-panel__preview,
+  .torra-sync-panel__status--reconciliation {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

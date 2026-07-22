@@ -12,6 +12,7 @@ import { RssSeedLibraryPage } from '../components/pages/RssSeedLibraryPage';
 import { getHealth } from '../services/api';
 import type { HealthResponse } from '../types/media';
 import { defaultVisualFx, normalizeVisualFx } from '../types/visualFx';
+import { pathForNavigation, readNavigation } from './navigation';
 
 const VISUAL_FX_VERSION = '4';
 const THEME_STORAGE_KEY = 'mcc-ui-theme';
@@ -28,8 +29,9 @@ function initialTheme(): ThemeMode {
 }
 
 export function App() {
-  const [page, setPage] = useState<PageId>('hall');
-  const [taskNavigationTarget, setTaskNavigationTarget] = useState<TaskNavigationTarget | null>(null);
+  const [navigation] = useState(readNavigation);
+  const [page, setPage] = useState<PageId>(navigation.page);
+  const [taskNavigationTarget, setTaskNavigationTarget] = useState<TaskNavigationTarget | null>(navigation.target);
   const [theme, setTheme] = useState<ThemeMode>(initialTheme);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [visualFx, setVisualFx] = useState(() => {
@@ -115,9 +117,25 @@ export function App() {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
   }, [page]);
 
+  useEffect(() => {
+    const handlePopState = () => {
+      const next = readNavigation();
+      setPage(next.page);
+      setTaskNavigationTarget(next.page === 'tasks' ? next.target : null);
+    };
+    window.addEventListener('popstate', handlePopState);
+    if (!navigation.canonical) {
+      const canonicalPath = pathForNavigation(navigation.page, navigation.target).split('?')[0];
+      window.history.replaceState({}, '', `${canonicalPath}${navigation.search}`);
+    }
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [navigation]);
+
   const navigate: AppNavigate = (nextPage, target) => {
     setPage(nextPage);
-    setTaskNavigationTarget(nextPage === 'tasks' ? target ?? null : null);
+    const nextTarget = nextPage === 'tasks' ? target ?? null : null;
+    setTaskNavigationTarget(nextTarget);
+    window.history.pushState({}, '', pathForNavigation(nextPage, nextTarget));
   };
 
   return (

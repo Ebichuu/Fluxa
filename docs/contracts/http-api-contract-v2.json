@@ -1,8 +1,8 @@
 {
   "contractVersion": 2,
-  "frozenAt": "2026-07-20",
+  "frozenAt": "2026-07-22",
   "pathVersioning": "url-v2",
-  "routeCount": 44,
+  "routeCount": 47,
   "routes": [
     { "method": "GET", "path": "/api/v2/integrations", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "integrations", "client": true },
     { "method": "POST", "path": "/api/v2/integrations/cloud115/probes", "audience": "browser", "auth": "session", "effect": "external-read", "response": "json", "success": [200], "migrationGroup": "integrations", "client": false },
@@ -16,7 +16,10 @@
     { "method": "POST", "path": "/api/v2/integrations/hdhive/check-ins", "audience": "browser", "auth": "session", "effect": "external-write", "response": "json", "success": [200], "migrationGroup": "integrations", "client": false },
     { "method": "GET", "path": "/api/v2/acquisition/cloud/candidates", "audience": "browser", "auth": "session", "effect": "external-read", "response": "json", "success": [200], "migrationGroup": "cloud-acquisition", "client": false },
     { "method": "POST", "path": "/api/v2/acquisition/cloud/transfers", "audience": "browser", "auth": "session", "effect": "external-write", "response": "json", "success": [200, 202], "migrationGroup": "cloud-acquisition", "client": false },
+    { "method": "GET", "path": "/api/v2/home/summary", "audience": "browser", "auth": "session", "effect": "external-read", "response": "json", "success": [200], "migrationGroup": "home", "client": true },
     { "method": "GET", "path": "/api/v2/subscriptions/workbench", "audience": "browser", "auth": "session", "effect": "external-read", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": true },
+    { "method": "GET", "path": "/api/v2/subscriptions/reconciliation", "audience": "browser", "auth": "session", "effect": "external-read", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": true },
+    { "method": "GET", "path": "/api/v2/tasks/chains", "audience": "browser", "auth": "session", "effect": "external-read", "response": "json", "success": [200], "migrationGroup": "tasks", "client": true },
     { "method": "PATCH", "path": "/api/v2/subscriptions/:id/cloud-policy", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "subscriptions", "client": false },
     { "method": "GET", "path": "/api/v2/subscriptions/:id/torra-push-preview", "audience": "browser", "auth": "session", "effect": "external-read", "response": "json", "success": [200], "migrationGroup": "torra-push", "client": true },
     { "method": "POST", "path": "/api/v2/subscriptions/:id/torra-pushes", "audience": "browser", "auth": "session", "effect": "external-write", "response": "json", "success": [200], "migrationGroup": "torra-push", "client": true },

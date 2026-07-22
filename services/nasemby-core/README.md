@@ -84,6 +84,9 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/media/*`：影院大厅与 Emby。
 - `/api/qbittorrent/*`、`/api/torra/summary`、`/api/symedia/summary`。
 - `/api/tasks/chain`：订阅到入库的统一证据链。
+- `/api/v2/tasks/chains`：以 `chainId`、`mediaKey`、`targetKey` 和 `artifactKeys` 返回可筛选的任务链 v2；完整快照幂等写入本地资源事件账本，并按需要处理、证据不足、等待、正常保护、正常分类，返回原因、建议和计划重试时间，但不执行外部动作。
+- `/api/v2/home/summary`：基于任务链和调度器心跳生成首页今日结论；证据缺失、调度未启动或服务不可验证时不返回绿色正常。
+- `/api/v2/subscriptions/reconciliation`：只读对比 Fluxa 与 Torra，按对账、履约、健康三个维度返回差异，不写入或删除任一台账。
 - `/api/internal/nasemby-core/*`：已认证的只读诊断兼容路由。
 - `/api/v2/subscriptions/:id/torra-push-*`：固定目标 Torra 的预览和受保护推送。
 - `/api/v2/torra/subscription-sync/*`：Torra 已有订阅状态、只读预览、幂等确认导入和手动状态同步。
@@ -98,7 +101,7 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/v2/integrations/*`、`/api/v2/acquisition/cloud/*` 和云盘策略路由继续保留，当前 React 不调用延期动作。
 - `/mineradio/embed`、`/mineradio/*`。
 
-47 条冻结 v1 契约见项目根 `docs/contracts/http-api-contract-v1.json`；43 条新增能力见 `http-api-contract-v2.json`。浏览器公开响应经过白名单映射；内部诊断路由保留 NasEmby 原始字段，仍受整站认证保护。
+47 条冻结 v1 契约见项目根 `docs/contracts/http-api-contract-v1.json`；47 条新增能力见 `http-api-contract-v2.json`。浏览器公开响应经过白名单映射；内部诊断路由保留 NasEmby 原始字段，仍受整站认证保护。
 
 ## 唯一订阅台账
 
@@ -114,11 +117,11 @@ python -m unittest discover -s tests -v
 
 测试使用临时台账、隔离的临时活动日志和模拟客户端，不连接真实服务执行写操作。保留接口只在模拟测试中显式开启；Mineradio 注入片段继续使用冻结的 SHA-256 快照保护视觉桥接基线。
 
-当前共 189 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘和系统指标测试全部使用临时台账与模拟函数，不连接真实外部服务；确认默认闸门、脱敏、原子迁移、Torra 镜像导入与幂等结果同事务、退避、并发上限、冷却、job 状态、按集固定窗口、RSS 活动匹配、主动兜底、公平轮询、截止点和缓存行为。
+当前共 227 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘和系统指标测试全部使用临时台账与模拟函数，不连接真实外部服务；确认默认闸门、脱敏、原子迁移、Torra 镜像导入与幂等结果同事务、只读对账、首页证据结论、任务链 v2 身份、资源事件账本与五类异常优先级、RSS 匹配器证据、追更工作台分页、退避、并发上限、冷却、job 状态、按集固定窗口、RSS 活动匹配、主动兜底、公平轮询、截止点和缓存行为。
 
 RSS 解析回归已加入四个真实结构的完全脱敏夹具：M-Team 的 `tests/fixtures/mteam_rss_sanitized.xml`、HDHome 的 `tests/fixtures/hdhome_rss_sanitized.xml`、织梦的 `tests/fixtures/zmpt_rss_sanitized.xml` 和青蛙的 `tests/fixtures/qingwa_rss_sanitized.xml`，覆盖 RSS 2.0、电影/剧集、多版本、单集/整季包、文件大小、`enclosure`、`720p/1080i/1080p/2160p`、Blu-ray/Remux、WEB-DL、H.264/H.265、HDR、Atmos 和 TrueHD 版本摘要。四个夹具还会经过假 HTTP 响应、收集器、临时 SQLite 和公共脱敏查询的完整回归，已满足当前版本；夹具只使用 `tracker.example` 地址，不保存真实签名、UID、详情或下载 URL，也不访问 enclosure。
 
-当前源码为 schema version 3；本地硬化候选镜像 `media-control-center:sqlite-rss-hardened` 仍是上一阶段的 schema v2。该镜像的隔离冒烟已确认 WAL、FTS5、RSS 外部访问闸门、无 Node 运行层和容器重建持久化，本轮代码尚未重建候选镜像。
+当前源码为 schema version 4，新增 `resource_chains`、`resource_artifacts` 和 `resource_events`；本地硬化候选镜像 `media-control-center:sqlite-rss-hardened` 仍是上一阶段的 schema v2。该镜像的隔离冒烟已确认 WAL、FTS5、RSS 外部访问闸门、无 Node 运行层和容器重建持久化，本轮代码尚未重建候选镜像。
 
 ## 持久目录
 

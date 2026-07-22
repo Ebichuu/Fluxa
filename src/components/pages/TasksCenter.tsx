@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Download, ExternalLink, HardDrive, Pause, Play, RefreshCcw, Rss, Server } from 'lucide-react';
-import { getActivityLogs, getTaskChain, runQbittorrentAction } from '../../services/api';
+import { Activity, AlertTriangle, CheckCircle2, CircleHelp, Clock3, Download, ExternalLink, HardDrive, Pause, Play, RefreshCcw, Rss, Server, ShieldCheck } from 'lucide-react';
+import { getActivityLogs, getTaskChainV2, runQbittorrentAction } from '../../services/api';
 import type { QbittorrentAction } from '../../types/qbittorrent';
-import type { TaskChainItem, TaskChainResponse, TaskChainState, TaskChainStep } from '../../types/taskChain';
+import type { TaskChainHealthState, TaskChainItem, TaskChainResponse, TaskChainStage, TaskChainState } from '../../types/taskChain';
 import type { ActivityLogItem } from '../../types/operations';
 import { usePolling } from '../../hooks/usePolling';
 import { formatSpeed, formatTimeAgo } from '../../utils/formatters';
@@ -10,9 +10,9 @@ import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
 import type { TaskNavigationTarget } from '../layout/AppTopNav';
 
-type FilterName = '全部' | '进行中' | '等待中' | '卡住' | '已入库' | '尚未接到链路';
+type FilterName = '全部' | '需要处理' | '证据不足' | '等待' | '正常保护' | '正常';
 
-const filters: FilterName[] = ['全部', '进行中', '等待中', '卡住', '已入库', '尚未接到链路'];
+const filters: FilterName[] = ['全部', '需要处理', '证据不足', '等待', '正常保护', '正常'];
 
 const activityFilters = [
   { key: '', label: '全部' },
@@ -47,43 +47,126 @@ const stateLabel: Record<TaskChainState, string> = {
   waiting: '等待中'
 };
 
-const stateClass: Record<TaskChainState, string> = {
-  active: 'ops-task-state ops-task-state--active',
-  blocked: 'ops-task-state ops-task-state--warn',
-  completed: 'ops-task-state ops-task-state--done',
-  waiting: 'ops-task-state'
+const healthLabel: Record<TaskChainHealthState, string> = {
+  action_required: '需要处理',
+  evidence_insufficient: '证据不足',
+  waiting: '等待',
+  protected: '正常保护',
+  normal: '正常'
 };
 
-function stepClass(step: TaskChainStep) {
-  if (step.status === 'done') return 'ops-task-chain__step is-done';
-  if (step.status === 'active') return 'ops-task-chain__step is-now';
-  if (step.status === 'blocked') return 'ops-task-chain__step is-stuck';
+const stageStatusLabel: Record<string, string> = {
+  done: '已完成',
+  active: '处理中',
+  blocked: '已阻塞',
+  waiting: '等待中',
+  unknown: '证据不足'
+};
+
+function resolvedHealth(item: TaskChainItem): TaskChainHealthState {
+  if (item.healthState) return item.healthState;
+  if (item.state === 'blocked') return 'action_required';
+  if (item.confidence === 'unlinked') return 'evidence_insufficient';
+  if (item.state === 'active' || item.state === 'waiting') return 'waiting';
+  return 'normal';
+}
+
+function healthClass(health: TaskChainHealthState) {
+  return `ops-task-health ops-task-health--${health.replace('_', '-')}`;
+}
+
+function stageItems(item: TaskChainItem): TaskChainStage[] {
+  if (item.stages?.length) return item.stages;
+  return item.steps.map((step) => ({
+    stage: step.key,
+    label: step.label,
+    status: step.status,
+    healthState: step.status === 'done' ? 'normal' : step.status === 'blocked' ? 'action_required' : step.status === 'unknown' ? 'evidence_insufficient' : 'waiting',
+    evidence: step.evidence,
+    observedAt: step.timestamp,
+    freshUntil: '',
+    source: step.source,
+    reasonCode: '',
+    reasonText: step.detail,
+    recommendedAction: '',
+    retryEligible: false,
+    plannedRetryAt: '',
+    actions: { preview: false, retry: false }
+  }));
+}
+
+function stageClass(stage: TaskChainStage) {
+  if (stage.healthState === 'action_required' || stage.status === 'blocked') return 'ops-task-chain__step is-stuck';
+  if (stage.healthState === 'evidence_insufficient' || stage.status === 'unknown') return 'ops-task-chain__step is-unknown';
+  if (stage.healthState === 'protected') return 'ops-task-chain__step is-protected';
+  if (stage.status === 'done') return 'ops-task-chain__step is-done';
+  if (stage.status === 'active' || stage.status === 'waiting') return 'ops-task-chain__step is-now';
   return 'ops-task-chain__step is-unknown';
 }
 
-function evidenceLabel(step: TaskChainStep) {
-  if (step.evidence === 'verified') return step.source || '已验证';
-  if (step.evidence === 'inferred') return '推断';
+function evidenceLabel(stage: TaskChainStage) {
+  if (stage.evidence === 'verified') return '已验证';
+  if (stage.evidence === 'inferred') return '推断证据';
   return '证据不足';
 }
 
-function stepDisplayLabel(step: TaskChainStep) {
-  if (step.key === 'download') return '正在下载';
-  if (step.key === 'library') return '整理与入库';
-  return step.label;
+function stageDisplayLabel(stage: TaskChainStage) {
+  if (stage.stage === 'download') return 'qB 下载';
+  if (stage.stage === 'cloud115') return '115 接管';
+  if (stage.stage === 'library') return '整理与入库';
+  return stage.label;
 }
 
 function currentDetail(item: TaskChainItem) {
-  return item.steps.find((step) => step.key === item.currentStep)?.detail || '等待下一步证据';
+  const stages = stageItems(item);
+  const current = stages.find((stage) => stage.stage === item.currentStep)
+    ?? stages.find((stage) => stage.status === 'blocked' || stage.status === 'active')
+    ?? stages.at(-1);
+  return item.reasonText || current?.reasonText || '等待下一步证据';
+}
+
+function recommendedAction(item: TaskChainItem, health: TaskChainHealthState) {
+  if (item.recommendedAction) return item.recommendedAction;
+  const current = stageItems(item).find((stage) => stage.stage === item.currentStep)
+    ?? stageItems(item).find((stage) => stage.recommendedAction);
+  if (current?.recommendedAction) return current.recommendedAction;
+  if (health === 'action_required') return '查看当前阶段证据并处理阻塞';
+  if (health === 'evidence_insufficient') return '刷新来源后重新检查';
+  if (health === 'waiting') return '等待当前阶段完成';
+  if (health === 'protected') return '已保留低分源文件，可进入存储清理';
+  return '';
+}
+
+function guidanceIcon(health: TaskChainHealthState) {
+  if (health === 'action_required') return <AlertTriangle aria-hidden="true" size={16} />;
+  if (health === 'evidence_insufficient') return <CircleHelp aria-hidden="true" size={16} />;
+  if (health === 'protected') return <ShieldCheck aria-hidden="true" size={16} />;
+  return <Clock3 aria-hidden="true" size={16} />;
+}
+
+function targetLabel(item: TaskChainItem) {
+  const episode = item.targetKey?.match(/:episode:(\d+)/)?.[1];
+  const season = item.targetKey?.match(/:season:(\d+)/)?.[1] || (item.seasonNumber > 0 ? String(item.seasonNumber) : '');
+  if (episode && season) return `S${season.padStart(2, '0')}E${episode.padStart(2, '0')}`;
+  if (season) return `S${season.padStart(2, '0')}`;
+  return item.mediaType === 'movie' ? '整部电影' : '整部剧集';
+}
+
+function stageStatusIcon(stage: TaskChainStage) {
+  if (stage.healthState === 'action_required' || stage.status === 'blocked') return <AlertTriangle aria-hidden="true" size={14} />;
+  if (stage.healthState === 'evidence_insufficient' || stage.status === 'unknown') return <CircleHelp aria-hidden="true" size={14} />;
+  if (stage.healthState === 'protected') return <ShieldCheck aria-hidden="true" size={14} />;
+  if (stage.status === 'done') return <CheckCircle2 aria-hidden="true" size={14} />;
+  return <Clock3 aria-hidden="true" size={14} />;
 }
 
 function matchesFilter(item: TaskChainItem, filter: FilterName) {
   if (filter === '全部') return true;
-  if (filter === '进行中') return item.state === 'active';
-  if (filter === '等待中') return item.state === 'waiting';
-  if (filter === '卡住') return item.state === 'blocked';
-  if (filter === '已入库') return item.state === 'completed';
-  return item.confidence === 'unlinked';
+  if (filter === '需要处理') return item.healthState === 'action_required' || (!item.healthState && item.state === 'blocked');
+  if (filter === '证据不足') return item.healthState === 'evidence_insufficient' || (!item.healthState && item.confidence === 'unlinked');
+  if (filter === '等待') return item.healthState === 'waiting' || (!item.healthState && item.state === 'waiting');
+  if (filter === '正常保护') return item.healthState === 'protected';
+  return item.healthState === 'normal' || (!item.healthState && item.state === 'completed');
 }
 
 function normalizeTitle(value: string | undefined) {
@@ -91,6 +174,14 @@ function normalizeTitle(value: string | undefined) {
 }
 
 function findTargetTasks(items: TaskChainItem[], target: TaskNavigationTarget) {
+  if (target.chainId) {
+    const byChain = items.filter((item) => item.chainId === target.chainId);
+    if (byChain.length > 0) return byChain;
+  }
+  if (target.targetKey) {
+    const byTarget = items.filter((item) => item.targetKey === target.targetKey);
+    if (byTarget.length > 0) return byTarget;
+  }
   if (target.subscriptionId) {
     const bySubscription = items.filter((item) => item.sourceIds.subscriptionId === target.subscriptionId);
     if (bySubscription.length > 0) return bySubscription;
@@ -113,7 +204,7 @@ function findTargetTasks(items: TaskChainItem[], target: TaskNavigationTarget) {
 }
 
 export function TasksCenter({ target, onClearTarget }: { target: TaskNavigationTarget | null; onClearTarget: () => void }) {
-  const [filter, setFilter] = useState<FilterName>('进行中');
+  const [filter, setFilter] = useState<FilterName>('全部');
   const [chain, setChain] = useState<TaskChainResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -130,7 +221,7 @@ export function TasksCenter({ target, onClearTarget }: { target: TaskNavigationT
     setLoading(true);
     setError('');
     try {
-      const payload = await getTaskChain({ signal });
+      const payload = await getTaskChainV2('', { signal });
       if (!signal.aborted) setChain(payload);
     } catch (reason) {
       if (!signal.aborted) setError(reason instanceof Error ? reason.message : '任务链读取失败');
@@ -173,14 +264,14 @@ export function TasksCenter({ target, onClearTarget }: { target: TaskNavigationT
   const focusedTaskId = focusedItems[0]?.id ?? null;
   const counts = useMemo<Record<FilterName, number>>(() => ({
     全部: items.length,
-    进行中: items.filter((item) => matchesFilter(item, '进行中')).length,
-    等待中: items.filter((item) => item.state === 'waiting').length,
-    卡住: items.filter((item) => item.state === 'blocked').length,
-    已入库: items.filter((item) => item.state === 'completed').length,
-    尚未接到链路: items.filter((item) => item.confidence === 'unlinked').length
+    需要处理: items.filter((item) => matchesFilter(item, '需要处理')).length,
+    证据不足: items.filter((item) => matchesFilter(item, '证据不足')).length,
+    等待: items.filter((item) => matchesFilter(item, '等待')).length,
+    正常保护: items.filter((item) => matchesFilter(item, '正常保护')).length,
+    正常: items.filter((item) => matchesFilter(item, '正常')).length
   }), [items]);
 
-  const completed115 = items.filter((item) => item.steps.find((step) => step.key === 'cloud115')?.status === 'done').length;
+  const completed115 = items.filter((item) => stageItems(item).find((stage) => stage.stage === 'cloud115')?.status === 'done').length;
 
   useEffect(() => {
     if (!target || !focusedTaskId) return;
@@ -275,7 +366,7 @@ export function TasksCenter({ target, onClearTarget }: { target: TaskNavigationT
                 }}
                 onKeyDown={handleHorizontalTabKeyDown}
               >
-                {name}<span className={name === '卡住' && counts[name] > 0 ? 'is-alert' : undefined}>{counts[name]}</span>
+                {name}<span className={['需要处理', '证据不足'].includes(name) && counts[name] > 0 ? 'is-alert' : undefined}>{counts[name]}</span>
               </button>
             ))}
           </div>
@@ -299,36 +390,63 @@ export function TasksCenter({ target, onClearTarget }: { target: TaskNavigationT
         )}
 
         <div className="ops-task-list">
-          {visible.map((item) => (
-            <article
-              className={`${item.state === 'blocked' ? 'ops-task-card ops-task-card--stuck' : 'ops-task-card'}${focusActive && item.id === focusedTaskId ? ' ops-task-card--focused' : ''}`}
-              key={item.id}
-              ref={(element) => {
-                if (element) taskCardRefs.current.set(item.id, element);
-                else taskCardRefs.current.delete(item.id);
-              }}
-              tabIndex={focusActive && item.id === focusedTaskId ? -1 : undefined}
-            >
+          {visible.map((item) => {
+            const health = resolvedHealth(item);
+            const stages = stageItems(item);
+            const nextAction = recommendedAction(item, health);
+            return (
+              <article
+                className={`${health === 'action_required' ? 'ops-task-card ops-task-card--stuck' : 'ops-task-card'}${focusActive && item.id === focusedTaskId ? ' ops-task-card--focused' : ''}`}
+                key={item.id}
+                ref={(element) => {
+                  if (element) taskCardRefs.current.set(item.id, element);
+                  else taskCardRefs.current.delete(item.id);
+                }}
+                tabIndex={focusActive && item.id === focusedTaskId ? -1 : undefined}
+              >
               <div className="ops-task-card__head">
-                <span className={stateClass[item.state]}>{stateLabel[item.state]}</span>
+                <div className="ops-task-card__status">
+                  <span className={healthClass(health)}>{healthLabel[health]}</span>
+                  <span className="ops-task-state">{stateLabel[item.state]}</span>
+                </div>
                 <div>
                   <h2>{item.title}</h2>
                   <p>
                     PT · {item.mediaType === 'movie' ? '电影' : item.mediaType === 'tv' ? `剧集${item.seasonNumber ? ` S${String(item.seasonNumber).padStart(2, '0')}` : ''}` : '未识别媒体'}
                     {' · '}{item.confidence === 'strong' ? '已精确匹配' : item.confidence === 'fallback' ? '按标题推测' : '尚未接到链路'}
                   </p>
+                  <div className="ops-task-card__identity">
+                    <span>目标 <strong>{targetLabel(item)}</strong></span>
+                    <span title={item.chainId || item.id}>链路 <code>{item.chainId || item.id}</code></span>
+                  </div>
                 </div>
                 <strong>{item.progress}%</strong>
               </div>
 
-              {item.state === 'blocked' && <div className="ops-task-alert"><AlertTriangle size={15} />{currentDetail(item)}</div>}
+              {health !== 'normal' && (
+                <div className={`ops-task-guidance ops-task-guidance--${health.replace('_', '-')}`} role={health === 'action_required' ? 'alert' : 'status'}>
+                  {guidanceIcon(health)}
+                  <div><strong>为什么</strong><span>{currentDetail(item)}</span></div>
+                  {nextAction && <div><strong>下一步</strong><span>{nextAction}</span></div>}
+                </div>
+              )}
 
               <div className="ops-task-chain" aria-label="任务证据链">
-                {item.steps.map((step, index) => (
-                  <div className={stepClass(step)} key={step.key}>
-                    <span>0{index + 1} · {evidenceLabel(step)}</span>
-                    <strong>{stepDisplayLabel(step)}</strong>
-                    <small>{step.detail}</small>
+                {stages.map((stage, index) => (
+                  <div className={stageClass(stage)} key={`${stage.stage}-${index}`}>
+                    <div className="ops-task-chain__evidence">
+                      <span>{stageStatusIcon(stage)}{String(index + 1).padStart(2, '0')} · {evidenceLabel(stage)}</span>
+                      <em>{stageStatusLabel[stage.status] || stage.status}</em>
+                    </div>
+                    <strong>{stageDisplayLabel(stage)}</strong>
+                    <small>{stage.reasonText || stageStatusLabel[stage.status] || '暂无阶段说明'}</small>
+                    {stage.recommendedAction && <small className="ops-task-chain__next">下一步：{stage.recommendedAction}</small>}
+                    <div className="ops-task-chain__meta">
+                      <span title={stage.reasonCode}>{stage.source || '未接入来源'}</span>
+                      <time dateTime={stage.observedAt} title={stage.freshUntil ? `证据有效至 ${stage.freshUntil}` : undefined}>
+                        {stage.observedAt ? formatTimeAgo(stage.observedAt) : '读取时间未知'}
+                      </time>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -360,8 +478,9 @@ export function TasksCenter({ target, onClearTarget }: { target: TaskNavigationT
                   </div>
                 </footer>
               )}
-            </article>
-          ))}
+              </article>
+            );
+          })}
         </div>
         {filtered.length > visible.length && (
           <div className="ops-task-more">

@@ -18,8 +18,10 @@ concurrency:
 
 jobs:
   publish:
-    name: Build and publish
+    name: Build immutable image
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -45,12 +47,12 @@ jobs:
           tags: |
             type=ref,event=tag
             type=sha,prefix=sha-
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
           labels: |
             org.opencontainers.image.title=Fluxa
             org.opencontainers.image.description=Personal media automation control center
 
       - name: Build and push image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -63,3 +65,67 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: mode=max
           sbom: true
+
+  smoke:
+    name: Smoke test published image
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start image and verify HTTP health
+        env:
+          IMAGE_DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          docker run --detach --name fluxa-smoke --publish 127.0.0.1:8987:8987 \
+            --env MCC_ENV=production --env APP_PORT=8987 \
+            ghcr.io/ebichuu/fluxa@${IMAGE_DIGEST}
+          for attempt in $(seq 1 45); do
+            if curl --fail --silent --show-error http://127.0.0.1:8987/healthz >/dev/null; then
+              curl --fail --silent --show-error http://127.0.0.1:8987/auth/setup >/dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs fluxa-smoke
+          exit 1
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker logs fluxa-smoke || true
+
+  promote-latest:
+    name: Promote verified image to latest
+    needs:
+      - publish
+      - smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Point latest to verified digest
+        env:
+          IMAGE_DIGEST: ${{ needs.publish.outputs.digest }}
+        run: docker buildx imagetools create --tag ghcr.io/ebichuu/fluxa:latest ghcr.io/ebichuu/fluxa@${IMAGE_DIGEST}
+
+      - name: Verify latest manifest
+        run: docker buildx imagetools inspect ghcr.io/ebichuu/fluxa:latest

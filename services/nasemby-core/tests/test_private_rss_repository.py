@@ -10,6 +10,20 @@ from app.private_rss_repository import FetchRunRecord, PrivateRssRepository
 
 
 class PrivateRssRepositoryTests(unittest.TestCase):
+    def test_summary_distinguishes_matcher_not_run_from_zero_matches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            before = repository.summary(enabled=True)
+            self.assertFalse(before["matcherRan"])
+            self.assertEqual(before["matches"], 0)
+
+            repository.record_match_run(scanned_count=347, match_count=0)
+            after = repository.summary(enabled=True)
+            self.assertTrue(after["matcherRan"])
+            self.assertEqual(after["lastMatchScanned"], 347)
+            self.assertEqual(after["lastMatchCreated"], 0)
+            self.assertEqual(after["lastMatchStatus"], "success")
+
     def test_source_urls_stay_internal_and_items_are_searchable(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")

@@ -31,15 +31,23 @@ from app.torra_subscription_sync_runtime import (
     TorraSubscriptionSyncService,
     register_torra_subscription_sync,
 )
+from app.subscription_reconciliation_runtime import (
+    SubscriptionReconciliationService,
+    register_subscription_reconciliation,
+)
 from app.torra_quality_runtime import TorraQualityClient
 from app.symedia_read_runtime import register_symedia_read
 from app.task_chain_runtime import register_task_chain
+from app.task_chain_v2_runtime import register_task_chain_v2
+from app.home_summary_runtime import register_home_summary
 from app.integration_runtime import register_integrations
 from app.cloud_acquisition_runtime import register_cloud_acquisition
 from app.system_metrics_runtime import register_system_metrics
 from app.private_rss_api_runtime import register_private_rss
 from app.automation_action_runtime import register_automation_actions
+from app.health_state_runtime import SchedulerStatusRegistry
 from app.quality_watch_repository import QualityWatchRepository
+from app.resource_task_repository import ResourceTaskRepository
 from app.quality_watch_runtime import register_quality_watch
 from app.quality_watch_scheduler import (
     QualityWatchScheduler,
@@ -405,11 +413,16 @@ def start_discover_preload_scheduler():
 def _subscription_scheduler_loop():
     time.sleep(5)
     while True:
+        registry = app.extensions.get("mcc_scheduler_status")
         try:
             discover_runtime.run_due_subscription_task()
             discover_runtime.run_due_subscription_search_poll()
             discover_runtime.run_due_channel_mode_poll()
+            if registry:
+                registry.mark_run("subscription-task")
         except Exception as exc:
+            if registry:
+                registry.mark_run("subscription-task", error=type(exc).__name__)
             logger.error("background scheduler failed scheduler=subscription-task error_type=%s", type(exc).__name__)
         time.sleep(60)
 
@@ -419,6 +432,9 @@ def start_subscription_scheduler():
     if _subscription_scheduler_started:
         return
     _subscription_scheduler_started = True
+    registry = app.extensions.get("mcc_scheduler_status")
+    if registry:
+        registry.mark_started("subscription-task")
     thread = threading.Thread(target=_subscription_scheduler_loop, name="subscription-task", daemon=True)
     thread.start()
 
@@ -501,7 +517,15 @@ def start_background_runtime():
     started.append("discover-cache-preload")
     start_torra_subscription_sync_scheduler()
     started.append("torra-subscription-sync")
-    if str(os.getenv("MCC_SUBSCRIPTION_SCHEDULER_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}:
+    environment = app.extensions.get("mcc_environment") or os.environ
+    subscription_enabled = _environment_flag_enabled(
+        "MCC_SUBSCRIPTION_SCHEDULER_ENABLED",
+        environment=environment,
+    )
+    registry = app.extensions.get("mcc_scheduler_status")
+    if registry:
+        registry.register("subscription-task", enabled=subscription_enabled, configured=True)
+    if subscription_enabled:
         start_subscription_scheduler()
         started.append("subscription-task")
     if str(os.getenv("MCC_PRIVATE_RSS_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}:
@@ -1306,6 +1330,8 @@ def create_app(
 ):
     environment = os.environ if access_environment is None else access_environment
     application = Flask(__name__, static_folder=None)
+    application.extensions["mcc_environment"] = environment
+    application.extensions["mcc_scheduler_status"] = SchedulerStatusRegistry()
     application.secret_key = os.getenv("APP_SECRET", "nasemby-dev")
     if is_production_environment(environment):
         application.wsgi_app = ProxyFix(application.wsgi_app, x_for=1, x_proto=1, x_host=1)
@@ -1354,6 +1380,12 @@ def create_app(
     )
     register_emby_refresh(application)
     register_task_chain(application)
+    resource_repository = None
+    if access_environment is None:
+        resource_repository = ResourceTaskRepository(discover_runtime.subscription_database_path())
+        application.extensions["mcc_resource_task_repository"] = resource_repository
+    register_task_chain_v2(application, repository=resource_repository)
+    register_home_summary(application)
     register_integrations(
         application,
         environment=environment,
@@ -1376,6 +1408,16 @@ def create_app(
         application,
         TorraSubscriptionSyncService(
             environment,
+            discover_runtime.subscription_repository(),
+            torra_read_client,
+            lambda: discover_runtime.load_subscription_items(remove_completed=False),
+            discover_runtime.get_subscription_item_key,
+            clock=torra_clock,
+        ),
+    )
+    register_subscription_reconciliation(
+        application,
+        SubscriptionReconciliationService(
             discover_runtime.subscription_repository(),
             torra_read_client,
             lambda: discover_runtime.load_subscription_items(remove_completed=False),

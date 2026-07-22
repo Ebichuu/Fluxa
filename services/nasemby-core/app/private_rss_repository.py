@@ -164,6 +164,11 @@ class PrivateRssRepository:
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL, status TEXT NOT NULL, item_count INTEGER NOT NULL DEFAULT 0, "
                 "http_status INTEGER NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)"
             )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS rss_match_runs ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, status TEXT NOT NULL, scanned_count INTEGER NOT NULL DEFAULT 0, "
+                "match_count INTEGER NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)"
+            )
             source_columns = {row["name"] for row in connection.execute("PRAGMA table_info(rss_sources)").fetchall()}
             if "failure_count" not in source_columns:
                 connection.execute("ALTER TABLE rss_sources ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0")
@@ -567,7 +572,29 @@ class PrivateRssRepository:
                 connection.executemany("DELETE FROM rss_item_search WHERE item_id=?", ((value,) for value in expired))
                 connection.executemany("DELETE FROM rss_items WHERE id=?", ((value,) for value in expired))
             connection.execute("DELETE FROM rss_fetch_runs WHERE created_at<?", (_iso(_now() - timedelta(days=30)),))
+            connection.execute("DELETE FROM rss_match_runs WHERE created_at<?", (_iso(_now() - timedelta(days=30)),))
         return len(expired)
+
+    def record_match_run(self, scanned_count, match_count, status="success", message="", connection=None):
+        values = (
+            str(status or "success"),
+            max(0, int(scanned_count or 0)),
+            max(0, int(match_count or 0)),
+            str(message or "")[:240],
+            _iso(),
+        )
+
+        def insert(target):
+            target.execute(
+                "INSERT INTO rss_match_runs (status, scanned_count, match_count, message, created_at) VALUES (?, ?, ?, ?, ?)",
+                values,
+            )
+
+        if connection is not None:
+            insert(connection)
+        else:
+            with self.runtime.transaction(immediate=True) as target:
+                insert(target)
 
     def summary(self, enabled=False):
         with closing(self.runtime.connect()) as connection:
@@ -576,6 +603,10 @@ class PrivateRssRepository:
                 "SUM(CASE WHEN last_error<>'' THEN 1 ELSE 0 END) AS errors, MAX(last_success_at) AS last_success FROM rss_sources"
             ).fetchone()
             item_count = int(connection.execute("SELECT COUNT(*) AS count FROM rss_items").fetchone()["count"])
+            match_count = int(connection.execute("SELECT COUNT(*) AS count FROM rss_subscription_matches").fetchone()["count"])
+            match_run = connection.execute(
+                "SELECT status, scanned_count, match_count, message, created_at FROM rss_match_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
         return {
             "enabled": bool(enabled),
             "sources": int(row["total"] or 0),
@@ -583,4 +614,10 @@ class PrivateRssRepository:
             "errorSources": int(row["errors"] or 0),
             "items": item_count,
             "lastSuccessAt": row["last_success"] or "",
+            "matches": match_count,
+            "matcherRan": bool(match_run),
+            "lastMatchAt": match_run["created_at"] if match_run else "",
+            "lastMatchStatus": match_run["status"] if match_run else "not_run",
+            "lastMatchScanned": int(match_run["scanned_count"] or 0) if match_run else 0,
+            "lastMatchCreated": int(match_run["match_count"] or 0) if match_run else 0,
         }

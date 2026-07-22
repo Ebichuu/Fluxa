@@ -291,6 +291,7 @@ class RssSubscriptionMatchRuntime:
                 )
                 if match:
                     created.append(match)
+        self.rss_repository.record_match_run(len(rows), len(created), connection=connection)
         return created
 
     def match_inserted_items(self, item_ids):

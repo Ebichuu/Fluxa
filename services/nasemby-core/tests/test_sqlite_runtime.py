@@ -25,7 +25,7 @@ class SQLiteRuntimeTests(unittest.TestCase):
             self.assertEqual(journal.lower(), "wal")
             self.assertEqual(foreign_keys, 1)
             self.assertEqual(busy_timeout, 5000)
-            self.assertEqual(version, 3)
+            self.assertEqual(version, 4)
             self.assertIsNone(probe)
 
     def test_transaction_rolls_back_on_error(self):
