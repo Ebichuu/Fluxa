@@ -1,6 +1,6 @@
 # Fluxa
 
-当前发布版本：`v0.4.2`。
+当前发布版本：`v0.4.3`。
 
 面向 fnOS / NAS 的个人影音中控。生产环境使用一个 Python / Flask / Gunicorn 后端，同时提供 React 页面、Mineradio 影院大厅、订阅中枢和外部服务聚合。
 
