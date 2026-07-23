@@ -6,6 +6,34 @@ export type TaskChainHealthState = 'normal' | 'waiting' | 'protected' | 'action_
 export type TaskChainIdentityState = 'unidentified' | 'linked' | 'conflict';
 export type TaskChainExecutionState = 'normal' | 'waiting' | 'protected' | 'suspected_blocked' | 'action_required' | 'confirmed_failed';
 
+export interface TorraSecuploadRun {
+  runId: string;
+  taskKey: string;
+  targetItemId: string;
+  trigger: string;
+  status: string;
+  message: string;
+  counts: { success: number | null; failed: number | null };
+  startedAt: string;
+  finishedAt: string;
+  createdAt: string;
+}
+
+export interface TorraSecuploadSummary {
+  configured: boolean;
+  connected: boolean;
+  pluginKey: string;
+  pluginEnabled: boolean;
+  readable: boolean;
+  perFileEvidence: boolean;
+  activeRuns?: number;
+  latestRun?: TorraSecuploadRun | null;
+  lastRunAt?: string;
+  nextRunAt?: string;
+  lastCheckedAt: string;
+  error?: string;
+}
+
 export interface TaskChainStep {
   key: 'subscription' | 'download' | 'cloud115' | 'library';
   label: string;
@@ -145,7 +173,7 @@ export interface TaskChainResponse {
   };
   services: {
     qb: { connected: boolean; error: string; total: number; active: number; downloadSpeed: number; webUrl: string };
-    torra: { connected: boolean; error: string; total: number; webUrl: string };
+    torra: { connected: boolean; error: string; total: number; webUrl: string; secupload115?: TorraSecuploadSummary };
     symedia: { connected: boolean; error: string; total: number; sampled: number; webUrl: string };
     emby: { connected: boolean; error: string; indexedMovies: number; indexedSeries: number; webUrl: string };
   };

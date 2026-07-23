@@ -269,7 +269,22 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     正常: chain?.healthCounts?.normal ?? 0
   }), [chain]);
 
-  const completed115 = chain?.stageCounts?.cloud115?.done ?? 0;
+  const secupload = chain?.services.torra.secupload115;
+  const latestUploadRun = secupload?.latestRun;
+  const identityPending = (chain?.identityCounts?.unidentified ?? 0) + (chain?.identityCounts?.conflict ?? 0);
+  const secuploadSummary = !chain
+    ? '读取中'
+    : !secupload?.readable
+      ? '插件状态不可读'
+      : (secupload.activeRuns ?? 0) > 0
+        ? `${secupload.activeRuns} 个分类运行中`
+        : latestUploadRun?.counts.success != null || latestUploadRun?.counts.failed != null
+          ? `最近成功 ${latestUploadRun.counts.success ?? 0} · 失败 ${latestUploadRun.counts.failed ?? 0}`
+          : '插件已连接';
+  const evidenceNotice = [
+    identityPending > 0 ? `${identityPending} 条记录尚未形成唯一媒体身份，当前不据此判断秒传积压。` : '',
+    secupload?.readable && !secupload.perFileEvidence ? 'Torra 当前只提供分类级运行记录，暂不支持逐文件确认。' : ''
+  ].filter(Boolean).join(' ');
 
   const loadDetail = async (item: TaskChainListItem) => {
     const chainId = item.chainId || '';
@@ -400,18 +415,28 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
           <p className="ops-deck">订阅、下载、进入 115 和整理入库集中显示；匹配依据和原工具入口放在任务详情中。</p>
         </div>
         <div className="ops-task-hero-status">
-          <span>{counts['需要处理'] > 0 ? `${counts['需要处理']} 项需要处理` : counts['疑似阻塞'] > 0 ? `${counts['疑似阻塞']} 项疑似阻塞` : counts['证据不足'] > 0 ? '部分任务证据不足' : counts['等待'] > 0 ? '任务正在处理' : chain ? '当前任务状态正常' : '正在读取任务状态'}</span>
+          <span>{counts['需要处理'] > 0 ? `${counts['需要处理']} 项需要处理` : counts['证据不足'] > 0 ? '部分任务证据不足' : counts['等待'] > 0 ? '任务正在处理' : chain ? '当前任务状态正常' : '正在读取任务状态'}</span>
           <strong>{chain?.services.qb.connected ? formatSpeed(chain.services.qb.downloadSpeed) : '下载器待连接'}</strong>
-          <small>{chain ? `${chain.counts.active} 进行中 · ${chain.counts.blocked} 阻塞 · ${formatTimeAgo(chain.generatedAt)}` : '正在汇总任务证据'}</small>
+          <small>{chain ? `${chain.counts.active} 进行中 · ${chain.healthCounts?.action_required ?? 0} 项需处理 · ${formatTimeAgo(chain.generatedAt)}` : '正在汇总任务证据'}</small>
         </div>
       </section>
 
       <section className="ops-task-summary" aria-label="任务状态摘要">
         <div><Rss size={16} /><span>已保存订阅</span><strong>{chain?.originCounts?.subscription ?? 0} 条主干</strong></div>
         <div><Download size={16} /><span>正在下载</span><strong>{chain ? `${chain.services.torra.total} 个订阅 · ${chain.services.qb.active} 个活跃下载` : '读取中'}</strong></div>
-        <div><HardDrive size={16} /><span>已进入 115</span><strong>{completed115} 条有秒传或接管记录</strong></div>
+        <div><HardDrive size={16} /><span>Torra 秒传</span><strong>{secuploadSummary}</strong></div>
         <div><Server size={16} /><span>整理与入库</span><strong>{chain ? `${chain.counts.completed} 个已完成` : '读取中'}</strong></div>
       </section>
+
+      {(identityPending > 0 || (secupload?.readable && !secupload.perFileEvidence)) && (
+        <section className="ops-task-focus" aria-label="任务证据说明">
+          <div>
+            <strong>{identityPending > 0 ? '任务身份尚未完成关联' : '秒传插件已接入'}</strong>
+            <span>{evidenceNotice}</span>
+          </div>
+          {secupload?.lastRunAt && <small>秒传最近运行 {formatTimeAgo(secupload.lastRunAt)}</small>}
+        </section>
+      )}
 
       <section className="ops-panel ops-task-workbench">
         {focusActive && (

@@ -162,6 +162,56 @@ class EvidenceOwnershipRuntimeTests(unittest.TestCase):
         self.assertEqual(qb_record["matchMethod"], "artifact_exact")
         self.assertTrue(qb_record["ownerTargetKey"])
 
+    def test_symedia_artifact_inherits_only_exact_torra_file_owner(self):
+        result = adjudicate_task_evidence(
+            [subscription("tv-a", "测试剧", "tv", tmdb_id="101", season=1)],
+            [{
+                "id": "torra-a",
+                "name": "测试剧",
+                "media_type": "tv",
+                "tmdb_id": "101",
+                "season_number": 1,
+                "downloaded_file_names": ["Test.Show.S01E01.1080p.WEB-DL.mkv"],
+            }],
+            [],
+            [{
+                "id": "symedia-a",
+                "title": "无关标题",
+                "type": "tv",
+                "src": "/115/Test.Show.S01E01.1080p.WEB-DL.mkv",
+                "status": True,
+            }],
+        )
+
+        symedia_record = next(record for record in result["records"] if record["source"] == "Symedia")
+        self.assertEqual(symedia_record["matchMethod"], "artifact_exact")
+        self.assertTrue(symedia_record["ownerTargetKey"])
+
+    def test_symedia_partial_file_name_does_not_inherit_torra_owner(self):
+        result = adjudicate_task_evidence(
+            [subscription("tv-a", "测试剧", "tv", tmdb_id="101", season=1)],
+            [{
+                "id": "torra-a",
+                "name": "测试剧",
+                "media_type": "tv",
+                "tmdb_id": "101",
+                "season_number": 1,
+                "downloaded_file_names": ["Test.Show.S01E01.1080p.WEB-DL.mkv"],
+            }],
+            [],
+            [{
+                "id": "symedia-a",
+                "title": "无关标题",
+                "type": "tv",
+                "src": "/115/Test.Show.S01E01.1080p.mkv",
+                "status": True,
+            }],
+        )
+
+        symedia_record = next(record for record in result["records"] if record["source"] == "Symedia")
+        self.assertEqual(symedia_record["ownerTargetKey"], "")
+        self.assertEqual(symedia_record["confidence"], "unlinked")
+
 
 if __name__ == "__main__":
     unittest.main()

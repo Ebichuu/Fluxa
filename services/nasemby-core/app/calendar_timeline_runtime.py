@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 
 from flask import Flask, Response, jsonify, request
@@ -312,10 +314,114 @@ def _summary_calendar(calendar: dict) -> dict:
     }
 
 
+def _torra_calendar_source_item(row: dict) -> dict | None:
+    if not isinstance(row, dict) or _text(row.get("reconciliationState")) != "only_torra":
+        return None
+    media_type = _text(row.get("mediaType"))
+    tmdb_id = _text(row.get("tmdbId"))
+    if media_type not in {"movie", "tv"} or not tmdb_id.isdigit():
+        return None
+    season = _integer(row.get("seasonNumber")) if media_type == "tv" else 0
+    remote_ref = _text(row.get("remoteRef")) or tmdb_id
+    return {
+        "subscription_key": f"torra:{remote_ref}",
+        "title": _text(row.get("title")),
+        "media_type": media_type,
+        "tmdb_id": tmdb_id,
+        "target_season": season,
+        "season_number": season,
+        "source": "torra",
+        "source_label": "Torra 只读追更",
+        "read_only": True,
+        # 远端创建时间不在公开订阅响应中，使用本次可靠读取时间避免把历史集误判为缺集。
+        "subscribed_at": _text(row.get("observedAt")),
+        "follow_scope_explicit": True,
+        "include_past_episodes": False,
+        "allowed_delay_hours": 24,
+        "in_library": False,
+    }
+
+
+def _calendar_entry_identity(entry: dict) -> tuple:
+    return (
+        _text(entry.get("date")),
+        _text(entry.get("mediaType")),
+        _text(entry.get("tmdbId")),
+        _integer(entry.get("seasonNumber")),
+        _integer(entry.get("episodeNumber")),
+    )
+
+
 class CalendarTimelineService:
     def __init__(self, app: Flask, calendar_loader=None):
         self.app = app
         self.calendar_loader = calendar_loader or discover_runtime.build_subscription_calendar
+        self._torra_cache = {}
+        self._torra_cache_lock = threading.RLock()
+
+    def _torra_calendar_entries(self, year: int, month: int, media_type: str) -> tuple[list[dict], list[str]]:
+        cache_key = (year, month, media_type)
+        with self._torra_cache_lock:
+            cached = self._torra_cache.get(cache_key)
+            if cached and time.monotonic() - cached[0] < 300:
+                return cached[1], cached[2]
+
+        reconciliation = self.app.extensions.get("mcc_subscription_reconciliation")
+        if not reconciliation:
+            return [], []
+        try:
+            snapshot = reconciliation.snapshot() or {}
+        except Exception:
+            return [], ["Torra 只读追更暂时无法生成日历"]
+        if snapshot.get("sourceError"):
+            return [], ["Torra 只读追更暂时无法读取"]
+
+        raw_entries = []
+        errors = []
+        seen_targets = set()
+        for row in snapshot.get("items") or []:
+            item = _torra_calendar_source_item(row)
+            if not item:
+                continue
+            if media_type in {"movie", "tv"} and item["media_type"] != media_type:
+                continue
+            target = (item["media_type"], item["tmdb_id"], _integer(item.get("target_season")))
+            if target in seen_targets:
+                continue
+            seen_targets.add(target)
+            try:
+                rows, error = discover_runtime.build_subscription_calendar_entries_for_item(
+                    item,
+                    year,
+                    month,
+                    media_type,
+                )
+            except Exception:
+                rows, error = [], ""
+            raw_entries.extend(rows)
+            if error:
+                errors.append(error)
+
+        payload = {
+            "success": True,
+            "year": year,
+            "month": month,
+            "type": media_type,
+            "entries": raw_entries,
+            "stats": {
+                "entries": len(raw_entries),
+                "titles": len({str(row.get("key") or row.get("title") or "") for row in raw_entries}),
+                "in_library": 0,
+                "pending": len(raw_entries),
+            },
+            "errors": errors,
+        }
+        mapped = map_calendar_payload(payload).get("calendar") or {}
+        entries = [entry for entry in mapped.get("entries") or [] if isinstance(entry, dict)]
+        public_errors = ["部分 Torra 只读追更缺少可验证播出日历"] if errors else []
+        with self._torra_cache_lock:
+            self._torra_cache[cache_key] = (time.monotonic(), entries, public_errors)
+        return entries, public_errors
 
     def _base_calendar(
         self,
@@ -342,6 +448,18 @@ class CalendarTimelineService:
                 if range_start.isoformat() <= _text(entry.get("date")) <= range_end.isoformat()
             )
             errors.extend(current.get("errors") or [])
+            torra_entries, torra_errors = self._torra_calendar_entries(
+                current_year,
+                current_month,
+                media_type,
+            )
+            existing = {_calendar_entry_identity(entry) for entry in entries}
+            entries.extend(
+                entry for entry in torra_entries
+                if _calendar_entry_identity(entry) not in existing
+                and range_start.isoformat() <= _text(entry.get("date")) <= range_end.isoformat()
+            )
+            errors.extend(torra_errors)
         entries.sort(key=lambda entry: (
             _text(entry.get("date")),
             _text(entry.get("title")),

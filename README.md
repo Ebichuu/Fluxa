@@ -8,9 +8,9 @@
 
 - 内容发现、媒体搜索、订阅管理和播出日历。
 - 首页只展示今日是否正常、入库、下载中、待处理和真实异常；缺少证据时不显示绿色正常。
-- 第一阶段追更工作台统一展示本地写入、Torra、镜像同步、RSS 和定时任务状态，并将 Fluxa/Torra 对账、qB、115 与入库证据关联到每条追更。
-- Torra 已有订阅单向镜像到本地 SQLite，支持预览、确认导入和状态同步；第一阶段不修改或删除 Torra 订阅。
-- Torra → qBittorrent → 115 → Symedia → Emby 的 PT 任务链观察，同时区分媒体身份、执行状态和用户介入优先级；疑似阻塞不会再被藏进证据不足。
+- 第一阶段追更工作台统一展示本地写入、Torra、镜像同步、RSS 和定时任务状态；Torra 只读订阅可直接进入追更与日历，Fluxa 本地台账仍保持独立边界。
+- Torra 已有订阅支持只读对账、预览、确认导入和状态同步；第一阶段不修改或删除 Torra 订阅，也不自动创建第二套本地真相。
+- Torra → qBittorrent → 115 → Symedia → Emby 的 PT 任务链观察，同时区分媒体身份、执行状态和用户介入优先级；Torra 已确认文件名与 Symedia 记录完全一致时可只读串链，没有 Torra 逐文件秒传证据时，不会由 qB 完成时间推断秒传中、已进入 115 或疑似阻塞。
 - 私人 PT RSS 种子库、本地全文搜索、订阅目标精确筛选、TMDB/IMDb 身份与有界历史回填；界面可区分回填尚未运行与运行后仍未识别。
 - 追更卡片按明确 TMDB 身份补齐空缺海报；无身份或仅 Torra 条目保持安全占位和只读边界。
 - 按电影或季集隔离的质量观察、人工追更分析和候选下载。
@@ -123,7 +123,7 @@ Vite 会把 `/api` 和 `/mineradio` 代理到 Python。
 ## 本地检查
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 295 项
+python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 304 项
 npm test
 npm run build
 docker compose config --services

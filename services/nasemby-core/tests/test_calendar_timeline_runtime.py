@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 import json
+from unittest.mock import patch
 
 from flask import Flask
 
@@ -55,6 +56,20 @@ class FakeTaskService:
         return {
             "version": "tasks-v1",
             "items": items,
+        }
+
+
+class FakeReconciliationService:
+    def __init__(self, rows, source_error=""):
+        self.rows = rows
+        self.source_error = source_error
+        self.calls = 0
+
+    def snapshot(self):
+        self.calls += 1
+        return {
+            "sourceError": self.source_error,
+            "items": self.rows,
         }
 
 
@@ -193,6 +208,61 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertLess(len(json.dumps(response.get_json(), ensure_ascii=False).encode("utf-8")), 200_000)
         self.assertEqual(response.get_json()["calendar"]["days"][0]["total"], 892)
+
+    def test_calendar_includes_only_torra_rows_without_creating_local_subscription(self):
+        reconciliation = FakeReconciliationService([{
+            "id": "torra:remote-ref",
+            "remoteRef": "remote-ref",
+            "title": "远端追更",
+            "mediaType": "tv",
+            "tmdbId": "202",
+            "seasonNumber": 1,
+            "reconciliationState": "only_torra",
+            "observedAt": "2026-07-23T00:00:00Z",
+        }])
+        self.app.extensions["mcc_subscription_reconciliation"] = reconciliation
+
+        def remote_entries(item, year, month, media_type):
+            self.assertTrue(item["read_only"])
+            self.assertEqual(item["source_label"], "Torra 只读追更")
+            self.assertEqual(item["tmdb_id"], "202")
+            return ([{
+                "date": "2026-07-23",
+                "key": item["subscription_key"],
+                "title": item["title"],
+                "media_type": "tv",
+                "tmdb_id": item["tmdb_id"],
+                "source_label": item["source_label"],
+                "season_number": 1,
+                "episode_number": 1,
+                "episode_label": "S01E01",
+                "in_library": False,
+                "subscription_created_at": item["subscribed_at"],
+                "follow_scope_explicit": True,
+                "include_past_episodes": False,
+                "allowed_delay_hours": 24,
+            }], "")
+
+        with patch("app.calendar_timeline_runtime.discover_runtime.build_subscription_calendar_entries_for_item", remote_entries):
+            payload = self.client.get("/api/v2/calendar?year=2026&month=7&type=tv").get_json()
+
+        remote = next(entry for entry in payload["calendar"]["entries"] if entry["tmdbId"] == "202")
+        self.assertEqual(remote["sourceLabel"], "Torra 只读追更")
+        self.assertEqual(remote["subscriptionCreatedAt"], "2026-07-23T00:00:00Z")
+        self.assertEqual(reconciliation.calls, 1)
+
+    def test_torra_calendar_source_error_is_public_and_not_raw(self):
+        self.app.extensions["mcc_subscription_reconciliation"] = FakeReconciliationService(
+            [],
+            source_error="token=must-not-escape /private/source",
+        )
+
+        payload = self.client.get("/api/v2/calendar?year=2026&month=7&type=tv").get_json()
+
+        errors = payload["calendar"]["errors"]
+        self.assertIn("Torra 只读追更暂时无法读取", errors)
+        self.assertNotIn("must-not-escape", str(errors))
+        self.assertNotIn("/private/source", str(errors))
 
     def test_invalid_detail_date_and_range_are_rejected(self):
         invalid_date = self.client.get("/api/v2/calendar?date=2026-02-30&view=detail")

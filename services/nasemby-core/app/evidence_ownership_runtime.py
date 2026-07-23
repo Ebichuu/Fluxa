@@ -121,6 +121,10 @@ def _symedia_evidence(row: dict, index: int) -> dict:
     identity = _text(row.get("id"))
     fallback = "|".join((_text(row.get("date")), _text(row.get("src")), str(index)))
     season = _integer(row.get("season")) or _season_from_text(row.get("season_episode"))
+    file_values = [row.get("src"), row.get("dest")]
+    files = row.get("files")
+    if isinstance(files, list):
+        file_values.extend(files)
     return {
         "artifactKey": artifact_key(
             remote_file_id=f"symedia:{identity}" if identity else "",
@@ -134,7 +138,11 @@ def _symedia_evidence(row: dict, index: int) -> dict:
         "seasonNumber": season,
         "year": _year(row.get("year"), row.get("release_year"), row.get("title")),
         "observedAt": _text(row.get("date")),
-        "fileKeys": [],
+        "fileKeys": [
+            key
+            for key in (_file_key(value) for value in file_values)
+            if _reliable_file_key(key)
+        ],
     }
 
 
@@ -217,14 +225,18 @@ def _decide(evidence: dict, targets: list[dict], artifact_candidates=()) -> dict
     }
 
 
-def _owned_torra_file_targets(qb_evidence: dict, torra_rows: list[tuple[dict, dict]]) -> set[str]:
-    qb_keys = [key for key in qb_evidence["fileKeys"] if _reliable_file_key(key)]
+def _owned_torra_file_targets(evidence: dict, torra_rows: list[tuple[dict, dict]], *, exact_only=False) -> set[str]:
+    file_keys = [key for key in evidence["fileKeys"] if _reliable_file_key(key)]
     owners = set()
     for torra_evidence, decision in torra_rows:
         owner = decision["ownerTargetKey"]
         if not owner:
             continue
-        if any(qb_key in torra_key or torra_key in qb_key for qb_key in qb_keys for torra_key in torra_evidence["fileKeys"]):
+        if any(
+            file_key == torra_key if exact_only else file_key in torra_key or torra_key in file_key
+            for file_key in file_keys
+            for torra_key in torra_evidence["fileKeys"]
+        ):
             owners.add(owner)
     return owners
 
@@ -262,7 +274,12 @@ def adjudicate_task_evidence(
 
     for index, row in enumerate(symedia_rows):
         evidence = _symedia_evidence(row, index)
-        decision = _decide(evidence, targets)
+        artifact_candidates = _owned_torra_file_targets(
+            evidence,
+            torra_decisions,
+            exact_only=True,
+        )
+        decision = _decide(evidence, targets, artifact_candidates)
         records.append(decision)
         bucket = owned.get(decision["ownerTargetKey"])
         (bucket["symedia"] if bucket else unowned["symedia"]).append((row, decision))

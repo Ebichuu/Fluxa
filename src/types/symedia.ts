@@ -17,7 +17,12 @@ export interface SymediaSummary {
   totals: {
     records: number;
     today: number;
+    processedToday?: number;
+    archivedToday?: number;
+    protectedToday?: number;
+    failedToday?: number;
     failedRecent: number;
+    protectedRecent?: number;
   };
   latest: SymediaTransferItem[];
   error?: string;

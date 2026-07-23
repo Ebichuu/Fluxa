@@ -307,6 +307,8 @@ class SubscriptionWorkbenchService:
         for recon in (reconciliation or {}).get("items", []):
             if not isinstance(recon, dict) or recon.get("localId") or recon.get("reconciliationState") != "only_torra":
                 continue
+            fulfillment_state = str(recon.get("fulfillmentState") or "following")
+            remote_completed = fulfillment_state == "completed"
             remote_visuals = discover_runtime.resolve_subscription_visuals({
                 "title": recon.get("title") or "",
                 "media_type": recon.get("mediaType") or "unknown",
@@ -320,14 +322,15 @@ class SubscriptionWorkbenchService:
                 "mediaType": recon.get("mediaType") or "unknown",
                 "tmdbId": recon.get("tmdbId") or "",
                 "posterUrl": remote_visuals.get("poster_url") or "",
-                "progressText": "Torra 已有订阅，待建立本地镜像",
+                "progressText": "Torra 订阅已完成" if remote_completed else "Torra 正在追更",
                 "inLibrary": False,
                 "updatedAt": recon.get("observedAt") or checked_at,
                 "createdAt": recon.get("observedAt") or checked_at,
                 "sourceLabel": "Torra 已有订阅",
-                "status": "pending",
+                "status": "done" if remote_completed else "pending",
                 "origin": "torra",
                 "readOnly": True,
+                "chainState": "completed" if remote_completed else "waiting",
                 "torraSyncState": "current",
                 "torraMappingStatus": "mapped",
                 "reconciliationState": recon.get("reconciliationState"),

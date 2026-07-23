@@ -8,6 +8,8 @@ from urllib.parse import urlencode
 import requests
 from flask import Flask, jsonify
 
+from app.task_exception_runtime import protection_rule
+
 
 REQUEST_TIMEOUT_SECONDS = 15
 RECENT_PAGE_SIZE = 50
@@ -158,7 +160,16 @@ class SymediaReadClient:
             "connected": False,
             "webUrl": self.base_url,
             "lastCheckedAt": _iso_timestamp(self.clock()),
-            "totals": {"records": 0, "today": 0, "failedRecent": 0},
+            "totals": {
+                "records": 0,
+                "today": 0,
+                "processedToday": 0,
+                "archivedToday": 0,
+                "protectedToday": 0,
+                "failedToday": 0,
+                "failedRecent": 0,
+                "protectedRecent": 0,
+            },
             "latest": [],
             **({"error": error} if error else {}),
         }
@@ -174,7 +185,7 @@ class SymediaReadClient:
             today = self.clock().strftime("%Y-%m-%d")
             first_page = self.list_transfer_history(RECENT_PAGE_SIZE, 1)
             recent_rows = first_page["rows"]
-            today_count = sum(str(row.get("date") or "").startswith(today) for row in recent_rows)
+            today_rows = [row for row in recent_rows if str(row.get("date") or "").startswith(today)]
             current_rows = recent_rows
             page = 2
             while (
@@ -183,10 +194,31 @@ class SymediaReadClient:
                 and str(current_rows[-1].get("date") or "").startswith(today)
             ):
                 current_rows = self.list_transfer_history(RECENT_PAGE_SIZE, page)["rows"]
-                today_count += sum(
-                    str(row.get("date") or "").startswith(today) for row in current_rows
+                today_rows.extend(
+                    row for row in current_rows
+                    if str(row.get("date") or "").startswith(today)
                 )
                 page += 1
+            protected_today = sum(
+                row.get("status") is False
+                and bool(protection_rule(row.get("reasonCode"), row.get("errmsg")))
+                for row in today_rows
+            )
+            failed_today = sum(
+                row.get("status") is False
+                and not protection_rule(row.get("reasonCode"), row.get("errmsg"))
+                for row in today_rows
+            )
+            protected_recent = sum(
+                row.get("status") is False
+                and bool(protection_rule(row.get("reasonCode"), row.get("errmsg")))
+                for row in recent_rows
+            )
+            failed_recent = sum(
+                row.get("status") is False
+                and not protection_rule(row.get("reasonCode"), row.get("errmsg"))
+                for row in recent_rows
+            )
             return {
                 "configured": True,
                 "connected": True,
@@ -194,8 +226,13 @@ class SymediaReadClient:
                 "lastCheckedAt": _iso_timestamp(self.clock()),
                 "totals": {
                     "records": first_page["total"],
-                    "today": today_count,
-                    "failedRecent": sum(row.get("status") is False for row in recent_rows),
+                    "today": len(today_rows),
+                    "processedToday": len(today_rows),
+                    "archivedToday": sum(row.get("status") is not False for row in today_rows),
+                    "protectedToday": protected_today,
+                    "failedToday": failed_today,
+                    "failedRecent": failed_recent,
+                    "protectedRecent": protected_recent,
                 },
                 "latest": [
                     {

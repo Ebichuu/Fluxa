@@ -14,7 +14,6 @@ from app.episode_evidence_runtime import build_episode_evidence
 from app.task_exception_runtime import protection_rule
 
 
-CLOUD_STUCK_HOURS = 6
 STATE_PRIORITY = {"blocked": 0, "active": 1, "waiting": 2, "completed": 3}
 
 
@@ -54,8 +53,12 @@ def _season_from_text(value: str) -> int:
 
 
 def _torra_media_type(row: dict) -> str:
-    value = _string(row.get("media_type"))
-    return value if value in {"movie", "tv"} else "unknown"
+    value = _string(row.get("media_type") or row.get("type")).lower()
+    if value in {"movie", "film", "电影"}:
+        return "movie"
+    if value in {"tv", "series", "电视剧", "剧集"}:
+        return "tv"
+    return "unknown"
 
 
 def _torra_files(row: dict | None) -> list[str]:
@@ -183,26 +186,25 @@ def _parse_timestamp(value: str):
         return None
 
 
-def _cloud_step(download: dict, symedia_rows: list[dict], now: datetime) -> dict:
+def _cloud_step(download: dict, symedia_rows: list[dict], upload_summary: dict | None = None) -> dict:
     if symedia_rows:
         return {
             "key": "cloud115", "label": "进入 115", "status": "done", "evidence": "verified",
-            "detail": f"Symedia 已收到 {len(symedia_rows)} 条源文件记录",
+            "detail": f"Symedia 已收到 {len(symedia_rows)} 条源文件记录；具体上传方式未确认",
             "timestamp": _newest(row.get("date") for row in symedia_rows), "source": "Symedia",
         }
     if download["status"] == "done":
-        completed_at = _parse_timestamp(download["timestamp"]) if download["timestamp"] else None
-        age_hours = max(0, (now - completed_at).total_seconds() / 3600) if completed_at else 0
-        if age_hours >= CLOUD_STUCK_HOURS:
-            return {
-                "key": "cloud115", "label": "进入 115", "status": "blocked", "evidence": "inferred",
-                "detail": f"推断已等待 {math.floor(age_hours)} 小时，仍无 Symedia 记录",
-                "timestamp": download["timestamp"], "source": "相邻证据推断",
-            }
+        plugin_readable = bool((upload_summary or {}).get("readable"))
         return {
-            "key": "cloud115", "label": "进入 115", "status": "active", "evidence": "inferred",
-            "detail": "下载已完成，推断正在硬链接或秒传",
-            "timestamp": download["timestamp"], "source": "相邻证据推断",
+            "key": "cloud115", "label": "进入 115", "status": "unknown", "evidence": "missing",
+            "detail": (
+                "下载已完成，但 Torra 秒传插件暂未提供逐文件证据"
+                if plugin_readable
+                else "下载已完成，但当前无法读取逐文件秒传证据"
+            ),
+            "timestamp": download["timestamp"],
+            "source": "Torra secupload_115" if plugin_readable else "",
+            "reasonCode": "TORRA_SECUPLOAD_FILE_EVIDENCE_UNAVAILABLE",
         }
     return {
         "key": "cloud115", "label": "进入 115", "status": "waiting", "evidence": "missing",
@@ -336,15 +338,17 @@ def _build_subscription_item(
     source,
     now,
     cloud_policy,
+    upload_summary,
 ):
+    subscription_source = _string(subscription.get("sourceLabel")) or source
     subscription_step = {
         "key": "subscription", "label": "订阅", "status": "done", "evidence": "verified",
-        "detail": f"{source} 与 Torra 订阅已关联" if torra else f"{source} 订阅存在，Torra 尚未关联",
+        "detail": f"{subscription_source} 与 Torra 订阅已关联" if torra else f"{subscription_source} 订阅存在，Torra 尚未关联",
         "timestamp": subscription["createdAt"],
-        "source": f"{source} + Torra" if torra else source,
+        "source": f"{subscription_source} + Torra" if torra else subscription_source,
     }
     download = _download_step(matched_qb, torra)
-    cloud = _cloud_step(download, matched_symedia, now)
+    cloud = _cloud_step(download, matched_symedia, upload_summary)
     indexed = _emby_has(emby_index, subscription["mediaType"], subscription["tmdbId"])
     library = _library_step(matched_symedia, indexed)
     steps = [subscription_step, download, cloud, library]
@@ -395,13 +399,13 @@ def _build_subscription_item(
     return item, matched_qb, matched_symedia
 
 
-def _orphan_qb_item(task: dict, ownership: dict, urls: dict, now: datetime) -> dict:
+def _orphan_qb_item(task: dict, ownership: dict, urls: dict, upload_summary: dict | None = None) -> dict:
     subscription = {
         "key": "subscription", "label": "订阅", "status": "unknown", "evidence": "missing",
         "detail": "未关联订阅中枢", "timestamp": "", "source": "",
     }
     download = _download_step([task], None)
-    cloud = _cloud_step(download, [], now)
+    cloud = _cloud_step(download, [], upload_summary)
     library = _library_step([], False)
     steps = [subscription, download, cloud, library]
     episode_evidence = build_episode_evidence(qb_pairs=[(task, ownership)])
@@ -469,7 +473,7 @@ def _orphan_symedia_item(row: dict, ownership: dict, urls: dict) -> dict:
     }
 
 
-def _orphan_torra_item(row: dict, ownership: dict, urls: dict) -> dict:
+def _orphan_torra_item(row: dict, ownership: dict, urls: dict, upload_summary: dict | None = None) -> dict:
     has_download = _torra_has_download_evidence(row)
     subscription = {
         "key": "subscription", "label": "订阅", "status": "done", "evidence": "verified",
@@ -480,7 +484,7 @@ def _orphan_torra_item(row: dict, ownership: dict, urls: dict) -> dict:
         "evidence": "verified", "detail": "Torra 保留有下载记录" if has_download else "Torra 尚无下载记录",
         "timestamp": "", "source": "Torra",
     }
-    cloud = _cloud_step(download, [], datetime.now(timezone.utc))
+    cloud = _cloud_step(download, [], upload_summary)
     library = _library_step([], False)
     steps = [subscription, download, cloud, library]
     episode_evidence = build_episode_evidence(torra_pairs=[(row, ownership)])
@@ -568,10 +572,11 @@ def build_task_chain(input_data: dict) -> dict:
             input_data.get("subscriptionSource") or "中控",
             now,
             input_data.get("cloudPolicy") or {},
+            input_data.get("torraUpload") or {},
         )
         subscription_items.append(item)
     orphan_qb = [
-        _orphan_qb_item(row, record, input_data["urls"], now)
+        _orphan_qb_item(row, record, input_data["urls"], input_data.get("torraUpload") or {})
         for row, record in ownership["unowned"]["qb"]
     ]
     orphan_symedia = [
@@ -579,7 +584,7 @@ def build_task_chain(input_data: dict) -> dict:
         for row, record in ownership["unowned"]["symedia"]
     ][:50]
     orphan_torra = [
-        _orphan_torra_item(row, record, input_data["urls"])
+        _orphan_torra_item(row, record, input_data["urls"], input_data.get("torraUpload") or {})
         for row, record in ownership["unowned"]["torra"]
     ][:50]
     items = [*subscription_items, *orphan_qb, *orphan_symedia, *orphan_torra]
@@ -614,6 +619,7 @@ def build_task_chain(input_data: dict) -> dict:
             "torra": {
                 "connected": bool(urls["torra"]) and not errors.get("torra"),
                 "error": errors.get("torra") or "", "total": len(input_data["torraRows"]), "webUrl": urls["torra"],
+                "secupload115": input_data.get("torraUpload") or {},
             },
             "symedia": {
                 "connected": bool(urls["symedia"]) and not errors.get("symedia"),
@@ -666,6 +672,7 @@ def map_task_subscriptions(payload: dict) -> list[dict]:
             "createdAt": _first_text(row, ("created_at",)),
             "updatedAt": _first_text(row, ("updated_at",)),
             "allowCloudFallback": bool(row.get("allow_cloud_fallback")),
+            "sourceLabel": _first_text(row, ("source_label", "sourceLabel", "source")),
         }
         if item["id"] and item["title"] and media_type in {"movie", "tv"}:
             result.append(item)
@@ -678,6 +685,60 @@ def _read_subscriptions():
         remove_completed=False,
         persist_progress=False,
     ))
+
+
+def _task_target_identity(subscription: dict) -> tuple:
+    media_type = _string(subscription.get("mediaType"))
+    tmdb_id = _string(subscription.get("tmdbId"))
+    season = int(_number(subscription.get("seasonNumber")) or 0) if media_type == "tv" else 0
+    return media_type, tmdb_id, season
+
+
+def _torra_task_subscriptions(rows: list[dict]) -> list[dict]:
+    result = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        media_type = _torra_media_type(row)
+        remote_id = _string(row.get("id"))
+        title = _first_text(row, ("name", "keyword"))
+        tmdb_id = _first_text(row, ("tmdb_id", "tmdbid"))
+        season = int(_number(row.get("season_number", row.get("season"))) or 0)
+        if not remote_id or not title or media_type not in {"movie", "tv"}:
+            continue
+        result.append({
+            "id": f"torra:{remote_id}",
+            "title": title,
+            "mediaType": media_type,
+            "tmdbId": tmdb_id,
+            "posterUrl": "",
+            "year": _first_text(row, ("year", "release_year")),
+            "seasonNumber": season if media_type == "tv" else 0,
+            "createdAt": _first_text(row, ("created_at",)),
+            "updatedAt": _first_text(row, ("updated_at",)),
+            "allowCloudFallback": False,
+            "sourceLabel": "Torra 只读订阅",
+        })
+    return result
+
+
+def merge_task_subscriptions(local_subscriptions: list[dict], torra_rows: list[dict]) -> list[dict]:
+    """把 Torra 远端订阅作为只读目标补入任务链，不建立本地台账。"""
+    merged = [dict(item) for item in local_subscriptions if isinstance(item, dict)]
+    local_identities = {
+        identity
+        for item in merged
+        if (identity := _task_target_identity(item))[0] in {"movie", "tv"} and identity[1]
+    }
+    seen_remote = set()
+    for remote in _torra_task_subscriptions(torra_rows):
+        identity = _task_target_identity(remote)
+        remote_key = identity if identity[1] else ("remote", remote["id"])
+        if remote_key in seen_remote or (identity[1] and identity in local_identities):
+            continue
+        seen_remote.add(remote_key)
+        merged.append(remote)
+    return merged
 
 
 def _optional_read(configured, reader, fallback):
@@ -699,7 +760,7 @@ class TaskChainService:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     def get_chain(self):
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=6) as executor:
             subscription_future = executor.submit(self.subscription_loader)
             qb_future = executor.submit(self.qb.summary)
             torra_future = executor.submit(
@@ -707,6 +768,13 @@ class TaskChainService:
                 self.torra.is_configured(),
                 self.torra.list_subscriptions,
                 [],
+            )
+            torra_upload_reader = getattr(self.torra, "get_secupload_summary", None)
+            torra_upload_future = executor.submit(
+                _optional_read,
+                self.torra.is_configured() and callable(torra_upload_reader),
+                torra_upload_reader if callable(torra_upload_reader) else lambda: {},
+                {},
             )
             symedia_future = executor.submit(
                 _optional_read,
@@ -723,12 +791,15 @@ class TaskChainService:
             subscriptions = subscription_future.result()
             qb = qb_future.result()
             torra_rows, torra_error = torra_future.result()
+            subscriptions = merge_task_subscriptions(subscriptions, torra_rows)
+            torra_upload, torra_upload_error = torra_upload_future.result()
             symedia_page, symedia_error = symedia_future.result()
             emby_index, emby_error = emby_future.result()
         return build_task_chain({
             "subscriptions": subscriptions,
-            "subscriptionSource": "NasEmby Core",
+            "subscriptionSource": "Fluxa 本地订阅",
             "torraRows": torra_rows,
+            "torraUpload": torra_upload,
             "qb": qb,
             "symediaRows": symedia_page["rows"],
             "symediaTotal": symedia_page["total"],
@@ -741,6 +812,7 @@ class TaskChainService:
             },
             "serviceErrors": {
                 "torra": torra_error,
+                "torraUpload": torra_upload_error,
                 "symedia": symedia_error,
                 "emby": emby_error,
             },

@@ -155,9 +155,12 @@ export function ControlRoom() {
       {
         id: 'symedia', order: '03', name: 'Symedia', role: '识别、整理、STRM 与归档', state: symediaState,
         stateLabel: symedia?.connected ? (symedia.totals.failedRecent > 0 ? '近期有失败' : '在线') : symedia?.configured ? '连接失败' : '未配置',
-        metric: symedia?.connected ? String(symedia.totals.today) : '—', metricLabel: `今日入库 / 累计 ${new Intl.NumberFormat('zh-CN').format(symedia?.totals.records ?? 0)}`,
+        metric: symedia?.connected ? String(symedia.totals.processedToday ?? symedia.totals.today) : '—', metricLabel: `今日处理 / 累计 ${new Intl.NumberFormat('zh-CN').format(symedia?.totals.records ?? 0)}`,
         checked: symedia?.connected && latestTransfer ? `最近：${latestTransfer.title}` : symedia ? `检查于 ${formatTimeAgo(symedia.lastCheckedAt)}` : '等待首次检查',
-        meta: symedia?.connected ? [`近期失败 ${symedia.totals.failedRecent}`, latestTransfer?.seasonEpisode || '等待下一条入库'] : [symedia?.error || '等待 Symedia 连接'],
+        meta: symedia?.connected ? [
+          `成功归档 ${symedia.totals.archivedToday ?? 0} · 正常保护 ${symedia.totals.protectedToday ?? 0}`,
+          symedia.totals.failedRecent > 0 ? `真实失败 ${symedia.totals.failedRecent}` : latestTransfer?.seasonEpisode || '近期没有真实归档故障'
+        ] : [symedia?.error || '等待 Symedia 连接'],
         icon: <Wrench aria-hidden="true" size={20} />, toolUrl: symedia?.webUrl || ''
       },
       {

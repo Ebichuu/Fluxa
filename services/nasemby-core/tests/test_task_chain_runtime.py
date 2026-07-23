@@ -112,7 +112,7 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
             [(1, 1, "download"), (1, 1, "download"), (1, 1, "library")],
         )
 
-    def test_completed_download_without_symedia_over_six_hours_is_inferred_block(self):
+    def test_completed_download_without_file_level_upload_evidence_stays_unknown(self):
         from app.task_chain_runtime import build_task_chain
 
         completed_at = int(datetime(2026, 7, 13, tzinfo=timezone.utc).timestamp())
@@ -140,6 +140,12 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
                 "tmdb_id": 456,
                 "downloaded_file_names": ["等待秒传.2026.mkv"],
             }],
+            "torraUpload": {
+                "connected": True,
+                "readable": True,
+                "perFileEvidence": False,
+                "activeRuns": 0,
+            },
             "qb": qb_summary([task]),
             "symediaRows": [],
             "symediaTotal": 0,
@@ -149,9 +155,13 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
         })
 
         cloud = next(step for step in result["items"][0]["steps"] if step["key"] == "cloud115")
-        self.assertEqual(result["items"][0]["state"], "blocked")
-        self.assertEqual(cloud["status"], "blocked")
-        self.assertEqual(cloud["evidence"], "inferred")
+        self.assertEqual(result["items"][0]["state"], "waiting")
+        self.assertEqual(cloud["status"], "unknown")
+        self.assertEqual(cloud["evidence"], "missing")
+        self.assertEqual(cloud["reasonCode"], "TORRA_SECUPLOAD_FILE_EVIDENCE_UNAVAILABLE")
+        self.assertIn("暂未提供逐文件证据", cloud["detail"])
+        self.assertNotIn("推断", cloud["detail"])
+        self.assertEqual(result["services"]["torra"]["secupload115"]["readable"], True)
 
     def test_qb_control_summary_matches_all_related_downloads(self):
         from app.task_chain_runtime import build_task_chain
@@ -210,6 +220,52 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
             "tv:test:tmdb:20:season:1",
         ])
         self.assertEqual(rows[1]["seasonNumber"], 1)
+
+    def test_torra_read_only_subscriptions_fill_empty_local_task_targets(self):
+        from app.task_chain_runtime import merge_task_subscriptions
+
+        subscriptions = merge_task_subscriptions([], [{
+            "id": "torra-101",
+            "name": "远端追更",
+            "media_type": "tv",
+            "tmdb_id": 101,
+            "season_number": 2,
+            "year": "2026",
+        }])
+
+        self.assertEqual(subscriptions, [{
+            "id": "torra:torra-101",
+            "title": "远端追更",
+            "mediaType": "tv",
+            "tmdbId": "101",
+            "posterUrl": "",
+            "year": "2026",
+            "seasonNumber": 2,
+            "createdAt": "",
+            "updatedAt": "",
+            "allowCloudFallback": False,
+            "sourceLabel": "Torra 只读订阅",
+        }])
+
+    def test_torra_read_only_target_does_not_duplicate_same_local_tmdb_target(self):
+        from app.task_chain_runtime import merge_task_subscriptions
+
+        local = [{
+            "id": "local-101",
+            "title": "本地追更",
+            "mediaType": "tv",
+            "tmdbId": "101",
+            "seasonNumber": 2,
+        }]
+        result = merge_task_subscriptions(local, [{
+            "id": "torra-101",
+            "name": "远端追更",
+            "media_type": "series",
+            "tmdb_id": 101,
+            "season_number": 2,
+        }])
+
+        self.assertEqual(result, local)
 
     def test_torra_zero_season_string_matches_any_requested_season(self):
         from app.task_chain_runtime import build_task_chain

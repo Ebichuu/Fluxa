@@ -103,13 +103,46 @@ class SymediaReadRuntimeContractTests(unittest.TestCase):
         summary = client.get_summary()
 
         self.assertTrue(summary["connected"])
-        self.assertEqual(summary["totals"], {"records": 53374, "today": 51, "failedRecent": 1})
+        self.assertEqual(summary["totals"], {
+            "records": 53374,
+            "today": 51,
+            "processedToday": 51,
+            "archivedToday": 50,
+            "protectedToday": 0,
+            "failedToday": 1,
+            "failedRecent": 1,
+            "protectedRecent": 0,
+        })
         self.assertEqual(summary["lastCheckedAt"], "2026-07-16T04:00:00.000Z")
         self.assertEqual(len(summary["latest"]), 5)
         self.assertFalse(summary["latest"][1]["status"])
         self.assertEqual(summary["latest"][0]["mediaType"], "movie")
         self.assertEqual(len(session.requests), 2)
         self.assertTrue(all(item[2]["headers"]["Authorization"] == "Bearer fixed-token" for item in session.requests))
+
+    def test_low_score_rejection_is_normal_protection_not_recent_failure(self):
+        from app.symedia_read_runtime import SymediaReadClient, SymediaReadConfig
+
+        rows = [{
+            "title": "保护测试",
+            "status": False,
+            "errmsg": "源文件评分低于目标文件，取消覆盖",
+            "date": "2026-07-16 11:00:00",
+        }]
+        session = FakeSession([FakeResponse(payload={"data": {"list": rows, "total": 1}})])
+        client = SymediaReadClient(
+            SymediaReadConfig(base_url="http://symedia.example.test", token="fixed-token"),
+            session=session,
+            clock=lambda: datetime(2026, 7, 16, 12, 0, tzinfo=timezone(timedelta(hours=8))),
+        )
+
+        totals = client.get_summary()["totals"]
+
+        self.assertEqual(totals["processedToday"], 1)
+        self.assertEqual(totals["archivedToday"], 0)
+        self.assertEqual(totals["protectedToday"], 1)
+        self.assertEqual(totals["failedToday"], 0)
+        self.assertEqual(totals["failedRecent"], 0)
 
     def test_password_token_relogs_once_after_unauthorized(self):
         from app.symedia_read_runtime import SymediaReadClient, SymediaReadConfig

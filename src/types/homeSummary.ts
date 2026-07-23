@@ -6,6 +6,7 @@ export interface HomeSummaryCounts {
   pending: number;
   waiting: number;
   evidenceInsufficient: number;
+  identityPending: number;
   actionRequired: number;
   suspectedBlocked: number;
   protected: number;

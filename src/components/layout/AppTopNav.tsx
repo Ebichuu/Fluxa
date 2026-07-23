@@ -46,8 +46,6 @@ export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, 
     ? '状态读取中'
     : homeSummary.counts.actionRequired > 0
       ? `${homeSummary.counts.actionRequired} 项需要处理`
-      : homeSummary.counts.suspectedBlocked > 0
-        ? `${homeSummary.counts.suspectedBlocked} 项疑似阻塞`
       : healthState === 'waiting'
         ? '任务处理中'
         : healthState === 'normal'

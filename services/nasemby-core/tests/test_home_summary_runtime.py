@@ -200,7 +200,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(issue["secondaryReasonText"], "任务尚未关联到可靠媒体身份")
         self.assertNotIn("/storage/", f"{issue['headline']} {issue['reasonText']} {issue['secondaryReasonText']}")
 
-    def test_home_lists_unlinked_inferred_block_as_suspected(self):
+    def test_home_collapses_unlinked_inferred_records_into_one_identity_notice(self):
         blocked = item(library_status="blocked")
         blocked.update({"state": "blocked", "tmdbId": "", "confidence": "unlinked"})
         blocked["steps"][-1].update({
@@ -212,12 +212,14 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
 
         result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
 
-        self.assertEqual(result["counts"]["suspectedBlocked"], 1)
+        self.assertEqual(result["counts"]["suspectedBlocked"], 0)
         self.assertEqual(result["counts"]["actionRequired"], 0)
         self.assertEqual(result["counts"]["evidenceInsufficient"], 1)
-        issue = next(value for value in result["issues"] if value["title"] == "测试剧")
-        self.assertEqual(issue["executionState"], "suspected_blocked")
-        self.assertEqual(issue["reasonCode"], "TASK_SUSPECTED_BLOCKED")
+        self.assertEqual(result["counts"]["identityPending"], 1)
+        issue = next(value for value in result["issues"] if value["source"] == "task-identity")
+        self.assertEqual(issue["headline"], "任务身份尚未完成关联")
+        self.assertEqual(issue["reasonCode"], "TASK_IDENTITY_AGGREGATION_INCOMPLETE")
+        self.assertIn("无法准确判断秒传积压", issue["reasonText"])
 
 
 if __name__ == "__main__":

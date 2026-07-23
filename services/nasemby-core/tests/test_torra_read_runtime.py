@@ -126,6 +126,71 @@ class TorraReadRuntimeContractTests(unittest.TestCase):
         self.assertEqual(session.requests[1][2]["headers"]["Authorization"], "Bearer token-one")
         self.assertEqual(session.requests[3][2]["headers"]["Authorization"], "Bearer token-two")
 
+    def test_secupload_summary_exposes_only_readable_plugin_evidence(self):
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        session = FakeSession([FakeResponse(payload={
+            "success": True,
+            "data": {
+                "manifest": {"key": "secupload_115", "enabled": True},
+                "config_items": [{
+                    "item_id": "category-tv",
+                    "name": "电视剧",
+                    "enabled": True,
+                    "values": {"cookie": "must-not-escape", "temp_path": "/private/pending"},
+                    "updated_at": "2026-07-23T15:00:00",
+                }],
+                "tasks": [{
+                    "key": "retry_pending",
+                    "name": "重试临时目录",
+                    "allow_schedule": True,
+                    "allow_manual_run": True,
+                }],
+                "schedules": [{
+                    "task_key": "retry_pending",
+                    "target_item_id": "category-tv",
+                    "enabled": True,
+                    "cron": "0 */8 * * *",
+                    "next_run_at": "2026-07-24T00:00:00+08:00",
+                    "last_run_at": "2026-07-23T16:00:00",
+                }],
+                "recent_runs": [{
+                    "run_id": "run-1",
+                    "task_key": "retry_pending",
+                    "target_item_id": "category-tv",
+                    "trigger": "schedule",
+                    "status": "success",
+                    "message": "电视剧 临时目录重试完成，成功 4 个，失败 1 个",
+                    "started_at": "2026-07-23T16:00:00",
+                    "finished_at": "2026-07-23T16:00:07",
+                    "created_at": "2026-07-23T16:00:00",
+                }],
+            },
+        })])
+        client = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+            clock=lambda: datetime(2026, 7, 23, 8, 30, tzinfo=timezone.utc),
+        )
+
+        summary = client.get_secupload_summary()
+
+        self.assertTrue(summary["connected"])
+        self.assertTrue(summary["readable"])
+        self.assertFalse(summary["perFileEvidence"])
+        self.assertEqual(summary["activeRuns"], 0)
+        self.assertEqual(summary["latestRun"]["counts"], {"success": 4, "failed": 1})
+        self.assertEqual(summary["nextRunAt"], "2026-07-24T00:00:00+08:00")
+        self.assertEqual(summary["configItems"], [{
+            "itemId": "category-tv",
+            "name": "电视剧",
+            "enabled": True,
+            "updatedAt": "2026-07-23T15:00:00",
+        }])
+        self.assertNotIn("must-not-escape", str(summary))
+        self.assertNotIn("/private/pending", str(summary))
+        self.assertEqual(session.requests[0][1], "/api/v1/plugins/secupload_115")
+
     def test_duplicate_matching_prefers_tmdb_type_and_season(self):
         from app.torra_read_runtime import find_subscription
 

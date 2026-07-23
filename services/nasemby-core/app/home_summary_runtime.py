@@ -66,6 +66,19 @@ def _item_evidence(item: dict, now: str) -> dict:
     return result
 
 
+def _identity_only_issue(result: dict) -> bool:
+    return (
+        result.get("healthState") == "evidence_insufficient"
+        and result.get("identityState") in {"unidentified", "conflict"}
+        and result.get("executionState") not in {"action_required", "confirmed_failed"}
+        and result.get("reasonCode") in {
+            "TASK_IDENTITY_UNLINKED",
+            "TASK_IDENTITY_CONFLICT",
+            "TASK_SUSPECTED_BLOCKED",
+        }
+    )
+
+
 def _problem_stage(item: dict) -> dict:
     stages = [row for row in item.get("stages") or [] if isinstance(row, dict)]
     return next((
@@ -199,6 +212,16 @@ class HomeSummaryService:
                 unique_items[key] = _latest_item(unique_items.get(key), item)
 
         item_evidence = [(_target_key(item), item, _item_evidence(item, now)) for item in unique_items.values()]
+        identity_only = [row for row in item_evidence if _identity_only_issue(row[2])]
+        visible_item_evidence = [row for row in item_evidence if not _identity_only_issue(row[2])]
+        identity_evidence = evidence(
+            state="evidence_insufficient",
+            source="task-identity",
+            reason_code="TASK_IDENTITY_AGGREGATION_INCOMPLETE",
+            reason_text=f"{len(identity_only)} 条任务身份尚未完成关联，当前无法准确判断秒传积压",
+            observed_at=str(chain.get("generatedAt") or now),
+            fresh_until=_fresh_until(now_value),
+        ) if identity_only else None
         counts = {
             "ingestedToday": sum(
                 _step(item, "library").get("status") == "done"
@@ -209,12 +232,19 @@ class HomeSummaryService:
                 any(step.get("key") == "download" and step.get("status") == "active" for step in item.get("steps") or [])
                 for item in unique_items.values()
             ),
-            "pending": sum(result["healthState"] in {"waiting", "evidence_insufficient"} for _, _, result in item_evidence),
-            "waiting": sum(result["healthState"] == "waiting" for _, _, result in item_evidence),
-            "evidenceInsufficient": sum(result["healthState"] == "evidence_insufficient" for _, _, result in item_evidence),
+            "pending": (
+                sum(result["healthState"] in {"waiting", "evidence_insufficient"} for _, _, result in visible_item_evidence)
+                + (1 if identity_evidence else 0)
+            ),
+            "waiting": sum(result["healthState"] == "waiting" for _, _, result in visible_item_evidence),
+            "evidenceInsufficient": (
+                sum(result["healthState"] == "evidence_insufficient" for _, _, result in visible_item_evidence)
+                + (1 if identity_evidence else 0)
+            ),
+            "identityPending": len(identity_only),
             "actionRequired": 0,
             "suspectedBlocked": sum(
-                result.get("executionState") == "suspected_blocked" for _, _, result in item_evidence
+                result.get("executionState") == "suspected_blocked" for _, _, result in visible_item_evidence
             ),
             "protected": sum(result["healthState"] == "protected" for _, _, result in item_evidence),
         }
@@ -333,12 +363,14 @@ class HomeSummaryService:
                     reason_text="RSS 状态暂时无法读取", observed_at=now, fresh_until=_fresh_until(now_value),
                 )
 
-        all_evidence = [result for _, _, result in item_evidence] + [scheduler_evidence] + service_evidence
+        all_evidence = [result for _, _, result in visible_item_evidence] + [scheduler_evidence] + service_evidence
+        if identity_evidence:
+            all_evidence.append(identity_evidence)
         if rss_evidence:
             all_evidence.append(rss_evidence)
         health_state = combine_health(*(result["healthState"] for result in all_evidence))
         issues = []
-        for target_key, item, result in item_evidence:
+        for target_key, item, result in visible_item_evidence:
             if result["healthState"] in {"action_required", "evidence_insufficient"}:
                 issue_copy = _safe_issue_copy(item, result)
                 issues.append({
@@ -348,6 +380,16 @@ class HomeSummaryService:
                     "chainId": str(item.get("chainId") or item.get("id") or ""),
                     "title": str(item.get("title") or "未命名媒体"),
                 })
+        if identity_evidence:
+            issues.append({
+                **identity_evidence,
+                "targetKey": "",
+                "chainId": "",
+                "title": "任务身份",
+                "headline": "任务身份尚未完成关联",
+                "displayTitle": "任务身份尚未完成关联",
+                "reasonText": identity_evidence["reasonText"],
+            })
         for result in [scheduler_evidence, *service_evidence, *([rss_evidence] if rss_evidence else [])]:
             if result["healthState"] in {"action_required", "evidence_insufficient"}:
                 issues.append({**result, "targetKey": "", "chainId": "", "title": result["source"]})
@@ -358,8 +400,6 @@ class HomeSummaryService:
 
         if health_state == "action_required":
             headline = f"有 {max(1, counts['actionRequired'])} 项需要处理"
-        elif counts["suspectedBlocked"]:
-            headline = f"有 {counts['suspectedBlocked']} 项疑似阻塞"
         elif health_state == "evidence_insufficient":
             headline = "部分状态缺少证据"
         elif health_state == "waiting":
@@ -368,8 +408,7 @@ class HomeSummaryService:
             headline = "影音中心运行正常"
         detail = (
             f"今日入库 {counts['ingestedToday']} 条 · 下载中 {counts['downloading']} 条 · "
-            f"等待 {counts['waiting']} 条 · 疑似阻塞 {counts['suspectedBlocked']} 条 · "
-            f"证据不足 {counts['evidenceInsufficient']} 条"
+            f"等待 {counts['waiting']} 条 · 证据不足 {counts['evidenceInsufficient']} 条"
         )
         return {
             "ok": True,

@@ -345,6 +345,37 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         self.assertTrue(snapshot["items"][0]["readOnly"])
         self.assertEqual(snapshot["posterBackfillIds"], ["torra:remote-only"])
 
+    def test_remote_completed_subscription_is_not_reported_as_pending(self):
+        app = Flask(__name__)
+        app.extensions["mcc_subscription_reconciliation"] = type("Reconciliation", (), {
+            "snapshot": lambda _self: {
+                "items": [{
+                    "id": "torra:completed",
+                    "localId": "",
+                    "title": "已完成远端剧",
+                    "mediaType": "tv",
+                    "tmdbId": "303",
+                    "seasonNumber": 1,
+                    "reconciliationState": "only_torra",
+                    "fulfillmentState": "completed",
+                }],
+            },
+        })()
+        service = SubscriptionWorkbenchService(app, {})
+        with patch.object(discover_runtime, "load_subscription_items", return_value={"items": [], "errors": []}), patch.object(
+            discover_runtime, "resolve_subscription_visuals", return_value={}
+        ), patch.object(discover_runtime, "load_subscription_config", return_value={}), patch.object(
+            discover_runtime, "subscription_blocked_titles", return_value=[]
+        ):
+            snapshot = service.snapshot(limit=24)
+
+        item = snapshot["items"][0]
+        self.assertEqual(item["progressText"], "Torra 订阅已完成")
+        self.assertEqual(item["status"], "done")
+        self.assertEqual(item["chainState"], "completed")
+        self.assertEqual(snapshot["stats"]["pending"], 0)
+        self.assertEqual(snapshot["stats"]["inLibrary"], 0)
+
     def test_visual_backfill_updates_only_local_rows_with_exact_tmdb_identity(self):
         app = Flask(__name__)
         service = SubscriptionWorkbenchService(app, {"NASEMBY_CORE_WRITE_ENABLED": "true"})
