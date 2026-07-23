@@ -119,25 +119,58 @@ def extract_media_identity(entry):
     return _media_identity(entry if isinstance(entry, dict) else {})
 
 
-def _season_episode(title):
+def _category_media_type(categories):
+    text = " ".join(str(value or "") for value in categories).casefold()
+    if any(keyword in text for keyword in (
+        "tv", "series", "episode", "anime", "animation",
+        "电视剧", "剧集", "连续剧", "动漫", "动画", "番剧", "综艺",
+    )):
+        return "tv"
+    if any(keyword in text for keyword in ("movie", "film", "电影", "影剧")):
+        return "movie"
+    return ""
+
+
+def extract_release_scope(title, categories=None):
     text = str(title or "")
     season = episode_start = episode_end = None
+    year_episode_match = re.search(
+        r"(?i)\bS((?:19|20)\d{2})\s*E(\d{1,4})(?:\s*[-~]\s*E?(\d{1,4}))?",
+        text,
+    )
     match = re.search(r"(?i)\bS(\d{1,2})\s*E(\d{1,4})(?:\s*[-~]\s*E?(\d{1,4}))?", text)
     if match:
         season = int(match.group(1))
         episode_start = int(match.group(2))
         episode_end = int(match.group(3) or match.group(2))
+    elif year_episode_match:
+        episode_start = int(year_episode_match.group(2))
+        episode_end = int(year_episode_match.group(3) or year_episode_match.group(2))
     else:
         season_match = re.search(r"(?i)\bS(\d{1,2})\b", text)
         if not season_match:
             season_match = re.search(r"(?i)(?:Season\s*|第\s*)(\d{1,2})(?:\s*季)", text)
+        season_episode_match = re.search(
+            r"(?i)(?<!\d)(\d{1,2})\s*x\s*(\d{1,4})(?:\s*[-~]\s*(\d{1,4}))?",
+            text,
+        )
         episode_match = re.search(r"第\s*(\d{1,4})(?:\s*[-~至]\s*(\d{1,4}))?\s*[集话]", text)
+        if not episode_match:
+            episode_match = re.search(
+                r"(?i)(?:^|[ ._\-\[])EP?\s*0*(\d{1,4})(?:\s*[-~]\s*E?P?\s*0*(\d{1,4}))?(?=$|[ ._\-\]])",
+                text,
+            )
+        if season_episode_match:
+            season = int(season_episode_match.group(1))
+            episode_start = int(season_episode_match.group(2))
+            episode_end = int(season_episode_match.group(3) or season_episode_match.group(2))
         if season_match:
             season = int(season_match.group(1))
-        if episode_match:
+        if episode_match and episode_start is None:
             episode_start = int(episode_match.group(1))
             episode_end = int(episode_match.group(2) or episode_match.group(1))
-    media_type = "tv" if episode_start is not None or season is not None else "movie"
+    category_type = _category_media_type(categories or [])
+    media_type = "tv" if episode_start is not None or season is not None else category_type or "movie"
     return media_type, season, episode_start, episode_end
 
 
@@ -178,7 +211,7 @@ def parse_private_feed(content):
         download_url = str(enclosure.get("href") or "").strip()
         guid = str(entry.get("id") or entry.get("guid") or download_url or detail_url).strip()
         categories = [str(value.get("term") or "").strip() for value in (entry.get("tags") or []) if value.get("term")]
-        media_type, season, episode_start, episode_end = _season_episode(title)
+        media_type, season, episode_start, episode_end = extract_release_scope(title, categories)
         identity = _media_identity(entry)
         fingerprint_source = guid or "|".join((title, _published(entry), download_url, detail_url))
         items.append({

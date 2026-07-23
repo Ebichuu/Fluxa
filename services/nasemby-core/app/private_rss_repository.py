@@ -670,7 +670,8 @@ class PrivateRssRepository:
                 "SELECT i.*, s.name AS source_name, s.domain AS source_domain "
                 "FROM rss_items i JOIN rss_sources s ON s.id=i.source_id "
                 "WHERE i.identity_status='unidentified' AND i.tmdb_id='' AND i.imdb_id='' "
-                "ORDER BY COALESCE(NULLIF(i.published_at, ''), i.created_at) DESC, i.id DESC LIMIT ?",
+                "ORDER BY i.identity_updated_at ASC, "
+                "COALESCE(NULLIF(i.published_at, ''), i.created_at) DESC, i.id DESC LIMIT ?",
                 (limit,),
             ).fetchall()]
 
@@ -702,6 +703,41 @@ class PrivateRssRepository:
             "identity_confidence=?, identity_updated_at=? "
             "WHERE id=? AND identity_status='unidentified' AND tmdb_id='' AND imdb_id=''",
             (str(source or "")[:160], str(confidence or "")[:40], _iso(), str(item_id)),
+        )
+        return cursor.rowcount > 0
+
+    @staticmethod
+    def update_item_release_scope(
+        connection,
+        item_id,
+        media_type,
+        season_number=None,
+        episode_start=None,
+        episode_end=None,
+    ):
+        cursor = connection.execute(
+            "UPDATE rss_items SET media_type=?, season_number=?, episode_start=?, episode_end=? "
+            "WHERE id=? AND (media_type<>? OR season_number IS NOT ? OR episode_start IS NOT ? OR episode_end IS NOT ?)",
+            (
+                str(media_type or ""),
+                season_number,
+                episode_start,
+                episode_end,
+                str(item_id),
+                str(media_type or ""),
+                season_number,
+                episode_start,
+                episode_end,
+            ),
+        )
+        return cursor.rowcount > 0
+
+    @staticmethod
+    def touch_item_identity_check(connection, item_id):
+        cursor = connection.execute(
+            "UPDATE rss_items SET identity_updated_at=? "
+            "WHERE id=? AND identity_status='unidentified' AND tmdb_id='' AND imdb_id=''",
+            (_iso(_now() + timedelta(seconds=1)), str(item_id)),
         )
         return cursor.rowcount > 0
 

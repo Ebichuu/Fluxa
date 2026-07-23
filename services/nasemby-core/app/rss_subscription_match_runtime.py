@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from app.private_rss_parser import extract_media_identity
+from app.private_rss_parser import extract_media_identity, extract_release_scope
 
 
 ACTIVE_WATCH_STATES = {"observing_upgrade", "search_due", "search_running"}
@@ -61,11 +62,11 @@ def _contains_title(text, alias):
         return False
     if any(ord(char) > 127 for char in alias):
         return compact_alias in _compact(text)
-    escaped = re.escape(" ".join(alias.split()))
-    escaped = escaped.replace(r"\ ", r"[ ._\-]+")
-    return bool(LATIN_BOUNDARY.pattern.format(escaped) and re.search(
-        LATIN_BOUNDARY.pattern.format(escaped), text, re.IGNORECASE
-    ))
+    tokens = re.findall(r"[a-z0-9]+", alias)
+    if not tokens:
+        return False
+    normalized_alias = r"[^a-z0-9]+".join(re.escape(token) for token in tokens)
+    return bool(re.search(LATIN_BOUNDARY.pattern.format(normalized_alias), text, re.IGNORECASE))
 
 
 def _year(*values):
@@ -106,16 +107,31 @@ def _subscription_key(subscription):
 def _subscription_aliases(subscription):
     canonical = []
     aliases = []
-    for key in ("title", "name", "original_title", "original_name", "source_title"):
+    for key in ("title", "name", "keyword", "original_title", "original_name", "source_title"):
         value = _text(subscription.get(key))
         if value:
             canonical.append(value)
-    for key in ("aliases", "names", "title_aliases", "alternate_titles", "aka"):
+    for key in (
+        "aliases", "names", "names_json", "search_names",
+        "title_aliases", "alternate_titles", "aka",
+    ):
         values = subscription.get(key)
         if isinstance(values, str):
-            values = [values]
+            try:
+                parsed = json.loads(values)
+            except (TypeError, ValueError):
+                parsed = None
+            values = parsed if isinstance(parsed, (list, tuple, set)) else [values]
         if isinstance(values, (list, tuple, set)):
-            aliases.extend(_text(value) for value in values)
+            for value in values:
+                if isinstance(value, dict):
+                    aliases.extend(
+                        _text(value.get(field))
+                        for field in ("name", "title", "value")
+                        if _text(value.get(field))
+                    )
+                else:
+                    aliases.append(_text(value))
     return (
         list(dict.fromkeys(value for value in canonical if value)),
         list(dict.fromkeys(value for value in aliases if value)),
@@ -213,7 +229,7 @@ class RssSubscriptionMatchRuntime:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.analysis = analysis
 
-    def _subscriptions(self):
+    def _local_subscriptions(self):
         payload = self.subscription_loader()
         if isinstance(payload, dict):
             payload = payload.get("items") or []
@@ -222,6 +238,30 @@ class RssSubscriptionMatchRuntime:
             for item in payload if isinstance(item, dict) and _subscription_key(item)
         }
 
+    def _torra_subscriptions(self):
+        torra = getattr(self.analysis, "torra", None) if self.analysis else None
+        if torra is None:
+            return {}
+        try:
+            if hasattr(torra, "is_configured") and not torra.is_configured():
+                return {}
+            rows = torra.list_subscriptions()
+        except Exception:
+            return {}
+        result = {}
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict) or not _subscription_key(row):
+                continue
+            item = dict(row)
+            item["key"] = f"torra:{_subscription_key(row)}"
+            item["source"] = "torra"
+            result[item["key"]] = item
+        return result
+
+    def _subscriptions(self):
+        local = self._local_subscriptions()
+        return {**self._torra_subscriptions(), **local}
+
     @staticmethod
     def _subscription_season(subscription):
         for key in ("target_season", "season_number", "current_season", "latest_season", "season"):
@@ -229,9 +269,35 @@ class RssSubscriptionMatchRuntime:
                 return _int(subscription.get(key))
         return None
 
+    @staticmethod
+    def _subscription_years(subscription, item_season=None):
+        years = {
+            value
+            for value in (
+                _year(subscription.get("year")),
+                _year(subscription.get("release_date")),
+                _year(subscription.get("first_air_date")),
+            )
+            if value
+        }
+        season_years = subscription.get("season_years") or subscription.get("season_years_json")
+        if isinstance(season_years, str):
+            try:
+                season_years = json.loads(season_years)
+            except (TypeError, ValueError):
+                season_years = {}
+        if isinstance(season_years, dict):
+            if item_season not in (None, ""):
+                value = season_years.get(str(_int(item_season)), season_years.get(_int(item_season)))
+                if _year(value):
+                    years.add(_year(value))
+            else:
+                years.update(_year(value) for value in season_years.values() if _year(value))
+        return years
+
     def _identity_backfill_candidates(self, item, subscriptions):
         item_type = _media_type(item.get("media_type") or item.get("mediaType"))
-        item_season = item.get("season_number")
+        item_season = item.get("season_number", item.get("seasonNumber"))
         item_year = _year(item.get("title"))
         candidates = []
         for subscription in subscriptions.values():
@@ -242,19 +308,22 @@ class RssSubscriptionMatchRuntime:
             if identity is None:
                 continue
             basis, matched_alias, subscription_tmdb = identity
-            if not subscription_tmdb or basis != "standard-title-map":
+            if not subscription_tmdb:
                 continue
             if item_type == "tv":
                 subscription_season = self._subscription_season(subscription)
-                if item_season is None or subscription_season is None or _int(item_season) != subscription_season:
+                if (
+                    item_season not in (None, "")
+                    and subscription_season is not None
+                    and _int(item_season) != subscription_season
+                ):
+                    continue
+                subscription_years = self._subscription_years(subscription, item_season)
+                if item_year and subscription_years and item_year not in subscription_years:
                     continue
             else:
-                subscription_year = _year(
-                    subscription.get("year"),
-                    subscription.get("release_date"),
-                    subscription.get("first_air_date"),
-                )
-                if not item_year or not subscription_year or item_year != subscription_year:
+                subscription_years = self._subscription_years(subscription)
+                if not item_year or not subscription_years or item_year not in subscription_years:
                     continue
             candidates.append({
                 "tmdbId": subscription_tmdb,
@@ -264,6 +333,67 @@ class RssSubscriptionMatchRuntime:
             })
         return candidates
 
+    def _refresh_item_scope(self, connection, item):
+        category = _text(item.get("category"))
+        categories = [value.strip() for value in category.split("/") if value.strip()]
+        media_type, season, episode_start, episode_end = extract_release_scope(
+            item.get("title"),
+            categories,
+        )
+        self.rss_repository.update_item_release_scope(
+            connection,
+            item.get("id"),
+            media_type,
+            season,
+            episode_start,
+            episode_end,
+        )
+        return {
+            **item,
+            "media_type": media_type,
+            "season_number": season,
+            "episode_start": episode_start,
+            "episode_end": episode_end,
+        }
+
+    def _supplement_item_from_subscriptions(self, connection, item, subscriptions):
+        identity_status = _text(item.get("identity_status") or item.get("identityStatus")) or "unidentified"
+        if (
+            identity_status != "unidentified"
+            or _tmdb_id(item)
+            or _text(item.get("imdb_id") or item.get("imdbId"))
+        ):
+            return item
+        candidates = self._identity_backfill_candidates(item, subscriptions)
+        candidate_tmdb_ids = {candidate["tmdbId"] for candidate in candidates if candidate["tmdbId"]}
+        if len(candidate_tmdb_ids) == 1:
+            tmdb_id = next(iter(candidate_tmdb_ids))
+            changed = self.rss_repository.supplement_item_identity(
+                connection,
+                item.get("id"),
+                tmdb_id=tmdb_id,
+                source="torra_subscription_match"
+                if any(
+                    _text(candidate.get("subscriptionId")).startswith("torra:")
+                    for candidate in candidates
+                )
+                else "subscription_match",
+                confidence="fallback",
+            )
+            if changed:
+                return {
+                    **item,
+                    "tmdb_id": tmdb_id,
+                    "identity_status": "identified",
+                }
+        elif len(candidate_tmdb_ids) > 1:
+            self.rss_repository.mark_item_identity_conflict(
+                connection,
+                item.get("id"),
+                source="torra_subscription_match",
+            )
+        return item
+
     def backfill_unidentified_items(self, limit=50):
         limit = max(1, min(int(limit or 50), 200))
         rows = self.rss_repository.list_unidentified_items(limit)
@@ -271,6 +401,7 @@ class RssSubscriptionMatchRuntime:
         result = {"scanned": len(rows), "identified": 0, "conflicts": 0, "unchanged": 0}
         with self.rss_repository.runtime.transaction(immediate=True) as connection:
             for item in rows:
+                item = self._refresh_item_scope(connection, item)
                 explicit = extract_media_identity({
                     "description": item.get("description"),
                     "link": item.get("detail_url"),
@@ -297,22 +428,39 @@ class RssSubscriptionMatchRuntime:
                 candidates = self._identity_backfill_candidates(item, subscriptions)
                 candidate_tmdb_ids = {candidate["tmdbId"] for candidate in candidates if candidate["tmdbId"]}
                 if len(candidate_tmdb_ids) == 1:
+                    source = (
+                        "torra_subscription_match"
+                        if any(
+                            _text(candidate.get("subscriptionId")).startswith("torra:")
+                            for candidate in candidates
+                        )
+                        else "subscription_match"
+                    )
                     changed = self.rss_repository.supplement_item_identity(
                         connection,
                         item.get("id"),
                         tmdb_id=next(iter(candidate_tmdb_ids)),
-                        source="subscription_match",
+                        source=source,
                         confidence="fallback",
                     )
                     result["identified" if changed else "unchanged"] += 1
                 elif len(candidate_tmdb_ids) > 1:
+                    source = (
+                        "torra_subscription_match"
+                        if any(
+                            _text(candidate.get("subscriptionId")).startswith("torra:")
+                            for candidate in candidates
+                        )
+                        else "subscription_match"
+                    )
                     changed = self.rss_repository.mark_item_identity_conflict(
                         connection,
                         item.get("id"),
-                        source="subscription_match",
+                        source=source,
                     )
                     result["conflicts" if changed else "unchanged"] += 1
                 else:
+                    self.rss_repository.touch_item_identity_check(connection, item.get("id"))
                     result["unchanged"] += 1
         result["remaining"] = self.rss_repository.count_unidentified_items()
         result["limit"] = limit
@@ -380,6 +528,7 @@ class RssSubscriptionMatchRuntime:
         created = []
         rows = rows if isinstance(rows, list) else []
         for item in rows:
+            item = self._supplement_item_from_subscriptions(connection, item, subscriptions)
             candidates = self._candidates_for_item(item, subscriptions, active_units)
             identity_candidates = {
                 str(candidate.get("reason", {}).get("identity", {}).get("tmdbId") or "")

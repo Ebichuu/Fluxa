@@ -155,12 +155,58 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self._insert("测试剧 S01E01", media_type="movie", season=None)
         self.assertEqual(self.rss.list_matches()["total"], 2)
 
-    def test_alias_match_does_not_reverse_write_subscription_identity(self):
+    def test_unique_alias_match_writes_subscription_identity(self):
         self._watch("tv:alias", tmdb_id="303", episode=1, aliases=["Alias Show"], title="主标题")
         self._insert("[制作组] Alias.Show.S01E01.1080p")
 
         item = self.rss.search_items(query="Alias Show")["items"][0]
-        self.assertEqual(item["identityStatus"], "unidentified")
+        self.assertEqual(item["identityStatus"], "identified")
+        self.assertEqual(item["tmdbId"], "303")
+        self.assertEqual(item["identitySource"], "subscription_match")
+
+    def test_torra_remote_subscription_identifies_rss_without_local_mirror(self):
+        torra, _qb = self._enable_analysis()
+        torra.rows = [{
+            "id": "torra-daredevil-s2",
+            "name": "夜魔侠：重生",
+            "media_type": "tv",
+            "tmdb_id": 202555,
+            "names_json": '["夜魔侠：重生", "Daredevil: Born Again"]',
+            "year": "2025",
+            "season_years_json": '{"1": "2025", "2": "2026"}',
+            "season_number": 2,
+        }]
+
+        self._insert("Daredevil.Born.Again.S02E03.2026.2160p.WEB-DL", season=2, start=3, end=3)
+
+        item = self.rss.search_items(query="Daredevil Born Again")["items"][0]
+        self.assertEqual(item["tmdbId"], "202555")
+        self.assertEqual(item["identityStatus"], "identified")
+        self.assertEqual(item["identitySource"], "torra_subscription_match")
+        self.assertEqual(self.rss.list_matches()["total"], 0)
+
+    def test_torra_remote_alias_conflict_does_not_guess(self):
+        torra, _qb = self._enable_analysis()
+        torra.rows = [{
+            "id": "torra-conflict-1",
+            "name": "甲剧",
+            "media_type": "tv",
+            "tmdb_id": 1001,
+            "names_json": '["Shared Show"]',
+            "season_number": 1,
+        }, {
+            "id": "torra-conflict-2",
+            "name": "乙剧",
+            "media_type": "tv",
+            "tmdb_id": 1002,
+            "names_json": '["Shared Show"]',
+            "season_number": 1,
+        }]
+
+        self._insert("Shared.Show.S01E01.1080p")
+
+        item = self.rss.search_items(query="Shared Show")["items"][0]
+        self.assertEqual(item["identityStatus"], "conflict")
         self.assertEqual(item["tmdbId"], "")
 
     def test_bounded_identity_backfill_uses_explicit_ids_and_unique_subscription(self):
@@ -219,6 +265,49 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         item = self.rss.search_items(query="Conflict Show")["items"][0]
         self.assertEqual(item["identityStatus"], "conflict")
         self.assertEqual(item["tmdbId"], "")
+
+    def test_backfill_rotates_past_unmatched_rows_and_repairs_legacy_scope(self):
+        torra, _qb = self._enable_analysis()
+        torra.rows = [{
+            "id": "torra-variety",
+            "name": "爱情保卫战",
+            "media_type": "tv",
+            "tmdb_id": 909,
+            "names_json": '["爱情保卫战", "Ai Qing Bao Wei Zhan"]',
+            "year": "2026",
+        }]
+        for index in range(2):
+            self.rss.upsert_items(self.source["id"], [{
+                "fingerprint": f"unmatched-{index}",
+                "title": f"Unknown Release {index}",
+                "media_type": "movie",
+            }])
+        self.rss.upsert_items(self.source["id"], [{
+            "fingerprint": "legacy-variety",
+            "title": "Ai Qing Bao Wei Zhan S2026E70 1080p",
+            "category": "综艺",
+            "media_type": "movie",
+        }])
+        with self.rss.runtime.transaction(immediate=True) as connection:
+            connection.execute(
+                "UPDATE rss_items SET identity_updated_at='2000-01-01T00:00:00Z' "
+                "WHERE fingerprint LIKE 'unmatched-%'"
+            )
+            connection.execute(
+                "UPDATE rss_items SET identity_updated_at='2001-01-01T00:00:00Z' "
+                "WHERE fingerprint='legacy-variety'"
+            )
+
+        first = self.runtime.backfill_unidentified_items(limit=2)
+        second = self.runtime.backfill_unidentified_items(limit=2)
+
+        self.assertEqual(first["identified"], 0)
+        self.assertEqual(second["identified"], 1)
+        item = self.rss.search_items(query="Ai Qing Bao Wei Zhan")["items"][0]
+        self.assertEqual(item["mediaType"], "tv")
+        self.assertEqual(item["episodeStart"], 70)
+        self.assertEqual(item["tmdbId"], "909")
+        self.assertEqual(item["identitySource"], "torra_subscription_match")
 
     def test_expired_and_pre_baseline_items_are_not_backfilled(self):
         self._watch("tv:202:s1", episode=1)

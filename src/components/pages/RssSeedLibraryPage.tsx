@@ -91,9 +91,20 @@ function identitySourceLabel(value: string) {
     rss_field: 'RSS 结构化字段',
     rss_description: 'RSS 简介',
     rss_link: 'RSS 公开链接',
-    subscription_match: '唯一追更匹配'
+    subscription_match: 'Fluxa 追更唯一匹配',
+    torra_subscription_match: 'Torra 订阅唯一匹配'
   };
   return value.split(',').filter(Boolean).map((source) => labels[source] || source).join('、') || '暂无可靠来源';
+}
+
+function identityConfidenceLabel(value: string) {
+  const labels: Record<string, string> = {
+    strong: '高（结构化证据）',
+    explicit: '高（公开明确证据）',
+    fallback: '保守匹配',
+    conflict: '存在冲突'
+  };
+  return labels[value] || value || '暂无';
 }
 
 function exactTimeLabel(value: string) {
@@ -667,7 +678,7 @@ export function RssSeedLibraryPage() {
               <span>IMDb</span><strong>{detailItem.imdbId || '未识别'}</strong>
               <span>身份状态</span><strong className={`rss-detail-status rss-detail-status--${detailItem.identityStatus}`}>{identityLabel(detailItem.identityStatus)}</strong>
               <span>身份来源</span><strong>{identitySourceLabel(detailItem.identitySource)}</strong>
-              <span>置信度</span><strong>{detailItem.identityConfidence || '暂无'}</strong>
+              <span>置信度</span><strong>{identityConfidenceLabel(detailItem.identityConfidence)}</strong>
               <span>最近确认</span><strong>{exactTimeLabel(detailItem.identityUpdatedAt)}</strong>
               <span>可交给 Torra</span><strong>{detailItem.hasDownload ? '是' : '否'}</strong>
             </div>

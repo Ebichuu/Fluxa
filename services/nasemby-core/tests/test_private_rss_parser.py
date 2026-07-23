@@ -39,6 +39,11 @@ RSS_IMDB_LINK_SAMPLE = b'''<?xml version="1.0" encoding="UTF-8"?>
 <description><![CDATA[Public reference: https://www.imdb.com/title/tt7654321/]]></description>
 </item></channel></rss>'''
 
+RSS_YEAR_EPISODE_SAMPLE = '''<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Variety</title><item>
+<title>Ai Qing Bao Wei Zhan S2026E70 1080p WEB-DL</title><guid>variety-70</guid>
+<category>综艺</category></item></channel></rss>'''.encode("utf-8")
+
 
 class PrivateRssParserTests(unittest.TestCase):
     def test_parses_identity_episode_and_version_summary(self):
@@ -129,6 +134,13 @@ class PrivateRssParserTests(unittest.TestCase):
         self.assertEqual(imdb_only["imdb_id"], "tt7654321")
         self.assertEqual(imdb_only["identity_status"], "identified")
         self.assertIn("rss_description", imdb_only["identity_source"])
+
+    def test_category_and_year_episode_token_keep_variety_as_tv(self):
+        item = parse_private_feed(RSS_YEAR_EPISODE_SAMPLE)["items"][0]
+
+        self.assertEqual(item["media_type"], "tv")
+        self.assertIsNone(item["season_number"])
+        self.assertEqual((item["episode_start"], item["episode_end"]), (70, 70))
 
 
 if __name__ == "__main__":
