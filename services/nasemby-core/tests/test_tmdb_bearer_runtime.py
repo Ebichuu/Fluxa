@@ -27,6 +27,8 @@ class TmdbBearerRuntimeTest(unittest.TestCase):
 
         self.assertEqual(config["api_token"], "v4-token")
         self.assertEqual(config["api_key"], "")
+        self.assertEqual(config["api_base_url"], "https://api.themoviedb.org/3")
+        loader.assert_not_called()
 
     def test_bearer_header_is_limited_to_tmdb_base_url(self):
         discover_runtime.TMDB_CONFIG = {
@@ -46,6 +48,38 @@ class TmdbBearerRuntimeTest(unittest.TestCase):
 
         self.assertEqual(tmdb_request.get_header("Authorization"), "Bearer v4-token")
         self.assertIsNone(other_request.get_header("Authorization"))
+
+    def test_v3_api_key_also_bypasses_legacy_bytecode(self):
+        loader = MagicMock()
+        discover_runtime.TMDB_CONFIG = None
+
+        with patch.dict(os.environ, {"TMDB_API_KEY": "v3-key"}, clear=True), patch(
+            "app.config.load_runtime_env"
+        ), patch.object(discover_runtime, "SourcelessFileLoader", return_value=loader):
+            config = discover_runtime.load_tmdb_config()
+
+        self.assertEqual(config["api_key"], "v3-key")
+        self.assertEqual(config["api_token"], "")
+        loader.assert_not_called()
+
+    def test_bearer_token_can_execute_tmdb_discover_without_query_api_key(self):
+        discover_runtime.TMDB_CONFIG = {
+            "api_key": "",
+            "api_token": "v4-token",
+            "api_base_url": "https://api.themoviedb.org/3",
+            "image_base_url": "https://image.tmdb.org/t/p",
+        }
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b'{"results": [], "total_results": 0, "total_pages": 1}'
+
+        with patch.object(discover_runtime.urllib.request, "urlopen", return_value=response) as urlopen:
+            payload = discover_runtime._fetch_tmdb_uncached({"type": "tv", "trend": "日榜", "limit": "16"})
+
+        request = urlopen.call_args.args[0]
+        self.assertTrue(payload["success"])
+        self.assertEqual(request.get_header("Authorization"), "Bearer v4-token")
+        self.assertNotIn("api_key=", request.full_url)
 
 
 if __name__ == "__main__":

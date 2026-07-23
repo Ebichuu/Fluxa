@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
+import { ImageOff } from 'lucide-react';
 
 interface PosterImageProps {
   className: string;
   fallbackClassName?: string;
+  fallbackVariant?: 'icon' | 'initial';
   loading?: 'eager' | 'lazy';
   src?: string;
   title: string;
@@ -30,7 +32,7 @@ function imageSource(value?: string) {
   return source;
 }
 
-export function PosterImage({ className, fallbackClassName, loading = 'lazy', src, title }: PosterImageProps) {
+export function PosterImage({ className, fallbackClassName, fallbackVariant = 'initial', loading = 'lazy', src, title }: PosterImageProps) {
   const resolvedSource = useMemo(() => imageSource(src), [src]);
   const [failed, setFailed] = useState(false);
 
@@ -39,7 +41,7 @@ export function PosterImage({ className, fallbackClassName, loading = 'lazy', sr
   if (!resolvedSource || failed) {
     return (
       <span aria-hidden="true" className={`${className} ${fallbackClassName ?? ''}`.trim()}>
-        {title.trim().charAt(0) || '影'}
+        {fallbackVariant === 'icon' ? <ImageOff aria-hidden="true" size={22} strokeWidth={1.5} /> : title.trim().charAt(0) || '影'}
       </span>
     );
   }

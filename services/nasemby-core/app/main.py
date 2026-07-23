@@ -542,6 +542,8 @@ def start_background_runtime():
 @core_routes.after_request
 def add_no_cache_headers(response):
     _log_user_operation(response)
+    if request.path == "/api/image" and response.status_code == 200 and response.mimetype.startswith("image/"):
+        return response
     response.headers["Cache-Control"] = (
         "private, no-cache, must-revalidate"
         if response.get_etag()[0]
@@ -938,10 +940,13 @@ def api_discover_image():
     if not discover_runtime.is_supported_image_proxy_url(url):
         return jsonify({"success": False, "error": "Unsupported image URL"}), 400
     try:
-        body, content_type = discover_runtime.http_bytes(url)
-        return Response(body, content_type=content_type)
-    except Exception as exc:
-        return jsonify({"success": False, "error": str(exc)}), 502
+        body, _content_type = discover_runtime.http_bytes(url)
+        content_type = discover_runtime.image_content_type(body)
+        if not content_type:
+            return jsonify({"success": False, "error": "上游未返回有效图片"}), 502
+        return Response(body, content_type=content_type, headers={"Cache-Control": "public, max-age=86400"})
+    except Exception:
+        return jsonify({"success": False, "error": "图片代理暂不可用"}), 502
 
 
 @core_routes.get("/api/subscriptions/config")
@@ -1510,7 +1515,7 @@ def create_app(
     @application.before_request
     def guard_preserved_core_management_api():
         endpoint = request.endpoint or ""
-        if endpoint.startswith("nasemby_core_routes.") and request.path not in {"/api/status", "/api/health"}:
+        if endpoint.startswith("nasemby_core_routes.") and request.path not in {"/api/status", "/api/health", "/api/image"}:
             if _environment_flag_enabled(
                 "MCC_PRESERVED_CORE_API_ENABLED",
                 environment=environment,

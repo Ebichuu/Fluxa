@@ -238,9 +238,13 @@
 }
 
 .discover-card__poster--fallback {
+  background: rgba(255, 255, 255, 0.035);
   border: 1px solid rgba(255, 255, 255, 0.08);
   color: rgba(255, 255, 255, 0.5);
-  font-size: 28px;
+}
+
+.discover-card__poster--fallback svg {
+  opacity: 0.68;
 }
 
 .discover-card__body {
@@ -1801,6 +1805,12 @@
 
 .app-shell:not(.app-shell--hall)[data-theme='light'] .discover-sub__poster--fallback {
   background: rgba(var(--theme-accent-rgb), 0.07);
+  color: var(--theme-muted);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .discover-card__poster--fallback {
+  border-color: rgba(23, 32, 48, 0.14);
+  background: rgba(44, 58, 70, 0.06);
   color: var(--theme-muted);
 }
 

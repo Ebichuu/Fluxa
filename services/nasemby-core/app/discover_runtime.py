@@ -156,6 +156,7 @@ IMAGE_PROXY_HOSTS = (
     "ykimg.com",
     "alicdn.com",
 )
+IMAGE_PROXY_MAX_BYTES = 8 * 1024 * 1024
 
 
 def subscription_database_path():
@@ -352,15 +353,39 @@ def load_tmdb_config():
         pass
     if TMDB_CONFIG is not None and (TMDB_CONFIG.get("api_key") or TMDB_CONFIG.get("api_token")):
         return TMDB_CONFIG
-    module = SourcelessFileLoader("tmdb_config", str(RUNTIME_DIR / "tmdb_config.pyc")).load_module()
     api_token = str(os.getenv("TMDB_API_TOKEN") or "").strip()
+    api_key = str(os.getenv("TMDB_API_KEY") or "").strip()
+    if api_token or api_key:
+        TMDB_CONFIG = {
+            "api_key": "" if api_token else api_key,
+            "api_token": api_token,
+            "api_base_url": "https://api.themoviedb.org/3",
+            "image_base_url": "https://image.tmdb.org/t/p",
+        }
+        return TMDB_CONFIG
+    try:
+        module = SourcelessFileLoader("tmdb_config", str(RUNTIME_DIR / "tmdb_config.pyc")).load_module()
+    except ImportError:
+        TMDB_CONFIG = {
+            "api_key": "",
+            "api_token": "",
+            "api_base_url": "https://api.themoviedb.org/3",
+            "image_base_url": "https://image.tmdb.org/t/p",
+        }
+        return TMDB_CONFIG
     TMDB_CONFIG = {
-        "api_key": "" if api_token else module.resolve_tmdb_api_key(),
-        "api_token": api_token,
+        "api_key": module.resolve_tmdb_api_key(),
+        "api_token": "",
         "api_base_url": module.resolve_tmdb_api_base_url().rstrip("/"),
         "image_base_url": module.resolve_tmdb_image_base_url().rstrip("/"),
     }
     return TMDB_CONFIG
+
+
+def tmdb_credentials_available(config):
+    """Return whether TMDB has either a v3 API key or a v4 bearer token."""
+    config = config or {}
+    return bool(str(config.get("api_key") or "").strip() or str(config.get("api_token") or "").strip())
 
 
 def load_pansou_module():
@@ -386,6 +411,9 @@ def http_json(url, timeout=18):
     tmdb_token = str((TMDB_CONFIG or {}).get("api_token") or "").strip()
     if tmdb_token and tmdb_base_url and url.startswith(f"{tmdb_base_url}/"):
         headers["Authorization"] = f"Bearer {tmdb_token}"
+        parsed = urllib.parse.urlsplit(url)
+        query = [(key, value) for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True) if key != "api_key"]
+        url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urllib.parse.urlencode(query), parsed.fragment))
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         body = resp.read().decode("utf-8", "replace")
@@ -417,7 +445,16 @@ def http_bytes(url, timeout=18):
         "Referer": referer,
     })
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read(), resp.headers.get("Content-Type") or "image/jpeg"
+        try:
+            length = int(resp.headers.get("Content-Length") or "0")
+        except ValueError:
+            length = 0
+        if length > IMAGE_PROXY_MAX_BYTES:
+            raise ValueError("图片响应过大")
+        body = resp.read(IMAGE_PROXY_MAX_BYTES + 1)
+        if len(body) > IMAGE_PROXY_MAX_BYTES:
+            raise ValueError("图片响应过大")
+        return body, resp.headers.get("Content-Type") or ""
 
 
 def read_json_body(handler):
@@ -800,7 +837,7 @@ def resolve_subscription_tmdb_meta(title, media_type="tv", year="", target_seaso
         return cached
     try:
         cfg = load_tmdb_config()
-        if not cfg["api_key"]:
+        if not tmdb_credentials_available(cfg):
             return {}
         params = {
             "api_key": cfg["api_key"],
@@ -1234,7 +1271,7 @@ def resolve_subscription_tmdb_meta(title, media_type="tv", year="", target_seaso
         return cached
     try:
         cfg = load_tmdb_config()
-        if not cfg["api_key"]:
+        if not tmdb_credentials_available(cfg):
             return {}
         resolved_year = extract_year(year)
         endpoint = f"{cfg['api_base_url']}/search/{media_type}"
@@ -4357,8 +4394,8 @@ def parse_positive_int(value, default, min_value=1, max_value=500):
 
 def fetch_tmdb(query):
     cfg = load_tmdb_config()
-    if not cfg["api_key"]:
-        raise RuntimeError("TMDB API Key 不可用")
+    if not tmdb_credentials_available(cfg):
+        raise RuntimeError("TMDB API Key 或 Bearer Token 不可用")
 
     media_type = "tv" if query.get("type") == "tv" else "movie"
     trend = query.get("trend") or "全部"
@@ -4552,8 +4589,8 @@ def daily_airing_dedupe_key(item):
 
 def _fetch_daily_airing_uncached(query):
     cfg = load_tmdb_config()
-    if not cfg["api_key"]:
-        raise RuntimeError("TMDB API Key 不可用")
+    if not tmdb_credentials_available(cfg):
+        raise RuntimeError("TMDB API Key 或 Bearer Token 不可用")
 
     page = parse_positive_int((query or {}).get("page"), 1, 1, 500)
     limit = parse_positive_int((query or {}).get("limit"), 24, 1, 24)
@@ -4659,8 +4696,8 @@ def _fetch_daily_airing_uncached(query):
 
 def _fetch_daily_airing_all_uncached(query):
     cfg = load_tmdb_config()
-    if not cfg["api_key"]:
-        raise RuntimeError("TMDB API Key 不可用")
+    if not tmdb_credentials_available(cfg):
+        raise RuntimeError("TMDB API Key 或 Bearer Token 不可用")
 
     timezone = (query or {}).get("timezone") or "Asia/Shanghai"
     max_pages = parse_positive_int((query or {}).get("max_pages"), 8, 1, 20)
@@ -4814,6 +4851,20 @@ def is_supported_image_proxy_url(url):
     return parsed.scheme in ("http", "https") and any(host == item or host.endswith("." + item) for item in IMAGE_PROXY_HOSTS)
 
 
+def image_content_type(body):
+    if body.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if body.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if body.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if body.startswith(b"RIFF") and body[8:12] == b"WEBP":
+        return "image/webp"
+    if len(body) >= 12 and b"ftypavif" in body[4:12]:
+        return "image/avif"
+    return ""
+
+
 def extract_year(*values):
     for value in values:
         match = re.search(r"(?:19|20)\d{2}", clean_html(str(value or "")))
@@ -4828,7 +4879,7 @@ def current_year():
 
 def tmdb_year_for_candidate(item_type, tmdb_id):
     cfg = load_tmdb_config()
-    if not cfg["api_key"] or item_type not in ("movie", "tv") or not tmdb_id:
+    if not tmdb_credentials_available(cfg) or item_type not in ("movie", "tv") or not tmdb_id:
         return ""
     endpoint = f"{cfg['api_base_url']}/{item_type}/{int(tmdb_id)}"
     params = urllib.parse.urlencode({"api_key": cfg["api_key"], "language": "zh-CN"})
@@ -4885,7 +4936,7 @@ def resolve_platform_year(title, explicit_year="", update_text="", desc=""):
         return str(cache.get(cache_key) or "")
     try:
         cfg = load_tmdb_config()
-        if not cfg["api_key"]:
+        if not tmdb_credentials_available(cfg):
             return ""
         endpoint = f"{cfg['api_base_url']}/search/tv"
         params = {
@@ -4941,7 +4992,7 @@ def resolve_platform_tmdb_meta(title, year=""):
         return cached
     try:
         cfg = load_tmdb_config()
-        if not cfg["api_key"]:
+        if not tmdb_credentials_available(cfg):
             return {}
         endpoint = f"{cfg['api_base_url']}/search/tv"
         params = {
@@ -5230,7 +5281,7 @@ def get_cached_tmdb_detail(media_type, tmdb_id, append_to_response="", fetch=Tru
     if not fetch:
         return {}
     cfg = load_tmdb_config()
-    if not cfg["api_key"]:
+    if not tmdb_credentials_available(cfg):
         return {}
     params = {"api_key": cfg["api_key"], "language": "zh-CN"}
     if append_to_response:
@@ -5276,7 +5327,7 @@ def get_cached_tmdb_season_detail(tmdb_id, season_number):
     if isinstance(cached, dict) and isinstance(cached.get("detail"), dict):
         return deepcopy(cached["detail"])
     cfg = load_tmdb_config()
-    if not cfg["api_key"]:
+    if not tmdb_credentials_available(cfg):
         return {}
     params = urllib.parse.urlencode({"api_key": cfg["api_key"], "language": "zh-CN"})
     raw = http_json(f"{cfg['api_base_url']}/tv/{int(tmdb_id)}/season/{int(season_number)}?{params}", timeout=12)
@@ -7094,7 +7145,7 @@ def normalize_hdhive_resources(raw):
 
 def search_tmdb_candidates(title, media_type=""):
     cfg = load_tmdb_config()
-    if not cfg["api_key"]:
+    if not tmdb_credentials_available(cfg):
         return []
     candidates = []
     seen = set()
@@ -7276,7 +7327,7 @@ def _tmdb_match_cache_key(title, media_type, year=""):
 
 def search_tmdb_candidates(title, media_type="", year=""):
     cfg = load_tmdb_config()
-    if not cfg["api_key"]:
+    if not tmdb_credentials_available(cfg):
         return []
     media_type = media_type if media_type in ("movie", "tv") else ""
     year = extract_year(year)
@@ -7334,7 +7385,7 @@ def search_tmdb_candidates(title, media_type="", year=""):
 
 def fetch_tmdb_season_episodes(tmdb_id, season_numbers):
     cfg = load_tmdb_config()
-    if not cfg["api_key"] or not tmdb_id:
+    if not tmdb_credentials_available(cfg) or not tmdb_id:
         return {}
     seasons = {}
     for season in sorted({str(s) for s in season_numbers if str(s).isdigit()}, key=lambda value: int(value)):
@@ -7468,7 +7519,7 @@ def build_resource_season_status(rows, title, tmdb_id):
 
 def fetch_tmdb_tv_episode_map(tmdb_id):
     cfg = load_tmdb_config()
-    if not cfg["api_key"] or not tmdb_id:
+    if not tmdb_credentials_available(cfg) or not tmdb_id:
         return {}
     endpoint = f"{cfg['api_base_url']}/tv/{int(tmdb_id)}"
     params = urllib.parse.urlencode({"api_key": cfg["api_key"], "language": "zh-CN"})

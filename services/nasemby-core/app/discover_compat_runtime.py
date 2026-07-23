@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from urllib.error import HTTPError
 
 from flask import Flask, jsonify, request
 
@@ -112,6 +113,21 @@ def _discover_error(code, message, status=502):
     return jsonify({"code": code, "error": message}), status
 
 
+def _tmdb_not_configured(source):
+    labels = {"tmdb": "TMDB", "daily": "全球日播", "streaming": "海外流媒体"}
+    return jsonify({
+        "configured": False,
+        "results": [],
+        "page": 1,
+        "totalPages": 1,
+        "totalResults": 0,
+        "hasNext": False,
+        "hasPrev": False,
+        "sourceLabel": labels.get(source, source),
+        "message": "请在控制室配置 TMDB API Key 或 Bearer Token",
+    })
+
+
 def register_discover_compat(app: Flask):
     @app.get("/api/discover/browse", endpoint="mcc_compat_discover_browse")
     def discover_browse():
@@ -121,13 +137,40 @@ def register_discover_compat(app: Flask):
         try:
             loader, query = _browse_target(source, request.args)
             return jsonify(map_discover_payload(loader(query), source))
+        except HTTPError as error:
+            if source in {"tmdb", "daily", "streaming"} and error.code in {401, 403}:
+                return _discover_error(
+                    "TMDB_AUTH_FAILED",
+                    "TMDB 鉴权失败，请在控制室更新 API Key 或 Bearer Token",
+                )
+            if source in {"tmdb", "daily", "streaming"} and error.code == 429:
+                return _discover_error("TMDB_RATE_LIMITED", "TMDB 请求过于频繁，请稍后重试", 503)
+            labels = {"tmdb": "TMDB", "daily": "全球日播", "streaming": "海外流媒体"}
+            return _discover_error(
+                "NASEMBY_DISCOVER_UNAVAILABLE",
+                f"{labels.get(source, '内容发现')}服务暂不可用，请稍后重试",
+            )
+        except RuntimeError:
+            if source in {"tmdb", "daily", "streaming"} and not discover_runtime.tmdb_credentials_available(
+                discover_runtime.load_tmdb_config()
+            ):
+                return _tmdb_not_configured(source)
+            labels = {"tmdb": "TMDB", "daily": "全球日播", "streaming": "海外流媒体"}
+            return _discover_error(
+                "NASEMBY_DISCOVER_UNAVAILABLE",
+                f"{labels.get(source, '内容发现')}服务暂不可用，请检查上游连接或鉴权配置",
+            )
         except Exception:
-            return _discover_error("NASEMBY_DISCOVER_UNAVAILABLE", "内容发现服务暂不可用")
+            labels = {"tmdb": "TMDB", "daily": "全球日播", "streaming": "海外流媒体"}
+            return _discover_error(
+                "NASEMBY_DISCOVER_UNAVAILABLE",
+                f"{labels.get(source, '内容发现')}服务暂不可用，请检查上游连接或鉴权配置",
+            )
 
     @app.get("/api/discover/trending", endpoint="mcc_compat_discover_trending")
     def discover_trending():
         try:
-            if not discover_runtime.load_tmdb_config().get("api_key"):
+            if not discover_runtime.tmdb_credentials_available(discover_runtime.load_tmdb_config()):
                 return jsonify({"configured": False, "results": []})
             media = "movie" if request.args.get("type") == "movie" else "tv"
             payload = discover_runtime.fetch_tmdb({"type": media, "trend": "日榜", "page": "1", "limit": "20"})
@@ -141,7 +184,7 @@ def register_discover_compat(app: Flask):
         if not query:
             return jsonify({"configured": True, "results": []})
         try:
-            if not discover_runtime.load_tmdb_config().get("api_key"):
+            if not discover_runtime.tmdb_credentials_available(discover_runtime.load_tmdb_config()):
                 return jsonify({"configured": False, "results": []})
             payload = discover_runtime.search_media({
                 "title": query[:200],

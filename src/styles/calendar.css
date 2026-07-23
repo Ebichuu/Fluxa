@@ -686,12 +686,18 @@
   background: rgba(255, 255, 255, 0.9);
 }
 
+.app-shell:not(.app-shell--hall)[data-theme='light'] .calendar-entry__poster--fallback {
+  border-color: rgba(23, 32, 48, 0.14);
+  background: linear-gradient(160deg, rgba(44, 58, 70, 0.12), rgba(44, 58, 70, 0.045));
+  color: var(--theme-muted);
+}
+
 .app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-entry--library {
   border-color: rgba(35, 122, 101, 0.22);
   background: rgba(35, 122, 101, 0.08);
 }
 
-.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-entry--library strong {
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-entry--library :is(strong, .calendar-entry__poster--fallback) {
   color: #237a65;
 }
 
@@ -700,7 +706,7 @@
   background: rgba(77, 95, 190, 0.08);
 }
 
-.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-entry--protected strong {
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-entry--protected :is(strong, .calendar-entry__poster--fallback) {
   color: #4d5fbe;
 }
 
@@ -709,7 +715,7 @@
   background: rgba(184, 45, 70, 0.07);
 }
 
-.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-entry--missing :is(strong, small) {
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-entry--missing :is(strong, small, .calendar-entry__poster--fallback) {
   color: #b82d46;
 }
 
@@ -718,7 +724,7 @@
   background: rgba(71, 82, 94, 0.05);
 }
 
-.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-entry--unknown strong {
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-entry--unknown :is(strong, .calendar-entry__poster--fallback) {
   color: #47525e;
 }
 

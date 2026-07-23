@@ -57,6 +57,10 @@ Node.js 只存在于 Docker `web-build` 阶段。生产镜像不复制 Node、np
 
 未知字段、原始上游包络、Token、Cookie 和异常正文不会透传浏览器。
 
+TMDB 发现、全球日播和海外流媒体同时支持 v3 API Key 与 v4 Bearer Token。未配置凭据时，公开浏览接口返回 `200 + configured:false`；上游拒绝凭据时返回稳定的 `TMDB_AUTH_FAILED`，限流返回 `TMDB_RATE_LIMITED`，浏览器只显示可操作的中文提示，不暴露凭据或上游响应正文。
+
+`GET /api/image` 是旧 Core 守卫中唯一公开的只读图片例外。它仍受固定外部域名白名单、8 MiB 响应上限和图片魔数校验约束；HTML 反爬页及其他非图片内容不会透传，其他旧 Core 接口继续由总守卫关闭。
+
 ### 内部诊断响应
 
 `/api/internal/nasemby-core/*` 保留原 NasEmby 数据形状，便于核对源码行为。它们仍受会话认证保护，不是外部服务间的第二个网络层。

@@ -490,6 +490,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   const [searchPage, setSearchPage] = useState(1);
   const [results, setResults] = useState<DiscoverResult[]>([]);
   const [configured, setConfigured] = useState(true);
+  const [discoverError, setDiscoverError] = useState('');
   const [loading, setLoading] = useState(true);
   const [pageInfo, setPageInfo] = useState({
     page: 1,
@@ -685,14 +686,17 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     if (activeSearch) return;
     let cancelled = false;
     setLoading(true);
+    setDiscoverError('');
 
     browseDiscover(filters)
       .then((payload) => {
         if (!cancelled) applyPayload(payload);
       })
-      .catch(() => {
+      .catch((reason: unknown) => {
         if (!cancelled) {
+          setConfigured(true);
           setResults([]);
+          setDiscoverError(reason instanceof Error ? reason.message : '内容来源暂不可用');
         }
       })
       .finally(() => {
@@ -709,13 +713,18 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     if (!activeSearch) return;
     let cancelled = false;
     setLoading(true);
+    setDiscoverError('');
 
     searchDiscover(activeSearch, searchPage)
       .then((payload) => {
         if (!cancelled) applyPayload(payload);
       })
-      .catch(() => {
-        if (!cancelled) setResults([]);
+      .catch((reason: unknown) => {
+        if (!cancelled) {
+          setConfigured(true);
+          setResults([]);
+          setDiscoverError(reason instanceof Error ? reason.message : '内容搜索暂不可用');
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -1553,10 +1562,13 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
         </section>
 
         {!configured && (
-          <div className="ops-panel ops-empty discover-empty">配置 TMDB_API_KEY 后，这里会显示热门与搜索结果。</div>
+          <div className="ops-panel ops-empty discover-empty">请在控制室配置 TMDB API Key 或 Bearer Token 后，这里会显示热门与搜索结果。</div>
+        )}
+        {configured && !loading && discoverError && (
+          <div className="ops-panel ops-empty discover-empty" role="alert">{discoverError}</div>
         )}
         {configured && loading && <div className="ops-panel ops-empty discover-empty">正在读取内容来源…</div>}
-        {configured && !loading && results.length === 0 && (
+        {configured && !loading && !discoverError && results.length === 0 && (
           <div className="ops-panel ops-empty discover-empty">没有找到内容，换个关键词或筛选试试。</div>
         )}
 
@@ -1573,6 +1585,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                   <PosterImage
                     className="discover-card__poster"
                     fallbackClassName="discover-card__poster--fallback"
+                    fallbackVariant="icon"
                     src={result.posterUrl}
                     title={result.title}
                   />

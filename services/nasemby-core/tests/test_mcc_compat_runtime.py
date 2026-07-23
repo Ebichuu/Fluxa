@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.error import HTTPError
 from unittest.mock import Mock, patch
 
 from app import discover_runtime
@@ -197,6 +198,27 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
             self.assertEqual(response.status_code, 503, path)
             self.assertEqual(response.get_json()["code"], "PRESERVED_CORE_API_DISABLED", path)
 
+    def test_discover_image_proxy_is_safe_read_only_exception_to_core_guard(self):
+        app = create_app(access_environment={"MCC_PRESERVED_CORE_API_ENABLED": "false"})
+        client = app.test_client()
+        image_url = "https://image.tmdb.org/t/p/w342/poster.jpg"
+        png = b"\x89PNG\r\n\x1a\n" + (b"\x00" * 16)
+
+        with patch.object(discover_runtime, "http_bytes", return_value=(png, "text/html")):
+            response = client.get("/api/image", query_string={"url": image_url})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content_type, "image/png")
+        self.assertEqual(response.headers["Cache-Control"], "public, max-age=86400")
+
+        with patch.object(discover_runtime, "http_bytes", return_value=(b"<html>blocked</html>", "text/html")):
+            invalid = client.get("/api/image", query_string={"url": image_url})
+        self.assertEqual(invalid.status_code, 502)
+        self.assertEqual(invalid.get_json()["error"], "上游未返回有效图片")
+
+        unsupported = client.get("/api/image", query_string={"url": "https://example.test/poster.jpg"})
+        self.assertEqual(unsupported.status_code, 400)
+
     def test_discover_routes_map_nasemby_payload_to_react_contract(self):
         app = create_app(access_environment={})
         sample = {
@@ -239,6 +261,46 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
             "sourceId": "101",
             "tmdbId": "101",
         })
+
+    def test_tmdb_discover_sources_accept_bearer_only_configuration(self):
+        app = create_app(access_environment={})
+        sample = {"success": True, "source": "TMDB", "items": [], "page": 1, "total_pages": 1, "total_results": 0}
+        with patch.object(
+            discover_runtime,
+            "load_tmdb_config",
+            return_value={"api_key": "", "api_token": "v4-token", "api_base_url": "https://api.themoviedb.org/3"},
+        ), patch.object(discover_runtime, "fetch_tmdb", return_value=sample), patch.object(
+            discover_runtime, "fetch_daily_airing", return_value=sample
+        ), patch.object(discover_runtime, "fetch_streaming", return_value=sample):
+            for source in ("tmdb", "daily", "streaming"):
+                response = app.test_client().get(f"/api/discover/browse?source={source}")
+                self.assertEqual(response.status_code, 200, source)
+                self.assertTrue(response.get_json()["configured"], source)
+
+    def test_tmdb_discover_sources_report_unconfigured_without_502(self):
+        app = create_app(access_environment={})
+        with patch.object(
+            discover_runtime,
+            "load_tmdb_config",
+            return_value={"api_key": "", "api_token": "", "api_base_url": "https://api.themoviedb.org/3"},
+        ):
+            for source in ("tmdb", "daily", "streaming"):
+                response = app.test_client().get(f"/api/discover/browse?source={source}")
+                body = response.get_json()
+                self.assertEqual(response.status_code, 200, source)
+                self.assertFalse(body["configured"], source)
+                self.assertIn("Bearer Token", body["message"], source)
+
+    def test_tmdb_auth_failure_has_actionable_error(self):
+        app = create_app(access_environment={})
+        error = HTTPError("https://api.themoviedb.org/3/discover/tv", 401, "Unauthorized", None, None)
+        with patch.object(discover_runtime, "fetch_tmdb", side_effect=error):
+            response = app.test_client().get("/api/discover/browse?source=tmdb")
+        error.close()
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.get_json()["code"], "TMDB_AUTH_FAILED")
+        self.assertIn("更新", response.get_json()["error"])
 
     def test_detail_calendar_and_resource_payloads_use_react_whitelists(self):
         detail = map_subscription_detail({
