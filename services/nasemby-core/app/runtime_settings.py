@@ -443,6 +443,9 @@ def save_runtime_settings(payload: dict, environment=None, app: Flask | None = N
             if callable(method):
                 method(resolver(target_environment or os.environ))
     changed_keys = sorted(set(values) | clear_set)
+    if {"TMDB_API_KEY", "TMDB_API_TOKEN"} & set(changed_keys):
+        from app import discover_runtime
+        discover_runtime.TMDB_CONFIG = None
     restart_required = sorted(key for key in changed_keys if key in RESTART_REQUIRED)
     result = build_runtime_settings(target_environment or os.environ)
     result.update({

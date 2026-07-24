@@ -19,6 +19,18 @@ export interface TorraSecuploadRun {
   createdAt: string;
 }
 
+export interface TorraSecuploadBatch {
+  batchKey: string;
+  taskKey: string;
+  trigger: string;
+  status: string;
+  runCount: number;
+  targetItemIds: string[];
+  counts: { success: number | null; failed: number | null };
+  startedAt: string;
+  finishedAt: string;
+}
+
 export interface TorraSecuploadSummary {
   configured: boolean;
   connected: boolean;
@@ -28,6 +40,8 @@ export interface TorraSecuploadSummary {
   perFileEvidence: boolean;
   activeRuns?: number;
   latestRun?: TorraSecuploadRun | null;
+  latestBatch?: TorraSecuploadBatch | null;
+  recentBatches?: TorraSecuploadBatch[];
   lastRunAt?: string;
   nextRunAt?: string;
   lastCheckedAt: string;
@@ -85,6 +99,7 @@ export interface TaskChainItem {
   currentStep: TaskChainStep['key'];
   steps: TaskChainStep[];
   embyIndexed: boolean;
+  embyEvidenceScope: 'none' | 'title' | 'episode';
   suggestion: { label: string; url: string } | null;
   qbControl: {
     total: number;
@@ -175,7 +190,7 @@ export interface TaskChainResponse {
     qb: { connected: boolean; error: string; total: number; active: number; downloadSpeed: number; webUrl: string };
     torra: { connected: boolean; error: string; total: number; webUrl: string; secupload115?: TorraSecuploadSummary };
     symedia: { connected: boolean; error: string; total: number; sampled: number; webUrl: string };
-    emby: { connected: boolean; error: string; indexedMovies: number; indexedSeries: number; webUrl: string };
+    emby: { connected: boolean; error: string; indexedMovies: number; indexedSeries: number; evidenceScope?: 'none' | 'title' | 'episode'; webUrl: string };
   };
   healthCounts?: Record<TaskChainHealthState, number>;
   identityCounts?: Record<TaskChainIdentityState, number>;

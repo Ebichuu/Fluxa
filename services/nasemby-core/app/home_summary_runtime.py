@@ -222,12 +222,20 @@ class HomeSummaryService:
             observed_at=str(chain.get("generatedAt") or now),
             fresh_until=_fresh_until(now_value),
         ) if identity_only else None
+        completed_targets_today = sum(
+            _step(item, "library").get("status") == "done"
+            and str(_step(item, "library").get("timestamp") or "")[:10] == now[:10]
+            for item in unique_items.values()
+        )
+        symedia_totals = (((chain.get("services") or {}).get("symedia") or {}).get("totals") or {})
+        try:
+            archived_today = max(0, int(symedia_totals.get("archivedToday") or 0))
+        except (TypeError, ValueError):
+            archived_today = 0
         counts = {
-            "ingestedToday": sum(
-                _step(item, "library").get("status") == "done"
-                and str(_step(item, "library").get("timestamp") or "")[:10] == now[:10]
-                for item in unique_items.values()
-            ),
+            "ingestedToday": completed_targets_today,
+            "archivedToday": archived_today,
+            "completedTargetsToday": completed_targets_today,
             "downloading": sum(
                 any(step.get("key") == "download" and step.get("status") == "active" for step in item.get("steps") or [])
                 for item in unique_items.values()
@@ -407,7 +415,8 @@ class HomeSummaryService:
         else:
             headline = "影音中心运行正常"
         detail = (
-            f"今日入库 {counts['ingestedToday']} 条 · 下载中 {counts['downloading']} 条 · "
+            f"今日成功归档 {counts['archivedToday']} 条 · 完成目标 {counts['completedTargetsToday']} 个 · "
+            f"下载中 {counts['downloading']} 条 · "
             f"等待 {counts['waiting']} 条 · 证据不足 {counts['evidenceInsufficient']} 条"
         )
         return {

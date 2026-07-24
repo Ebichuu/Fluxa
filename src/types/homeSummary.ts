@@ -2,6 +2,8 @@ export type HealthState = 'normal' | 'protected' | 'waiting' | 'evidence_insuffi
 
 export interface HomeSummaryCounts {
   ingestedToday: number;
+  archivedToday: number;
+  completedTargetsToday: number;
   downloading: number;
   pending: number;
   waiting: number;

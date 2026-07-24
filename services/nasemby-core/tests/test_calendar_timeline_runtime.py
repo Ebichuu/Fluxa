@@ -146,6 +146,42 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
         self.assertEqual(entry["healthState"], "evidence_insufficient")
         self.assertEqual(entry["reasonCode"], "CALENDAR_EPISODE_EVIDENCE_MISSING")
 
+    def test_library_evidence_sets_in_library_and_removes_later_acquisition_time(self):
+        item = FakeTaskService().full_snapshot()["items"][0]
+        item["episodeEvidence"] = [
+            {
+                "seasonNumber": 2,
+                "episodeStart": 3,
+                "episodeEnd": 3,
+                "numberingScheme": "season_episode",
+                "stage": "download",
+                "source": "qBittorrent",
+                "observedAt": "2026-07-22T10:17:00Z",
+                "status": "done",
+            },
+            {
+                "seasonNumber": 2,
+                "episodeStart": 3,
+                "episodeEnd": 3,
+                "numberingScheme": "season_episode",
+                "stage": "library",
+                "source": "Symedia",
+                "observedAt": "2026-07-22T08:01:00Z",
+                "status": "done",
+            },
+        ]
+        self.app.extensions["mcc_task_chain_v2_service"] = FakeTaskService([item])
+
+        calendar = self.client.get("/api/v2/calendar?year=2026&month=7&type=tv").get_json()["calendar"]
+        entry = calendar["entries"][0]
+
+        self.assertEqual(entry["libraryAt"], "2026-07-22T08:01:00Z")
+        self.assertEqual(entry["acquiredAt"], "")
+        self.assertTrue(entry["inLibrary"])
+        self.assertEqual(entry["status"], "library")
+        self.assertEqual(calendar["stats"]["inLibrary"], 1)
+        self.assertEqual(calendar["stats"]["pending"], 0)
+
     def test_summary_and_date_detail_keep_legacy_request_compatible(self):
         legacy = self.client.get("/api/v2/calendar?year=2026&month=7&type=tv")
         summary = self.client.get("/api/v2/calendar?year=2026&month=7&type=tv&view=summary")

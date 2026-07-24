@@ -254,6 +254,11 @@ def _merge_group(items: list[dict], observed_at: str, fresh_until: str, now_valu
         "confidence": confidence,
         "progress": _chain_progress(stages, items),
         "embyIndexed": any(bool(item.get("embyIndexed")) for item in items),
+        "embyEvidenceScope": (
+            "episode" if any(item.get("embyEvidenceScope") == "episode" for item in items)
+            else "title" if any(bool(item.get("embyIndexed")) for item in items)
+            else "none"
+        ),
         "sourceIds": source_ids,
         "subscriptionId": source_ids["subscriptionId"],
         "artifactKeys": artifacts,
@@ -350,7 +355,7 @@ def _summary_item(item: dict) -> dict:
     fields = (
         "id", "title", "mediaType", "tmdbId", "seasonNumber", "episodeNumber", "posterUrl",
         "origin", "origins", "channel", "state", "confidence", "progress", "currentStep",
-        "embyIndexed", "qbControl", "acquisition", "updatedAt", "chainId", "mediaKey",
+        "embyIndexed", "embyEvidenceScope", "qbControl", "acquisition", "updatedAt", "chainId", "mediaKey",
         "targetKey", "subscriptionId", "healthState", "observedAt", "freshUntil", "source",
         "reasonCode", "reasonText", "userReasonText", "recommendedAction", "retryEligible", "plannedRetryAt",
         "identityState", "executionState",

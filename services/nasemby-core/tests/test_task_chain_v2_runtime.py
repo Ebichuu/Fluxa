@@ -43,6 +43,7 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(item["mediaKey"], "tv:tmdb:101")
         self.assertEqual(item["targetKey"], "tv:tmdb:101:season:2")
         self.assertEqual(item["artifactKeys"], ["artifact:hash-1"])
+        self.assertEqual(item["embyEvidenceScope"], "none")
         self.assertTrue(item["chainId"].startswith("chain:"))
         self.assertEqual(item["healthState"], "action_required")
         self.assertEqual(item["stages"][0]["reasonCode"], "DOWNLOAD_BLOCKED")

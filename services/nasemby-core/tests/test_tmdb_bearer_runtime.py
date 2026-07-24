@@ -62,6 +62,31 @@ class TmdbBearerRuntimeTest(unittest.TestCase):
         self.assertEqual(config["api_token"], "")
         loader.assert_not_called()
 
+    def test_v3_api_key_takes_precedence_when_both_credentials_exist(self):
+        discover_runtime.TMDB_CONFIG = None
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b'{"ok": true}'
+
+        with patch.dict(os.environ, {
+            "TMDB_API_KEY": "v3-key",
+            "TMDB_API_TOKEN": "invalid-v4-token",
+        }, clear=True), patch("app.config.load_runtime_env"), patch.object(
+            discover_runtime.urllib.request,
+            "urlopen",
+            return_value=response,
+        ) as urlopen:
+            config = discover_runtime.load_tmdb_config()
+            discover_runtime.http_json(
+                f"{config['api_base_url']}/configuration?api_key={config['api_key']}"
+            )
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(config["api_key"], "v3-key")
+        self.assertEqual(config["api_token"], "invalid-v4-token")
+        self.assertIsNone(request.get_header("Authorization"))
+        self.assertIn("api_key=v3-key", request.full_url)
+
     def test_bearer_token_can_execute_tmdb_discover_without_query_api_key(self):
         discover_runtime.TMDB_CONFIG = {
             "api_key": "",

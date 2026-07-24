@@ -146,7 +146,8 @@ def build_episode_evidence(torra_pairs=(), qb_pairs=(), symedia_pairs=()) -> lis
     for row, record in torra_pairs:
         ranges = _torra_ranges(row)
         if ranges:
-            values.extend(_evidence_items(ranges, record, "download", "done"))
+            # Torra 的 updated_at 是订阅更新时间，不是具体文件的获取时间。
+            values.extend(_evidence_items(ranges, {**record, "observedAt": ""}, "download", "done"))
     for row, record in qb_pairs:
         ranges = parse_episode_ranges(row.get("name"))
         if ranges:

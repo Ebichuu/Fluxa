@@ -63,13 +63,13 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `POST /api/qbittorrent/actions/:action/preview` | 只读检查最多 20 个 hash，返回是否允许、影响数量、禁止原因、确认要求、幂等键和冷却时间 |
 | `POST /api/qbittorrent/actions/:action` | `hashes`、`taskId`、`title`、可选 `idempotencyKey`；执行前重新读取 qB 状态，旧预览键返回 `409 QB_PREVIEW_STALE` |
 | `GET /api/subscriptions/items` | 可选 `include_progress=1` |
-| `GET /api/v2/home/summary` | 无参数；按任务链、调度器心跳和服务证据返回今日结论，证据不足不得报告绿色正常；问题项可选返回 `displayTitle`、`seasonNumber`、`episodeNumber` 和 `secondaryReasonText` |
+| `GET /api/v2/home/summary` | 无参数；按任务链、调度器心跳和服务证据返回今日结论，证据不足不得报告绿色正常；问题项可选返回 `displayTitle`、`seasonNumber`、`episodeNumber` 和 `secondaryReasonText`；统计可选返回 `archivedToday` 与 `completedTargetsToday`，旧 `ingestedToday` 保留兼容 |
 | `GET /api/v2/subscriptions/workbench` | 可选 `limit`（1–100，默认 24）、`offset`（默认 0）、`mediaType`（`movie`/`tv`）和 `query`；返回五项能力状态、全量统计、当前页订阅、`page.nextOffset` 和可选 `posterBackfillIds`，只读访问外部服务 |
 | `POST /api/v2/subscriptions/visual-backfills` | `ids` 为最多 100 个订阅 ID；只按明确 TMDB 身份补充空缺海报/背景，不按标题猜图；本地写入开启时可补充已有本地记录，关闭时只返回视觉结果；仅 Torra 条目始终不创建本地镜像 |
 | `GET /api/v2/subscriptions/reconciliation` | 无参数；只读对比 Fluxa 与 Torra，独立返回对账、履约、健康状态，不修改或删除任一台账 |
 | `GET /api/v2/tasks/summary` | 返回唯一任务链数量、健康/身份/执行三维状态数量、阶段数量、服务状态和稳定 `version`；支持 ETag 条件读取 |
-| `GET /api/v2/tasks/chains` | 支持 `healthState`、`identityState`、`executionState`、`chainId`、`targetKey`、`updatedAfter`、`offset`、`limit`；默认返回 20 条唯一链路摘要和稳定分页字段，不返回完整阶段证据 |
-| `GET /api/v2/tasks/chains/:chainId` | 返回单条任务链的阶段证据、artifact、原因和动作资格；不存在返回 `404 TASK_CHAIN_NOT_FOUND` |
+| `GET /api/v2/tasks/chains` | 支持 `healthState`、`identityState`、`executionState`、`chainId`、`targetKey`、`updatedAfter`、`offset`、`limit`；默认返回 20 条唯一链路摘要和稳定分页字段，不返回完整阶段证据；摘要可选返回 `embyEvidenceScope` |
+| `GET /api/v2/tasks/chains/:chainId` | 返回单条任务链的阶段证据、artifact、原因和动作资格；不存在返回 `404 TASK_CHAIN_NOT_FOUND`；Emby 证据范围可选为 `none`、`title` 或 `episode` |
 | `GET /api/v2/calendar` | 按月聚合播出日期与任务链获取/入库证据，返回标准 `chainId/targetKey`、播出/获取/入库/正常保护/逾期/未知状态和 `Asia/Shanghai` 时区；支持 ETag |
 | `GET /api/v2/subscriptions/capabilities` | 只读返回本地写入、Torra 推送和调度器真实运行状态，供发现页生成不夸大的追更文案 |
 | `POST /api/subscriptions/save` | 标题、TMDB ID、媒体类型和可选元数据 |

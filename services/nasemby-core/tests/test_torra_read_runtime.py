@@ -191,6 +191,59 @@ class TorraReadRuntimeContractTests(unittest.TestCase):
         self.assertNotIn("/private/pending", str(summary))
         self.assertEqual(session.requests[0][1], "/api/v1/plugins/secupload_115")
 
+    def test_secupload_summary_aggregates_latest_scheduled_batch(self):
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        recent_runs = [
+            {
+                "run_id": f"run-{index}",
+                "task_key": "retry_pending",
+                "target_item_id": f"category-{index}",
+                "trigger": "schedule",
+                "status": "success",
+                "message": f"任务完成，成功 {success} 个，失败 {failed} 个",
+                "started_at": f"2026-07-24T08:00:0{index}",
+                "finished_at": f"2026-07-24T08:00:1{index}",
+            }
+            for index, (success, failed) in enumerate(((6, 0), (0, 0), (8, 0)))
+        ]
+        session = FakeSession([FakeResponse(payload={
+            "data": {
+                "manifest": {"enabled": True},
+                "recent_runs": [
+                    *recent_runs,
+                    {
+                        "run_id": "old",
+                        "task_key": "retry_pending",
+                        "target_item_id": "category-old",
+                        "trigger": "schedule",
+                        "status": "success",
+                        "message": "任务完成，成功 3 个，失败 1 个",
+                        "started_at": "2026-07-24T00:00:00",
+                        "finished_at": "2026-07-24T00:00:05",
+                    },
+                ],
+                "schedules": [{
+                    "task_key": "retry_pending",
+                    "target_item_id": "category-0",
+                    "enabled": True,
+                    "next_run_at": "2026-07-24T16:00:00+08:00",
+                }],
+            },
+        })])
+        client = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+        )
+
+        summary = client.get_secupload_summary()
+
+        self.assertEqual(summary["latestBatch"]["runCount"], 3)
+        self.assertEqual(summary["latestBatch"]["counts"], {"success": 14, "failed": 0})
+        self.assertEqual(summary["latestBatch"]["startedAt"], "2026-07-24T08:00:00")
+        self.assertEqual(summary["recentBatches"][1]["counts"], {"success": 3, "failed": 1})
+        self.assertEqual(summary["nextRunAt"], "2026-07-24T16:00:00+08:00")
+
     def test_duplicate_matching_prefers_tmdb_type_and_season(self):
         from app.torra_read_runtime import find_subscription
 

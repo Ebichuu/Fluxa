@@ -357,7 +357,7 @@ def load_tmdb_config():
     api_key = str(os.getenv("TMDB_API_KEY") or "").strip()
     if api_token or api_key:
         TMDB_CONFIG = {
-            "api_key": "" if api_token else api_key,
+            "api_key": api_key,
             "api_token": api_token,
             "api_base_url": "https://api.themoviedb.org/3",
             "image_base_url": "https://image.tmdb.org/t/p",
@@ -409,7 +409,8 @@ def http_json(url, timeout=18):
     }
     tmdb_base_url = str((TMDB_CONFIG or {}).get("api_base_url") or "").rstrip("/")
     tmdb_token = str((TMDB_CONFIG or {}).get("api_token") or "").strip()
-    if tmdb_token and tmdb_base_url and url.startswith(f"{tmdb_base_url}/"):
+    tmdb_key = str((TMDB_CONFIG or {}).get("api_key") or "").strip()
+    if tmdb_token and not tmdb_key and tmdb_base_url and url.startswith(f"{tmdb_base_url}/"):
         headers["Authorization"] = f"Bearer {tmdb_token}"
         parsed = urllib.parse.urlsplit(url)
         query = [(key, value) for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True) if key != "api_key"]

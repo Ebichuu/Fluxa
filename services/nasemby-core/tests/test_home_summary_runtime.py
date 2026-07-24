@@ -89,7 +89,24 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
 
         self.assertEqual(result["counts"]["ingestedToday"], 1)
+        self.assertEqual(result["counts"]["completedTargetsToday"], 1)
         self.assertEqual(result["counts"]["pending"], 0)
+
+    def test_today_archive_uses_symedia_success_count_without_changing_legacy_target_count(self):
+        app = self.build_app([item()])
+        app.extensions["mcc_task_chain_service"].payload["services"]["symedia"]["totals"] = {
+            "processedToday": 31,
+            "archivedToday": 24,
+            "protectedToday": 7,
+            "failedToday": 0,
+        }
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+
+        self.assertEqual(result["counts"]["archivedToday"], 24)
+        self.assertEqual(result["counts"]["completedTargetsToday"], 1)
+        self.assertEqual(result["counts"]["ingestedToday"], 1)
+        self.assertIn("今日成功归档 24 条", result["detail"])
 
     def test_enabled_scheduler_without_runtime_is_not_reported_normal(self):
         app = self.build_app([item()], scheduler_enabled=True)

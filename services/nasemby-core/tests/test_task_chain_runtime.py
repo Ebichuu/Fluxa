@@ -92,6 +92,10 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
                 "date": "2026-07-14 00:00:00",
             }],
             "symediaTotal": 1,
+            "symediaSummary": {
+                "connected": True,
+                "totals": {"processedToday": 31, "archivedToday": 24, "protectedToday": 7, "failedToday": 0},
+            },
             "embyIndex": {"movies": set(), "series": {"123"}},
             "urls": {
                 "qb": "http://qb.example.test",
@@ -106,6 +110,9 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
         self.assertEqual(item["confidence"], "strong")
         self.assertEqual(item["state"], "completed")
         self.assertTrue(item["embyIndexed"])
+        self.assertEqual(item["embyEvidenceScope"], "title")
+        self.assertIn("Emby 已收录该作品", item["steps"][-1]["detail"])
+        self.assertEqual(result["services"]["symedia"]["totals"]["archivedToday"], 24)
         self.assertEqual([step["status"] for step in item["steps"]], ["done"] * 4)
         self.assertEqual(
             [(row["seasonNumber"], row["episodeStart"], row["stage"]) for row in item["episodeEvidence"]],

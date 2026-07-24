@@ -97,6 +97,50 @@ def _safe_run_message(status: str, counts: dict) -> str:
     return labels.get(str(status or "").lower(), "任务状态已更新")
 
 
+def _run_batch_key(run: dict) -> str:
+    started_at = str(run.get("startedAt") or run.get("createdAt") or "")
+    minute = started_at[:16] if len(started_at) >= 16 else started_at
+    return "|".join((str(run.get("taskKey") or ""), str(run.get("trigger") or ""), minute))
+
+
+def _run_batches(runs: list[dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = {}
+    for run in runs:
+        grouped.setdefault(_run_batch_key(run), []).append(run)
+    batches = []
+    active_statuses = {"queued", "pending", "running", "stopping"}
+    for key, batch_runs in grouped.items():
+        known_success = [run["counts"]["success"] for run in batch_runs if run["counts"].get("success") is not None]
+        known_failed = [run["counts"]["failed"] for run in batch_runs if run["counts"].get("failed") is not None]
+        statuses = {str(run.get("status") or "").lower() for run in batch_runs}
+        failed_total = sum(known_failed) if known_failed else None
+        if statuses & active_statuses:
+            status = "running"
+        elif (failed_total or 0) > 0 or statuses & {"failed", "cancelled"}:
+            status = "failed"
+        elif statuses == {"success"}:
+            status = "success"
+        else:
+            status = "unknown"
+        batches.append({
+            "batchKey": key,
+            "taskKey": str(batch_runs[0].get("taskKey") or ""),
+            "trigger": str(batch_runs[0].get("trigger") or ""),
+            "status": status,
+            "runCount": len(batch_runs),
+            "targetItemIds": sorted({
+                str(run.get("targetItemId") or "") for run in batch_runs if run.get("targetItemId")
+            }),
+            "counts": {
+                "success": sum(known_success) if known_success else None,
+                "failed": failed_total,
+            },
+            "startedAt": min((str(run.get("startedAt") or "") for run in batch_runs if run.get("startedAt")), default=""),
+            "finishedAt": max((str(run.get("finishedAt") or "") for run in batch_runs if run.get("finishedAt")), default=""),
+        })
+    return sorted(batches, key=lambda batch: str(batch.get("startedAt") or ""), reverse=True)
+
+
 def subscription_matches(row: dict, target: dict) -> bool:
     row_tmdb_id = _integer(row.get("tmdb_id", row.get("tmdbid")))
     target_tmdb_id = _integer(target.get("tmdbId"))
@@ -390,12 +434,17 @@ class TorraReadClient:
                     "createdAt": str(run.get("created_at") or ""),
                 })
 
+            recent_runs.sort(
+                key=lambda run: str(run.get("startedAt") or run.get("createdAt") or ""),
+                reverse=True,
+            )
+            recent_batches = _run_batches(recent_runs)
             active_runs = sum(run["status"] in {"queued", "pending", "running", "stopping"} for run in recent_runs)
             latest_run = recent_runs[0] if recent_runs else None
-            latest_schedule = max(
-                schedules,
-                key=lambda row: str(row.get("lastRunAt") or ""),
-                default=None,
+            latest_batch = recent_batches[0] if recent_batches else None
+            next_run_at = min(
+                (str(row.get("nextRunAt") or "") for row in schedules if row.get("enabled") and row.get("nextRunAt")),
+                default="",
             )
             return {
                 **base,
@@ -406,10 +455,12 @@ class TorraReadClient:
                 "tasks": tasks,
                 "schedules": schedules,
                 "recentRuns": recent_runs,
+                "recentBatches": recent_batches,
                 "activeRuns": active_runs,
                 "latestRun": latest_run,
-                "lastRunAt": str((latest_run or {}).get("finishedAt") or ""),
-                "nextRunAt": str((latest_schedule or {}).get("nextRunAt") or ""),
+                "latestBatch": latest_batch,
+                "lastRunAt": str((latest_batch or {}).get("finishedAt") or (latest_run or {}).get("finishedAt") or ""),
+                "nextRunAt": next_run_at,
                 "lastCheckedAt": _iso_timestamp(self.clock()),
             }
         except Exception as exc:

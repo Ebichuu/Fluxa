@@ -185,6 +185,14 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
             "mcc_torra_client": FakeTorraClient(),
             "mcc_torra_subscription_sync": FakeTorraSync(),
             "mcc_private_rss": FakeRssService(),
+            "mcc_subscription_reconciliation": type("Reconciliation", (), {
+                "snapshot": lambda _self: {
+                    "ok": True,
+                    "sourceError": "",
+                    "summary": {"reconciliation": {"linked": 0}},
+                    "items": [],
+                },
+            })(),
         })
         service = SubscriptionWorkbenchService(app, {"NASEMBY_CORE_WRITE_ENABLED": "true"})
         row = {
@@ -217,6 +225,9 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
             "rss": "ready",
             "scheduler": "ready",
         })
+        mirror = next(item for item in snapshot["capabilities"] if item["key"] == "torra_mirror")
+        self.assertIn("当前对账已关联 0 条", mirror["detail"])
+        self.assertIn("历史镜像链接 1 条", mirror["detail"])
         self.assertEqual(snapshot["stats"]["movie"], 1)
         self.assertEqual(snapshot["stats"]["pending"], 1)
         self.assertEqual(snapshot["items"][0]["torra"]["status"], "linked")

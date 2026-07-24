@@ -63,6 +63,22 @@ class EpisodeEvidenceRuntimeTests(unittest.TestCase):
             [(item["episodeStart"], item["episodeEnd"]) for item in values],
             [(1, 1), (2, 3)],
         )
+        self.assertTrue(all(item["observedAt"] == "" for item in values))
+
+    def test_torra_subscription_update_is_not_used_as_episode_acquisition_time(self):
+        values = build_episode_evidence(
+            torra_pairs=[(
+                {
+                    "season_number": 1,
+                    "updated_at": "2026-07-23T10:17:00Z",
+                    "downloaded_file_names": ["Example.Show.S01E04.mkv"],
+                },
+                record("Torra", "artifact:torra-file"),
+            )],
+        )
+
+        self.assertEqual(values[0]["observedAt"], "")
+        self.assertEqual(values[0]["status"], "done")
 
     def test_qb_and_symedia_keep_artifact_stage_and_protection(self):
         values = build_episode_evidence(

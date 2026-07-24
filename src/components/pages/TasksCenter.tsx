@@ -44,7 +44,7 @@ const activityActionLabels: Record<string, string> = {
 const stateLabel: Record<TaskChainState, string> = {
   active: '进行中',
   blocked: '卡住',
-  completed: '已入库',
+  completed: '目标完成',
   waiting: '等待中'
 };
 
@@ -270,7 +270,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   }), [chain]);
 
   const secupload = chain?.services.torra.secupload115;
-  const latestUploadRun = secupload?.latestRun;
+  const latestUploadRun = secupload?.latestBatch ?? secupload?.latestRun;
   const identityPending = (chain?.identityCounts?.unidentified ?? 0) + (chain?.identityCounts?.conflict ?? 0);
   const secuploadSummary = !chain
     ? '读取中'
@@ -279,7 +279,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
       : (secupload.activeRuns ?? 0) > 0
         ? `${secupload.activeRuns} 个分类运行中`
         : latestUploadRun?.counts.success != null || latestUploadRun?.counts.failed != null
-          ? `最近成功 ${latestUploadRun.counts.success ?? 0} · 失败 ${latestUploadRun.counts.failed ?? 0}`
+          ? `最近 ${'runCount' in latestUploadRun ? `${latestUploadRun.runCount} 个分类 · ` : ''}成功 ${latestUploadRun.counts.success ?? 0} · 失败 ${latestUploadRun.counts.failed ?? 0}`
           : '插件已连接';
   const evidenceNotice = [
     identityPending > 0 ? `${identityPending} 条记录尚未形成唯一媒体身份，当前不据此判断秒传积压。` : '',
@@ -425,7 +425,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
         <div><Rss size={16} /><span>已保存订阅</span><strong>{chain?.originCounts?.subscription ?? 0} 条主干</strong></div>
         <div><Download size={16} /><span>正在下载</span><strong>{chain ? `${chain.services.torra.total} 个订阅 · ${chain.services.qb.active} 个活跃下载` : '读取中'}</strong></div>
         <div><HardDrive size={16} /><span>Torra 秒传</span><strong>{secuploadSummary}</strong></div>
-        <div><Server size={16} /><span>整理与入库</span><strong>{chain ? `${chain.counts.completed} 个已完成` : '读取中'}</strong></div>
+        <div><Server size={16} /><span>整理与入库</span><strong>{chain ? `${chain.counts.completed} 个完成目标` : '读取中'}</strong></div>
       </section>
 
       {(identityPending > 0 || (secupload?.readable && !secupload.perFileEvidence)) && (
@@ -616,7 +616,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
 
               {expanded && detail && (detail.suggestion || detail.embyIndexed || detail.qbControl.total > 0) && (
                 <footer className="ops-task-card__foot">
-                  <span>{detail.embyIndexed ? 'Emby 已索引' : currentDetail(detail)}</span>
+                  <span>{detail.embyIndexed ? (detail.embyEvidenceScope === 'episode' ? 'Emby 已收录该集' : 'Emby 已收录该作品') : currentDetail(detail)}</span>
                   <div className="ops-task-card__actions">
                     {detail.qbControl.total > 0 && (
                       <button

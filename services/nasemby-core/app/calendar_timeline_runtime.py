@@ -250,6 +250,18 @@ def _public_task(entry: dict, items: list[dict]) -> dict:
     }
 
 
+def _normalize_entry_evidence(entry: dict) -> dict:
+    value = dict(entry)
+    library_at = _as_datetime(value.get("libraryAt"))
+    acquired_at = _as_datetime(value.get("acquiredAt"))
+    if library_at:
+        value["inLibrary"] = True
+    if acquired_at and library_at and acquired_at > library_at:
+        value["acquiredAt"] = ""
+        value["acquisitionSource"] = ""
+    return value
+
+
 def _entry_status(entry: dict, today: str) -> str:
     current = datetime.now(timezone.utc)
     if entry.get("inLibrary") or entry.get("libraryAt"):
@@ -499,11 +511,11 @@ class CalendarTimelineService:
         task_service = self.app.extensions.get("mcc_task_chain_v2_service")
         task_payload = task_service.full_snapshot() if task_service else {"items": [], "version": ""}
         task_items = task_payload.get("items") or []
-        entries = [{
+        entries = [_normalize_entry_evidence({
             **entry,
             "airAt": f"{entry.get('date')}T00:00:00+08:00" if entry.get("date") else "",
             **_public_task(entry, task_items),
-        } for entry in calendar.get("entries") or []]
+        }) for entry in calendar.get("entries") or []]
         today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
         entries = [{**entry, "status": _entry_status(entry, today)} for entry in entries]
         calendar = {
@@ -513,6 +525,8 @@ class CalendarTimelineService:
             "view": view or "legacy",
             "stats": {
                 **(calendar.get("stats") or {}),
+                "inLibrary": sum(bool(entry.get("inLibrary")) for entry in entries),
+                "pending": sum(not bool(entry.get("inLibrary")) for entry in entries),
                 "acquired": sum(bool(entry.get("acquiredAt")) for entry in entries),
                 "libraryEvidence": sum(bool(entry.get("libraryAt")) for entry in entries),
                 "actionRequired": sum(entry.get("healthState") == "action_required" for entry in entries),

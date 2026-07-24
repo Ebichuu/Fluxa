@@ -242,11 +242,11 @@ def _library_step(rows: list[dict], emby_indexed: bool) -> dict:
             "matchedProtectionRule": protected_rules[0] if protected_rules and not real_failures else "",
             "protectionRules": protected_rules if not real_failures else [],
         }
-    detail = f"{success} 条 Symedia 成功 · Emby {'已索引' if emby_indexed else '尚未确认'}"
+    detail = f"{success} 条 Symedia 成功 · Emby {'已收录该作品' if emby_indexed else '尚未确认'}"
     return {
         "key": "library", "label": "入库", "status": "done", "evidence": "verified",
         "detail": detail, "timestamp": timestamp,
-        "source": "Symedia + Emby" if emby_indexed else "Symedia",
+        "source": "Symedia + Emby 作品级证据" if emby_indexed else "Symedia",
     }
 
 
@@ -375,6 +375,7 @@ def _build_subscription_item(
         "currentStep": _current_step(steps),
         "steps": steps,
         "embyIndexed": indexed,
+        "embyEvidenceScope": "title" if indexed else "none",
         "suggestion": _suggestion(steps, urls),
         "qbControl": _qb_control(matched_qb),
         "sourceIds": {
@@ -420,7 +421,7 @@ def _orphan_qb_item(task: dict, ownership: dict, urls: dict, upload_summary: dic
         "episodeNumber": episode_number,
         "posterUrl": "", "origin": "download", "channel": "PT", "state": _item_state(steps),
         "confidence": ownership.get("confidence") or "unlinked", "progress": round(_number(task.get("progress")) * 100),
-        "currentStep": _current_step(steps), "steps": steps, "embyIndexed": False,
+        "currentStep": _current_step(steps), "steps": steps, "embyIndexed": False, "embyEvidenceScope": "none",
         "suggestion": _suggestion(steps, urls), "qbControl": _qb_control([task]),
         "sourceIds": {"subscriptionId": "", "torraId": "", "qbHashes": [_string(task.get("hash"))], "symediaIds": []},
         "evidenceOwnership": [ownership],
@@ -462,7 +463,7 @@ def _orphan_symedia_item(row: dict, ownership: dict, urls: dict) -> dict:
         "episodeNumber": episode_number,
         "posterUrl": "", "origin": "library", "channel": "PT", "state": _item_state(steps),
         "confidence": ownership.get("confidence") or "unlinked", "progress": 100 if library["status"] == "done" else 0,
-        "currentStep": _current_step(steps), "steps": steps, "embyIndexed": False,
+        "currentStep": _current_step(steps), "steps": steps, "embyIndexed": False, "embyEvidenceScope": "none",
         "suggestion": _suggestion(steps, urls), "qbControl": _qb_control([]),
         "sourceIds": {"subscriptionId": "", "torraId": "", "qbHashes": [], "symediaIds": [row_id]},
         "evidenceOwnership": [ownership],
@@ -509,6 +510,7 @@ def _orphan_torra_item(row: dict, ownership: dict, urls: dict, upload_summary: d
         "currentStep": _current_step(steps),
         "steps": steps,
         "embyIndexed": False,
+        "embyEvidenceScope": "none",
         "suggestion": _suggestion(steps, urls),
         "qbControl": _qb_control([]),
         "sourceIds": {
@@ -593,6 +595,7 @@ def build_task_chain(input_data: dict) -> dict:
     errors = input_data.get("serviceErrors") or {}
     qb = input_data["qb"]
     emby_index = input_data.get("embyIndex")
+    symedia_summary = input_data.get("symediaSummary") or {}
     urls = input_data["urls"]
     return {
         "generatedAt": _iso_datetime(now),
@@ -625,11 +628,13 @@ def build_task_chain(input_data: dict) -> dict:
                 "connected": bool(urls["symedia"]) and not errors.get("symedia"),
                 "error": errors.get("symedia") or "", "total": input_data.get("symediaTotal", len(input_data["symediaRows"])),
                 "sampled": len(input_data["symediaRows"]), "webUrl": urls["symedia"],
+                "totals": symedia_summary.get("totals") or {},
             },
             "emby": {
                 "connected": emby_index is not None and not errors.get("emby"),
                 "error": errors.get("emby") or "", "indexedMovies": len((emby_index or {}).get("movies", set())),
-                "indexedSeries": len((emby_index or {}).get("series", set())), "webUrl": urls["emby"],
+                "indexedSeries": len((emby_index or {}).get("series", set())),
+                "evidenceScope": "title" if emby_index and (emby_index.get("movies") or emby_index.get("series")) else "none", "webUrl": urls["emby"],
             },
         },
     }
@@ -760,7 +765,7 @@ class TaskChainService:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     def get_chain(self):
-        with ThreadPoolExecutor(max_workers=6) as executor:
+        with ThreadPoolExecutor(max_workers=7) as executor:
             subscription_future = executor.submit(self.subscription_loader)
             qb_future = executor.submit(self.qb.summary)
             torra_future = executor.submit(
@@ -782,6 +787,13 @@ class TaskChainService:
                 lambda: self.symedia.list_transfer_history(200),
                 {"rows": [], "total": 0},
             )
+            symedia_summary_reader = getattr(self.symedia, "get_summary", None)
+            symedia_summary_future = executor.submit(
+                _optional_read,
+                self.symedia.is_configured() and callable(symedia_summary_reader),
+                symedia_summary_reader if callable(symedia_summary_reader) else lambda: {},
+                {},
+            )
             emby_future = executor.submit(
                 _optional_read,
                 self.emby.is_configured(),
@@ -794,6 +806,7 @@ class TaskChainService:
             subscriptions = merge_task_subscriptions(subscriptions, torra_rows)
             torra_upload, torra_upload_error = torra_upload_future.result()
             symedia_page, symedia_error = symedia_future.result()
+            symedia_summary, _ = symedia_summary_future.result()
             emby_index, emby_error = emby_future.result()
         return build_task_chain({
             "subscriptions": subscriptions,
@@ -803,6 +816,7 @@ class TaskChainService:
             "qb": qb,
             "symediaRows": symedia_page["rows"],
             "symediaTotal": symedia_page["total"],
+            "symediaSummary": symedia_summary if symedia_summary.get("connected") else {},
             "embyIndex": emby_index,
             "urls": {
                 "qb": qb.get("webUrl") or self.qb.base_url,

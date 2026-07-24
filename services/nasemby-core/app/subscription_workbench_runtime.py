@@ -386,6 +386,27 @@ class SubscriptionWorkbenchService:
         torra_service = task_services.get("torra") or {}
         torra_connected = bool(torra_service.get("connected")) if task_service else torra_configured
         torra_error = str(torra_service.get("error") or chain_error or "")
+        reconciliation_counts = ((reconciliation or {}).get("summary") or {}).get("reconciliation") or {}
+        try:
+            reconciliation_linked = int(reconciliation_counts.get("linked") or 0)
+        except (TypeError, ValueError):
+            reconciliation_linked = 0
+        reconciliation_readable = bool(reconciliation and not reconciliation.get("sourceError"))
+        if reconciliation_readable:
+            mirror_state = "ready" if torra_status.get("enabled") and not torra_status.get("errors") else ("error" if torra_status.get("errors") else "disabled")
+            mirror_detail = (
+                f"当前对账已关联 {reconciliation_linked} 条；历史镜像链接 {torra_status.get('linked', 0)} 条"
+                + ("；镜像同步未开启" if not torra_status.get("enabled") else "")
+            )
+        elif reconciliation and reconciliation.get("sourceError"):
+            mirror_state = "error"
+            mirror_detail = "对账暂不可用；历史镜像链接仅供参考"
+        elif torra_status.get("enabled"):
+            mirror_state = "error" if torra_status.get("errors") else "ready"
+            mirror_detail = f"历史镜像链接 {torra_status.get('linked', 0)} 条，最近同步 {torra_status.get('lastSyncedAt') or '尚未同步'}"
+        else:
+            mirror_state = "disabled"
+            mirror_detail = "Torra 订阅镜像未开启"
         rss = self.app.extensions.get("mcc_private_rss")
         rss_summary = rss.repository.summary(rss.collection_enabled()) if rss else {
             "enabled": False,
@@ -446,7 +467,7 @@ class SubscriptionWorkbenchService:
         capabilities = [
             _state("local_write", "本地写入", "ready" if write_enabled else "disabled", "可保存和管理 Fluxa 本地订阅" if write_enabled else "本地订阅写入已关闭", enabled=write_enabled, configured=True, checked_at=checked_at),
             _state("torra_connection", "Torra 连接", "ready" if torra_connected else ("error" if torra_error else "disabled"), "连接正常" if torra_connected else (torra_error or ("Torra 未配置" if not torra_configured else "暂未建立连接")), enabled=torra_connected, configured=torra_configured, checked_at=checked_at),
-            _state("torra_mirror", "镜像同步", "ready" if torra_status.get("enabled") and not torra_status.get("errors") else ("error" if torra_status.get("errors") else "disabled"), f"已关联 {torra_status.get('linked', 0)} 条，最近同步 {torra_status.get('lastSyncedAt') or '尚未同步'}" if torra_status.get("enabled") else "Torra 订阅镜像未开启", enabled=bool(torra_status.get("enabled")), configured=torra_configured, checked_at=checked_at),
+            _state("torra_mirror", "镜像同步", mirror_state, mirror_detail, enabled=bool(torra_status.get("enabled")), configured=torra_configured, checked_at=checked_at),
             _state("rss", "RSS", rss_state, rss_detail, enabled=bool(rss_summary.get("enabled")), configured=bool(rss_summary.get("sources")), checked_at=checked_at),
             _state("scheduler", "定时任务", scheduler_state, scheduler_detail, enabled=scheduler_enabled, configured=bool(douban), checked_at=checked_at),
         ]
