@@ -25,6 +25,7 @@ import {
   getRssSeedItems,
   getRssMatches,
   getRssSources,
+  runRssMatcher,
   saveRssSource,
   startRssMatchAnalysis,
   testRssSource
@@ -165,6 +166,7 @@ export function RssSeedLibraryPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
   const [identityBackfillBusy, setIdentityBackfillBusy] = useState(false);
+  const [matcherRunBusy, setMatcherRunBusy] = useState(false);
   const itemsRequestRef = useRef<AbortController | null>(null);
   const matchesRequestRef = useRef<AbortController | null>(null);
   const matchPollRef = useRef<AbortController | null>(null);
@@ -249,6 +251,22 @@ export function RssSeedLibraryPage() {
       setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : 'RSS 身份回填失败' });
     } finally {
       setIdentityBackfillBusy(false);
+    }
+  };
+
+  const runMatcher = async () => {
+    setMatcherRunBusy(true);
+    try {
+      const result = await runRssMatcher(200);
+      setFeedback({
+        tone: 'ok',
+        message: `匹配器完成：扫描 ${result.scanned} 条，新增 ${result.created} 条候选，仍有 ${result.remaining} 条待处理`
+      });
+      await Promise.all([loadSources(), loadItems({ offset: 0 }), loadMatches(0)]);
+    } catch (reason) {
+      setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : 'RSS 历史匹配失败' });
+    } finally {
+      setMatcherRunBusy(false);
     }
   };
 
@@ -466,8 +484,11 @@ export function RssSeedLibraryPage() {
           <div className="rss-index-head">
             <span>{loading || itemsLoading ? '正在读取本地索引' : `找到 ${total} 条内容`}</span>
             <div className="rss-index-filters">
-              <button className="ops-action-button" disabled={identityBackfillBusy} type="button" onClick={() => void runIdentityBackfill()}>
+              <button className="ops-action-button" disabled={identityBackfillBusy || matcherRunBusy} type="button" onClick={() => void runIdentityBackfill()}>
                 <RefreshCcw aria-hidden="true" size={13} />{identityBackfillBusy ? '正在回填' : '补齐身份'}
+              </button>
+              <button className="ops-action-button" disabled={identityBackfillBusy || matcherRunBusy} type="button" onClick={() => void runMatcher()}>
+                <Send aria-hidden="true" size={13} />{matcherRunBusy ? '正在匹配' : '运行一批匹配'}
               </button>
               <select aria-label="按身份状态筛选" value={identityStatus} onChange={(event) => setIdentityStatus(event.target.value as RssIdentityStatus)}>
                 <option value="">全部身份</option>

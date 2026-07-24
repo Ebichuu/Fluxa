@@ -12,6 +12,7 @@ import type {
   AutomationAction,
   RssIdentityBackfillResponse,
   RssMatchListResponse,
+  RssMatchRunResponse,
   RssSeedItem,
   RssSeedListResponse,
   RssSource,
@@ -485,6 +486,10 @@ export function getRssSeedItem(id: string, options?: RequestOptions): Promise<Rs
 
 export function backfillRssIdentities(limit = 50): Promise<RssIdentityBackfillResponse> {
   return postJson<RssIdentityBackfillResponse>('/api/v2/rss-items/identity-backfills', { limit });
+}
+
+export function runRssMatcher(limit = 200): Promise<RssMatchRunResponse> {
+  return postJson<RssMatchRunResponse>('/api/v2/rss-items/match-runs', { limit });
 }
 
 export function getRssMatches(input: { status?: string; limit?: number; offset?: number } = {}, options?: RequestOptions): Promise<RssMatchListResponse> {

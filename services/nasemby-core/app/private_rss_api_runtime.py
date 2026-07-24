@@ -89,6 +89,11 @@ class PrivateRssService:
             raise RuntimeError("RSS identity matcher is not initialized")
         return self.match_runtime.backfill_unidentified_items(limit)
 
+    def run_matcher(self, limit=200):
+        if not self.match_runtime:
+            raise RuntimeError("RSS identity matcher is not initialized")
+        return self.match_runtime.match_existing_items(limit)
+
 
 def register_private_rss(
     app,
@@ -224,6 +229,25 @@ def register_private_rss(
         except Exception:
             return _error("RSS_BACKFILL_FAILED", "RSS 身份回填失败", 500)
         write_activity("rss", "identity_backfill", "success", "RSS 身份回填完成", **result)
+        return jsonify({"ok": True, **result})
+
+    @app.post("/api/v2/rss-items/match-runs")
+    def rss_items_match_run():
+        if not service.config_write_enabled():
+            return _error("RSS_MATCH_WRITE_DISABLED", "RSS 匹配需要开启本地写入", 503)
+        try:
+            raw_limit = (request.get_json(silent=True) or {}).get("limit", 200)
+            if isinstance(raw_limit, bool):
+                raise ValueError
+            limit = int(raw_limit)
+            if limit < 1 or limit > 200:
+                raise ValueError
+            result = service.run_matcher(limit)
+        except (TypeError, ValueError):
+            return _error("RSS_MATCH_INVALID", "RSS 匹配批量必须是 1 到 200", 422)
+        except Exception:
+            return _error("RSS_MATCH_FAILED", "RSS 历史匹配失败", 500)
+        write_activity("rss", "match_run", "success", "RSS 历史匹配完成", **result)
         return jsonify({"ok": True, **result})
 
     @app.get("/api/v2/rss-items/<item_id>")

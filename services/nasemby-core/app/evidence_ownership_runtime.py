@@ -62,6 +62,26 @@ def _season_from_text(value) -> int:
     return int(match.group(1)) if match else 0
 
 
+def _qb_title_keys(name: str) -> list[str]:
+    text = _text(name)
+    prefix = re.split(
+        r"(?i)(?:^|[.\s_-])S(?:eason)?[.\s_-]*\d{1,2}",
+        text,
+        maxsplit=1,
+    )[0]
+    values = [prefix]
+    values.extend(match.group(1) for match in re.finditer(r"[\[【（(]([^\]】）)]+)[\]】）)]", text))
+    leading = re.match(r"^[\s.\-_[\]【】（）()]*([\u4e00-\u9fff][\u4e00-\u9fff·、，。！？：:]*)", text)
+    if leading:
+        values.append(leading.group(1))
+    result = []
+    for value in values:
+        key = _identity_title_key(value)
+        if key and key not in result:
+            result.append(key)
+    return result
+
+
 def _media_type(value, season=0) -> str:
     text = _text(value).lower()
     if text in {"tv", "series"} or "剧" in text:
@@ -167,8 +187,16 @@ def _symedia_evidence(row: dict, index: int) -> dict:
 def _qb_evidence(row: dict, index: int) -> dict:
     name = _text(row.get("name"))
     season = _season_from_text(name)
+    title_keys = _qb_title_keys(name)
     observed_at = ""
-    seconds = row.get("completionOn") or row.get("addedOn")
+    seconds = 0
+    for value in (row.get("completionOn"), row.get("addedOn")):
+        try:
+            if float(value or 0) > 0:
+                seconds = value
+                break
+        except (TypeError, ValueError):
+            continue
     try:
         observed_at = datetime.fromtimestamp(float(seconds), timezone.utc).isoformat().replace("+00:00", "Z")
     except (TypeError, ValueError, OSError):
@@ -179,7 +207,8 @@ def _qb_evidence(row: dict, index: int) -> dict:
         "sourceIndex": index,
         "mediaType": "tv" if season else "movie",
         "tmdbId": "",
-        "titleKey": _identity_title_key(re.split(r"(?i)(?:^|[.\s_-])S(?:eason)?[.\s_-]*\d{1,2}", name, maxsplit=1)[0]),
+        "titleKey": title_keys[0] if title_keys else "",
+        "titleKeys": title_keys,
         "seasonNumber": season,
         "year": _year(name),
         "observedAt": observed_at,

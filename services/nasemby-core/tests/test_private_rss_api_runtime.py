@@ -67,6 +67,12 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             self.assertTrue(backfill_summary["identityBackfillRan"])
             self.assertEqual(backfill_summary["lastIdentityBackfillIdentified"], 1)
             self.assertGreaterEqual(backfill_summary["lastIdentityBackfillRemaining"], 1)
+            matcher = client.post("/api/v2/rss-items/match-runs", json={"limit": 200})
+            self.assertEqual(matcher.status_code, 200)
+            self.assertGreaterEqual(matcher.get_json()["scanned"], 1)
+            matcher_summary = client.get("/api/v2/rss-sources").get_json()["summary"]
+            self.assertTrue(matcher_summary["matcherRan"])
+            self.assertEqual(matcher_summary["lastMatchStatus"], "success")
             repository.create_match(item_id, "tv:202:s1", "tv:202:s1:s1:e1", {"identity": {"basis": "title"}})
             listed_matches = client.get("/api/v2/rss-matches?status=candidate").get_json()
             self.assertEqual(listed_matches["total"], 1)

@@ -2,7 +2,7 @@
   "contractVersion": 2,
   "frozenAt": "2026-07-24",
   "pathVersioning": "url-v2",
-  "routeCount": 53,
+  "routeCount": 54,
   "routes": [
     { "method": "GET", "path": "/api/v2/integrations", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "integrations", "client": true },
     { "method": "POST", "path": "/api/v2/integrations/cloud115/probes", "audience": "browser", "auth": "session", "effect": "external-read", "response": "json", "success": [200], "migrationGroup": "integrations", "client": false },
@@ -42,6 +42,7 @@
     { "method": "GET", "path": "/api/v2/rss-items", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "private-rss", "client": true, "optionalQuery": ["query", "sourceId", "window", "identityStatus", "tmdbId", "mediaType", "seasonNumber", "year", "limit", "offset"], "optionalResponseFields": ["matchMethod", "matchConfidence", "seasonScopeState"], "identityStatus": ["identified", "conflict", "unidentified"] },
     { "method": "GET", "path": "/api/v2/rss-items/:id", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "private-rss", "client": true, "optionalResponseFields": ["tmdbId", "imdbId", "identityStatus", "identitySource", "identityConfidence", "identityUpdatedAt"], "redactedFields": ["download_url", "detail_url", "passkey"] },
     { "method": "POST", "path": "/api/v2/rss-items/identity-backfills", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "private-rss", "client": true, "request": { "limit": "1..200" }, "responseFields": ["scanned", "identified", "conflicts", "unchanged", "remaining"] },
+    { "method": "POST", "path": "/api/v2/rss-items/match-runs", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200], "migrationGroup": "private-rss", "client": true, "request": { "limit": "1..200" }, "responseFields": ["scanned", "created", "remaining"] },
     { "method": "GET", "path": "/api/v2/rss-matches", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "private-rss", "client": true },
     { "method": "GET", "path": "/api/v2/automation-actions/:id", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "automation", "client": true },
     { "method": "GET", "path": "/api/v2/subscription-automation/settings", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "subscription-automation", "client": true },

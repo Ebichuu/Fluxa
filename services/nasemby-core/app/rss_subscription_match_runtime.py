@@ -467,6 +467,18 @@ class RssSubscriptionMatchRuntime:
         self.rss_repository.record_identity_backfill_run(result)
         return result
 
+    def match_existing_items(self, limit=200):
+        limit = max(1, min(int(limit or 200), 200))
+        rows = self.rss_repository.list_items_for_match(limit)
+        with self.rss_repository.runtime.transaction(immediate=True) as connection:
+            created = self.match_inserted_rows(connection, rows)
+        return {
+            "scanned": len(rows),
+            "created": len(created),
+            "remaining": self.rss_repository.count_items_for_match(),
+            "limit": limit,
+        }
+
     @staticmethod
     def _compatible_type(item, subscription, unit):
         item_type = _media_type(item.get("media_type") or item.get("mediaType"))

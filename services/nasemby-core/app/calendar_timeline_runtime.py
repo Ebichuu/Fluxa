@@ -538,6 +538,8 @@ class CalendarTimelineService:
             "view": view or "legacy",
             "stats": {
                 **(calendar.get("stats") or {}),
+                "entries": len(entries),
+                "titles": len({_text(entry.get("key")) or _text(entry.get("title")) for entry in entries}),
                 "inLibrary": sum(bool(entry.get("inLibrary")) for entry in entries),
                 "pending": sum(not bool(entry.get("inLibrary")) for entry in entries),
                 "acquired": sum(bool(entry.get("acquiredAt")) for entry in entries),

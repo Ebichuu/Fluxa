@@ -240,6 +240,8 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
 
         self.assertEqual(payload["entries"], [])
         self.assertEqual(payload["stats"]["excludedBeforeSubscription"], 1)
+        self.assertEqual(payload["stats"]["entries"], 0)
+        self.assertEqual(payload["stats"]["titles"], 0)
         self.assertEqual(payload["stats"]["statusCounts"]["unknown"], 0)
 
     def test_protection_evidence_is_not_counted_as_missing(self):

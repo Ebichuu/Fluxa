@@ -182,6 +182,23 @@ class EvidenceOwnershipRuntimeTests(unittest.TestCase):
         self.assertEqual(qb_record["ownerTargetKey"], "tv:tmdb:101:season:1")
         self.assertEqual(qb_record["matchMethod"], "title_season_unique")
 
+    def test_qb_bracketed_chinese_title_binds_and_negative_completion_uses_added_time(self):
+        from app.evidence_ownership_runtime import _qb_evidence
+
+        name = "[灿如繁星].Road.to.Success.S01E01.1080p.mkv"
+        result = adjudicate_task_evidence(
+            [subscription("tv-cn", "灿如繁星", "tv", tmdb_id="808", season=1)],
+            [],
+            [{"hash": "hash-cn", "name": name, "completionOn": -28800, "addedOn": 1700000000}],
+            [],
+        )
+
+        qb_record = next(record for record in result["records"] if record["source"] == "qBittorrent")
+        self.assertEqual(qb_record["ownerTargetKey"], "tv:tmdb:808:season:1")
+        evidence = _qb_evidence({"hash": "hash-cn", "name": name, "completionOn": -28800, "addedOn": 1700000000}, 0)
+        self.assertEqual(evidence["observedAt"], "2023-11-14T22:13:20Z")
+        self.assertNotIn("1969", evidence["observedAt"])
+
     def test_symedia_artifact_inherits_only_exact_torra_file_owner(self):
         result = adjudicate_task_evidence(
             [subscription("tv-a", "测试剧", "tv", tmdb_id="101", season=1)],

@@ -682,6 +682,27 @@ class PrivateRssRepository:
                 "WHERE identity_status='unidentified' AND tmdb_id='' AND imdb_id=''"
             ).fetchone()["count"])
 
+    def list_items_for_match(self, limit=200):
+        limit = max(1, min(int(limit or 200), 200))
+        with closing(self.runtime.connect()) as connection:
+            return [dict(row) for row in connection.execute(
+                "SELECT i.*, s.name AS source_name, s.domain AS source_domain "
+                "FROM rss_items i JOIN rss_sources s ON s.id=i.source_id "
+                "WHERE i.identity_status<>'conflict' AND NOT EXISTS ("
+                "SELECT 1 FROM rss_subscription_matches m WHERE m.item_id=i.id) "
+                "ORDER BY i.identity_updated_at ASC, "
+                "COALESCE(NULLIF(i.published_at, ''), i.created_at) DESC, i.id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()]
+
+    def count_items_for_match(self):
+        with closing(self.runtime.connect()) as connection:
+            return int(connection.execute(
+                "SELECT COUNT(*) AS count FROM rss_items i "
+                "WHERE i.identity_status<>'conflict' AND NOT EXISTS ("
+                "SELECT 1 FROM rss_subscription_matches m WHERE m.item_id=i.id)"
+            ).fetchone()["count"])
+
     @staticmethod
     def supplement_item_identity(connection, item_id, tmdb_id="", imdb_id="", source="subscription_match", confidence="fallback"):
         tmdb_id = str(tmdb_id or "").strip()[:24]

@@ -93,6 +93,14 @@ export interface RssIdentityBackfillResponse {
   limit: number;
 }
 
+export interface RssMatchRunResponse {
+  ok: boolean;
+  scanned: number;
+  created: number;
+  remaining: number;
+  limit: number;
+}
+
 export interface RssSourceInput {
   name: string;
   feedUrl?: string;
