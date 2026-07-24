@@ -32,6 +32,7 @@ import {
 } from '../../services/api';
 import type { AutomationAction, RssIdentityStatus, RssLibrarySummary, RssMatch, RssSeedItem, RssSource, RssSourceInput } from '../../types/rssSeedLibrary';
 import { formatTimeAgo } from '../../utils/formatters';
+import { createIdempotencyKey } from '../../utils/idempotency';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
 
 type WindowFilter = '' | '1h' | '24h' | '7d';
@@ -336,7 +337,7 @@ export function RssSeedLibraryPage() {
 
   const analyzeMatch = (match: RssMatch) => {
     setMatchBusy(match.id);
-    startRssMatchAnalysis(match.id, window.crypto.randomUUID())
+    startRssMatchAnalysis(match.id, createIdempotencyKey())
       .then((action) => {
         setMatchActions((current) => ({ ...current, [match.id]: action }));
         void pollMatchAction(match.id, action.id);

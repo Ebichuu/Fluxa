@@ -47,6 +47,7 @@ import type {
   TorraPushPreviewResponse
 } from '../../types/subscriptions';
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
+import { createIdempotencyKey } from '../../utils/idempotency';
 import type { AppNavigate, TaskNavigationTarget } from '../layout/AppTopNav';
 import { HealthBadge } from '../status/HealthBadge';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
@@ -904,7 +905,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       confirmLabel: '确认导入',
       onConfirm: () => {
         setTorraSyncBusy('import');
-        importTorraSubscriptions(window.crypto.randomUUID())
+        importTorraSubscriptions(createIdempotencyKey())
           .then((result) => {
             setTorraSyncMessage(`已导入 ${result.summary.imported ?? 0} 条，更新 ${result.summary.updated ?? 0} 条`);
             setTorraSyncPreview(null);
@@ -1006,7 +1007,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     if (!item.id || !torraPushPreview?.preview.ready) return;
     setTorraPushBusy(`push:${item.id}`);
     setTorraPushMessage('');
-    pushSubscriptionToTorra(item.id, window.crypto.randomUUID())
+    pushSubscriptionToTorra(item.id, createIdempotencyKey())
       .then((result) => {
         setTorraPushMessage(result.message);
         setSweepMessage(`${item.title}：${result.message}`);
@@ -1064,7 +1065,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     setQualityWatchMessage('正在提交 Torra 质量分析…');
     setAutomationAction(null);
     startTorraRewashAnalysis(item.id, {
-      idempotencyKey: window.crypto.randomUUID(),
+      idempotencyKey: createIdempotencyKey(),
       ...(selectedUnitId ? { unitId: selectedUnitId } : {})
     })
       .then((action) => {
@@ -1090,7 +1091,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
         setQualityWatchMessage('正在提交 Torra 候选下载…');
         startTorraRewashDownload(itemId, {
           confirm: true,
-          idempotencyKey: window.crypto.randomUUID(),
+          idempotencyKey: createIdempotencyKey(),
           analysisActionId: analysis.id,
           ...((analysis.unitId || selectedUnitId) ? { unitId: analysis.unitId || selectedUnitId } : {})
         })
@@ -1130,7 +1131,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       onConfirm: () => {
         setMoviePilotBusy(`push:${itemId}`);
         setMoviePilotMessage('正在执行 MoviePilot 备用推送…');
-        pushToMoviePilot(itemId, window.crypto.randomUUID())
+        pushToMoviePilot(itemId, createIdempotencyKey())
           .then((result: MoviePilotPushResult) => {
             setMoviePilotMessage(result.message);
             setSweepMessage(`${item.title}：${result.message}`);
