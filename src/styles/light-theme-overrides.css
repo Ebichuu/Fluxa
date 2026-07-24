@@ -1,0 +1,172 @@
+/*
+ * 浅色主题全局可读性补丁。
+ * 管理工作台使用 data-theme="light"，影视大厅没有该属性，因此不会被覆盖。
+ */
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page {
+  --ops-ink-muted: var(--theme-muted);
+  --ops-ink-strong: var(--theme-text-strong);
+  --ops-text: var(--theme-text);
+  --ops-muted: var(--theme-muted);
+  --ops-faint: var(--theme-faint);
+  --ops-steel: var(--theme-accent);
+  --ops-signal: var(--theme-accent);
+  --ops-rose: var(--theme-danger);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+  .page-kicker,
+  .ops-eyebrow,
+  .ops-command small,
+  .health-line,
+  .queue-count,
+  .queue-empty,
+  .activity-row__text small,
+  .rss-identity-run
+) {
+  color: var(--theme-muted);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+  .page-hero-copy h1,
+  .page-hero-copy p,
+  .activity-panel__head h2,
+  .activity-row__text strong,
+  .queue-steps b.is-now,
+  .service-card__metric strong,
+  .panel h2,
+  .console-panel h2,
+  .task-card h2,
+  .queue-card h2,
+  .settings-section h2,
+  .setting-field code,
+  .sub-config__modes label strong
+) {
+  color: var(--theme-text-strong);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+  .page-hero-copy p,
+  .panel p,
+  .console-panel p,
+  .task-card p,
+  .queue-card p,
+  .sub-config label,
+  .sub-config__toggles label,
+  .sub-config__sources label,
+  .sub-config__row > span,
+  .settings-section p
+) {
+  color: var(--theme-muted);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+  .settings-button,
+  .round-actions button,
+  .state-chip,
+  .tool-link,
+  .health-line,
+  .discover-source,
+  .discover-filter-chip,
+  .rss-window-tab,
+  .rss-source-card__actions button,
+  .rss-source-form__title button
+) {
+  border-color: var(--theme-border);
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--theme-muted);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+  .settings-button:hover,
+  .settings-button--active,
+  .round-actions button:hover,
+  .tool-link:hover,
+  .health-line:hover,
+  .discover-source:hover,
+  .discover-source--active,
+  .discover-filter-chip:hover,
+  .discover-filter-chip--active,
+  .rss-window-tab:hover,
+  .rss-window-tab:focus-visible,
+  .rss-window-tab--active,
+  .rss-source-card__actions button:hover,
+  .rss-source-card__actions button:focus-visible,
+  .rss-source-form__title button:hover,
+  .rss-source-form__title button:focus-visible
+) {
+  border-color: rgba(var(--theme-accent-rgb), 0.32);
+  background: rgba(var(--theme-accent-rgb), 0.1);
+  color: var(--theme-text-strong);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+  .discover-search input,
+  .rss-search input,
+  .sub-config input[type='text'],
+  .sub-config input[type='number'],
+  .sub-config input[type='time'],
+  .sub-config select,
+  .sub-config textarea
+) {
+  color: var(--theme-text-strong);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .segmented-tabs__count {
+  background: rgba(var(--theme-accent-rgb), 0.12);
+  color: var(--theme-text-strong);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .queue-steps b.is-done {
+  color: var(--theme-success);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .rss-library-page {
+  --rss-line: rgba(31, 35, 41, 0.12);
+  --rss-blue: var(--theme-accent);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .rss-feedback {
+  border-color: rgba(23, 125, 114, 0.24);
+  background: rgba(23, 125, 114, 0.09);
+  color: #176b60;
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .rss-feedback--error {
+  border-color: rgba(201, 52, 78, 0.24);
+  background: rgba(201, 52, 78, 0.08);
+  color: #a52840;
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .rss-detail-status--conflict {
+  color: var(--theme-warning) !important;
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .rss-seed-open:hover,
+.app-shell:not(.app-shell--hall)[data-theme='light'] .rss-seed-open:focus-visible {
+  color: var(--theme-text-strong);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] :is(
+  .ops-page--calendar .calendar-grid__weekday,
+  .ops-page--calendar .calendar-cell,
+  .ops-page--calendar .calendar-cell--empty
+) {
+  border-color: var(--theme-border);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-grid__weekday {
+  background: rgba(31, 35, 41, 0.045);
+  color: var(--theme-muted);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-cell {
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-cell--empty {
+  background: rgba(31, 35, 41, 0.035);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .service-card__metric strong {
+  color: var(--theme-text-strong);
+}

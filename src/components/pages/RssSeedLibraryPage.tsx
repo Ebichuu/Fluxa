@@ -244,7 +244,7 @@ export function RssSeedLibraryPage() {
       const result = await backfillRssIdentities(50);
       setFeedback({
         tone: 'ok',
-        message: `身份回填完成：识别 ${result.identified} 条，冲突 ${result.conflicts} 条，剩余 ${result.remaining} 条`
+        message: `身份回填完成：本次扫描 ${result.scanned} 条，识别 ${result.identified} 条，冲突 ${result.conflicts} 条，未变化 ${result.unchanged} 条，剩余 ${result.remaining} 条`
       });
       await Promise.all([loadSources(), loadItems({ offset: 0 })]);
     } catch (reason) {
