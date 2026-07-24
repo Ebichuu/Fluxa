@@ -101,6 +101,8 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 
 任务链健康状态固定为 `action_required`、`evidence_insufficient`、`waiting`、`protected`、`normal`，优先级依次降低。缺失或过期证据不得返回 `normal`；已有计划重试返回 `waiting`；低分、重复或已有更高版本返回 `protected`，并且不会通过该读取接口开放重试动作。
 
+没有 Fluxa/Torra 订阅时，Symedia 记录只有在电视剧类型、有效 TMDB、明确季号和非空规范标题同时成立时，才可以建立只存在于任务快照中的媒体目标。qB 必须以保守中文标题、相同季号和唯一候选归属；匹配方法分别记录为 `symedia_tmdb_anchor` 与 `symedia_title_season_unique`。多 TMDB 候选保持冲突，电影缺年份不使用该回退。统一链可以返回 Emby 作品级 `embyEvidenceScope=title`，但 Symedia 下游记录不能反推逐文件秒传方式或 Emby 单集索引。
+
 内部诊断路由仍受会话保护，只用于核对同一 Python 进程中的 NasEmby 数据，不表示存在第二个服务。
 
 集合边界：

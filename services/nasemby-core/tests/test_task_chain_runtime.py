@@ -55,6 +55,67 @@ def qb_task(**overrides):
 
 
 class TaskChainRuntimeContractTests(unittest.TestCase):
+    def test_symedia_identity_merges_qb_and_library_without_subscription(self):
+        from app.task_chain_runtime import build_task_chain
+        from app.task_chain_v2_runtime import adapt_task_chain
+
+        input_data = {
+            "subscriptions": [],
+            "torraRows": [],
+            "torraUpload": {"connected": True, "readable": True, "perFileEvidence": False},
+            "qb": qb_summary([qb_task(
+                hash="hash-cn",
+                name="[灿如繁星].Road.to.Success.S01E01.1080p.mkv",
+            )]),
+            "symediaRows": [{
+                "id": "symedia-cn",
+                "title": "灿如繁星",
+                "type": "tv",
+                "tmdbid": "808",
+                "season": 1,
+                "episode": 1,
+                "src": "/115/灿如繁星.S01E01.mkv",
+                "dest": "/strm/灿如繁星/S01E01.strm",
+                "status": True,
+                "date": "2026-07-25 01:00:00",
+            }],
+            "symediaTotal": 1,
+            "embyIndex": {"movies": set(), "series": {"808"}},
+            "urls": {"qb": "http://qb", "torra": "", "symedia": "http://symedia", "emby": "http://emby"},
+            "now": datetime(2026, 7, 25, 2, 0, tzinfo=timezone.utc),
+        }
+        result = build_task_chain(input_data)
+
+        self.assertEqual(len(result["items"]), 1)
+        item = result["items"][0]
+        self.assertEqual(item["title"], "灿如繁星")
+        self.assertEqual(item["tmdbId"], "808")
+        self.assertEqual(item["seasonNumber"], 1)
+        self.assertEqual(item["sourceIds"]["subscriptionId"], "")
+        self.assertEqual(item["sourceIds"]["torraId"], "")
+        self.assertEqual(item["sourceIds"]["qbHashes"], ["hash-cn"])
+        self.assertEqual(item["sourceIds"]["symediaIds"], ["symedia-cn"])
+        self.assertTrue(item["embyIndexed"])
+        self.assertEqual(item["embyEvidenceScope"], "title")
+        self.assertIn("未发现 Fluxa/Torra 追更订阅", item["steps"][0]["detail"])
+        self.assertIn("具体上传方式未确认", item["steps"][2]["detail"])
+        self.assertEqual([step["status"] for step in item["steps"]], ["done"] * 4)
+
+        adapted = adapt_task_chain(result, now=datetime(2026, 7, 25, 2, 1, tzinfo=timezone.utc))
+        self.assertEqual(len(adapted["items"]), 1)
+        self.assertEqual(adapted["items"][0]["targetKey"], "tv:tmdb:808:season:1")
+        self.assertEqual(adapted["items"][0]["identityState"], "linked")
+        self.assertEqual(adapted["items"][0]["embyEvidenceScope"], "title")
+
+        input_data["embyIndex"] = {"movies": set(), "series": set()}
+        without_emby = adapt_task_chain(
+            build_task_chain(input_data),
+            now=datetime(2026, 7, 25, 2, 1, tzinfo=timezone.utc),
+        )["items"][0]
+        self.assertFalse(without_emby["embyIndexed"])
+        self.assertEqual(without_emby["embyEvidenceScope"], "none")
+        self.assertNotEqual(without_emby["healthState"], "action_required")
+
     def test_tmdb_file_and_symedia_evidence_form_strong_completed_chain(self):
         from app.task_chain_runtime import build_task_chain
 

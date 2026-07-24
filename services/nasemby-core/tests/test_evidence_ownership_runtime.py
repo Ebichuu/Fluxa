@@ -268,6 +268,124 @@ class EvidenceOwnershipRuntimeTests(unittest.TestCase):
         self.assertEqual(symedia_record["ownerTargetKey"], "")
         self.assertEqual(symedia_record["confidence"], "unlinked")
 
+    def test_symedia_tmdb_anchor_owns_unique_qb_without_subscription(self):
+        result = adjudicate_task_evidence(
+            [],
+            [],
+            [{"hash": "hash-cn", "name": "[灿如繁星].Road.to.Success.S01E01.1080p.mkv"}],
+            [{
+                "id": "symedia-cn",
+                "title": "灿如繁星",
+                "type": "tv",
+                "tmdbid": "808",
+                "season": 1,
+                "episode": 1,
+                "status": True,
+            }],
+        )
+
+        target = "tv:tmdb:808:season:1"
+        symedia_record = next(record for record in result["records"] if record["source"] == "Symedia")
+        qb_record = next(record for record in result["records"] if record["source"] == "qBittorrent")
+        self.assertEqual(symedia_record["ownerTargetKey"], target)
+        self.assertEqual(symedia_record["matchMethod"], "symedia_tmdb_anchor")
+        self.assertEqual(symedia_record["confidence"], "strong")
+        self.assertEqual(qb_record["ownerTargetKey"], target)
+        self.assertEqual(qb_record["matchMethod"], "symedia_title_season_unique")
+        self.assertEqual(qb_record["confidence"], "fallback")
+        self.assertEqual(list(result["derivedTargets"]), [target])
+
+    def test_symedia_derived_targets_keep_same_title_different_tmdb_as_qb_conflict(self):
+        result = adjudicate_task_evidence(
+            [],
+            [],
+            [{"hash": "hash-conflict", "name": "[同名剧].Same.Show.S01E01.1080p.mkv"}],
+            [
+                {"id": "symedia-a", "title": "同名剧", "type": "tv", "tmdbid": "101", "season": 1},
+                {"id": "symedia-b", "title": "同名剧", "type": "tv", "tmdbid": "202", "season": 1},
+            ],
+        )
+
+        qb_record = next(record for record in result["records"] if record["source"] == "qBittorrent")
+        self.assertEqual(qb_record["ownerTargetKey"], "")
+        self.assertEqual(qb_record["confidence"], "conflict")
+        self.assertEqual(qb_record["conflictCandidates"], [
+            "tv:tmdb:101:season:1",
+            "tv:tmdb:202:season:1",
+        ])
+
+    def test_symedia_derived_owner_is_stable_when_rows_are_reordered(self):
+        symedia = [
+            {"id": "symedia-cn", "title": "灿如繁星", "type": "tv", "tmdbid": "808", "season": 1},
+            {"id": "symedia-en", "title": "Road to Success", "type": "tv", "tmdbid": "808", "season": 1},
+        ]
+        qb = [{"hash": "hash-cn", "name": "[灿如繁星].Road.to.Success.S01E01.mkv"}]
+
+        first = adjudicate_task_evidence([], [], qb, symedia)
+        second = adjudicate_task_evidence([], [], qb, list(reversed(symedia)))
+
+        first_records = sorted(
+            (record["artifactKey"], record["ownerTargetKey"], record["confidence"])
+            for record in first["records"]
+        )
+        second_records = sorted(
+            (record["artifactKey"], record["ownerTargetKey"], record["confidence"])
+            for record in second["records"]
+        )
+        self.assertEqual(first_records, second_records)
+        target = "tv:tmdb:808:season:1"
+        self.assertEqual(first["derivedTargets"][target]["title"], "灿如繁星")
+        self.assertEqual(second["derivedTargets"][target]["title"], "灿如繁星")
+
+    def test_qb_without_season_and_symedia_movie_do_not_use_tv_derived_fallback(self):
+        no_qb_season = adjudicate_task_evidence(
+            [],
+            [],
+            [{"hash": "hash-no-season", "name": "[灿如繁星].Road.to.Success.mkv"}],
+            [{"id": "symedia-tv", "title": "灿如繁星", "type": "tv", "tmdbid": "808", "season": 1}],
+        )
+        qb_record = next(record for record in no_qb_season["records"] if record["source"] == "qBittorrent")
+        self.assertEqual(qb_record["confidence"], "unlinked")
+
+        movie = adjudicate_task_evidence(
+            [],
+            [],
+            [{"hash": "hash-movie", "name": "测试电影.2026.mkv"}],
+            [{"id": "symedia-movie", "title": "测试电影", "type": "movie", "tmdbid": "909", "year": 2026}],
+        )
+        self.assertEqual(movie["derivedTargets"], {})
+        self.assertTrue(all(record["confidence"] == "unlinked" for record in movie["records"]))
+
+    def test_symedia_missing_required_identity_does_not_create_derived_target(self):
+        rows = [
+            {"id": "missing-tmdb", "title": "缺身份", "type": "tv", "tmdbid": "", "season": 1},
+            {"id": "missing-season", "title": "缺身份", "type": "tv", "tmdbid": "101", "season": 0},
+            {"id": "missing-title", "title": "", "type": "tv", "tmdbid": "101", "season": 1},
+        ]
+
+        for row in rows:
+            with self.subTest(row=row["id"]):
+                result = adjudicate_task_evidence(
+                    [],
+                    [],
+                    [{"hash": f"hash-{row['id']}", "name": "[缺身份].Unknown.Show.S01E01.mkv"}],
+                    [row],
+                )
+                self.assertEqual(result["derivedTargets"], {})
+                self.assertTrue(all(record["confidence"] == "unlinked" for record in result["records"]))
+
+    def test_symedia_anchor_reuses_existing_subscription_target(self):
+        result = adjudicate_task_evidence(
+            [subscription("sub-cn", "灿如繁星", "tv", tmdb_id="808", season=1)],
+            [],
+            [{"hash": "hash-cn", "name": "[灿如繁星].Road.to.Success.S01E01.mkv"}],
+            [{"id": "symedia-cn", "title": "灿如繁星", "type": "tv", "tmdbid": "808", "season": 1}],
+        )
+
+        self.assertEqual(result["derivedTargets"], {})
+        self.assertEqual(len(result["owned"]), 1)
+        self.assertEqual(len(result["owned"]["tv:tmdb:808:season:1"]["symedia"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

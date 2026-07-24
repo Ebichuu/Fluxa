@@ -414,6 +414,92 @@ def _build_subscription_item(
     return item, matched_qb, matched_symedia
 
 
+def _build_evidence_target_item(
+    target,
+    bucket,
+    emby_index,
+    urls,
+    upload_summary,
+):
+    torra_candidates = sorted(
+        bucket["torra"],
+        key=lambda value: (
+            0 if value[1].get("matchMethod") == "tmdb_exact" else 1,
+            str(value[1].get("artifactKey") or ""),
+        ),
+    )
+    torra = torra_candidates[0][0] if torra_candidates else None
+    matched_qb = [row for row, _ in bucket["qb"]]
+    matched_symedia = [row for row, _ in bucket["symedia"]]
+    episode_evidence = build_episode_evidence(
+        torra_pairs=bucket["torra"],
+        qb_pairs=bucket["qb"],
+        symedia_pairs=bucket["symedia"],
+    )
+    source_detail = (
+        "未发现 Fluxa 本地追更；当前按 Torra、qB 与 Symedia 媒体证据跟踪"
+        if torra
+        else "未发现 Fluxa/Torra 追更订阅；当前按 qB 与 Symedia 媒体证据跟踪"
+    )
+    source_step = {
+        "key": "subscription",
+        "label": "任务来源",
+        "status": "done",
+        "evidence": "verified",
+        "detail": source_detail,
+        "timestamp": _string(target.get("observedAt")),
+        "source": "Fluxa 证据关联",
+    }
+    download = _download_step(matched_qb, torra)
+    cloud = _cloud_step(download, matched_symedia, upload_summary)
+    indexed = _emby_has(emby_index, target["mediaType"], target["tmdbId"])
+    library = _library_step(matched_symedia, indexed)
+    steps = [source_step, download, cloud, library]
+    episode_number = (
+        episode_evidence[0]["episodeStart"]
+        if len(episode_evidence) == 1
+        and episode_evidence[0]["episodeStart"] == episode_evidence[0]["episodeEnd"]
+        else None
+    )
+    return {
+        "id": f"evidence:{target['targetKey']}",
+        "title": target["title"],
+        "mediaType": target["mediaType"],
+        "tmdbId": target["tmdbId"],
+        "seasonNumber": target["seasonNumber"],
+        "episodeNumber": episode_number,
+        "posterUrl": "",
+        "origin": "download" if matched_qb else "library",
+        "channel": "PT",
+        "state": _item_state(steps),
+        "confidence": "strong",
+        "progress": _task_progress(matched_qb, download, library),
+        "currentStep": _current_step(steps),
+        "steps": steps,
+        "embyIndexed": indexed,
+        "embyEvidenceScope": "title" if indexed else "none",
+        "suggestion": _suggestion(steps, urls),
+        "qbControl": _qb_control(matched_qb),
+        "activeDownloadTasks": _qb_active_count(matched_qb),
+        "completedDownloadTasks": _qb_completed_count(matched_qb),
+        "sourceIds": {
+            "subscriptionId": "",
+            "torraId": _string((torra or {}).get("id")),
+            "qbHashes": [_string(task.get("hash")) for task in matched_qb],
+            "symediaIds": [
+                _string(row.get("id") or f"{row.get('date')}:{row.get('src')}")
+                for row in matched_symedia
+            ],
+        },
+        "evidenceOwnership": bucket["records"],
+        "episodeEvidence": episode_evidence,
+        "updatedAt": _newest([
+            target.get("observedAt"),
+            *(step["timestamp"] for step in steps),
+        ]),
+    }
+
+
 def _orphan_qb_item(task: dict, ownership: dict, urls: dict, upload_summary: dict | None = None) -> dict:
     subscription = {
         "key": "subscription", "label": "订阅", "status": "unknown", "evidence": "missing",
@@ -593,6 +679,18 @@ def build_task_chain(input_data: dict) -> dict:
             input_data.get("torraUpload") or {},
         )
         subscription_items.append(item)
+    derived_items = []
+    for target_key_value, target in (ownership.get("derivedTargets") or {}).items():
+        bucket = ownership["owned"].get(target_key_value) or {
+            "torra": [], "qb": [], "symedia": [], "records": [],
+        }
+        derived_items.append(_build_evidence_target_item(
+            target,
+            bucket,
+            input_data.get("embyIndex"),
+            input_data["urls"],
+            input_data.get("torraUpload") or {},
+        ))
     orphan_qb = [
         _orphan_qb_item(row, record, input_data["urls"], input_data.get("torraUpload") or {})
         for row, record in ownership["unowned"]["qb"]
@@ -605,7 +703,7 @@ def build_task_chain(input_data: dict) -> dict:
         _orphan_torra_item(row, record, input_data["urls"], input_data.get("torraUpload") or {})
         for row, record in ownership["unowned"]["torra"]
     ][:50]
-    items = [*subscription_items, *orphan_qb, *orphan_symedia, *orphan_torra]
+    items = [*subscription_items, *derived_items, *orphan_qb, *orphan_symedia, *orphan_torra]
     items.sort(key=lambda item: item["updatedAt"], reverse=True)
     items.sort(key=lambda item: STATE_PRIORITY[item["state"]])
     errors = input_data.get("serviceErrors") or {}

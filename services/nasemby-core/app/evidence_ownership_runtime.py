@@ -20,6 +20,14 @@ def _integer(value) -> int:
         return 0
 
 
+def _positive_integer_text(value) -> str:
+    text = _text(value)
+    if not text.isdigit():
+        return ""
+    number = int(text)
+    return str(number) if number > 0 else ""
+
+
 def _title_key(value) -> str:
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", _text(value).casefold())
 
@@ -28,6 +36,17 @@ def _identity_title_key(value) -> str:
     text = _text(value)
     without_year = re.sub(r"(?<!\d)(?:19|20)\d{2}(?!\d)", " ", text)
     return _title_key(without_year) or _title_key(text)
+
+
+def _preferred_title(*values) -> str:
+    titles = [_text(value) for value in values if _text(value)]
+    if not titles:
+        return ""
+    return min(titles, key=lambda value: (
+        0 if re.search(r"[\u4e00-\u9fff]", value) else 1,
+        len(_identity_title_key(value)),
+        value.casefold(),
+    ))
 
 
 def _year(*values) -> int:
@@ -109,6 +128,7 @@ def _target(subscription: dict) -> dict:
         ),
         "mediaType": media_type,
         "tmdbId": _text(subscription.get("tmdbId")),
+        "title": _text(subscription.get("title")),
         "titleKey": _identity_title_key(subscription.get("title")),
         "titleKeys": sorted({key for key in (
             _identity_title_key(subscription.get("title")),
@@ -116,7 +136,39 @@ def _target(subscription: dict) -> dict:
         ) if key}),
         "seasonNumber": season,
         "year": _year(subscription.get("year")),
+        "observedAt": _text(subscription.get("updatedAt") or subscription.get("createdAt")),
+        "subscriptionBacked": True,
+        "symediaDerived": False,
     }
+
+
+def _merge_target(targets: dict[str, dict], candidate: dict) -> dict:
+    key = candidate["targetKey"]
+    current = targets.get(key)
+    if current is None:
+        targets[key] = candidate
+        return candidate
+    current["titleKeys"] = sorted({
+        *(current.get("titleKeys") or []),
+        *(candidate.get("titleKeys") or []),
+    })
+    if candidate.get("subscriptionBacked") and not current.get("subscriptionBacked"):
+        current["title"] = candidate.get("title") or current.get("title") or ""
+    elif not current.get("subscriptionBacked"):
+        current["title"] = _preferred_title(current.get("title"), candidate.get("title"))
+    current["titleKey"] = _identity_title_key(current.get("title"))
+    current["year"] = current.get("year") or candidate.get("year") or 0
+    current["observedAt"] = max(
+        str(current.get("observedAt") or ""),
+        str(candidate.get("observedAt") or ""),
+    )
+    current["subscriptionBacked"] = bool(
+        current.get("subscriptionBacked") or candidate.get("subscriptionBacked")
+    )
+    current["symediaDerived"] = bool(
+        current.get("symediaDerived") or candidate.get("symediaDerived")
+    )
+    return current
 
 
 def _torra_evidence(row: dict, index: int) -> dict:
@@ -190,6 +242,28 @@ def _symedia_evidence(row: dict, index: int) -> dict:
     }
 
 
+def _symedia_target(row: dict, evidence: dict) -> dict | None:
+    tmdb_id = _positive_integer_text(evidence.get("tmdbId"))
+    title = _text(row.get("title"))
+    title_key = _identity_title_key(title)
+    season = _integer(evidence.get("seasonNumber"))
+    if not tmdb_id or evidence.get("mediaType") != "tv" or not season or not title_key:
+        return None
+    return {
+        "targetKey": target_key("tv", tmdb_id, title, season),
+        "mediaType": "tv",
+        "tmdbId": tmdb_id,
+        "title": title,
+        "titleKey": title_key,
+        "titleKeys": [title_key],
+        "seasonNumber": season,
+        "year": evidence.get("year") or 0,
+        "observedAt": evidence.get("observedAt") or "",
+        "subscriptionBacked": False,
+        "symediaDerived": True,
+    }
+
+
 def _qb_evidence(row: dict, index: int) -> dict:
     name = _text(row.get("name"))
     season = _season_from_text(name)
@@ -247,7 +321,12 @@ def _candidate(evidence: dict, target: dict) -> tuple[str, str] | None:
         # 才允许已知季号的 qB 证据归属到该全季目标。
         if target["seasonNumber"] and evidence["seasonNumber"] != target["seasonNumber"]:
             return None
-        return "title_season_unique", "fallback"
+        method = (
+            "symedia_title_season_unique"
+            if target.get("symediaDerived") and not target.get("subscriptionBacked")
+            else "title_season_unique"
+        )
+        return method, "fallback"
     if target["mediaType"] == "movie":
         if not evidence["year"] or not target["year"] or evidence["year"] != target["year"]:
             return None
@@ -282,6 +361,18 @@ def _decide(evidence: dict, targets: list[dict], artifact_candidates=()) -> dict
     }
 
 
+def _anchored_decision(evidence: dict, owner: str, method: str) -> dict:
+    return {
+        "artifactKey": evidence["artifactKey"],
+        "ownerTargetKey": owner,
+        "matchMethod": method,
+        "confidence": "strong",
+        "conflictCandidates": [],
+        "observedAt": evidence["observedAt"],
+        "source": evidence["source"],
+    }
+
+
 def _owned_torra_file_targets(evidence: dict, torra_rows: list[tuple[dict, dict]], *, exact_only=False) -> set[str]:
     file_keys = [key for key in evidence["fileKeys"] if _reliable_file_key(key)]
     owners = set()
@@ -308,9 +399,26 @@ def adjudicate_task_evidence(
     subscription_targets = {}
     for subscription in subscriptions:
         target_value = _target(subscription)
-        targets_by_key[target_value["targetKey"]] = target_value
+        _merge_target(targets_by_key, target_value)
         subscription_targets[str(subscription.get("id") or "")] = target_value["targetKey"]
+
+    symedia_evidences = []
+    symedia_anchors = {}
+    for index, row in enumerate(symedia_rows):
+        evidence = _symedia_evidence(row, index)
+        symedia_evidences.append((row, evidence))
+        candidate = _symedia_target(row, evidence)
+        if candidate is None:
+            continue
+        target_value = _merge_target(targets_by_key, candidate)
+        symedia_anchors[evidence["artifactKey"]] = target_value["targetKey"]
+
     targets = list(targets_by_key.values())
+    derived_targets = {
+        key: dict(value)
+        for key, value in targets_by_key.items()
+        if value.get("symediaDerived") and not value.get("subscriptionBacked")
+    }
     owned = {
         key: {"torra": [], "qb": [], "symedia": [], "records": []}
         for key in targets_by_key
@@ -329,14 +437,17 @@ def adjudicate_task_evidence(
         if bucket:
             bucket["records"].append(decision)
 
-    for index, row in enumerate(symedia_rows):
-        evidence = _symedia_evidence(row, index)
-        artifact_candidates = _owned_torra_file_targets(
-            evidence,
-            torra_decisions,
-            exact_only=True,
-        )
-        decision = _decide(evidence, targets, artifact_candidates)
+    for row, evidence in symedia_evidences:
+        anchor = symedia_anchors.get(evidence["artifactKey"])
+        if anchor:
+            decision = _anchored_decision(evidence, anchor, "symedia_tmdb_anchor")
+        else:
+            artifact_candidates = _owned_torra_file_targets(
+                evidence,
+                torra_decisions,
+                exact_only=True,
+            )
+            decision = _decide(evidence, targets, artifact_candidates)
         records.append(decision)
         bucket = owned.get(decision["ownerTargetKey"])
         (bucket["symedia"] if bucket else unowned["symedia"]).append((row, decision))
@@ -355,6 +466,7 @@ def adjudicate_task_evidence(
 
     return {
         "subscriptionTargets": subscription_targets,
+        "derivedTargets": derived_targets,
         "owned": owned,
         "unowned": unowned,
         "records": records,
