@@ -146,6 +146,26 @@ class TaskExceptionRuntimeTests(unittest.TestCase):
         self.assertEqual(result["executionState"], "confirmed_failed")
         self.assertEqual(result["reasonCode"], "UPLOAD_FAILED")
 
+    def test_verified_qb_missing_files_overrides_unlinked_identity(self):
+        result = classify_task({
+            "state": "blocked",
+            "confidence": "unlinked",
+            "reasonCode": "TASK_IDENTITY_UNLINKED",
+            "reasonText": "任务尚未关联到媒体身份",
+            "stages": [stage(
+                "blocked",
+                key="download",
+                source="qBittorrent",
+                reasonCode="QB_MISSING_FILES",
+                reasonText="qB 文件缺失，任务无法继续",
+            )],
+        }, now=NOW)
+
+        self.assertEqual(result["healthState"], "action_required")
+        self.assertEqual(result["executionState"], "confirmed_failed")
+        self.assertEqual(result["reasonCode"], "QB_MISSING_FILES")
+        self.assertEqual(result["reasonText"], "qB 文件缺失，任务无法继续")
+
     def test_technical_reason_is_kept_separately_from_user_reason(self):
         result = classify_stage(
             stage("blocked", key="library", source="Symedia", reasonCode="SYMEDIA_LIBRARY_FAILED", reasonText="/vol/private/file.mkv 未找到媒体信息"),

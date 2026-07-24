@@ -274,6 +274,28 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
 
         self.assertEqual(result, local)
 
+    def test_torra_aliases_merge_into_existing_local_target_without_duplicate(self):
+        from app.task_chain_runtime import merge_task_subscriptions
+
+        local = [{
+            "id": "local-101",
+            "title": "中文剧名",
+            "mediaType": "tv",
+            "tmdbId": "101",
+            "seasonNumber": 1,
+        }]
+        result = merge_task_subscriptions(local, [{
+            "id": "torra-101",
+            "name": "English Show",
+            "names_json": '["中文剧名", "English Show"]',
+            "media_type": "tv",
+            "tmdb_id": 101,
+            "season_number": 1,
+        }])
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["aliases"], ["English Show", "中文剧名"])
+
     def test_torra_zero_season_string_matches_any_requested_season(self):
         from app.task_chain_runtime import build_task_chain
 

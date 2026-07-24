@@ -114,8 +114,11 @@ function exactTimeLabel(value: string) {
 }
 
 function identityBackfillLabel(summary: RssLibrarySummary) {
-  if (!summary.identityBackfillRan) {
+  if (!summary.identityBackfillRan || summary.identityBackfillStatus === 'not_run') {
     return `身份回填尚未运行；当前 ${summary.items} 条种子尚不能证明识别链路已处理。`;
+  }
+  if (summary.identityBackfillStatus === 'failed') {
+    return `身份回填最近运行失败；已扫描 ${summary.lastIdentityBackfillScanned ?? 0} 条，剩余 ${summary.lastIdentityBackfillRemaining ?? summary.items} 条。`;
   }
   return [
     `最近回填 ${summary.lastIdentityBackfillAt ? formatTimeAgo(summary.lastIdentityBackfillAt) : '时间未知'}`,
@@ -125,6 +128,12 @@ function identityBackfillLabel(summary: RssLibrarySummary) {
     `未变化 ${summary.lastIdentityBackfillUnchanged ?? 0} 条`,
     `剩余 ${summary.lastIdentityBackfillRemaining ?? summary.items} 条`
   ].join(' · ');
+}
+
+function matcherLabel(summary: RssLibrarySummary) {
+  if (!summary.matcherRan || summary.matcherStatus === 'not_run') return `匹配器尚未运行；当前 ${summary.items} 条种子还没有匹配结果。`;
+  if (summary.matcherStatus === 'failed') return `匹配器最近运行失败；上次扫描 ${summary.lastMatchScanned ?? 0} 条，未将结果视为成功。`;
+  return `最近匹配 ${summary.lastMatchAt ? formatTimeAgo(summary.lastMatchAt) : '时间未知'} · 扫描 ${summary.lastMatchScanned ?? 0} 条 · 命中 ${summary.lastMatchCreated ?? 0} 条`;
 }
 
 export function RssSeedLibraryPage() {
@@ -473,6 +482,7 @@ export function RssSeedLibraryPage() {
             </div>
           </div>
           <p className="rss-identity-run" role="status">{identityBackfillLabel(summary)}</p>
+          <p className="rss-identity-run" role="status">{matcherLabel(summary)}</p>
 
           <div className="rss-timeline">
             {!loading && timeline.length === 0 && (

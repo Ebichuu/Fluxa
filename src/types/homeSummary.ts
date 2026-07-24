@@ -5,6 +5,8 @@ export interface HomeSummaryCounts {
   archivedToday: number;
   completedTargetsToday: number;
   downloading: number;
+  activeDownloadTasks: number;
+  concurrentDownloadGroups: number;
   pending: number;
   waiting: number;
   evidenceInsufficient: number;

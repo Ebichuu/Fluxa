@@ -210,6 +210,38 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
             "subscriptionCreatedAt": "2002-01-01T00:00:00Z",
         }, "2026-07-23"), "unknown")
 
+    def test_calendar_hides_episode_aired_before_subscription_without_history_scope(self):
+        def pre_subscription_loader(year, month, media_type):
+            return {
+                "success": True,
+                "year": year,
+                "month": month,
+                "type": media_type,
+                "entries": [{
+                    "date": "2026-07-18",
+                    "key": "sub-late",
+                    "title": "晚订阅剧",
+                    "media_type": "tv",
+                    "tmdb_id": "404",
+                    "season_number": 1,
+                    "episode_number": 1,
+                    "subscription_created_at": "2026-07-24T00:00:00Z",
+                    "follow_scope_explicit": True,
+                    "include_past_episodes": False,
+                }],
+                "stats": {"entries": 1, "titles": 1, "in_library": 0, "pending": 1},
+                "errors": [],
+            }
+
+        application = Flask(f"{__name__}-pre-subscription")
+        application.extensions["mcc_task_chain_v2_service"] = FakeTaskService([])
+        register_calendar_timeline(application, calendar_loader=pre_subscription_loader)
+        payload = application.test_client().get("/api/v2/calendar?year=2026&month=7&type=tv").get_json()["calendar"]
+
+        self.assertEqual(payload["entries"], [])
+        self.assertEqual(payload["stats"]["excludedBeforeSubscription"], 1)
+        self.assertEqual(payload["stats"]["statusCounts"]["unknown"], 0)
+
     def test_protection_evidence_is_not_counted_as_missing(self):
         entry = {
             "date": "2001-01-01",

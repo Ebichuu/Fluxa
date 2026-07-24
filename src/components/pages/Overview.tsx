@@ -24,7 +24,7 @@ interface OverviewProps {
 
 const metricDefinitions = [
   { key: 'archivedToday', label: '今日成功归档', icon: Library },
-  { key: 'downloading', label: '下载中', icon: Download },
+  { key: 'activeDownloadTasks', label: '下载任务', icon: Download },
   { key: 'waiting', label: '等待', icon: Clock3 },
   { key: 'evidenceInsufficient', label: '证据不足', icon: CircleHelp },
   { key: 'actionRequired', label: '需要处理', icon: TriangleAlert },
@@ -38,7 +38,7 @@ function emptySummary(): HomeSummaryResponse {
     healthState: 'evidence_insufficient',
     headline: '正在读取影音中心状态',
     detail: '正在汇总下载、入库和调度证据',
-    counts: { ingestedToday: 0, archivedToday: 0, completedTargetsToday: 0, downloading: 0, pending: 0, waiting: 0, evidenceInsufficient: 0, identityPending: 0, actionRequired: 0, suspectedBlocked: 0, protected: 0 },
+    counts: { ingestedToday: 0, archivedToday: 0, completedTargetsToday: 0, downloading: 0, activeDownloadTasks: 0, concurrentDownloadGroups: 0, pending: 0, waiting: 0, evidenceInsufficient: 0, identityPending: 0, actionRequired: 0, suspectedBlocked: 0, protected: 0 },
     issues: []
   };
 }

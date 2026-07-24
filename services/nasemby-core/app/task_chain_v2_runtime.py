@@ -274,6 +274,14 @@ def _merge_group(items: list[dict], observed_at: str, fresh_until: str, now_valu
             "canPause": any(bool((item.get("qbControl") or {}).get("canPause")) for item in items),
             "canResume": any(bool((item.get("qbControl") or {}).get("canResume")) for item in items),
         },
+        "activeDownloadTasks": sum(
+            int(item.get("activeDownloadTasks") or (item.get("qbControl") or {}).get("active") or 0)
+            for item in items
+        ),
+        "completedDownloadTasks": sum(
+            int(item.get("completedDownloadTasks") or (item.get("qbControl") or {}).get("completed") or 0)
+            for item in items
+        ),
     }
     merged.update(_health(merged, observed_at, fresh_until, now_value))
     return merged

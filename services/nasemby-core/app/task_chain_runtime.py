@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import json
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -48,7 +49,7 @@ def _flatten_strings(value) -> list[str]:
 
 
 def _season_from_text(value: str) -> int:
-    match = re.search(r"(?:^|[.\s_-])S(?:eason)?[.\s_-]*0*(\d{1,2})(?:[.\s_-]|$)", value, re.IGNORECASE)
+    match = re.search(r"(?:^|[.\s_-])S(?:eason)?[.\s_-]*0*(\d{1,2})(?:E\d{1,4}|[.\s_-]|$)", value, re.IGNORECASE)
     return int(match.group(1)) if match else 0
 
 
@@ -119,17 +120,28 @@ def _qb_control(tasks: list[dict]) -> dict:
     }
 
 
+def _qb_active_count(tasks: list[dict]) -> int:
+    return sum(task.get("status") in {"downloading", "queued"} for task in tasks)
+
+
+def _qb_completed_count(tasks: list[dict]) -> int:
+    return sum(task.get("status") == "completed" for task in tasks)
+
+
 def _download_step(tasks: list[dict], torra: dict | None) -> dict:
     stalled = next((task for task in tasks if task.get("status") == "stalled"), None)
     if stalled:
+        missing_files = "missing" in _string(stalled.get("state")).lower()
         return {
             "key": "download",
             "label": "获取 / 下载",
             "status": "blocked",
             "evidence": "verified",
-            "detail": f"qB 卡住在 {round(_number(stalled.get('progress')) * 100)}%",
+            "detail": "qB 文件缺失，任务无法继续" if missing_files else f"qB 卡住在 {round(_number(stalled.get('progress')) * 100)}%",
             "timestamp": _iso_from_seconds(stalled.get("addedOn")),
             "source": "qBittorrent",
+            "reasonCode": "QB_MISSING_FILES" if missing_files else "QB_DOWNLOAD_STALLED",
+            "technicalReasonText": _string(stalled.get("stateLabel")) or _string(stalled.get("state")),
         }
     if tasks and all(task.get("status") == "completed" for task in tasks):
         return {
@@ -378,6 +390,8 @@ def _build_subscription_item(
         "embyEvidenceScope": "title" if indexed else "none",
         "suggestion": _suggestion(steps, urls),
         "qbControl": _qb_control(matched_qb),
+        "activeDownloadTasks": _qb_active_count(matched_qb),
+        "completedDownloadTasks": _qb_completed_count(matched_qb),
         "sourceIds": {
             "subscriptionId": subscription["id"],
             "torraId": _string((torra or {}).get("id")),
@@ -423,6 +437,8 @@ def _orphan_qb_item(task: dict, ownership: dict, urls: dict, upload_summary: dic
         "confidence": ownership.get("confidence") or "unlinked", "progress": round(_number(task.get("progress")) * 100),
         "currentStep": _current_step(steps), "steps": steps, "embyIndexed": False, "embyEvidenceScope": "none",
         "suggestion": _suggestion(steps, urls), "qbControl": _qb_control([task]),
+        "activeDownloadTasks": _qb_active_count([task]),
+        "completedDownloadTasks": _qb_completed_count([task]),
         "sourceIds": {"subscriptionId": "", "torraId": "", "qbHashes": [_string(task.get("hash"))], "symediaIds": []},
         "evidenceOwnership": [ownership],
         "episodeEvidence": episode_evidence,
@@ -659,6 +675,29 @@ def _subscription_season(row: dict):
     return None
 
 
+def _subscription_aliases(row: dict) -> list[str]:
+    values = []
+    for key in ("aliases", "names", "search_names", "title_aliases", "alternate_titles", "aka"):
+        value = row.get(key)
+        if isinstance(value, list):
+            values.extend(value)
+        elif value:
+            values.append(value)
+    names_json = row.get("names_json")
+    if names_json:
+        try:
+            parsed = json.loads(names_json) if isinstance(names_json, str) else names_json
+        except (TypeError, ValueError):
+            parsed = []
+        values.extend(_flatten_strings(parsed))
+    result = []
+    for value in values:
+        text = _first_text({"value": value}, ("value",))
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
 def map_task_subscriptions(payload: dict) -> list[dict]:
     rows = payload.get("items") if isinstance(payload, dict) else []
     result = []
@@ -679,6 +718,9 @@ def map_task_subscriptions(payload: dict) -> list[dict]:
             "allowCloudFallback": bool(row.get("allow_cloud_fallback")),
             "sourceLabel": _first_text(row, ("source_label", "sourceLabel", "source")),
         }
+        aliases = _subscription_aliases(row)
+        if aliases:
+            item["aliases"] = aliases
         if item["id"] and item["title"] and media_type in {"movie", "tv"}:
             result.append(item)
     return result
@@ -711,7 +753,7 @@ def _torra_task_subscriptions(rows: list[dict]) -> list[dict]:
         season = int(_number(row.get("season_number", row.get("season"))) or 0)
         if not remote_id or not title or media_type not in {"movie", "tv"}:
             continue
-        result.append({
+        item = {
             "id": f"torra:{remote_id}",
             "title": title,
             "mediaType": media_type,
@@ -723,7 +765,11 @@ def _torra_task_subscriptions(rows: list[dict]) -> list[dict]:
             "updatedAt": _first_text(row, ("updated_at",)),
             "allowCloudFallback": False,
             "sourceLabel": "Torra 只读订阅",
-        })
+        }
+        aliases = _subscription_aliases(row)
+        if aliases:
+            item["aliases"] = aliases
+        result.append(item)
     return result
 
 
@@ -735,11 +781,30 @@ def merge_task_subscriptions(local_subscriptions: list[dict], torra_rows: list[d
         for item in merged
         if (identity := _task_target_identity(item))[0] in {"movie", "tv"} and identity[1]
     }
+    local_by_identity = {}
+    for item in merged:
+        identity = _task_target_identity(item)
+        if identity[0] in {"movie", "tv"} and identity[1]:
+            local_by_identity[identity] = item
     seen_remote = set()
     for remote in _torra_task_subscriptions(torra_rows):
         identity = _task_target_identity(remote)
         remote_key = identity if identity[1] else ("remote", remote["id"])
-        if remote_key in seen_remote or (identity[1] and identity in local_identities):
+        if remote_key in seen_remote:
+            continue
+        if identity[1] and identity in local_identities:
+            local = local_by_identity.get(identity)
+            alias_values = [
+                *((local or {}).get("aliases") or []),
+                *((remote.get("aliases") or [])),
+            ]
+            aliases = sorted({
+                str(value).strip()
+                for value in alias_values
+                if str(value or "").strip()
+            })
+            if local is not None and aliases:
+                local["aliases"] = aliases
             continue
         seen_remote.add(remote_key)
         merged.append(remote)

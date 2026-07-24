@@ -24,6 +24,7 @@ export interface RssLibrarySummary {
   items: number;
   lastSuccessAt: string;
   identityBackfillRan?: boolean;
+  identityBackfillStatus?: string;
   lastIdentityBackfillAt?: string;
   lastIdentityBackfillStatus?: string;
   lastIdentityBackfillScanned?: number;
@@ -32,6 +33,12 @@ export interface RssLibrarySummary {
   lastIdentityBackfillUnchanged?: number;
   lastIdentityBackfillRemaining?: number;
   lastIdentityBackfillLimit?: number;
+  matcherRan?: boolean;
+  matcherStatus?: string;
+  lastMatchAt?: string;
+  lastMatchStatus?: string;
+  lastMatchScanned?: number;
+  lastMatchCreated?: number;
 }
 
 export interface RssSourceListResponse {

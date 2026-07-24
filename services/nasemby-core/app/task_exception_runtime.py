@@ -133,6 +133,8 @@ def _user_reason_text(stage: dict, state: str, value: str) -> str:
     if state in {"action_required", "evidence_insufficient"} and (
         key == "download" or "qbittorrent" in source or "DOWNLOAD" in reason_code
     ):
+        if reason_code == "QB_MISSING_FILES":
+            return "qB 文件缺失，任务无法继续"
         return "qB 下载任务未正常继续"
     if state in {"action_required", "evidence_insufficient"} and (
         key in {"resource", "torra"} or "torra" in source
@@ -299,8 +301,8 @@ def _task_action(item, classified):
     result = _first_result(classified, "action_required")
     return _outcome(
         "action_required",
-        _text(item.get("reasonCode")) or result.get("reasonCode") or "TASK_BLOCKED",
-        _text(item.get("reasonText")) or result.get("reasonText") or "任务链出现阻塞",
+        result.get("reasonCode") or _text(item.get("reasonCode")) or "TASK_BLOCKED",
+        result.get("reasonText") or _text(item.get("reasonText")) or "任务链出现阻塞",
         result.get("recommendedAction") or "查看任务证据并处理阻塞",
     )
 

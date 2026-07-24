@@ -291,6 +291,17 @@ def _entry_status(entry: dict, today: str) -> str:
     return "missing"
 
 
+def _is_pre_subscription_episode(entry: dict) -> bool:
+    if entry.get("includePastEpisodes"):
+        return False
+    created_at = _as_datetime(entry.get("subscriptionCreatedAt"))
+    entry_date = _parse_date(entry.get("date"))
+    if created_at and entry_date:
+        return entry_date < created_at.astimezone(BEIJING_TZ).date()
+    aired_at = _as_datetime(entry.get("airAt")) or _as_datetime(entry.get("date"))
+    return bool(created_at and aired_at and aired_at < created_at)
+
+
 def _summary_calendar(calendar: dict) -> dict:
     today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
     grouped = {}
@@ -511,11 +522,13 @@ class CalendarTimelineService:
         task_service = self.app.extensions.get("mcc_task_chain_v2_service")
         task_payload = task_service.full_snapshot() if task_service else {"items": [], "version": ""}
         task_items = task_payload.get("items") or []
-        entries = [_normalize_entry_evidence({
+        raw_entries = [_normalize_entry_evidence({
             **entry,
             "airAt": f"{entry.get('date')}T00:00:00+08:00" if entry.get("date") else "",
             **_public_task(entry, task_items),
         }) for entry in calendar.get("entries") or []]
+        excluded_before_subscription = sum(_is_pre_subscription_episode(entry) for entry in raw_entries)
+        entries = [entry for entry in raw_entries if not _is_pre_subscription_episode(entry)]
         today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
         entries = [{**entry, "status": _entry_status(entry, today)} for entry in entries]
         calendar = {
@@ -530,6 +543,7 @@ class CalendarTimelineService:
                 "acquired": sum(bool(entry.get("acquiredAt")) for entry in entries),
                 "libraryEvidence": sum(bool(entry.get("libraryAt")) for entry in entries),
                 "actionRequired": sum(entry.get("healthState") == "action_required" for entry in entries),
+                "excludedBeforeSubscription": excluded_before_subscription,
                 "statusCounts": {
                     state: sum(entry.get("status") == state for entry in entries)
                     for state in ("upcoming", "acquiring", "library", "protected", "missing", "unknown")

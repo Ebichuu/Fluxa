@@ -5,7 +5,7 @@ import unittest
 from app.evidence_ownership_runtime import adjudicate_task_evidence, compare_legacy_ownership
 
 
-def subscription(item_id, title, media_type, tmdb_id="", year="", season=0):
+def subscription(item_id, title, media_type, tmdb_id="", year="", season=0, aliases=None):
     return {
         "id": item_id,
         "title": title,
@@ -13,6 +13,7 @@ def subscription(item_id, title, media_type, tmdb_id="", year="", season=0):
         "tmdbId": tmdb_id,
         "year": year,
         "seasonNumber": season,
+        "aliases": aliases or [],
     }
 
 
@@ -161,6 +162,25 @@ class EvidenceOwnershipRuntimeTests(unittest.TestCase):
         qb_record = next(record for record in result["records"] if record["source"] == "qBittorrent")
         self.assertEqual(qb_record["matchMethod"], "artifact_exact")
         self.assertTrue(qb_record["ownerTargetKey"])
+
+    def test_qb_alias_from_torra_names_json_binds_to_same_target(self):
+        result = adjudicate_task_evidence(
+            [subscription("tv-a", "中文剧名", "tv", tmdb_id="101", season=1, aliases=["English Show"])],
+            [{
+                "id": "torra-a",
+                "name": "English Show",
+                "names_json": '["中文剧名", "English Show"]',
+                "media_type": "tv",
+                "tmdb_id": "",
+                "season_number": 1,
+            }],
+            [{"hash": "hash-alias", "name": "English.Show.S01E01.1080p.mkv"}],
+            [],
+        )
+
+        qb_record = next(record for record in result["records"] if record["source"] == "qBittorrent")
+        self.assertEqual(qb_record["ownerTargetKey"], "tv:tmdb:101:season:1")
+        self.assertEqual(qb_record["matchMethod"], "title_season_unique")
 
     def test_symedia_artifact_inherits_only_exact_torra_file_owner(self):
         result = adjudicate_task_evidence(

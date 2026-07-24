@@ -107,6 +107,8 @@ export interface TaskChainItem {
     canPause: boolean;
     canResume: boolean;
   };
+  activeDownloadTasks?: number;
+  completedDownloadTasks?: number;
   sourceIds: {
     subscriptionId: string;
     subscriptionIds?: string[];

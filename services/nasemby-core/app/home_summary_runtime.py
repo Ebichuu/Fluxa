@@ -240,6 +240,8 @@ class HomeSummaryService:
                 any(step.get("key") == "download" and step.get("status") == "active" for step in item.get("steps") or [])
                 for item in unique_items.values()
             ),
+            "activeDownloadTasks": sum(int(item.get("activeDownloadTasks") or (item.get("qbControl") or {}).get("active") or 0) for item in unique_items.values()),
+            "concurrentDownloadGroups": sum(int(item.get("activeDownloadTasks") or (item.get("qbControl") or {}).get("active") or 0) > 1 for item in unique_items.values()),
             "pending": (
                 sum(result["healthState"] in {"waiting", "evidence_insufficient"} for _, _, result in visible_item_evidence)
                 + (1 if identity_evidence else 0)
@@ -416,7 +418,7 @@ class HomeSummaryService:
             headline = "影音中心运行正常"
         detail = (
             f"今日成功归档 {counts['archivedToday']} 条 · 完成目标 {counts['completedTargetsToday']} 个 · "
-            f"下载中 {counts['downloading']} 条 · "
+            f"下载任务 {counts['activeDownloadTasks']} 个 · 并发目标 {counts['concurrentDownloadGroups']} 个 · "
             f"等待 {counts['waiting']} 条 · 证据不足 {counts['evidenceInsufficient']} 条"
         )
         return {

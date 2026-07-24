@@ -520,6 +520,9 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                   </p>
                   <div className="ops-task-card__identity">
                     <span>目标 <strong>{targetLabel(item)}</strong></span>
+                    {(item.activeDownloadTasks ?? 0) > 1 && (
+                      <span>并发下载 <strong>同一目标有 {item.activeDownloadTasks} 个 qB 任务同时下载</strong></span>
+                    )}
                   </div>
                 </div>
                 <strong>{item.progress}%</strong>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 from datetime import datetime, timezone
@@ -57,7 +58,7 @@ def _reliable_file_key(value: str) -> bool:
 
 
 def _season_from_text(value) -> int:
-    match = re.search(r"(?i)(?:^|[.\s_-])S(?:eason)?[.\s_-]*0*(\d{1,2})(?:[.\s_-]|$)", _text(value))
+    match = re.search(r"(?i)(?:^|[.\s_-])S(?:eason)?[.\s_-]*0*(\d{1,2})(?:E\d{1,4}|[.\s_-]|$)", _text(value))
     return int(match.group(1)) if match else 0
 
 
@@ -83,6 +84,10 @@ def _target(subscription: dict) -> dict:
         "mediaType": media_type,
         "tmdbId": _text(subscription.get("tmdbId")),
         "titleKey": _identity_title_key(subscription.get("title")),
+        "titleKeys": sorted({key for key in (
+            _identity_title_key(subscription.get("title")),
+            *(_identity_title_key(value) for value in subscription.get("aliases") or []),
+        ) if key}),
         "seasonNumber": season,
         "year": _year(subscription.get("year")),
     }
@@ -91,6 +96,15 @@ def _target(subscription: dict) -> dict:
 def _torra_evidence(row: dict, index: int) -> dict:
     identity = _text(row.get("id")) or f"row:{index}"
     season = _integer(row.get("season_number"))
+    aliases = []
+    names_json = row.get("names_json")
+    if names_json:
+        try:
+            parsed = json.loads(names_json) if isinstance(names_json, str) else names_json
+        except (TypeError, ValueError):
+            parsed = []
+        aliases.extend(_flatten_strings(parsed))
+    aliases.extend(_flatten_strings(row.get("aliases")))
     return {
         "artifactKey": artifact_key(remote_file_id=f"torra:{identity}"),
         "source": "Torra",
@@ -98,6 +112,10 @@ def _torra_evidence(row: dict, index: int) -> dict:
         "mediaType": _media_type(row.get("media_type"), season),
         "tmdbId": _text(row.get("tmdb_id")),
         "titleKey": _identity_title_key(row.get("name") or row.get("keyword")),
+        "titleKeys": sorted({key for key in (
+            _identity_title_key(row.get("name") or row.get("keyword")),
+            *(_identity_title_key(value) for value in aliases),
+        ) if key}),
         "seasonNumber": season,
         "year": _year(row.get("year"), row.get("release_year"), row.get("name"), row.get("keyword")),
         "observedAt": _text(row.get("updated_at") or row.get("created_at")),
@@ -183,7 +201,9 @@ def _candidate(evidence: dict, target: dict) -> tuple[str, str] | None:
             if evidence_season and target_season and evidence_season != target_season:
                 return None
         return "tmdb_exact", "strong"
-    if not evidence["titleKey"] or evidence["titleKey"] != target["titleKey"]:
+    evidence_titles = set(evidence.get("titleKeys") or [evidence.get("titleKey")])
+    target_titles = set(target.get("titleKeys") or [target.get("titleKey")])
+    if not evidence_titles.intersection(target_titles):
         return None
     if target["mediaType"] == "tv":
         if not evidence["seasonNumber"] or not target["seasonNumber"]:

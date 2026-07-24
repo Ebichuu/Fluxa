@@ -238,6 +238,17 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(issue["reasonCode"], "TASK_IDENTITY_AGGREGATION_INCOMPLETE")
         self.assertIn("无法准确判断秒传积压", issue["reasonText"])
 
+    def test_home_counts_qb_tasks_and_concurrent_targets_separately(self):
+        value = item()
+        value["qbControl"] = {"total": 3, "active": 3, "completed": 0, "paused": 0}
+        app = self.build_app([value], scheduler_enabled=False)
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+
+        self.assertEqual(result["counts"]["activeDownloadTasks"], 3)
+        self.assertEqual(result["counts"]["concurrentDownloadGroups"], 1)
+        self.assertIn("下载任务 3 个 · 并发目标 1 个", result["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()
