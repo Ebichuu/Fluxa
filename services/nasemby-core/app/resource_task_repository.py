@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
 import uuid
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -52,6 +53,12 @@ def _row(row):
 
 class ResourceIdentityConflict(RuntimeError):
     pass
+
+
+class ResourceMigrationConflict(RuntimeError):
+    def __init__(self, reason_code):
+        super().__init__(reason_code)
+        self.reason_code = reason_code
 
 
 class ResourceTaskRepository:
@@ -112,6 +119,17 @@ class ResourceTaskRepository:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_resource_events_health "
                 "ON resource_events(health_state, observed_at DESC)"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS resource_chain_aliases ("
+                "alias_chain_id TEXT PRIMARY KEY, canonical_chain_id TEXT NOT NULL, "
+                "reason_code TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, "
+                "payload_json TEXT NOT NULL DEFAULT '{}', "
+                "FOREIGN KEY(canonical_chain_id) REFERENCES resource_chains(chain_id))"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_resource_chain_aliases_canonical "
+                "ON resource_chain_aliases(canonical_chain_id)"
             )
 
     def _event_key(self, chain_id, artifact_key_value, stage):
@@ -276,24 +294,445 @@ class ResourceTaskRepository:
             if isinstance(stage, dict)
         )
 
+    @staticmethod
+    def _migration_result(**updates):
+        result = {
+            "artifactMigrations": 0,
+            "chainAliases": 0,
+            "artifactConflicts": 0,
+            "migrationSkipped": 0,
+            "migrationSkipReasons": {},
+            "deletedEmptyChains": 0,
+            "migrationBackupCreated": False,
+            "migrationPlans": [],
+            "migrationSkips": [],
+        }
+        result.update(updates)
+        return result
+
+    @staticmethod
+    def _skip_migration(skips, artifact_key_value, old_chain_id, new_chain_id, reason_code):
+        skips.append({
+            "artifactKey": artifact_key_value,
+            "expectedOldChainId": old_chain_id,
+            "newChainId": new_chain_id,
+            "reasonCode": reason_code,
+        })
+
+    @staticmethod
+    def _is_tmdb_target(item):
+        tmdb_id = _text(item.get("tmdbId"), 80)
+        target_value = _text(item.get("targetKey"), 180)
+        media_type = _text(item.get("mediaType"), 40).lower()
+        return bool(
+            item.get("identityState") == "linked"
+            and tmdb_id
+            and media_type in {"tv", "movie"}
+            and target_value.startswith(f"{media_type}:tmdb:{tmdb_id}:season:")
+        )
+
+    @staticmethod
+    def _is_legacy_chain(row):
+        return bool(
+            row
+            and not _text(row.get("tmdb_id"), 80)
+            and ":title:" in _text(row.get("target_key"), 180)
+        )
+
+    @staticmethod
+    def _anchor_matches(anchor, item, target_value):
+        return bool(
+            anchor.get("ownerTargetKey") == target_value
+            and anchor.get("matchMethod") == "symedia_tmdb_anchor"
+            and anchor.get("confidence") == "strong"
+            and anchor.get("source") == "Symedia"
+            and anchor.get("mediaType") == item.get("mediaType") == "tv"
+            and int(anchor.get("seasonNumber") or 0) == int(item.get("seasonNumber") or 0)
+        )
+
+    def _snapshot_anchors(self, items):
+        result = {}
+        for item in items:
+            target_value = _text(item.get("targetKey"), 180)
+            result.setdefault(target_value, []).extend(
+                record
+                for record in item.get("evidenceOwnership") or []
+                if isinstance(record, dict)
+                and self._anchor_matches(record, item, target_value)
+            )
+        return result
+
+    @staticmethod
+    def _ownership_by_artifact(item):
+        result = {}
+        for record in item.get("evidenceOwnership") or []:
+            if isinstance(record, dict):
+                result.setdefault(_text(record.get("artifactKey"), 220), []).append(record)
+        return result
+
+    def _old_chain_rejection(self, connection, old_chain_id, new_chain_id):
+        old_chain = connection.execute(
+            "SELECT * FROM resource_chains WHERE chain_id=?",
+            (old_chain_id,),
+        ).fetchone()
+        if not self._is_legacy_chain(_row(old_chain)):
+            return "OLD_CHAIN_NOT_LEGACY"
+        alias = connection.execute(
+            "SELECT canonical_chain_id FROM resource_chain_aliases WHERE alias_chain_id=?",
+            (old_chain_id,),
+        ).fetchone()
+        if alias and alias["canonical_chain_id"] != new_chain_id:
+            return "OLD_CHAIN_NOT_LEGACY"
+        return ""
+
+    @staticmethod
+    def _match_rejection(item, record, anchors):
+        if record is None or record.get("conflictCandidates"):
+            return "OWNERSHIP_RECORD_MISSING"
+        method = record.get("matchMethod")
+        if method == "symedia_tmdb_anchor" and not ResourceTaskRepository._anchor_matches(
+            record,
+            item,
+            _text(item.get("targetKey"), 180),
+        ):
+            return "TARGET_SCOPE_MISMATCH"
+        if method in {"artifact_exact", "tmdb_exact", "symedia_tmdb_anchor"}:
+            return "" if record.get("confidence") == "strong" else "MATCH_METHOD_NOT_ALLOWED"
+        if method != "symedia_title_season_unique":
+            return "MATCH_METHOD_NOT_ALLOWED"
+        same_scope = bool(
+            record.get("mediaType") == item.get("mediaType") == "tv"
+            and int(record.get("seasonNumber") or 0) == int(item.get("seasonNumber") or 0)
+        )
+        if not same_scope:
+            return "TARGET_SCOPE_MISMATCH"
+        return "" if anchors else "SYMEDIA_ANCHOR_MISSING"
+
+    def _migration_rejection(self, connection, item, candidate, anchors):
+        if not self._is_tmdb_target(item):
+            return (
+                "NEW_CHAIN_NOT_LINKED"
+                if item.get("identityState") != "linked"
+                else "NEW_TARGET_WITHOUT_TMDB"
+            )
+        match_rejection = self._match_rejection(item, candidate.get("record"), anchors)
+        if match_rejection:
+            return match_rejection
+        return self._old_chain_rejection(
+            connection,
+            candidate["expectedOldChainId"],
+            candidate["newChainId"],
+        )
+
+    @staticmethod
+    def _migration_plan(candidate):
+        record = candidate["record"]
+        return {
+            key: candidate[key]
+            for key in ("artifactKey", "expectedOldChainId", "newChainId", "targetKey")
+        } | {
+            "matchMethod": record.get("matchMethod"),
+            "confidence": record.get("confidence"),
+            "migrationMode": "single_artifact",
+        }
+
+    @staticmethod
+    def _migration_reason_counts(skips):
+        counts = {}
+        for skip in skips:
+            reason = skip["reasonCode"]
+            counts[reason] = counts.get(reason, 0) + 1
+        return counts
+
+    def _mark_whole_chain_plans(self, connection, plans):
+        plans_by_old_chain = {}
+        for plan in plans:
+            plans_by_old_chain.setdefault(plan["expectedOldChainId"], []).append(plan)
+        whole_chain_aliases = 0
+        for old_chain_id, chain_plans in plans_by_old_chain.items():
+            existing_artifacts = {
+                row["artifact_key"]
+                for row in connection.execute(
+                    "SELECT artifact_key FROM resource_artifacts WHERE chain_id=?",
+                    (old_chain_id,),
+                ).fetchall()
+            }
+            planned_artifacts = {plan["artifactKey"] for plan in chain_plans}
+            new_owners = {plan["newChainId"] for plan in chain_plans}
+            if existing_artifacts and existing_artifacts == planned_artifacts and len(new_owners) == 1:
+                whole_chain_aliases += 1
+                for plan in chain_plans:
+                    plan["migrationMode"] = "whole_chain"
+        return whole_chain_aliases
+
+    @staticmethod
+    def _migration_candidate(connection, context, artifact_key_value):
+        existing = connection.execute(
+            "SELECT chain_id FROM resource_artifacts WHERE artifact_key=?",
+            (artifact_key_value,),
+        ).fetchone()
+        if not existing or existing["chain_id"] == context["newChainId"]:
+            return None
+        records = [
+            record
+            for record in context["ownershipByArtifact"].get(artifact_key_value, [])
+            if record.get("ownerTargetKey") == context["targetKey"]
+        ]
+        return {
+            "artifactKey": artifact_key_value,
+            "expectedOldChainId": existing["chain_id"],
+            "newChainId": context["newChainId"],
+            "targetKey": context["targetKey"],
+            "record": records[0] if len(records) == 1 else None,
+        }
+
+    def _plan_snapshot_migrations(self, connection, payload):
+        items = [item for item in payload.get("items") or [] if isinstance(item, dict)]
+        anchors = self._snapshot_anchors(items)
+        plans = []
+        skips = []
+        for item in items:
+            target_value = _text(item.get("targetKey"), 180)
+            context = {
+                "newChainId": _text(item.get("chainId"), 120),
+                "targetKey": target_value,
+                "ownershipByArtifact": self._ownership_by_artifact(item),
+            }
+            for artifact_key_value in sorted(row[0] for row in self._artifact_rows(item)):
+                candidate = self._migration_candidate(connection, context, artifact_key_value)
+                if candidate is None:
+                    continue
+                reason_code = self._migration_rejection(
+                    connection,
+                    item,
+                    candidate,
+                    anchors.get(target_value),
+                )
+                if reason_code:
+                    self._skip_migration(
+                        skips,
+                        artifact_key_value,
+                        candidate["expectedOldChainId"],
+                        candidate["newChainId"],
+                        reason_code,
+                    )
+                    continue
+                plans.append(self._migration_plan(candidate))
+
+        whole_chain_aliases = self._mark_whole_chain_plans(connection, plans)
+        return self._migration_result(
+            artifactMigrations=len(plans),
+            chainAliases=whole_chain_aliases,
+            artifactConflicts=len(skips),
+            migrationSkipped=len(skips),
+            migrationSkipReasons=self._migration_reason_counts(skips),
+            migrationPlans=plans,
+            migrationSkips=skips,
+        )
+
+    def preview_snapshot_migrations(self, payload):
+        with closing(self.runtime.connect()) as connection:
+            return self._plan_snapshot_migrations(connection, payload)
+
+    def _ensure_migration_backup(self):
+        backup_path = self.database_path.with_name(
+            f"{self.database_path.stem}.resource-chain-migration-v1.sqlite3"
+        )
+        if backup_path.exists():
+            return False
+        temporary_path = backup_path.with_suffix(f"{backup_path.suffix}.{uuid.uuid4().hex}.tmp")
+        try:
+            with closing(self.runtime.connect()) as source, closing(sqlite3.connect(temporary_path)) as target:
+                source.backup(target)
+            temporary_path.replace(backup_path)
+        except Exception:
+            temporary_path.unlink(missing_ok=True)
+            raise
+        return True
+
+    def _conditional_reassign_artifact(self, connection, plan, now_text):
+        cursor = connection.execute(
+            "UPDATE resource_artifacts SET chain_id=?, last_seen_at=? "
+            "WHERE artifact_key=? AND chain_id=?",
+            (
+                plan["newChainId"],
+                now_text,
+                plan["artifactKey"],
+                plan["expectedOldChainId"],
+            ),
+        )
+        if int(cursor.rowcount or 0) != 1:
+            raise ResourceMigrationConflict("OWNER_CHANGED_CONCURRENTLY")
+
+    def _migrate_events(self, connection, old_chain_id, new_chain_id, now_text, artifact_key_value=None):
+        if artifact_key_value is None:
+            events = connection.execute(
+                "SELECT * FROM resource_events WHERE chain_id=?",
+                (old_chain_id,),
+            ).fetchall()
+        else:
+            events = connection.execute(
+                "SELECT * FROM resource_events WHERE chain_id=? AND artifact_key=?",
+                (old_chain_id, artifact_key_value),
+            ).fetchall()
+        for event in events:
+            stage = {
+                "stage": event["stage"],
+                "status": event["status"],
+                "healthState": event["health_state"],
+                "evidence": event["evidence"],
+                "source": event["source"],
+                "reasonCode": event["reason_code"],
+                "reasonText": event["reason_text"],
+            }
+            canonical_key = self._event_key(new_chain_id, event["artifact_key"], stage)
+            duplicate = connection.execute(
+                "SELECT event_id FROM resource_events WHERE idempotency_key=? AND event_id<>?",
+                (canonical_key, event["event_id"]),
+            ).fetchone()
+            if duplicate:
+                connection.execute("DELETE FROM resource_events WHERE event_id=?", (event["event_id"],))
+            else:
+                connection.execute(
+                    "UPDATE resource_events SET chain_id=?, idempotency_key=? WHERE event_id=?",
+                    (new_chain_id, canonical_key, event["event_id"]),
+                )
+
+    def _record_migration_event(self, connection, new_chain_id, plan, now_text):
+        return self._append_event(
+            connection,
+            new_chain_id,
+            plan["artifactKey"],
+            {
+                "stage": "identity",
+                "status": "done",
+                "healthState": "normal",
+                "evidence": "verified",
+                "observedAt": now_text,
+                "freshUntil": _iso(self.clock() + timedelta(minutes=5)),
+                "source": "resource-ledger",
+                "reasonCode": "ARTIFACT_CHAIN_MIGRATED",
+                "reasonText": "历史产物身份已迁移到标准媒体链",
+            },
+            now_text,
+        )
+
+    def _execute_snapshot_migrations(self, connection, preview, now_text):
+        plans = preview.get("migrationPlans") or []
+        for plan in plans:
+            self._conditional_reassign_artifact(connection, plan, now_text)
+
+        event_count = alias_count = deleted_count = 0
+        whole_groups = {}
+        for plan in plans:
+            if plan["migrationMode"] == "whole_chain":
+                whole_groups.setdefault(
+                    (plan["expectedOldChainId"], plan["newChainId"]),
+                    [],
+                ).append(plan)
+            else:
+                self._migrate_events(
+                    connection,
+                    plan["expectedOldChainId"],
+                    plan["newChainId"],
+                    now_text,
+                    plan["artifactKey"],
+                )
+                event_count += self._record_migration_event(connection, plan["newChainId"], plan, now_text)
+
+        for (old_chain_id, new_chain_id), chain_plans in whole_groups.items():
+            self._migrate_events(connection, old_chain_id, new_chain_id, now_text)
+            for plan in chain_plans:
+                event_count += self._record_migration_event(connection, new_chain_id, plan, now_text)
+            connection.execute(
+                "UPDATE resource_chain_aliases SET canonical_chain_id=?, updated_at=? "
+                "WHERE canonical_chain_id=?",
+                (new_chain_id, now_text, old_chain_id),
+            )
+            cursor = connection.execute(
+                "INSERT INTO resource_chain_aliases ("
+                "alias_chain_id, canonical_chain_id, reason_code, created_at, updated_at, payload_json) "
+                "VALUES (?, ?, 'CHAIN_IDENTITY_MIGRATED', ?, ?, ?) "
+                "ON CONFLICT(alias_chain_id) DO UPDATE SET canonical_chain_id=excluded.canonical_chain_id, "
+                "reason_code=excluded.reason_code, updated_at=excluded.updated_at, payload_json=excluded.payload_json",
+                (
+                    old_chain_id,
+                    new_chain_id,
+                    now_text,
+                    now_text,
+                    _json({"artifactCount": len(chain_plans), "mode": "whole_chain"}),
+                ),
+            )
+            alias_count += int(cursor.rowcount or 0) > 0
+            cursor = connection.execute(
+                "DELETE FROM resource_chains WHERE chain_id=? "
+                "AND NOT EXISTS (SELECT 1 FROM resource_artifacts WHERE chain_id=?) "
+                "AND NOT EXISTS (SELECT 1 FROM resource_events WHERE chain_id=?)",
+                (old_chain_id, old_chain_id, old_chain_id),
+            )
+            deleted_count += int(cursor.rowcount or 0)
+        return {
+            "artifactMigrations": len(plans),
+            "chainAliases": alias_count,
+            "deletedEmptyChains": deleted_count,
+            "migrationEvents": event_count,
+        }
+
     def record_snapshot(self, payload):
         now_text = _iso(self.clock())
         chain_count = artifact_count = event_count = conflict_count = 0
-        with self.runtime.transaction(immediate=True) as connection:
-            for item in payload.get("items") or []:
-                if not isinstance(item, dict):
-                    continue
-                chain_id = self._upsert_chain(connection, item, now_text)
-                artifacts, conflicts_events, conflicts, artifact_keys = self._record_artifacts(
-                    connection, chain_id, item, now_text
-                )
-                chain_count += 1
-                artifact_count += artifacts
-                conflict_count += conflicts
-                event_count += conflicts_events
-                event_count += self._record_stages(
-                    connection, chain_id, item.get("stages") or [], artifact_keys, now_text
-                )
+        preview = self.preview_snapshot_migrations(payload)
+        backup_created = False
+        if preview["artifactMigrations"]:
+            try:
+                backup_created = self._ensure_migration_backup()
+            except Exception:
+                return {
+                    "persisted": False,
+                    "chains": 0,
+                    "artifacts": 0,
+                    "events": 0,
+                    "observedAt": now_text,
+                    **self._migration_result(
+                        migrationSkipped=1,
+                        migrationSkipReasons={"BACKUP_FAILED": 1},
+                    ),
+                }
+        try:
+            with self.runtime.transaction(immediate=True) as connection:
+                migration_preview = self._plan_snapshot_migrations(connection, payload)
+                if migration_preview["migrationPlans"] != preview["migrationPlans"]:
+                    raise ResourceMigrationConflict("OWNER_CHANGED_CONCURRENTLY")
+                items = [item for item in payload.get("items") or [] if isinstance(item, dict)]
+                for item in items:
+                    self._upsert_chain(connection, item, now_text)
+                migration_result = self._execute_snapshot_migrations(connection, migration_preview, now_text)
+                event_count += migration_result.pop("migrationEvents")
+                for item in items:
+                    chain_id_value = _text(item.get("chainId"), 120)
+                    artifacts, conflicts_events, conflicts, artifact_keys = self._record_artifacts(
+                        connection, chain_id_value, item, now_text
+                    )
+                    chain_count += 1
+                    artifact_count += artifacts
+                    conflict_count += conflicts
+                    event_count += conflicts_events
+                    event_count += self._record_stages(
+                        connection, chain_id_value, item.get("stages") or [], artifact_keys, now_text
+                    )
+        except ResourceMigrationConflict as exc:
+            return {
+                "persisted": False,
+                "chains": 0,
+                "artifacts": 0,
+                "events": 0,
+                "observedAt": now_text,
+                **self._migration_result(
+                    migrationSkipped=1,
+                    migrationSkipReasons={exc.reason_code: 1},
+                    migrationBackupCreated=backup_created,
+                ),
+            }
         return {
             "persisted": True,
             "chains": chain_count,
@@ -301,14 +740,39 @@ class ResourceTaskRepository:
             "events": event_count,
             "artifactConflicts": conflict_count,
             "observedAt": now_text,
+            **{
+                **self._migration_result(),
+                **migration_result,
+                "artifactConflicts": conflict_count,
+                "migrationSkipped": migration_preview["migrationSkipped"],
+                "migrationSkipReasons": migration_preview["migrationSkipReasons"],
+                "migrationBackupCreated": backup_created,
+            },
         }
 
+    def resolve_chain_id(self, chain_id):
+        current = _text(chain_id, 120)
+        visited = set()
+        with closing(self.runtime.connect()) as connection:
+            while current and current not in visited:
+                visited.add(current)
+                row = connection.execute(
+                    "SELECT canonical_chain_id FROM resource_chain_aliases WHERE alias_chain_id=?",
+                    (current,),
+                ).fetchone()
+                if not row:
+                    break
+                current = row["canonical_chain_id"]
+        return current
+
     def get_chain(self, chain_id):
+        chain_id = self.resolve_chain_id(chain_id)
         with closing(self.runtime.connect()) as connection:
             row = connection.execute("SELECT * FROM resource_chains WHERE chain_id=?", (str(chain_id),)).fetchone()
         return _row(row)
 
     def list_events(self, chain_id, limit=100):
+        chain_id = self.resolve_chain_id(chain_id)
         try:
             limit = max(1, min(int(limit or 100), 1000))
         except (TypeError, ValueError):
@@ -333,6 +797,7 @@ class ResourceTaskRepository:
         source = artifact.get("source") or "task-chain"
         external_id = artifact.get("externalId") or ""
         chain_id = _text(chain_id, 120)
+        chain_id = self.resolve_chain_id(chain_id)
         previous_key = _text(previous_artifact_key, 220)
         current_key = _text(current_artifact_key, 220)
         if not chain_id or not current_key or previous_key == current_key:

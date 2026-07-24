@@ -70,6 +70,7 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `GET /api/v2/tasks/summary` | 返回唯一任务链数量、健康/身份/执行三维状态数量、阶段数量、服务状态和稳定 `version`；支持 ETag 条件读取 |
 | `GET /api/v2/tasks/chains` | 支持 `healthState`、`identityState`、`executionState`、`chainId`、`targetKey`、`updatedAfter`、`offset`、`limit`；默认返回 20 条唯一链路摘要和稳定分页字段，不返回完整阶段证据；摘要可选返回 `embyEvidenceScope` |
 | `GET /api/v2/tasks/chains/:chainId` | 返回单条任务链的阶段证据、artifact、原因和动作资格；不存在返回 `404 TASK_CHAIN_NOT_FOUND`；Emby 证据范围可选为 `none`、`title` 或 `episode` |
+| `GET /api/v2/tasks/ledger/migrations/preview` | 只读计算旧标题链到标准 TMDB 链的安全迁移计划、拒绝原因和预计别名数量；不写台账，不触发外部服务写操作 |
 | `GET /api/v2/calendar` | 按月聚合播出日期与任务链获取/入库证据，返回标准 `chainId/targetKey`、播出/获取/入库/正常保护/逾期/未知状态和 `Asia/Shanghai` 时区；支持 ETag |
 | `GET /api/v2/subscriptions/capabilities` | 只读返回本地写入、Torra 推送和调度器真实运行状态，供发现页生成不夸大的追更文案 |
 | `POST /api/subscriptions/save` | 标题、TMDB ID、媒体类型和可选元数据 |

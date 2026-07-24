@@ -1,7 +1,7 @@
 # Fluxa 前端 UI 改造实施计划
 
 日期：2026-07-23
-状态：阶段 H 已发布；阶段 I 事实源一致性收口已完成（2026-07-24）
+状态：阶段 M 已完成；阶段 N 持久任务台账链迁移已完成（2026-07-25）
 范围：Fluxa 管理工作台、任务数据契约、前端 UI、交互与响应式体验
 
 本计划整合当前实机检查、用户任务中枢产品方案和任务链/API 审查结论。早期 UI 设计稿及 `docs/UI_STANDARD.md` 不再作为实施依据；后续设计只参考当前产品职责、真实数据状态和本计划。
@@ -995,3 +995,25 @@ Fluxa 的前端不以展示更多工程数据为目标，而是让用户更快�
 - 后端全量回归 324 项通过；
 - 前端 `npm run typecheck` 与 `npm run build` 通过；
 - `git diff --check` 通过。
+
+## 26. 阶段 N：持久任务台账链迁移与别名升级（2026-07-25）
+
+### 26.1 实施内容
+
+1. 任务台账在写入快照前先生成只读迁移计划；普通标题、多个候选、缺少 TMDB 锚点或目标范围不一致时只返回结构化拒绝原因，不猜测、不改绑。
+2. `symedia_title_season_unique` 只有在同一次快照、同一 `targetKey` 存在 `symedia_tmdb_anchor`，且来源、媒体类型和季号一致时才允许迁移。
+3. artifact 使用 `expectedOldChainId` 条件更新；owner 在预检与事务执行之间发生变化时，整批迁移和本次快照写入回滚。
+4. 旧链全部 artifact 明确进入同一标准链时执行整链迁移：迁移链级与 artifact 事件、重算 canonical 幂等键、合并重复事件、建立永久 chain alias，并删除确认空置的旧链。
+5. 只迁移部分 artifact 时，仅移动明确关联的历史事件；`artifact_key=''` 的链级事件留在旧链，不建立整链别名，也不删除旧链。
+6. 第一次存在可执行迁移前使用 SQLite backup API 创建固定版本备份；备份失败时返回 `persisted=false`，不写入 canonical chain、artifact 或事件。
+7. 旧 `chainId` 在任务列表筛选、详情和台账查询中解析到 canonical chain，已有任务深链接继续有效。
+8. 新增 `GET /api/v2/tasks/ledger/migrations/preview`，仅返回脱敏迁移计划、预计别名数和拒绝原因，不写台账。
+
+### 26.2 验收结果
+
+- 定向回归覆盖无 anchor 拒绝、季号范围冲突、整链迁移、单 artifact 迁移、事件幂等去重、备份失败、并发 owner 改变、旧链解析和只读 API，共 41 项通过；
+- 后端全量回归 332 项通过；
+- 前端 `npm run typecheck` 与 `npm run build` 通过；
+- v2 HTTP 契约已登记只读迁移预检接口，原有任务摘要、列表和详情字段保持兼容；
+- 安全扫描未发现本阶段新增问题，SQL 全部使用参数绑定，迁移计划不返回文件路径、Token、Cookie 或 Passkey；
+- 本阶段未对真实台账执行迁移预检或迁移，也未触发 RSS、Torra、qB、115、Symedia 或 Emby 外部写操作。

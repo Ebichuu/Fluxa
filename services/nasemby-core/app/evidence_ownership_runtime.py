@@ -358,6 +358,8 @@ def _decide(evidence: dict, targets: list[dict], artifact_candidates=()) -> dict
         "conflictCandidates": ordered if len(ordered) > 1 else [],
         "observedAt": evidence["observedAt"],
         "source": evidence["source"],
+        "mediaType": evidence.get("mediaType") or "unknown",
+        "seasonNumber": _integer(evidence.get("seasonNumber")),
     }
 
 
@@ -370,6 +372,8 @@ def _anchored_decision(evidence: dict, owner: str, method: str) -> dict:
         "conflictCandidates": [],
         "observedAt": evidence["observedAt"],
         "source": evidence["source"],
+        "mediaType": evidence.get("mediaType") or "unknown",
+        "seasonNumber": _integer(evidence.get("seasonNumber")),
     }
 
 

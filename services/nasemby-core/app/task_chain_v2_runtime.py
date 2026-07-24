@@ -187,6 +187,23 @@ def _episode_evidence(items: list[dict]) -> list[dict]:
     return [merged[key] for key in sorted(merged)]
 
 
+def _evidence_ownership(items: list[dict]) -> list[dict]:
+    merged = {}
+    for item in items:
+        for row in item.get("evidenceOwnership") or []:
+            if not isinstance(row, dict):
+                continue
+            key = (
+                str(row.get("artifactKey") or ""),
+                str(row.get("ownerTargetKey") or ""),
+                str(row.get("matchMethod") or ""),
+            )
+            current = merged.get(key)
+            if current is None or str(row.get("observedAt") or "") >= str(current.get("observedAt") or ""):
+                merged[key] = dict(row)
+    return [merged[key] for key in sorted(merged)]
+
+
 def _primary_item(items: list[dict]) -> dict:
     return min(
         items,
@@ -262,6 +279,7 @@ def _merge_group(items: list[dict], observed_at: str, fresh_until: str, now_valu
         "sourceIds": source_ids,
         "subscriptionId": source_ids["subscriptionId"],
         "artifactKeys": artifacts,
+        "evidenceOwnership": _evidence_ownership(items),
         "episodeEvidence": episode_evidence,
         "origins": _dedupe(item.get("origin") for item in items),
         "relatedRecords": len(items),
@@ -495,6 +513,8 @@ class TaskChainV2Service:
     ):
         payload = self.full_snapshot(force=force)
         items = payload.get("items") or []
+        if chain_id_value and self.repository:
+            chain_id_value = self.repository.resolve_chain_id(chain_id_value)
         if health_state:
             items = [item for item in items if item.get("healthState") == health_state]
         if identity_state:
@@ -547,6 +567,8 @@ class TaskChainV2Service:
 
     def detail(self, chain_id_value: str, *, force=False):
         payload = self.full_snapshot(force=force)
+        if self.repository:
+            chain_id_value = self.repository.resolve_chain_id(chain_id_value)
         item = next((
             item for item in payload.get("items") or []
             if item.get("chainId") == chain_id_value
@@ -554,6 +576,19 @@ class TaskChainV2Service:
         return {
             **self.summary(force=False),
             "item": item,
+        }
+
+    def migration_preview(self):
+        if not self.repository:
+            raise RuntimeError("任务台账尚未启用")
+        service = self.app.extensions.get("mcc_task_chain_service")
+        if not service:
+            raise RuntimeError("任务链尚未注册")
+        payload = adapt_task_chain(service.get_chain(), now=self.clock())
+        preview = self.repository.preview_snapshot_migrations(payload)
+        return {
+            "generatedAt": payload.get("generatedAt"),
+            **preview,
         }
 
 
@@ -655,5 +690,14 @@ def register_task_chain_v2(app: Flask, repository=None, clock=None):
             return _conditional(payload, f"detail:{chain_id_value}")
         except Exception:
             return _error("TASK_CHAIN_V2_READ_FAILED", "任务链读取失败", 502)
+
+    @app.get("/api/v2/tasks/ledger/migrations/preview")
+    def task_ledger_migration_preview_v2():
+        try:
+            return jsonify(service.migration_preview())
+        except RuntimeError as exc:
+            return _error("TASK_LEDGER_NOT_AVAILABLE", str(exc), 503)
+        except Exception:
+            return _error("TASK_LEDGER_MIGRATION_PREVIEW_FAILED", "任务台账迁移预检失败", 502)
 
     return service

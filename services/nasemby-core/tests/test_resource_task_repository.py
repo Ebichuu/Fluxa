@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -45,7 +46,243 @@ def snapshot(reason_text="下载完成"):
     }
 
 
+def legacy_snapshot(*hashes, chain_id="chain:legacy"):
+    return {
+        "items": [{
+            "chainId": chain_id,
+            "mediaKey": "unknown:title:灿如繁星",
+            "targetKey": "unknown:title:灿如繁星:season:1",
+            "subscriptionId": "",
+            "mediaType": "unknown",
+            "tmdbId": "",
+            "seasonNumber": 1,
+            "title": "[灿如繁星].Road.to.Success.S01",
+            "origin": "download",
+            "state": "completed",
+            "healthState": "evidence_insufficient",
+            "identityState": "unidentified",
+            "observedAt": "2026-07-22T06:00:00Z",
+            "freshUntil": "2026-07-22T06:05:00Z",
+            "source": "task-chain",
+            "reasonCode": "TASK_IDENTITY_UNLINKED",
+            "reasonText": "下载证据尚未关联到媒体目标",
+            "sourceIds": {"qbHashes": list(hashes), "symediaIds": []},
+            "evidenceOwnership": [],
+            "stages": [{
+                "stage": "download",
+                "status": "done",
+                "healthState": "normal",
+                "evidence": "verified",
+                "observedAt": "2026-07-22T05:59:00Z",
+                "freshUntil": "2026-07-22T06:05:00Z",
+                "source": "qBittorrent",
+                "reasonCode": "DOWNLOAD_DONE",
+                "reasonText": "下载完成",
+            }],
+        }],
+    }
+
+
+def canonical_snapshot(*hashes, include_anchor=True, season=1, method="symedia_title_season_unique"):
+    target = f"tv:tmdb:808:season:{season}"
+    records = [{
+        "artifactKey": f"artifact:{value}",
+        "ownerTargetKey": target,
+        "matchMethod": method,
+        "confidence": "fallback" if method == "symedia_title_season_unique" else "strong",
+        "conflictCandidates": [],
+        "source": "qBittorrent",
+        "mediaType": "tv",
+        "seasonNumber": season,
+    } for value in hashes]
+    if include_anchor:
+        records.append({
+            "artifactKey": "artifact:symedia:anchor-1",
+            "ownerTargetKey": target,
+            "matchMethod": "symedia_tmdb_anchor",
+            "confidence": "strong",
+            "conflictCandidates": [],
+            "source": "Symedia",
+            "mediaType": "tv",
+            "seasonNumber": season,
+        })
+    return {
+        "items": [{
+            "chainId": "chain:canonical",
+            "mediaKey": "tv:tmdb:808",
+            "targetKey": target,
+            "subscriptionId": "",
+            "mediaType": "tv",
+            "tmdbId": "808",
+            "seasonNumber": season,
+            "title": "灿如繁星",
+            "origin": "download",
+            "state": "completed",
+            "healthState": "normal",
+            "identityState": "linked",
+            "observedAt": "2026-07-22T06:00:00Z",
+            "freshUntil": "2026-07-22T06:05:00Z",
+            "source": "task-chain",
+            "reasonCode": "TASK_COMPLETED",
+            "reasonText": "处理完成",
+            "sourceIds": {"qbHashes": list(hashes), "symediaIds": []},
+            "evidenceOwnership": records,
+            "stages": [{
+                "stage": "download",
+                "status": "done",
+                "healthState": "normal",
+                "evidence": "verified",
+                "observedAt": "2026-07-22T05:59:00Z",
+                "freshUntil": "2026-07-22T06:05:00Z",
+                "source": "qBittorrent",
+                "reasonCode": "DOWNLOAD_DONE",
+                "reasonText": "下载完成",
+            }],
+        }],
+    }
+
+
+def rows(repository, statement, parameters=()):
+    with closing(repository.runtime.connect()) as connection:
+        return [dict(row) for row in connection.execute(statement, parameters).fetchall()]
+
+
 class ResourceTaskRepositoryTests(unittest.TestCase):
+    def test_migration_preview_requires_same_snapshot_symedia_anchor_and_is_read_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ResourceTaskRepository(Path(directory) / "media.sqlite3", clock=lambda: NOW)
+            repository.record_snapshot(legacy_snapshot("hash-a"))
+
+            rejected = repository.preview_snapshot_migrations(
+                canonical_snapshot("hash-a", include_anchor=False)
+            )
+            allowed = repository.preview_snapshot_migrations(canonical_snapshot("hash-a"))
+
+            self.assertEqual(rejected["artifactMigrations"], 0)
+            self.assertEqual(rejected["migrationSkipReasons"], {"SYMEDIA_ANCHOR_MISSING": 1})
+            self.assertEqual(allowed["artifactMigrations"], 1)
+            self.assertEqual(allowed["chainAliases"], 1)
+            self.assertEqual(rows(
+                repository,
+                "SELECT chain_id FROM resource_artifacts WHERE artifact_key='artifact:hash-a'",
+            )[0]["chain_id"], "chain:legacy")
+            self.assertIsNone(repository.get_chain("chain:canonical"))
+
+    def test_migration_preview_rejects_qb_season_scope_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ResourceTaskRepository(Path(directory) / "media.sqlite3", clock=lambda: NOW)
+            repository.record_snapshot(legacy_snapshot("hash-a"))
+            payload = canonical_snapshot("hash-a")
+            payload["items"][0]["evidenceOwnership"][0]["seasonNumber"] = 2
+
+            result = repository.preview_snapshot_migrations(payload)
+
+            self.assertEqual(result["artifactMigrations"], 0)
+            self.assertEqual(result["migrationSkipReasons"], {"TARGET_SCOPE_MISMATCH": 1})
+
+    def test_whole_chain_migration_moves_history_aliases_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ResourceTaskRepository(Path(directory) / "media.sqlite3", clock=lambda: NOW)
+            repository.record_snapshot(canonical_snapshot())
+            repository.record_snapshot(legacy_snapshot("hash-a", "hash-b"))
+
+            first = repository.record_snapshot(canonical_snapshot("hash-a", "hash-b"))
+            second = repository.record_snapshot(canonical_snapshot("hash-a", "hash-b"))
+
+            self.assertEqual(first["artifactMigrations"], 2)
+            self.assertEqual(first["chainAliases"], 1)
+            self.assertEqual(first["deletedEmptyChains"], 1)
+            self.assertEqual(first["artifactConflicts"], 0)
+            self.assertEqual(second["artifactMigrations"], 0)
+            self.assertEqual(second["chainAliases"], 0)
+            self.assertEqual(repository.resolve_chain_id("chain:legacy"), "chain:canonical")
+            self.assertEqual(repository.get_chain("chain:legacy")["chain_id"], "chain:canonical")
+            self.assertEqual(rows(
+                repository,
+                "SELECT count(*) n FROM resource_chains WHERE chain_id='chain:legacy'",
+            )[0]["n"], 0)
+            self.assertTrue(all(
+                row["chain_id"] == "chain:canonical"
+                for row in rows(repository, "SELECT chain_id FROM resource_artifacts")
+            ))
+            download_events = [
+                event for event in repository.list_events("chain:canonical")
+                if event["reason_code"] == "DOWNLOAD_DONE"
+            ]
+            self.assertEqual(len(download_events), 1)
+
+    def test_partial_artifact_migration_keeps_chain_level_history_and_old_chain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ResourceTaskRepository(Path(directory) / "media.sqlite3", clock=lambda: NOW)
+            repository.record_snapshot(legacy_snapshot("hash-a"))
+            repository.record_snapshot(legacy_snapshot("hash-a", "hash-b"))
+
+            result = repository.record_snapshot(canonical_snapshot("hash-a"))
+
+            self.assertEqual(result["artifactMigrations"], 1)
+            self.assertEqual(result["chainAliases"], 0)
+            self.assertEqual(result["deletedEmptyChains"], 0)
+            owners = {
+                row["artifact_key"]: row["chain_id"]
+                for row in rows(repository, "SELECT artifact_key, chain_id FROM resource_artifacts")
+            }
+            self.assertEqual(owners["artifact:hash-a"], "chain:canonical")
+            self.assertEqual(owners["artifact:hash-b"], "chain:legacy")
+            self.assertIsNotNone(repository.get_chain("chain:legacy"))
+            self.assertTrue(rows(
+                repository,
+                "SELECT event_id FROM resource_events WHERE chain_id='chain:legacy' AND artifact_key=''",
+            ))
+            self.assertTrue(rows(
+                repository,
+                "SELECT event_id FROM resource_events WHERE chain_id='chain:canonical' AND artifact_key='artifact:hash-a'",
+            ))
+
+    def test_backup_failure_prevents_snapshot_and_migration_writes(self):
+        class BackupFailureRepository(ResourceTaskRepository):
+            def _ensure_migration_backup(self):
+                raise OSError("backup failed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            repository = BackupFailureRepository(Path(directory) / "media.sqlite3", clock=lambda: NOW)
+            repository.record_snapshot(legacy_snapshot("hash-a"))
+
+            result = repository.record_snapshot(canonical_snapshot("hash-a"))
+
+            self.assertFalse(result["persisted"])
+            self.assertEqual(result["migrationSkipReasons"], {"BACKUP_FAILED": 1})
+            self.assertIsNone(repository.get_chain("chain:canonical"))
+            self.assertEqual(rows(
+                repository,
+                "SELECT chain_id FROM resource_artifacts WHERE artifact_key='artifact:hash-a'",
+            )[0]["chain_id"], "chain:legacy")
+
+    def test_conditional_owner_change_rolls_back_entire_snapshot(self):
+        class RacingRepository(ResourceTaskRepository):
+            def _conditional_reassign_artifact(self, connection, plan, now_text):
+                connection.execute(
+                    "UPDATE resource_artifacts SET chain_id='chain:racer' WHERE artifact_key=?",
+                    (plan["artifactKey"],),
+                )
+                return super()._conditional_reassign_artifact(connection, plan, now_text)
+
+        with tempfile.TemporaryDirectory() as directory:
+            repository = RacingRepository(Path(directory) / "media.sqlite3", clock=lambda: NOW)
+            repository.record_snapshot(legacy_snapshot("hash-a"))
+            racer = legacy_snapshot(chain_id="chain:racer")
+            racer["items"][0]["sourceIds"] = {"qbHashes": [], "symediaIds": []}
+            repository.record_snapshot(racer)
+
+            result = repository.record_snapshot(canonical_snapshot("hash-a"))
+
+            self.assertFalse(result["persisted"])
+            self.assertEqual(result["migrationSkipReasons"], {"OWNER_CHANGED_CONCURRENTLY": 1})
+            self.assertIsNone(repository.get_chain("chain:canonical"))
+            self.assertEqual(rows(
+                repository,
+                "SELECT chain_id FROM resource_artifacts WHERE artifact_key='artifact:hash-a'",
+            )[0]["chain_id"], "chain:legacy")
+
     def test_snapshot_is_idempotent_and_redacts_event_text(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = ResourceTaskRepository(

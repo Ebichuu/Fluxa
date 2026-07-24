@@ -293,6 +293,10 @@ class EvidenceOwnershipRuntimeTests(unittest.TestCase):
         self.assertEqual(qb_record["ownerTargetKey"], target)
         self.assertEqual(qb_record["matchMethod"], "symedia_title_season_unique")
         self.assertEqual(qb_record["confidence"], "fallback")
+        self.assertEqual(qb_record["mediaType"], "tv")
+        self.assertEqual(qb_record["seasonNumber"], 1)
+        self.assertEqual(symedia_record["mediaType"], "tv")
+        self.assertEqual(symedia_record["seasonNumber"], 1)
         self.assertEqual(list(result["derivedTargets"]), [target])
 
     def test_symedia_derived_targets_keep_same_title_different_tmdb_as_qb_conflict(self):

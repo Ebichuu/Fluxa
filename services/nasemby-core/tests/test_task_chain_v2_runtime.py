@@ -38,6 +38,93 @@ class FakeTaskChain:
 
 
 class TaskChainV2RuntimeTests(unittest.TestCase):
+    def test_migration_preview_route_is_read_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ResourceTaskRepository(
+                Path(directory) / "media.sqlite3",
+                clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+            )
+            repository.record_snapshot({
+                "items": [{
+                    "chainId": "chain:legacy",
+                    "mediaKey": "unknown:title:测试剧",
+                    "targetKey": "unknown:title:测试剧:season:2",
+                    "identityState": "unidentified",
+                    "mediaType": "unknown",
+                    "tmdbId": "",
+                    "seasonNumber": 2,
+                    "title": "测试剧.S02",
+                    "sourceIds": {"qbHashes": ["hash-1"], "symediaIds": []},
+                    "stages": [],
+                }],
+            })
+            chain = FakeTaskChain().get_chain()
+            chain["items"][0]["evidenceOwnership"] = [
+                {
+                    "artifactKey": "artifact:hash-1",
+                    "ownerTargetKey": "tv:tmdb:101:season:2",
+                    "matchMethod": "symedia_title_season_unique",
+                    "confidence": "fallback",
+                    "conflictCandidates": [],
+                    "source": "qBittorrent",
+                    "mediaType": "tv",
+                    "seasonNumber": 2,
+                },
+                {
+                    "artifactKey": "artifact:symedia:anchor-1",
+                    "ownerTargetKey": "tv:tmdb:101:season:2",
+                    "matchMethod": "symedia_tmdb_anchor",
+                    "confidence": "strong",
+                    "conflictCandidates": [],
+                    "source": "Symedia",
+                    "mediaType": "tv",
+                    "seasonNumber": 2,
+                },
+            ]
+            app = Flask(__name__)
+            fake = FakeTaskChain()
+            fake.get_chain = lambda: chain
+            app.extensions["mcc_task_chain_service"] = fake
+            register_task_chain_v2(
+                app,
+                repository=repository,
+                clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+            )
+
+            response = app.test_client().get("/api/v2/tasks/ledger/migrations/preview")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()["artifactMigrations"], 1)
+            self.assertEqual(repository.get_chain("chain:legacy")["chain_id"], "chain:legacy")
+            canonical = chain_id("tv:tmdb:101", "tv:tmdb:101:season:2")
+            self.assertIsNone(repository.get_chain(canonical))
+
+    def test_old_chain_filter_and_detail_resolve_to_canonical_chain(self):
+        class AliasRepository:
+            def record_snapshot(self, payload):
+                return {"persisted": True}
+
+            @staticmethod
+            def resolve_chain_id(value):
+                expected = chain_id("tv:tmdb:101", "tv:tmdb:101:season:2")
+                return expected if value == "chain:legacy" else value
+
+        app = Flask(__name__)
+        app.extensions["mcc_task_chain_service"] = FakeTaskChain()
+        service = register_task_chain_v2(
+            app,
+            repository=AliasRepository(),
+            clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+        )
+        expected = chain_id("tv:tmdb:101", "tv:tmdb:101:season:2")
+
+        listing = service.list_items(chain_id_value="chain:legacy")
+        detail = service.detail("chain:legacy")
+
+        self.assertEqual(listing["page"]["total"], 1)
+        self.assertEqual(listing["items"][0]["chainId"], expected)
+        self.assertEqual(detail["item"]["chainId"], expected)
+
     def test_identity_keys_are_stable_and_health_is_independent(self):
         item = adapt_task_chain(FakeTaskChain().get_chain(), now=datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc))["items"][0]
         self.assertEqual(item["mediaKey"], "tv:tmdb:101")
