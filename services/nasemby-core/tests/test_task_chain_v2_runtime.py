@@ -110,6 +110,47 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(payload["items"][0]["artifactKeys"], ["artifact:hash-1", "artifact:hash-2"])
         self.assertEqual(payload["items"][0]["healthState"], "action_required")
 
+    def test_concurrent_download_summary_is_aggregated_and_returned_in_v2_list(self):
+        chain = FakeTaskChain().get_chain()
+        chain["items"][0].update({
+            "activeDownloadTasks": 2,
+            "completedDownloadTasks": 1,
+        })
+        chain["items"].append({
+            "id": "qb:hash-2",
+            "title": "测试剧",
+            "mediaType": "tv",
+            "tmdbId": "101",
+            "seasonNumber": 2,
+            "state": "active",
+            "confidence": "strong",
+            "origin": "download",
+            "steps": [{
+                "key": "download",
+                "label": "获取 / 下载",
+                "status": "active",
+                "evidence": "verified",
+                "source": "qBittorrent",
+            }],
+            "sourceIds": {"subscriptionId": "", "qbHashes": ["hash-2"], "symediaIds": []},
+            "activeDownloadTasks": 3,
+            "completedDownloadTasks": 4,
+        })
+
+        payload = adapt_task_chain(chain, now=datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc))
+        item = payload["items"][0]
+        self.assertEqual(item["activeDownloadTasks"], 5)
+        self.assertEqual(item["completedDownloadTasks"], 5)
+        self.assertEqual(item["concurrentDownloadCount"], 5)
+
+        app = Flask(__name__)
+        fake = FakeTaskChain()
+        fake.get_chain = lambda: chain
+        app.extensions["mcc_task_chain_service"] = fake
+        register_task_chain_v2(app, clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc))
+        listing = app.test_client().get("/api/v2/tasks/chains?limit=1").get_json()
+        self.assertEqual(listing["items"][0]["concurrentDownloadCount"], 5)
+
     def test_merged_progress_uses_the_whole_stage_chain(self):
         chain = FakeTaskChain().get_chain()
         chain["items"][0]["progress"] = 100

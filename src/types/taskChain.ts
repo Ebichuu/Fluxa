@@ -109,6 +109,7 @@ export interface TaskChainItem {
   };
   activeDownloadTasks?: number;
   completedDownloadTasks?: number;
+  concurrentDownloadCount?: number;
   sourceIds: {
     subscriptionId: string;
     subscriptionIds?: string[];

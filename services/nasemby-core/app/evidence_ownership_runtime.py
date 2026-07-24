@@ -69,8 +69,14 @@ def _qb_title_keys(name: str) -> list[str]:
         text,
         maxsplit=1,
     )[0]
-    values = [prefix]
-    values.extend(match.group(1) for match in re.finditer(r"[\[【（(]([^\]】）)]+)[\]】）)]", text))
+    bracket_values = [
+        match.group(1)
+        for match in re.finditer(r"[\[【（(]([^\]】）)]+)[\]】）)]", text)
+        if re.search(r"[\u4e00-\u9fff]", match.group(1))
+    ]
+    # 中文方括号通常是发布标题中的规范中文名，优先作为主标题候选；
+    # 组合标题仍保留在 titleKeys 中，用于兼容中英混合资源。
+    values = [*bracket_values, prefix]
     leading = re.match(r"^[\s.\-_[\]【】（）()]*([\u4e00-\u9fff][\u4e00-\u9fff·、，。！？：:]*)", text)
     if leading:
         values.append(leading.group(1))
@@ -235,9 +241,11 @@ def _candidate(evidence: dict, target: dict) -> tuple[str, str] | None:
     if not evidence_titles.intersection(target_titles):
         return None
     if target["mediaType"] == "tv":
-        if not evidence["seasonNumber"] or not target["seasonNumber"]:
+        if not evidence["seasonNumber"]:
             return None
-        if evidence["seasonNumber"] != target["seasonNumber"]:
+        # Torra 季号为 0 表示全季/未指定。只有标题和类型候选唯一时，
+        # 才允许已知季号的 qB 证据归属到该全季目标。
+        if target["seasonNumber"] and evidence["seasonNumber"] != target["seasonNumber"]:
             return None
         return "title_season_unique", "fallback"
     if target["mediaType"] == "movie":

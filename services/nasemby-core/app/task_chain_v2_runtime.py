@@ -283,6 +283,7 @@ def _merge_group(items: list[dict], observed_at: str, fresh_until: str, now_valu
             for item in items
         ),
     }
+    merged["concurrentDownloadCount"] = merged["activeDownloadTasks"]
     merged.update(_health(merged, observed_at, fresh_until, now_value))
     return merged
 
@@ -367,7 +368,7 @@ def _summary_item(item: dict) -> dict:
         "targetKey", "subscriptionId", "healthState", "observedAt", "freshUntil", "source",
         "reasonCode", "reasonText", "userReasonText", "recommendedAction", "retryEligible", "plannedRetryAt",
         "identityState", "executionState",
-        "relatedRecords",
+        "relatedRecords", "activeDownloadTasks", "completedDownloadTasks", "concurrentDownloadCount",
     )
     result = {field: item.get(field) for field in fields if field in item}
     result["stageSummary"] = [{
@@ -397,6 +398,9 @@ def _version(payload: dict) -> str:
             "executionState": item.get("executionState"),
             "reasonCode": item.get("reasonCode"),
             "artifactKeys": item.get("artifactKeys") or [],
+            "activeDownloadTasks": item.get("activeDownloadTasks") or 0,
+            "completedDownloadTasks": item.get("completedDownloadTasks") or 0,
+            "concurrentDownloadCount": item.get("concurrentDownloadCount") or 0,
             "episodeEvidence": [{
                 "seasonNumber": row.get("seasonNumber"),
                 "episodeStart": row.get("episodeStart"),

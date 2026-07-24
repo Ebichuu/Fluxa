@@ -939,6 +939,14 @@ Torra 当前通过 `GET /api/v1/plugins/secupload_115` 提供插件视图，响�
 
 本阶段本地全量回归 315 项通过，前端 `npm run build`（含 `typecheck`）通过；新增历史匹配接口已登记到 v2 HTTP 契约，旧客户端字段和请求继续兼容。
 
+### 22.4 本轮补充收口（2026-07-24）
+
+- qB 方括号中文标题回归覆盖扩展到 Torra 全季/未知季号目标：已知季号的 qB 证据只有在候选唯一时才归属，不放宽为普通模糊匹配。
+- v2 任务摘要与列表回归覆盖 `activeDownloadTasks`、`completedDownloadTasks` 和 `concurrentDownloadCount` 的合并、分页返回与兼容字段。
+- 秒传文件级证据仍不实现：Torra 当前只提供批次级摘要，Fluxa 不根据 qB 完成时间或 Symedia 缺失推断单文件秒传状态。
+- 本轮后端全量回归共 317 项通过，前端 `npm run typecheck` 与 `npm run build` 通过。
+- 本轮变更仅涉及 Fluxa 本地身份裁决、任务摘要和测试文档，不执行任何 Torra、qB、115、Symedia 或 Emby 外部写操作。
+
 ## 23. 最终实施原则
 
 实施顺序保持为：
