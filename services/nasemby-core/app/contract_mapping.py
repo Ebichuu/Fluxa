@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from app.torra_subscription_keys import torra_public_storage_key
+
 
 def record(value):
     return value if isinstance(value, dict) else {}
@@ -112,8 +114,12 @@ def map_subscription_item(value):
     origin = first_text(row, "origin", "subscription_origin").lower()
     if origin not in {"manual", "auto", "torra"}:
         origin = "unknown"
+    read_only = source_boolean(row.get("read_only"))
+    item_id = first_text(row, "key", "subscription_key", "dedupe_key", "id")
+    if item_id.startswith("torra:") and (origin == "torra" or read_only):
+        item_id = torra_public_storage_key(item_id, first_text(row, "torra_remote_id"))
     result = {
-        "id": first_text(row, "key", "subscription_key", "dedupe_key", "id"),
+        "id": item_id,
         "title": first_text(row, "title", "name"),
         "seasonName": first_text(row, "season_name"),
         "mediaType": kind,
@@ -131,7 +137,7 @@ def map_subscription_item(value):
         "status": "done" if done else "pending",
         "metadataPending": source_boolean(row.get("metadata_pending")),
         "origin": origin,
-        "readOnly": source_boolean(row.get("read_only")),
+        "readOnly": read_only,
         "torraSyncState": first_text(row, "torra_sync_state") or None,
         "torraMappingStatus": first_text(row, "torra_mapping_status") or None,
     }

@@ -87,4 +87,4 @@ docker compose exec fluxa python -m app.admin reset-password
 - 不配置任何 Origin 环境变量也能完成登录和受保护操作。
 - 反向代理或访问地址变化不会返回 `ORIGIN_FORBIDDEN`。
 - 密码重置命令使全部旧会话失效。
-- 现有 API、React 页面、影院大厅和 172 项回归保持兼容。
+- 现有 API、React 页面、影院大厅和全部现有回归保持兼容。

@@ -6,9 +6,11 @@ import re
 from flask import jsonify
 
 from app.http_runtime import current_request_id
+from app.torra_subscription_keys import torra_public_storage_key, torra_public_unit_key
 
 
 SENSITIVE_KEY_PARTS = {
+    "analysis",
     "authorization",
     "candidate",
     "cookie",
@@ -18,6 +20,9 @@ SENSITIVE_KEY_PARTS = {
     "passkey",
     "password",
     "payload",
+    "remote",
+    "row_id",
+    "rowid",
     "secret",
     "stack",
     "token",
@@ -84,10 +89,16 @@ def _action_error(action):
 def present_automation_action(action):
     if not isinstance(action, dict):
         return None
+    internal_subscription_key = _action_text(action, "subscription_key")
+    public_subscription_key = torra_public_storage_key(internal_subscription_key)
     return {
         "id": _action_text(action, "action_id"),
-        "subscriptionId": _action_text(action, "subscription_key"),
-        "unitId": _action_text(action, "unit_key"),
+        "subscriptionId": public_subscription_key,
+        "unitId": torra_public_unit_key(
+            _action_text(action, "unit_key"),
+            internal_subscription_key,
+            public_subscription_key,
+        ),
         "provider": _action_text(action, "provider"),
         "type": _action_text(action, "action_type"),
         "status": _action_text(action, "status"),

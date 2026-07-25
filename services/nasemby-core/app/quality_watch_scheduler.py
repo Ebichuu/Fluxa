@@ -305,6 +305,7 @@ class QualityWatchScheduler:
                 "selectedCandidates": selection["selected_candidates"],
                 "rowCount": selection["row_count"],
                 "selectedCount": selection["selected_count"],
+                "upgradeOptions": selection.get("upgrade_options") or [],
             },
         )
         reason = "upgrade_found" if selection["selected_count"] else "no_upgrade"

@@ -9,6 +9,7 @@ from flask import Flask
 from app import discover_runtime
 from app.health_state_runtime import SchedulerStatusRegistry
 from app.subscription_workbench_runtime import SubscriptionWorkbenchService, register_subscription_workbench
+from app.subscription_reconciliation_runtime import torra_public_subscription_key
 
 
 class FakeTaskService:
@@ -230,9 +231,94 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         self.assertIn("历史镜像链接 1 条", mirror["detail"])
         self.assertEqual(snapshot["stats"]["movie"], 1)
         self.assertEqual(snapshot["stats"]["pending"], 1)
+        self.assertEqual(snapshot["stats"]["following"], 0)
+        self.assertEqual(snapshot["stats"]["completed"], 0)
+        self.assertEqual(snapshot["stats"]["actionRequired"], 1)
         self.assertEqual(snapshot["items"][0]["torra"]["status"], "linked")
         self.assertEqual(snapshot["items"][0]["qb"]["status"], "blocked")
         self.assertEqual(snapshot["items"][0]["blockingReason"], "qB 下载卡住")
+        self.assertNotIn("remoteId", snapshot["items"][0]["torra"])
+        self.assertNotIn("hashes", snapshot["items"][0]["qb"])
+        self.assertNotIn("ids", snapshot["items"][0]["cloud115"])
+        serialized = str(snapshot["items"][0])
+        self.assertNotIn("torra-1", serialized)
+        self.assertNotIn("hash-1", serialized)
+
+    def test_snapshot_maps_legacy_torra_mirror_key_to_public_hash(self):
+        remote_id = "legacy-private-remote"
+        internal_key = f"torra:{remote_id}"
+        public_key = torra_public_subscription_key(remote_id)
+        app = Flask(__name__)
+        app.extensions["mcc_subscription_reconciliation"] = type("Reconciliation", (), {
+            "snapshot": lambda _self: {
+                "ok": True,
+                "sourceError": "",
+                "summary": {"reconciliation": {"linked": 1}},
+                "items": [{
+                    "id": public_key,
+                    "localId": public_key,
+                    "title": "旧镜像剧",
+                    "mediaType": "tv",
+                    "tmdbId": "202",
+                    "seasonNumber": 1,
+                    "reconciliationState": "linked",
+                }],
+            },
+        })()
+        service = SubscriptionWorkbenchService(app, {})
+        row = {
+            "subscription_key": internal_key,
+            "title": "旧镜像剧",
+            "media_type": "tv",
+            "tmdb_id": "202",
+            "target_season": 1,
+            "origin": "torra",
+            "read_only": True,
+            "torra_remote_id": remote_id,
+        }
+        with patch.object(discover_runtime, "load_subscription_items", return_value={"items": [row], "errors": []}), patch.object(
+            discover_runtime, "resolve_subscription_visuals", return_value={}
+        ), patch.object(discover_runtime, "load_subscription_config", return_value={}), patch.object(
+            discover_runtime, "subscription_blocked_titles", return_value=[]
+        ):
+            snapshot = service.snapshot(limit=24)
+
+        self.assertEqual(snapshot["items"][0]["id"], public_key)
+        self.assertEqual(snapshot["items"][0]["reconciliationState"], "linked")
+        self.assertNotIn(remote_id, str(snapshot))
+
+    def test_visual_backfill_resolves_public_hash_to_legacy_torra_storage_key(self):
+        remote_id = "legacy-visual-private"
+        internal_key = f"torra:{remote_id}"
+        public_key = torra_public_subscription_key(remote_id)
+        app = Flask(__name__)
+        service = SubscriptionWorkbenchService(app, {"NASEMBY_CORE_WRITE_ENABLED": "true"})
+        row = {
+            "subscription_key": internal_key,
+            "title": "旧镜像海报",
+            "media_type": "tv",
+            "tmdb_id": "808",
+            "origin": "torra",
+            "read_only": True,
+            "torra_remote_id": remote_id,
+        }
+        saved = {**row, "poster_url": "https://image.tmdb.org/t/p/w342/legacy.jpg"}
+        with patch.object(discover_runtime, "load_subscription_items", return_value={"items": [row], "errors": []}), patch.object(
+            discover_runtime,
+            "resolve_subscription_visuals",
+            return_value={"poster_url": saved["poster_url"]},
+        ), patch.object(
+            discover_runtime,
+            "supplement_subscription_visuals",
+            return_value=saved,
+        ) as supplement:
+            result = service.backfill_visuals([public_key])
+
+        self.assertEqual(result["scanned"], 1)
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(result["items"][0]["id"], public_key)
+        supplement.assert_called_once_with(internal_key, {"poster_url": saved["poster_url"]})
+        self.assertNotIn(remote_id, str(result))
 
     def test_route_returns_502_without_leaking_internal_exception(self):
         app = Flask(__name__)
@@ -355,6 +441,9 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         self.assertEqual(snapshot["items"][0]["id"], "torra:remote-only")
         self.assertTrue(snapshot["items"][0]["readOnly"])
         self.assertEqual(snapshot["posterBackfillIds"], ["torra:remote-only"])
+        self.assertEqual(snapshot["stats"]["following"], 1)
+        self.assertEqual(snapshot["stats"]["completed"], 0)
+        self.assertEqual(snapshot["stats"]["actionRequired"], 0)
 
     def test_remote_completed_subscription_is_not_reported_as_pending(self):
         app = Flask(__name__)
@@ -385,6 +474,9 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         self.assertEqual(item["status"], "done")
         self.assertEqual(item["chainState"], "completed")
         self.assertEqual(snapshot["stats"]["pending"], 0)
+        self.assertEqual(snapshot["stats"]["following"], 0)
+        self.assertEqual(snapshot["stats"]["completed"], 1)
+        self.assertEqual(snapshot["stats"]["actionRequired"], 0)
         self.assertEqual(snapshot["stats"]["inLibrary"], 0)
 
     def test_visual_backfill_updates_only_local_rows_with_exact_tmdb_identity(self):

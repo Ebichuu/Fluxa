@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -9,6 +8,13 @@ from flask import Flask, jsonify
 from app.health_state_runtime import evidence
 from app.http_runtime import current_request_id
 from app.torra_subscription_sync_runtime import normalize_torra_subscription
+from app.torra_subscription_keys import (
+    resolve_torra_subscription_key,
+    torra_internal_unit_key,
+    torra_public_storage_key,
+    torra_public_subscription_key,
+    torra_public_unit_key,
+)
 
 
 def _iso(value: datetime) -> str:
@@ -41,10 +47,6 @@ def _title_key(value) -> str:
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(value or "").casefold())
 
 
-def _remote_ref(remote_id) -> str:
-    return hashlib.sha256(str(remote_id or "").encode("utf-8")).hexdigest()[:10]
-
-
 def _local_record(item: dict, key_resolver) -> dict:
     row = dict(item or {})
     media_type = _media_type(row.get("media_type") or row.get("mediaType") or row.get("type"))
@@ -59,6 +61,7 @@ def _local_record(item: dict, key_resolver) -> dict:
         "tmdbId": str(row.get("tmdb_id") or row.get("tmdbId") or "").strip(),
         "seasonNumber": season if media_type == "tv" else 0,
         "remoteId": str(row.get("torra_remote_id") or "").strip(),
+        "origin": str(row.get("origin") or "").strip().lower(),
         "inLibrary": _truthy(row.get("in_library") or row.get("inLibrary")),
         "paused": _truthy(row.get("paused")),
         "blocked": bool(str(row.get("blocking_reason") or row.get("blockingReason") or "").strip()),
@@ -136,15 +139,6 @@ def _health(reconciliation_state: str, local: dict | None, remote: dict | None, 
             observed_at=observed_at,
             fresh_until=fresh_until,
         )
-    if reconciliation_state == "only_torra":
-        return evidence(
-            state="waiting",
-            source=source,
-            reason_code="TORRA_MIRROR_PENDING",
-            reason_text="Torra 订阅尚未建立 Fluxa 本地镜像",
-            observed_at=observed_at,
-            fresh_until=fresh_until,
-        )
     if (remote or {}).get("mapping_status") != "mapped":
         return evidence(
             state="evidence_insufficient",
@@ -172,11 +166,19 @@ def _public_item(local: dict | None, remote: dict | None, state: str, observed_a
     }
     remote_id = str((remote or {}).get("remote_id") or "")
     local_key = str((local or {}).get("key") or "")
+    public_local_key = local_key
+    if local and local_key.startswith("torra:") and (
+        local.get("readOnly") or local.get("origin") == "torra"
+    ):
+        public_local_key = torra_public_storage_key(
+            local_key,
+            remote_id or local.get("remoteId"),
+        )
     health = _health(state, local, remote, observed_at, fresh_until)
     return {
-        "id": local_key or f"torra:{_remote_ref(remote_id)}",
-        "localId": local_key,
-        "remoteRef": _remote_ref(remote_id) if remote_id else "",
+        "id": public_local_key or torra_public_subscription_key(remote_id),
+        "localId": public_local_key,
+        "remoteRef": torra_public_subscription_key(remote_id).removeprefix("torra:") if remote_id else "",
         "title": str(primary.get("title") or remote_item.get("title") or "未命名订阅"),
         "mediaType": str(primary.get("mediaType") or remote_item.get("media_type") or "unknown"),
         "tmdbId": str(primary.get("tmdbId") or remote_item.get("tmdb_id") or ""),
@@ -223,12 +225,13 @@ class SubscriptionReconciliationService:
         links_by_local = {str(link.get("subscription_key") or ""): link for link in links}
 
         configured = not hasattr(self.client, "is_configured") or bool(self.client.is_configured())
-        source_error = ""
+        source_error = "" if configured else "Torra 尚未配置"
         try:
             remote_rows = self.client.list_subscriptions() if configured else []
-        except Exception as exc:
+        except Exception:
             remote_rows = []
-            source_error = str(exc) or "Torra 订阅读取失败"
+            source_error = "Torra 订阅读取失败"
+        source_available = configured and not source_error
         remotes = [normalize_torra_subscription(row) for row in remote_rows if isinstance(row, dict)]
         remote_by_id = {str(row.get("remote_id") or ""): index for index, row in enumerate(remotes) if row.get("remote_id")}
         used_local: set[int] = set()
@@ -242,7 +245,8 @@ class SubscriptionReconciliationService:
                 continue
             remote_index = remote_by_id.get(remote_id)
             if remote_index is None:
-                rows.append(_public_item(local, None, "remote_missing", observed_at, fresh_until))
+                state = "remote_missing" if source_available else "linked"
+                rows.append(_public_item(local, None, state, observed_at, fresh_until))
                 used_local.add(local_index)
                 continue
             rows.append(_public_item(local, remotes[remote_index], "linked", observed_at, fresh_until))
@@ -311,13 +315,13 @@ class SubscriptionReconciliationService:
             if index not in used_remote:
                 rows.append(_public_item(None, remote, "only_torra", observed_at, fresh_until))
 
-        if source_error or not configured:
+        if not source_available:
             for row in rows:
                 row.update(evidence(
                     state="evidence_insufficient",
                     source="Torra",
-                    reason_code="TORRA_READ_FAILED" if source_error else "TORRA_NOT_CONFIGURED",
-                    reason_text=source_error or "Torra 尚未配置，无法完成对账",
+                    reason_code="TORRA_READ_FAILED" if configured else "TORRA_NOT_CONFIGURED",
+                    reason_text=source_error,
                     observed_at=observed_at,
                     fresh_until=fresh_until,
                 ))

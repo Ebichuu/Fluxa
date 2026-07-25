@@ -32,6 +32,15 @@ class FakeRssService:
         return True
 
 
+class FakeSubscriptionWorkbench:
+    def __init__(self, items=None, errors=None):
+        self.items = items or []
+        self.errors = errors or []
+
+    def snapshot(self, *, limit=None):
+        return {"ok": True, "items": self.items, "errors": self.errors}
+
+
 def item(*, item_id="chain-1", updated_at="2026-07-22T01:00:00Z", library_status="done", library_time="2026-07-22T01:00:00Z"):
     return {
         "id": item_id,
@@ -92,6 +101,23 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["counts"]["completedTargetsToday"], 1)
         self.assertEqual(result["counts"]["pending"], 0)
 
+    def test_today_ingest_uses_shanghai_date_during_utc_evening_boundary(self):
+        before_midnight = item(item_id="before-midnight", library_time="2026-07-21T15:59:59Z")
+        before_midnight["tmdbId"] = "201"
+        at_midnight = item(item_id="at-midnight", library_time="2026-07-21T16:00:00Z")
+        at_midnight["tmdbId"] = "202"
+        before_eight = item(item_id="before-eight", library_time="2026-07-21T23:00:00Z")
+        before_eight["tmdbId"] = "203"
+        app = self.build_app([before_midnight, at_midnight, before_eight])
+        shanghai_morning = datetime(2026, 7, 21, 23, 30, tzinfo=timezone.utc)
+
+        result = HomeSummaryService(app, clock=lambda: shanghai_morning).snapshot()
+
+        self.assertEqual(result["counts"]["ingestedToday"], 2)
+        self.assertEqual(result["counts"]["completedTargetsToday"], 2)
+        archived_focus = next(value for value in result["focusItems"] if value["key"] == "archived_today")
+        self.assertEqual(archived_focus["href"], "/tasks?userState=completed&completedDate=2026-07-22")
+
     def test_today_archive_uses_symedia_success_count_without_changing_legacy_target_count(self):
         app = self.build_app([item()])
         app.extensions["mcc_task_chain_service"].payload["services"]["symedia"]["totals"] = {
@@ -106,16 +132,19 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["counts"]["archivedToday"], 24)
         self.assertEqual(result["counts"]["completedTargetsToday"], 1)
         self.assertEqual(result["counts"]["ingestedToday"], 1)
-        self.assertIn("今日成功归档 24 条", result["detail"])
+        self.assertIn("归档文件 24 · 完成作品/季 1", result["detail"])
 
-    def test_enabled_scheduler_without_runtime_is_not_reported_normal(self):
+    def test_enabled_scheduler_without_runtime_is_neutral_diagnostic(self):
         app = self.build_app([item()], scheduler_enabled=True)
 
         result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
 
-        self.assertEqual(result["healthState"], "evidence_insufficient")
-        scheduler_issue = next(issue for issue in result["issues"] if issue["source"] == "subscription-scheduler")
-        self.assertEqual(scheduler_issue["reasonCode"], "SCHEDULER_NOT_STARTED")
+        self.assertEqual(result["healthState"], "normal")
+        scheduler_diagnostic = next(
+            diagnostic for diagnostic in result["diagnostics"]
+            if diagnostic.get("source") == "subscription-scheduler"
+        )
+        self.assertEqual(scheduler_diagnostic["code"], "SCHEDULER_NOT_STARTED")
 
     def test_endpoint_returns_actionable_service_failure(self):
         app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)
@@ -131,24 +160,30 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(payload["counts"]["actionRequired"], 1)
         self.assertTrue(any(issue["source"] == "symedia" for issue in payload["issues"]))
 
-    def test_collected_rss_without_matcher_run_is_insufficient_evidence(self):
+    def test_collected_rss_without_matcher_run_is_neutral_diagnostic(self):
         app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)
         app.extensions["mcc_private_rss"] = FakeRssService()
 
         result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
 
-        self.assertEqual(result["healthState"], "evidence_insufficient")
-        rss_issue = next(issue for issue in result["issues"] if issue["source"] == "private-rss")
-        self.assertEqual(rss_issue["reasonCode"], "RSS_MATCHER_NOT_RUN")
+        self.assertEqual(result["healthState"], "normal")
+        rss_diagnostic = next(
+            diagnostic for diagnostic in result["diagnostics"]
+            if diagnostic.get("source") == "private-rss"
+        )
+        self.assertEqual(rss_diagnostic["code"], "RSS_MATCHER_NOT_RUN")
 
     def test_home_reuses_task_v2_protection_classification(self):
         app = self.build_app([protected_item()], scheduler_enabled=True, scheduler_started=True)
 
         result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+        focus = {value["key"]: value for value in result["focusItems"]}
 
-        self.assertEqual(result["healthState"], "protected")
+        self.assertEqual(result["healthState"], "normal")
         self.assertEqual(result["counts"]["protected"], 1)
         self.assertEqual(result["counts"]["actionRequired"], 0)
+        self.assertEqual(focus["downloaded_not_archived"]["value"], 0)
+        self.assertEqual(focus["downloaded_not_archived"]["state"], "normal")
 
     def test_issue_uses_standard_task_identity_and_splits_pending_states(self):
         blocked = item(library_status="blocked")
@@ -233,13 +268,17 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["counts"]["actionRequired"], 0)
         self.assertEqual(result["counts"]["evidenceInsufficient"], 1)
         self.assertEqual(result["counts"]["identityPending"], 1)
-        issue = next(value for value in result["issues"] if value["source"] == "task-identity")
-        self.assertEqual(issue["headline"], "任务身份尚未完成关联")
-        self.assertEqual(issue["reasonCode"], "TASK_IDENTITY_AGGREGATION_INCOMPLETE")
-        self.assertIn("无法准确判断秒传积压", issue["reasonText"])
+        self.assertEqual(result["healthState"], "normal")
+        self.assertEqual(result["issueTotal"], 0)
+        diagnostic = next(value for value in result["diagnostics"] if value["code"] == "TASK_IDENTITY_PENDING")
+        self.assertEqual(diagnostic["count"], 1)
+        self.assertIn("identityState=unidentified", diagnostic["href"])
+        self.assertIn("无法准确判断秒传积压", diagnostic["reasonText"])
 
     def test_home_counts_qb_tasks_and_concurrent_targets_separately(self):
         value = item()
+        value["state"] = "active"
+        value["steps"][0]["status"] = "active"
         value["qbControl"] = {"total": 3, "active": 3, "completed": 0, "paused": 0}
         app = self.build_app([value], scheduler_enabled=False)
 
@@ -247,7 +286,155 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result["counts"]["activeDownloadTasks"], 3)
         self.assertEqual(result["counts"]["concurrentDownloadGroups"], 1)
-        self.assertIn("下载任务 3 个 · 并发目标 1 个", result["detail"])
+        self.assertEqual(result["healthState"], "waiting")
+        self.assertEqual(result["headline"], "有 3 个任务正在处理")
+        self.assertIn("qB 下载任务 3", result["detail"])
+
+    def test_focus_items_report_verified_zero_and_precise_hrefs(self):
+        app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)
+        services = app.extensions["mcc_task_chain_service"].payload["services"]
+        services["symedia"]["totals"] = {"archivedToday": 0}
+        services["torra"]["secupload115"] = {
+            "readable": True,
+            "perFileEvidence": False,
+            "latestBatch": {"counts": {"success": 13, "failed": 0}},
+        }
+        app.extensions["mcc_subscription_workbench"] = FakeSubscriptionWorkbench([
+            {"id": "subscription-1", "missingEpisodes": []},
+        ])
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+        focus = {value["key"]: value for value in result["focusItems"]}
+
+        self.assertEqual(
+            [value["key"] for value in result["focusItems"]],
+            [
+                "current_downloads", "secupload_failures", "downloaded_not_archived",
+                "archived_today", "missing_episodes", "action_required",
+            ],
+        )
+        for key in (
+            "current_downloads", "secupload_failures", "downloaded_not_archived",
+            "archived_today", "missing_episodes", "action_required",
+        ):
+            self.assertEqual(focus[key]["value"], 0)
+            self.assertEqual(focus[key]["state"], "normal")
+        self.assertEqual(focus["current_downloads"]["href"], "/tasks?userState=in_progress")
+        self.assertEqual(focus["archived_today"]["href"], "/tasks?userState=completed&completedDate=2026-07-22")
+        self.assertEqual(focus["missing_episodes"]["href"], "/following?missingEpisodes=1")
+        self.assertEqual(focus["action_required"]["href"], "/tasks?userState=action_required")
+
+    def test_focus_items_only_raise_failures_from_explicit_evidence(self):
+        pending_archive = item(library_status="blocked")
+        pending_archive["state"] = "blocked"
+        pending_archive["steps"][-1].update({"source": "Symedia", "reasonCode": "SYMEDIA_LIBRARY_FAILED"})
+        app = self.build_app([pending_archive], scheduler_enabled=True, scheduler_started=True)
+        services = app.extensions["mcc_task_chain_service"].payload["services"]
+        services["symedia"]["totals"] = {"archivedToday": 4}
+        services["torra"]["secupload115"] = {
+            "readable": True,
+            "perFileEvidence": False,
+            "latestBatch": {"counts": {"success": 8, "failed": 2}},
+        }
+        app.extensions["mcc_subscription_workbench"] = FakeSubscriptionWorkbench([
+            {"id": "subscription-1", "missingEpisodes": ["E05", "E06"]},
+        ])
+
+        focus = {
+            value["key"]: value
+            for value in HomeSummaryService(app, clock=lambda: NOW).snapshot()["focusItems"]
+        }
+
+        self.assertEqual(focus["secupload_failures"]["value"], 2)
+        self.assertEqual(focus["secupload_failures"]["state"], "action_required")
+        self.assertEqual(focus["downloaded_not_archived"]["value"], 1)
+        self.assertEqual(focus["downloaded_not_archived"]["state"], "action_required")
+        self.assertEqual(focus["missing_episodes"]["value"], 2)
+        self.assertEqual(focus["missing_episodes"]["state"], "action_required")
+        self.assertEqual(focus["action_required"]["value"], 1)
+        self.assertEqual(focus["action_required"]["state"], "action_required")
+
+    def test_focus_items_ignore_expired_download_completion(self):
+        expired = item(library_status="waiting")
+        expired["steps"][0]["freshUntil"] = "2026-07-22T01:00:00Z"
+        app = self.build_app([expired], scheduler_enabled=True, scheduler_started=True)
+
+        focus = {
+            value["key"]: value
+            for value in HomeSummaryService(app, clock=lambda: NOW).snapshot()["focusItems"]
+        }
+
+        self.assertEqual(focus["downloaded_not_archived"]["value"], 0)
+        self.assertEqual(focus["downloaded_not_archived"]["state"], "normal")
+
+    def test_home_does_not_report_expired_active_downloads_as_current(self):
+        expired = item(library_status="waiting")
+        expired.update({"state": "active", "activeDownloadTasks": 2})
+        expired["steps"][0].update({
+            "status": "active",
+            "freshUntil": "2026-07-22T01:00:00Z",
+        })
+        app = self.build_app([expired], scheduler_enabled=True, scheduler_started=True)
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+        focus = {value["key"]: value for value in result["focusItems"]}
+
+        self.assertEqual(result["counts"]["activeDownloadTasks"], 0)
+        self.assertEqual(result["counts"]["downloading"], 0)
+        self.assertEqual(focus["current_downloads"]["value"], 0)
+        self.assertEqual(focus["current_downloads"]["state"], "normal")
+        self.assertNotEqual(result["healthState"], "waiting")
+
+    def test_focus_items_ignore_unidentified_historical_download(self):
+        historical = item(library_status="waiting")
+        historical.update({"tmdbId": "", "confidence": "unlinked"})
+        app = self.build_app([historical], scheduler_enabled=True, scheduler_started=True)
+
+        focus = {
+            value["key"]: value
+            for value in HomeSummaryService(app, clock=lambda: NOW).snapshot()["focusItems"]
+        }
+
+        self.assertEqual(focus["downloaded_not_archived"]["value"], 0)
+        self.assertEqual(focus["downloaded_not_archived"]["state"], "normal")
+
+    def test_focus_items_use_unknown_instead_of_unverified_zero(self):
+        app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)
+        services = app.extensions["mcc_task_chain_service"].payload["services"]
+        services["qb"] = {"connected": False, "error": ""}
+        services["symedia"].pop("totals", None)
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+        focus = {
+            value["key"]: value
+            for value in result["focusItems"]
+        }
+
+        for key in ("current_downloads", "secupload_failures", "downloaded_not_archived", "archived_today", "missing_episodes"):
+            self.assertIsNone(focus[key]["value"])
+            self.assertEqual(focus[key]["state"], "unknown")
+        self.assertEqual(focus["action_required"]["value"], 0)
+        self.assertEqual(focus["action_required"]["state"], "normal")
+        self.assertIsNone(result["counts"]["activeDownloadTasks"])
+        self.assertIsNone(result["counts"]["archivedToday"])
+        self.assertEqual(result["healthState"], "evidence_insufficient")
+        self.assertEqual(result["headline"], "核心服务状态尚待确认")
+        self.assertIn("归档文件 未知", result["detail"])
+        self.assertIn("qB 下载任务 未知", result["detail"])
+
+    def test_missing_episode_zero_requires_complete_subscription_coverage(self):
+        app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)
+        app.extensions["mcc_subscription_workbench"] = FakeSubscriptionWorkbench([
+            {"id": "subscription-1", "missingEpisodes": []},
+            {"id": "subscription-2"},
+        ])
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+        focus = {value["key"]: value for value in result["focusItems"]}
+
+        self.assertIsNone(focus["missing_episodes"]["value"])
+        self.assertEqual(focus["missing_episodes"]["state"], "unknown")
+        self.assertIn("尚未提供", focus["missing_episodes"]["detail"])
 
 
 if __name__ == "__main__":

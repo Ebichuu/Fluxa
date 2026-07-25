@@ -7,11 +7,13 @@ runtime/
 临时/
 参考/
 .agents/
-.env
-.env.local
+.env*
+!.env.example
 .codex-dev*.log
 .codex-ui-review*.log
 .codex-vite.*.log
+.codex-app-*.log
+frontend-reference.html
 .superpowers/
 npm-debug.log*
 Dockerfile.local

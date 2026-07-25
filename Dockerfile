@@ -1,4 +1,4 @@
-FROM node:20-slim AS web-build
+FROM node:22-slim AS web-build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -6,6 +6,7 @@ COPY . .
 RUN npm run build
 
 FROM python:3.13-slim AS runtime
+ARG FLUXA_BUILD_REVISION
 WORKDIR /app
 
 COPY services/nasemby-core/requirements.txt /app/requirements.txt
@@ -20,6 +21,7 @@ ENV PYTHONPATH=/app \
     APP_HOST=0.0.0.0 \
     APP_PORT=8987 \
     MCC_ENV=production \
+    FLUXA_BUILD_REVISION=${FLUXA_BUILD_REVISION} \
     MCC_FRONTEND_DIST=/app/dist \
     MINERADIO_PUBLIC_DIR=/app/vendor/mineradio-public
 

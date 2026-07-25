@@ -8,7 +8,7 @@ export interface SubscriptionCalendarEntry {
   seasonName?: string;
   seasonNumber?: number;
   tmdbId?: string;
-  posterUrl: string;
+  posterUrl?: string;
   inLibrary: boolean;
   mediaType: string;
   sourceLabel: string;
@@ -36,10 +36,11 @@ export interface SubscriptionCalendarEntry {
 export type SubscriptionCalendarStatus = 'upcoming' | 'acquiring' | 'library' | 'protected' | 'missing' | 'unknown';
 
 export interface SubscriptionCalendarDayPreview {
+  date?: string;
   key?: string;
   title: string;
   episodeLabel: string;
-  posterUrl: string;
+  posterUrl?: string;
   mediaType: string;
   healthState?: SubscriptionHealthState;
   status: SubscriptionCalendarStatus;
@@ -80,6 +81,7 @@ export interface SubscriptionCalendar {
   errorCount?: number;
   view?: 'legacy' | 'summary' | 'detail';
   days?: SubscriptionCalendarDaySummary[];
+  searchIndex?: SubscriptionCalendarDayPreview[];
 }
 
 export interface SubscriptionCalendarResponse {
@@ -160,6 +162,9 @@ export interface SubscriptionWorkbenchResponse {
     movie: number;
     tv: number;
     pending: number;
+    following: number;
+    completed: number;
+    actionRequired: number;
     inLibrary: number;
   };
   items: SubscriptionItem[];
@@ -401,9 +406,21 @@ export interface DiscoverResponse {
   hasNext?: boolean;
   hasPrev?: boolean;
   sourceLabel?: string;
+  sourceStatuses?: DiscoverSourceStatus[];
+}
+
+export type DiscoverSourceAvailability = 'available' | 'unavailable' | 'disabled' | 'not_configured';
+
+export interface DiscoverSourceStatus {
+  key: string;
+  label: string;
+  status: DiscoverSourceAvailability;
+  count: number;
+  message: string;
 }
 
 export interface DiscoverResourceItem {
+  rssItemId?: string;
   source?: string;
   source_key?: string;
   source_label?: string;
@@ -447,6 +464,7 @@ export interface DiscoverResourceResponse {
   seasons: DiscoverResourceSeason[];
   errors: string[];
   cache_hits: string[];
+  sourceStatuses?: DiscoverSourceStatus[];
 }
 
 export interface SubscriptionList {
@@ -589,6 +607,7 @@ export interface QualityWatchUnit {
 
 export interface QualityWatchResponse {
   subscriptionId: string;
+  readOnly?: boolean;
   policy: {
     windowHours: 24 | 48;
     scheduleMinutes: number[];

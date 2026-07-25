@@ -367,12 +367,24 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
         self.assertIn("http://127.0.0.1:8987/healthz", compose)
 
     def test_root_container_builds_react_but_runs_only_python(self):
-        dockerfile = (MODULE_ROOT.parents[1] / "Dockerfile").read_text(encoding="utf-8")
+        project_root = MODULE_ROOT.parents[1]
+        dockerfile = (project_root / "Dockerfile").read_text(encoding="utf-8")
+        dockerignore = (project_root / ".dockerignore").read_text(encoding="utf-8")
+        workflow = (project_root / ".github" / "workflows" / "publish-container.yml").read_text(encoding="utf-8")
 
-        self.assertIn("FROM node:20-slim AS web-build", dockerfile)
+        self.assertIn("FROM node:22-slim AS web-build", dockerfile)
         self.assertIn("FROM python:3.13-slim AS runtime", dockerfile)
+        self.assertIn("ARG FLUXA_BUILD_REVISION", dockerfile)
+        self.assertIn("FLUXA_BUILD_REVISION=${FLUXA_BUILD_REVISION}", dockerfile)
         self.assertIn('CMD ["gunicorn", "--config", "app/gunicorn.conf.py", "app.main:app"]', dockerfile)
         self.assertNotIn('CMD ["npm"', dockerfile)
+        for private_path in (
+            "services/nasemby-core/data",
+            "services/nasemby-core/db",
+            "services/nasemby-core/upload",
+        ):
+            self.assertIn(private_path, dockerignore)
+        self.assertIn("FLUXA_BUILD_REVISION=${{ github.sha }}", workflow)
         self.assertNotIn("dist-server", dockerfile)
 
     def test_streaming_provider_reaches_tmdb_discover_query(self):
@@ -759,6 +771,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
         environment = {
             "MCC_ACCESS_KEY": "contract-access-key-1234567890",
             "MCC_COOKIE_SECURE": "false",
+            "FLUXA_BUILD_REVISION": "0123456789abcdef0123456789abcdef01234567",
         }
         with tempfile.TemporaryDirectory() as directory:
             frontend = Path(directory)
@@ -772,7 +785,10 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             )
             client = application.test_client()
 
-            self.assertEqual(client.get("/healthz").get_json(), {"status": "ok"})
+            self.assertEqual(client.get("/healthz").get_json(), {
+                "status": "ok",
+                "revision": "0123456789abcdef0123456789abcdef01234567",
+            })
             session = client.get("/api/auth/session")
             self.assertEqual(session.status_code, 200)
             self.assertEqual(session.get_json(), {

@@ -8,6 +8,7 @@ from pathlib import Path
 from app.private_rss_repository import PrivateRssRepository
 from app.quality_watch_repository import QualityWatchRepository
 from app.rss_subscription_match_runtime import RssAnalysisDependencies, RssSubscriptionMatchRuntime
+from app.subscription_reconciliation_runtime import torra_public_subscription_key
 from app.torra_quality_runtime import TorraQualityClient
 
 
@@ -163,6 +164,300 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(item["identityStatus"], "identified")
         self.assertEqual(item["tmdbId"], "303")
         self.assertEqual(item["identitySource"], "subscription_match")
+
+    def test_manual_match_revalidates_item_unit_and_torra_ownership(self):
+        unit = self._watch("tv:202:s1", episode=1)
+        torra, _qb = self._enable_analysis()
+        self.rss.upsert_items(self.source["id"], [{
+            "fingerprint": "manual-match",
+            "title": "测试剧 S01E01 2160p",
+            "media_type": "tv",
+            "season_number": 1,
+            "episode_start": 1,
+            "episode_end": 1,
+            "tmdb_id": "202",
+            "identity_status": "identified",
+        }])
+        item = self.rss.search_items(query="测试剧")["items"][0]
+
+        created = self.runtime.create_manual_match(item["id"], "tv:202:s1", unit["unit_key"])
+        repeated = self.runtime.create_manual_match(item["id"], "tv:202:s1", unit["unit_key"])
+
+        self.assertEqual(created["status"], "created")
+        self.assertEqual(repeated["status"], "existing")
+        self.assertEqual(created["match"]["reason"]["matchSource"], "manual")
+
+        incompatible_rows = [
+            {"id": "torra-202", "media_type": "movie"},
+            {"id": "torra-202", "media_type": "tv", "season_number": 2},
+            {
+                "id": "torra-202",
+                "media_type": "tv",
+                "season_number": 1,
+                "name": "Completely Unrelated Show",
+            },
+        ]
+        for torra_row in incompatible_rows:
+            with self.subTest(torra_row=torra_row):
+                torra.rows = [torra_row]
+                rejected = self.runtime.create_manual_match(
+                    item["id"], "tv:202:s1", unit["unit_key"]
+                )
+                self.assertEqual(rejected["status"], "invalid")
+                self.assertEqual(rejected["reason"], "torra_subscription_owner_mismatch")
+
+        wrong_owner = self.runtime.create_manual_match(item["id"], "tv:other", unit["unit_key"])
+        self.assertEqual(wrong_owner["reason"], "subscription_missing")
+
+    def test_manual_match_uses_canonical_tmdb_title_for_single_sided_tmdb(self):
+        unit = self._watch(
+            "tv:202:canonical",
+            episode=1,
+            title="本地展示标题",
+            tmdb_title="Canonical Show",
+        )
+        torra, _qb = self._enable_analysis()
+        torra.rows = [{
+            "id": "torra-202",
+            "name": "Canonical Show",
+            "media_type": "tv",
+            "season_number": 1,
+            "is_running": False,
+            "is_mutating": False,
+        }]
+        self.rss.upsert_items(self.source["id"], [{
+            "fingerprint": "manual-canonical-title",
+            "title": "本地展示标题 S01E01 2160p",
+            "media_type": "tv",
+            "season_number": 1,
+            "episode_start": 1,
+            "episode_end": 1,
+            "tmdb_id": "202",
+            "identity_status": "identified",
+        }])
+        item = self.rss.search_items(query="本地展示标题")["items"][0]
+
+        created = self.runtime.create_manual_match(
+            item["id"], "tv:202:canonical", unit["unit_key"]
+        )
+
+        self.assertEqual(created["status"], "created")
+        torra.rows[0]["name"] = "Unrelated Show"
+        rejected = self.runtime.create_manual_match(
+            item["id"], "tv:202:canonical", unit["unit_key"]
+        )
+        self.assertEqual(rejected, {
+            "status": "invalid",
+            "reason": "torra_subscription_owner_mismatch",
+        })
+
+    def test_manual_match_supports_torra_only_subscription(self):
+        torra, _qb = self._enable_analysis()
+        torra.rows = [{
+            "id": "torra-202",
+            "name": "测试剧",
+            "media_type": "tv",
+            "tmdb_id": "202",
+            "season_number": 1,
+            "is_running": False,
+            "is_mutating": False,
+        }]
+        unit = self.watch.ensure_watch_unit(
+            "torra:torra-202", "tv", 1, 1, window_hours=48, torra_subscription_id="torra-202"
+        )
+        unit = self.watch.mark_baseline_ready(unit["unit_key"])
+        self.rss.upsert_items(self.source["id"], [{
+            "fingerprint": "manual-torra-only",
+            "title": "测试剧 S01E01 2160p",
+            "media_type": "tv",
+            "season_number": 1,
+            "episode_start": 1,
+            "episode_end": 1,
+            "tmdb_id": "202",
+            "identity_status": "identified",
+        }])
+        item = self.rss.search_items(query="测试剧")["items"][0]
+        public_key = torra_public_subscription_key("torra-202")
+        public_unit_key = unit["unit_key"].replace("torra:torra-202", public_key, 1)
+
+        result = self.runtime.create_manual_match(
+            item["id"], public_key, public_unit_key
+        )
+
+        self.assertEqual(result["status"], "created")
+        self.assertEqual(result["match"]["subscriptionId"], public_key)
+        self.assertEqual(result["match"]["unitId"], public_unit_key)
+        self.assertNotIn("torra-202", str(result["match"]))
+
+        analysis = self.runtime.start_analysis(
+            result["match"]["id"],
+            idempotency_key="torra-public-rss-analysis",
+            source="manual-rss",
+            require_rss_gate=False,
+        )
+        self.assertEqual(analysis["status"], "submitted")
+        self.assertEqual(torra.submissions, ["torra-202"])
+        action = self.watch.get_action(analysis["actionId"])
+        self.assertEqual(action["subscription_key"], public_key)
+        self.assertEqual(action["unit_key"], public_unit_key)
+
+        missing = self.runtime.create_manual_match(
+            item["id"], "torra:missing", public_unit_key
+        )
+        self.assertEqual(missing, {"status": "missing", "reason": "subscription_missing"})
+
+        collision_id = public_key.removeprefix("torra:")
+        torra.rows.append({
+            "id": collision_id,
+            "name": "冲突剧",
+            "media_type": "tv",
+            "tmdb_id": "999",
+            "season_number": 1,
+        })
+        conflict = self.runtime.create_manual_match(item["id"], public_key, public_unit_key)
+        self.assertEqual(conflict, {
+            "status": "conflict",
+            "reason": "torra_subscription_key_conflict",
+        })
+
+    def test_legacy_raw_torra_match_projects_existing_but_actions_keep_raw_keys(self):
+        remote_id = "legacy-torra-runtime-secret"
+        raw_key = f"torra:{remote_id}"
+        unit = self._watch(raw_key, episode=1, torra_id=remote_id)
+        torra, _qb = self._enable_analysis()
+        torra.rows = [{
+            "id": remote_id,
+            "name": "测试剧",
+            "media_type": "tv",
+            "tmdb_id": "202",
+            "season_number": 1,
+            "is_running": False,
+            "is_mutating": False,
+        }]
+        self.rss.upsert_items(self.source["id"], [{
+            "fingerprint": "legacy-torra-runtime-match",
+            "title": "测试剧 S01E01 2160p",
+            "media_type": "tv",
+            "season_number": 1,
+            "episode_start": 1,
+            "episode_end": 1,
+            "tmdb_id": "202",
+            "identity_status": "identified",
+        }])
+        item = self.rss.search_items(query="测试剧")["items"][0]
+        stored = self.rss.create_match(
+            item["id"], raw_key, unit["unit_key"], {"identity": {"basis": "title"}}
+        )
+        public_key = torra_public_subscription_key(remote_id)
+        public_unit_key = unit["unit_key"].replace(raw_key, public_key, 1)
+
+        existing = self.runtime.create_manual_match(item["id"], public_key, public_unit_key)
+        analysis = self.runtime.start_analysis(
+            stored["id"],
+            idempotency_key="legacy-torra-raw-action",
+            source="manual-rss",
+            require_rss_gate=False,
+        )
+
+        self.assertEqual(existing["status"], "existing")
+        self.assertEqual(existing["match"]["subscriptionId"], public_key)
+        self.assertEqual(existing["match"]["unitId"], public_unit_key)
+        self.assertNotIn(remote_id, str(existing["match"]))
+        self.assertEqual(analysis["status"], "submitted")
+        self.assertEqual(torra.submissions, [remote_id])
+        persisted = self.rss.get_match(stored["id"])
+        self.assertEqual(persisted["subscriptionId"], raw_key)
+        self.assertEqual(persisted["unitId"], unit["unit_key"])
+        action = self.watch.get_action(analysis["actionId"])
+        self.assertEqual(action["subscription_key"], raw_key)
+        self.assertEqual(action["unit_key"], unit["unit_key"])
+        self.assertEqual(action["external_job_id"], "job-1")
+
+    def test_manual_match_supports_new_hashed_local_torra_mirror_key(self):
+        torra, _qb = self._enable_analysis()
+        remote_id = "torra-hashed-mirror"
+        public_key = torra_public_subscription_key(remote_id)
+        torra.rows = [{
+            "id": remote_id,
+            "name": "哈希镜像剧",
+            "media_type": "tv",
+            "tmdb_id": "909",
+            "season_number": 1,
+            "is_running": False,
+            "is_mutating": False,
+        }]
+        self.subscriptions.append({
+            "key": public_key,
+            "subscription_key": public_key,
+            "title": "哈希镜像剧",
+            "media_type": "tv",
+            "tmdb_id": "909",
+            "target_season": 1,
+            "origin": "torra",
+            "read_only": True,
+            "torra_remote_id": remote_id,
+        })
+        unit = self.watch.ensure_watch_unit(
+            public_key,
+            "tv",
+            1,
+            1,
+            window_hours=48,
+            torra_subscription_id=remote_id,
+        )
+        unit = self.watch.mark_baseline_ready(unit["unit_key"])
+        self.rss.upsert_items(self.source["id"], [{
+            "fingerprint": "manual-torra-hashed-mirror",
+            "title": "哈希镜像剧 S01E01 2160p",
+            "media_type": "tv",
+            "season_number": 1,
+            "episode_start": 1,
+            "episode_end": 1,
+            "tmdb_id": "909",
+            "identity_status": "identified",
+        }])
+        item = self.rss.search_items(query="哈希镜像剧")["items"][0]
+
+        result = self.runtime.create_manual_match(item["id"], public_key, unit["unit_key"])
+
+        self.assertEqual(result["status"], "created")
+        self.assertEqual(result["match"]["subscriptionId"], public_key)
+        self.assertEqual(result["match"]["unitId"], unit["unit_key"])
+        self.assertNotIn(remote_id, str(result["match"]))
+        analysis = self.runtime.start_analysis(
+            result["match"]["id"],
+            idempotency_key="torra-hashed-rss-analysis",
+            source="manual-rss",
+            require_rss_gate=False,
+        )
+        self.assertEqual(analysis["status"], "submitted")
+        self.assertEqual(torra.submissions, [remote_id])
+
+    def test_manual_match_rejects_at_observation_deadline(self):
+        unit = self._watch("tv:202:s1", episode=1)
+        unit = self.watch.get_watch_unit(unit["unit_key"])
+        self._enable_analysis()
+        self.rss.upsert_items(self.source["id"], [{
+            "fingerprint": "manual-match-window-deadline",
+            "title": "测试剧 S01E01 2160p",
+            "media_type": "tv",
+            "season_number": 1,
+            "episode_start": 1,
+            "episode_end": 1,
+            "tmdb_id": "202",
+            "identity_status": "identified",
+        }])
+        item = self.rss.search_items(query="测试剧")["items"][0]
+        self.now[0] = datetime.fromisoformat(
+            unit["observation_ends_at"].replace("Z", "+00:00")
+        )
+
+        result = self.runtime.create_manual_match(
+            item["id"], "tv:202:s1", unit["unit_key"]
+        )
+
+        self.assertEqual(result, {"status": "blocked", "reason": "watch_unit_inactive"})
+        self.assertEqual(self.rss.list_matches()["total"], 0)
 
     def test_torra_remote_subscription_identifies_rss_without_local_mirror(self):
         torra, _qb = self._enable_analysis()
@@ -430,6 +725,215 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
 
         self.assertEqual(replayed["status"], "replay")
         self.assertEqual(self.rss.get_match(match["id"])["status"], "ignored")
+
+    def test_reclaimed_analysis_cancels_expired_context_at_deadline(self):
+        unit = self._watch("tv:202:s1", episode=1)
+        self._insert("测试剧 S01E01 2160p")
+        match = self.rss.list_matches()["items"][0]
+        self._enable_analysis()
+        idempotency_key = "manual-rss-reclaim-window-expired"
+        action = self.watch.claim_action(
+            idempotency_key,
+            unit["subscription_key"],
+            "torra",
+            "rewash-analysis",
+            unit_key=unit["unit_key"],
+            request_summary={"source": "manual-rss", "matchId": match["id"]},
+        )["action"]
+        stored_unit = self.watch.get_watch_unit(unit["unit_key"])
+        self.now[0] = datetime.fromisoformat(
+            stored_unit["observation_ends_at"].replace("Z", "+00:00")
+        )
+
+        result = self.runtime.start_analysis(
+            match["id"],
+            idempotency_key=idempotency_key,
+            source="manual-rss",
+            require_rss_gate=False,
+        )
+
+        self.assertEqual(result, {"status": "blocked", "reason": "window_expired"})
+        stored = self.watch.get_action(action["action_id"])
+        self.assertEqual(stored["status"], "cancelled")
+        self.assertEqual(stored["error_code"], "RSS_REWASH_WINDOW_EXPIRED")
+        self.assertEqual(stored["response_summary"]["contextReason"], "window_expired")
+        self.assertIsNone(self.watch.find_inflight_action("torra", "rewash-analysis"))
+
+    def test_reclaimed_analysis_cancels_missing_watch_unit(self):
+        self._enable_analysis()
+        self.rss.upsert_items(self.source["id"], [{
+            "fingerprint": "rss-reclaim-missing-unit",
+            "title": "测试剧 S01E01 2160p",
+        }])
+        item = self.rss.search_items()["items"][0]
+        match = self.rss.create_match(
+            item["id"], "tv:202:s1", "unit:missing", {"identity": {"basis": "title"}}
+        )
+        idempotency_key = "manual-rss-reclaim-missing-unit"
+        action = self.watch.claim_action(
+            idempotency_key,
+            match["subscriptionId"],
+            "torra",
+            "rewash-analysis",
+            unit_key=match["unitId"],
+            request_summary={"source": "manual-rss", "matchId": match["id"]},
+        )["action"]
+        self.now[0] += timedelta(seconds=61)
+
+        result = self.runtime.start_analysis(
+            match["id"], idempotency_key=idempotency_key, source="manual-rss", require_rss_gate=False
+        )
+
+        self.assertEqual(result, {"status": "blocked", "reason": "watch_unit_missing"})
+        stored = self.watch.get_action(action["action_id"])
+        self.assertEqual(stored["status"], "cancelled")
+        self.assertEqual(stored["error_code"], "RSS_REWASH_WATCH_UNIT_MISSING")
+        self.assertEqual(stored["response_summary"]["contextReason"], "watch_unit_missing")
+        self.assertIsNone(self.watch.find_inflight_action("torra", "rewash-analysis"))
+
+    def test_reclaimed_analysis_cancels_missing_subscription(self):
+        unit = self._watch("tv:202:s1", episode=1)
+        self._insert("测试剧 S01E01 2160p")
+        match = self.rss.list_matches()["items"][0]
+        self._enable_analysis()
+        idempotency_key = "manual-rss-reclaim-missing-subscription"
+        action = self.watch.claim_action(
+            idempotency_key,
+            unit["subscription_key"],
+            "torra",
+            "rewash-analysis",
+            unit_key=unit["unit_key"],
+            request_summary={"source": "manual-rss", "matchId": match["id"]},
+        )["action"]
+        self.subscriptions.clear()
+        self.now[0] += timedelta(seconds=61)
+
+        result = self.runtime.start_analysis(
+            match["id"], idempotency_key=idempotency_key, source="manual-rss", require_rss_gate=False
+        )
+
+        self.assertEqual(result, {"status": "blocked", "reason": "subscription_missing"})
+        stored = self.watch.get_action(action["action_id"])
+        self.assertEqual(stored["status"], "cancelled")
+        self.assertEqual(stored["error_code"], "RSS_REWASH_SUBSCRIPTION_MISSING")
+        self.assertEqual(stored["response_summary"]["contextReason"], "subscription_missing")
+        self.assertIsNone(self.watch.find_inflight_action("torra", "rewash-analysis"))
+
+    def test_reclaimed_analysis_cancels_missing_torra_owner(self):
+        unit = self._watch("tv:202:s1", episode=1, torra_id="")
+        self._insert("测试剧 S01E01 2160p")
+        match = self.rss.list_matches()["items"][0]
+        self._enable_analysis()
+        idempotency_key = "manual-rss-reclaim-missing-torra-owner"
+        action = self.watch.claim_action(
+            idempotency_key,
+            unit["subscription_key"],
+            "torra",
+            "rewash-analysis",
+            unit_key=unit["unit_key"],
+            request_summary={"source": "manual-rss", "matchId": match["id"]},
+        )["action"]
+        self.now[0] += timedelta(seconds=61)
+
+        result = self.runtime.start_analysis(
+            match["id"], idempotency_key=idempotency_key, source="manual-rss", require_rss_gate=False
+        )
+
+        self.assertEqual(result, {"status": "blocked", "reason": "torra_subscription_missing"})
+        stored = self.watch.get_action(action["action_id"])
+        self.assertEqual(stored["status"], "cancelled")
+        self.assertEqual(stored["error_code"], "RSS_REWASH_TORRA_SUBSCRIPTION_MISSING")
+        self.assertEqual(stored["response_summary"]["contextReason"], "torra_subscription_missing")
+        self.assertIsNone(self.watch.find_inflight_action("torra", "rewash-analysis"))
+
+    def test_reclaimed_analysis_keeps_temporary_provider_error_retryable(self):
+        unit = self._watch("tv:202:s1", episode=1)
+        self._insert("测试剧 S01E01 2160p")
+        match = self.rss.list_matches()["items"][0]
+        torra, _qb = self._enable_analysis()
+        idempotency_key = "manual-rss-reclaim-torra-busy"
+        action = self.watch.claim_action(
+            idempotency_key,
+            unit["subscription_key"],
+            "torra",
+            "rewash-analysis",
+            unit_key=unit["unit_key"],
+            request_summary={"source": "manual-rss", "matchId": match["id"]},
+        )["action"]
+        torra.rows[0]["is_running"] = True
+        self.now[0] += timedelta(seconds=61)
+
+        result = self.runtime.start_analysis(
+            match["id"], idempotency_key=idempotency_key, source="manual-rss", require_rss_gate=False
+        )
+
+        self.assertEqual(result, {"status": "blocked", "reason": "torra_busy"})
+        stored = self.watch.get_action(action["action_id"])
+        self.assertEqual(stored["status"], "claimed")
+        self.assertEqual(
+            self.watch.find_inflight_action("torra", "rewash-analysis")["action_id"],
+            stored["action_id"],
+        )
+        self.assertEqual(torra.submissions, [])
+
+    def test_download_preparation_binds_analysis_to_match_and_records_stable_action(self):
+        unit = self._watch("tv:202:s1", episode=1)
+        self._insert("测试剧 S01E01 2160p")
+        match = self.rss.list_matches()["items"][0]
+        analysis = self.watch.claim_action(
+            "rss-download-analysis-runtime",
+            unit["subscription_key"],
+            "torra",
+            "rewash-analysis",
+            unit_key=unit["unit_key"],
+            request_summary={"source": "manual-rss", "matchId": match["id"]},
+        )["action"]
+        self.watch.complete_action(analysis["action_id"], "succeeded", {
+            "analysisId": "analysis-runtime",
+            "selectedCandidates": {"row-runtime": "candidate-runtime"},
+            "selectedCount": 1,
+        })
+        self.rss.update_match(match["id"], "triggered", analysis["action_id"])
+
+        prepared = self.runtime.prepare_download(
+            match["id"], analysis["action_id"], "rss-download-runtime-0001"
+        )
+        self.assertEqual(prepared["status"], "ready")
+
+        download = self.watch.claim_action(
+            "rss-download-runtime-0001",
+            unit["subscription_key"],
+            "torra",
+            "rewash-download",
+            unit_key=unit["unit_key"],
+            request_summary={
+                "source": "manual-subscription",
+                "analysisActionId": analysis["action_id"],
+            },
+        )["action"]
+        recorded = self.runtime.record_download(match["id"], analysis["action_id"], download)
+
+        self.assertEqual(recorded["status"], "confirmed")
+        stored = self.rss.get_match(match["id"])
+        self.assertEqual(stored["status"], "confirmed")
+        self.assertEqual(stored["triggerActionId"], download["action_id"])
+
+        other_source = self.rss.save_source({
+            "name": "其他 RSS",
+            "feedUrl": "https://tracker.example/other.xml",
+        })
+        self.rss.upsert_items(other_source["id"], [{
+            "fingerprint": "rss-download-other",
+            "title": "测试剧 S01E01 1080p",
+        }])
+        other_item = self.rss.search_items(source_id=other_source["id"])["items"][0]
+        other_match = self.rss.create_match(
+            other_item["id"], unit["subscription_key"], unit["unit_key"], {"identity": {"basis": "title"}}
+        )
+        rejected = self.runtime.prepare_download(
+            other_match["id"], analysis["action_id"], "rss-download-runtime-0002"
+        )
+        self.assertEqual(rejected["reason"], "analysis_action_missing")
 
     def test_multiple_rss_candidates_share_one_global_analysis_slot(self):
         self._watch("tv:202:s1", episode=1)

@@ -160,7 +160,12 @@ def configure_access_runtime(app: Flask, auth: AccessAuth):
 
     @app.get("/healthz")
     def access_healthz():
-        return jsonify({"status": "ok"})
+        payload = {"status": "ok"}
+        environment = app.extensions.get("mcc_environment") or {}
+        revision = str(environment.get("FLUXA_BUILD_REVISION") or "").strip()
+        if revision:
+            payload["revision"] = revision
+        return jsonify(payload)
 
     @app.get("/auth/setup")
     def access_setup_page():

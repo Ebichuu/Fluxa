@@ -96,6 +96,7 @@ def _best_row_candidate(row):
         _blocked("Torra 分析行缺少 candidates")
     best = None
     best_score = None
+    best_candidate = None
     for candidate in candidates:
         candidate_id, is_upgrade, candidate_score = _candidate_fields(candidate)
         if not is_upgrade or candidate_score <= library_score:
@@ -103,7 +104,35 @@ def _best_row_candidate(row):
         if best_score is None or candidate_score > best_score:
             best = candidate_id
             best_score = candidate_score
-    return row_id, best
+            best_candidate = candidate
+    summary = None
+    if best_candidate is not None:
+        quality = next(
+            (
+                str(best_candidate.get(field) or "").strip()[:120]
+                for field in ("quality", "quality_label", "version_summary", "resolution")
+                if str(best_candidate.get(field) or "").strip()
+            ),
+            "",
+        )
+        size = next(
+            (
+                best_candidate.get(field)
+                for field in ("size", "size_bytes", "size_text")
+                if isinstance(best_candidate.get(field), (int, float, str))
+            ),
+            None,
+        )
+        summary = {
+            "currentScore": library_score,
+            "upgradeScore": best_score,
+            "scoreGain": best_score - library_score,
+        }
+        if quality:
+            summary["quality"] = quality
+        if size is not None:
+            summary["size"] = size
+    return row_id, best, summary
 
 
 class TorraQualityClient(TorraReadClient):
@@ -164,13 +193,17 @@ class TorraQualityClient(TorraReadClient):
     def select_upgrade_candidates(job):
         analysis_id, rows = _analysis_rows(job)
         selected = {}
+        upgrade_options = []
         for row in rows:
-            row_id, best = _best_row_candidate(row)
+            row_id, best, summary = _best_row_candidate(row)
             if best:
                 selected[row_id] = best
+                if summary:
+                    upgrade_options.append(summary)
         return {
             "analysis_id": analysis_id,
             "selected_candidates": selected,
             "row_count": len(rows),
             "selected_count": len(selected),
+            "upgrade_options": upgrade_options,
         }

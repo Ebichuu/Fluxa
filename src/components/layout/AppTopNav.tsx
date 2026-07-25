@@ -2,8 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Activity, Bookmark, CalendarDays, Compass, Film, Home, ListChecks, Moon, Search, Settings, Sun } from 'lucide-react';
 import type { HomeSummaryResponse } from '../../types/homeSummary';
 import { healthStatusLabel } from '../status/HealthBadge';
+import { GlobalMediaSearch } from './GlobalMediaSearch';
 
-export type PageId = 'overview' | 'hall' | 'control' | 'tasks' | 'calendar' | 'discover' | 'subscriptions' | 'subscription-settings' | 'rss-library' | 'settings';
+export type PageId = 'overview' | 'hall' | 'control' | 'tasks' | 'calendar' | 'discover' | 'subscriptions' | 'subscription-settings' | 'rss-library' | 'settings' | 'media';
 export type ThemeMode = 'dark' | 'light';
 
 export interface TaskNavigationTarget {
@@ -14,9 +15,14 @@ export interface TaskNavigationTarget {
   tmdbId?: string;
   title?: string;
   seasonNumber?: number | null;
+  userState?: 'action_required' | 'in_progress' | 'completed' | 'no_action';
+  completedDate?: string;
+  advanced?: boolean;
+  identityStates?: Array<'unidentified' | 'linked' | 'conflict'>;
 }
 
 export type AppNavigate = (page: PageId, target?: TaskNavigationTarget) => void;
+export type AppPathNavigate = (path: string) => void;
 
 const navItems: Array<{
   id: PageId;
@@ -62,8 +68,12 @@ export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, 
   const [selection, setSelection] = useState({ left: 0, width: 0, visible: false });
   const [isScrolled, setIsScrolled] = useState(false);
   const [managementOpen, setManagementOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
 
-  useEffect(() => setManagementOpen(false), [activePage]);
+  useEffect(() => {
+    setManagementOpen(false);
+    setSearchOpen(false);
+  }, [activePage]);
 
   useEffect(() => {
     if (!managementOpen) return undefined;
@@ -169,6 +179,7 @@ export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, 
   }, [selection.left, selection.visible, selection.width]);
 
   return (
+    <>
     <header className={isScrolled ? 'app-top-nav app-top-nav--scrolled' : 'app-top-nav'}>
       <div className="nav-left-group">
         <button className="brand-lockup" type="button" onClick={() => onNavigate('hall')}>
@@ -223,13 +234,10 @@ export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, 
         </button>
         <button
           aria-label="搜索媒体"
-          className="nav-pill"
+          className="nav-pill nav-search-trigger"
           title="搜索媒体"
           type="button"
-          onClick={() => {
-            onNavigate('discover');
-            window.setTimeout(() => window.dispatchEvent(new Event('mcc:focus-discover-search')), 0);
-          }}
+          onClick={() => setSearchOpen(true)}
         >
           <Search aria-hidden="true" size={15} strokeWidth={1.8} />
           <span>搜索媒体</span>
@@ -292,5 +300,7 @@ export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, 
         </div>
       </div>
     </header>
+    <GlobalMediaSearch open={searchOpen} onClose={() => setSearchOpen(false)} onNavigate={onNavigate} />
+    </>
   );
 }

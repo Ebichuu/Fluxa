@@ -131,19 +131,19 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
       <div className="sub-config__toggles">
         <label>
           <input checked={douban.enabled} disabled={saving} type="checkbox" onChange={(event) => patch({ enabled: event.target.checked })} />
-          启用自动订阅
+          <span><strong>启用自动订阅</strong><small>开启后按所选来源维护追更；关闭后保留现有订阅，只停止新增。</small></span>
         </label>
         <label>
           <input checked={douban.movie_enabled} disabled={saving} type="checkbox" onChange={(event) => patch({ movie_enabled: event.target.checked })} />
-          电影
+          <span><strong>电影</strong><small>关闭后不再从榜单新增电影追更，已有电影不删除。</small></span>
         </label>
         <label>
           <input checked={douban.tv_enabled} disabled={saving} type="checkbox" onChange={(event) => patch({ tv_enabled: event.target.checked })} />
-          剧集
+          <span><strong>剧集</strong><small>关闭后不再从榜单新增剧集追更，已有剧集继续保留。</small></span>
         </label>
         <label>
           <input checked={douban.task_enabled} disabled={saving} type="checkbox" onChange={(event) => patch({ task_enabled: event.target.checked })} />
-          每日定时任务
+          <span><strong>每日定时任务</strong><small>开启后按下方时间运行；关闭后仍可在追更页手动更新。</small></span>
         </label>
         <label className="sub-config__time">
           任务时间
@@ -243,7 +243,7 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
           <RotateCcw aria-hidden="true" size={14} />
           使用最新规则
         </button>
-        <button className="tool-link" disabled={saving} type="button" onClick={save}>
+        <button className="ops-action-button ops-action-button--primary" disabled={saving} type="button" onClick={save}>
           <Save aria-hidden="true" size={14} />
           {saving ? '保存中…' : '保存订阅配置'}
         </button>
@@ -313,17 +313,16 @@ export function SettingsPage() {
 
   return (
     <main className="work-page ops-page ops-page--settings">
-      <section className="ops-hero ops-hero--settings">
+      <section className="ops-hero ops-hero--settings ops-hero--compact">
         <div>
           <p className="ops-eyebrow">连接与安全</p>
           <h1>设置</h1>
           <p className="ops-page-subtitle">管理软件连接、功能开关与访问保护。</p>
           <p className="ops-deck">所有应用配置都可在这里修改；密码、Token 与 Cookie 只写入服务端，不回显明文。</p>
         </div>
-        <div className="ops-settings-guard">
-          <span><KeyRound size={15} />凭据策略</span>
-          <strong>服务端安全保存</strong>
-          <small>已保存的账号、密码与访问令牌不回填前端</small>
+        <div className="ops-settings-guard ops-settings-guard--compact">
+          <span><KeyRound size={15} />凭据由服务端保存</span>
+          <small>账号、密码与令牌不回填明文</small>
         </div>
       </section>
 

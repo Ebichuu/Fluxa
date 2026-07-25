@@ -136,6 +136,11 @@ class TorraQualityRuntimeTests(unittest.TestCase):
             "selected_candidates": {"row-1": "highest"},
             "row_count": 3,
             "selected_count": 1,
+            "upgrade_options": [{
+                "currentScore": 60.0,
+                "upgradeScore": 85.0,
+                "scoreGain": 25.0,
+            }],
         })
 
     def test_unknown_or_incomplete_structures_are_blocked(self):

@@ -126,6 +126,13 @@ export interface AutomationAction {
     items?: number;
     title?: string;
     selectedCount?: number;
+    upgradeOptions?: Array<{
+      currentScore: number;
+      upgradeScore: number;
+      scoreGain: number;
+      quality?: string;
+      size?: number | string;
+    }>;
     [key: string]: unknown;
   } | null;
   error?: { code?: string; message?: string } | null;
@@ -153,4 +160,10 @@ export interface RssMatchListResponse {
   total: number;
   limit: number;
   offset: number;
+}
+
+export interface CreateRssMatchInput {
+  rssItemId: string;
+  subscriptionId: string;
+  unitId: string;
 }

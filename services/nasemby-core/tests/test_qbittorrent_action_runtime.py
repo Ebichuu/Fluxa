@@ -70,6 +70,7 @@ class QbittorrentActionRuntimeContractTests(unittest.TestCase):
 
     def test_pause_submits_only_eligible_tasks_and_redacts_activity_hashes(self):
         from app.qbittorrent_action_runtime import QbittorrentActionService
+        from app.task_public_runtime import public_qb_task_ref
 
         before = summary([
             task(HASH_A, "downloading", "downloading"),
@@ -87,7 +88,7 @@ class QbittorrentActionRuntimeContractTests(unittest.TestCase):
         )
 
         result = service.execute("pause", {
-            "hashes": [HASH_A, HASH_B],
+            "hashes": [public_qb_task_ref(HASH_A), public_qb_task_ref(HASH_B)],
             "taskId": "subscription:test",
             "title": "测试媒体",
         })
@@ -96,13 +97,20 @@ class QbittorrentActionRuntimeContractTests(unittest.TestCase):
         self.assertEqual(result["succeeded"], 1)
         self.assertEqual(result["skipped"], 1)
         self.assertTrue(result["confirmed"])
+        self.assertEqual(
+            [item["hash"] for item in result["tasks"]],
+            [public_qb_task_ref(HASH_A), public_qb_task_ref(HASH_B)],
+        )
+        self.assertNotIn(HASH_A, str(result))
+        self.assertNotIn(HASH_B, str(result))
         activity_text = str(activities)
-        self.assertIn(HASH_A[:8], activity_text)
+        self.assertIn(public_qb_task_ref(HASH_A)[:8], activity_text)
         self.assertNotIn(HASH_A, activity_text)
         self.assertNotIn(HASH_B, activity_text)
 
     def test_preview_reports_eligibility_without_writing(self):
         from app.qbittorrent_action_runtime import QbittorrentActionService
+        from app.task_public_runtime import public_qb_task_ref
 
         client = FakeActionClient([summary([
             {**task(HASH_A, "downloading", "downloading"), "name": "测试任务 A"},
@@ -110,7 +118,9 @@ class QbittorrentActionRuntimeContractTests(unittest.TestCase):
         ])])
         service = QbittorrentActionService(client, activity_writer=lambda *args, **kwargs: None)
 
-        result = service.preview("pause", {"hashes": [HASH_A, HASH_B]})
+        result = service.preview("pause", {
+            "hashes": [public_qb_task_ref(HASH_A), public_qb_task_ref(HASH_B)],
+        })
 
         self.assertTrue(result["allowed"])
         self.assertTrue(result["supportsPreview"])
@@ -118,7 +128,42 @@ class QbittorrentActionRuntimeContractTests(unittest.TestCase):
         self.assertEqual(result["affected"], {"requested": 2, "eligible": 1, "skipped": 1, "missing": 0})
         self.assertTrue(result["idempotencyKey"].startswith("qb:"))
         self.assertEqual([target["outcome"] for target in result["targets"]], ["will_change", "unchanged"])
+        self.assertNotIn(HASH_A, str(result))
+        self.assertNotIn(HASH_B, str(result))
         self.assertEqual(client.actions, [])
+
+    def test_preview_accepts_legacy_hash_without_echoing_raw_prefix(self):
+        from app.qbittorrent_action_runtime import QbittorrentActionService
+        from app.task_public_runtime import public_qb_task_ref
+
+        client = FakeActionClient([summary([
+            {**task(HASH_A, "downloading", "downloading"), "name": "http://private.example/task"},
+        ])])
+        service = QbittorrentActionService(client, activity_writer=lambda *args, **kwargs: None)
+
+        result = service.preview("pause", {"hashes": [HASH_A]})
+
+        self.assertTrue(result["allowed"])
+        self.assertEqual(result["targets"][0]["hashPrefix"], public_qb_task_ref(HASH_A)[:8])
+        self.assertNotIn(HASH_A[:8], str(result))
+        self.assertNotIn("private.example", str(result))
+
+    def test_preview_redacts_internal_host_and_credentials_from_error(self):
+        from app.qbittorrent_action_runtime import QbittorrentActionService
+
+        client = FakeActionClient([summary(
+            [],
+            connected=False,
+            error="torra:8989 passkey=private-pass Bearer private-token",
+        )])
+        service = QbittorrentActionService(client, activity_writer=lambda *args, **kwargs: None)
+
+        result = service.preview("pause", {"hashes": [HASH_A]})
+
+        serialized = str(result)
+        self.assertNotIn("torra:8989", serialized)
+        self.assertNotIn("private-pass", serialized)
+        self.assertNotIn("private-token", serialized)
 
     def test_execute_rejects_stale_preview_key_without_writing(self):
         from app.qbittorrent_action_runtime import QbittorrentActionError, QbittorrentActionService

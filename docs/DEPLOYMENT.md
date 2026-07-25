@@ -8,7 +8,7 @@
 - Node.js 只在镜像构建阶段生成 React `dist`。
 - `data/`、`db/`、`upload/` 统一持久化到 `MCC_DATA_ROOT`。
 
-当前只准备和验证部署包，不执行 fnOS 实机安装或真实订阅。
+fnOS 实机已经安装；本文档覆盖镜像发布、拉取、重建、健康检查与回滚。真实订阅和下载写入仍由独立开关与明确确认保护。
 
 ## 2. 准备目录
 
@@ -105,14 +105,14 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 ## 5. 首次启动
 
 ```bash
-docker compose config
+docker compose config --quiet
 docker compose pull
 docker compose up -d
 docker compose ps
 docker compose logs --tail=100 fluxa
 ```
 
-Compose 会从 `.env` 读取全部服务配置，并拉取 `ghcr.io/ebichuu/fluxa:latest`。正式镜像统一由 GitHub Actions 构建并推送到 GHCR；每次发布先推送不可变版本/SHA 镜像，容器冒烟通过后才更新 `latest`，无需修改 Compose 版本号。
+Compose 会从 `.env` 读取全部服务配置，并拉取 `ghcr.io/ebichuu/fluxa:latest`。正式镜像统一由 GitHub Actions 在 `main` 推送后构建并推送到 GHCR；每次发布先推送完整提交 SHA 镜像，重复运行时复用已存在的 SHA digest，amd64 与 arm64 容器冒烟都通过、且该 SHA 仍是远端 `main` 头后才更新 `latest`，无需修改 Compose 版本号。
 
 访问：
 
@@ -152,7 +152,7 @@ docker compose down
 
 ## 6. 只读验收
 
-1. `/healthz` 返回 200。
+1. `/healthz` 返回 200；正式镜像还必须返回与 GitHub 完整提交 SHA 一致的 `revision`。
 2. 未登录业务 API 返回 401。
 3. 首次打开创建管理员，之后使用账号密码登录。
 4. `/api/health` 返回 `runtime=python`。
@@ -255,7 +255,8 @@ fnOS 首次部署新镜像时只执行空库初始化和只读状态检查。真
 ### 当前源码验收记录
 
 - 当前源码使用 SQLite schema version 4，包含质量观察、provider 动作、调度状态、私人 RSS 种子索引和资源事件账本。
-- 285 项 Python 回归、53 条 v2 机器契约、前端类型检查和生产构建通过；资源身份/执行状态、正常保护一致性、用户/技术原因分层、首页季集定位、事件幂等、qB 动作预览、日历未知/逾期判定、RSS 精确搜索与身份回填、追更海报补齐均使用临时台账和脱敏夹具验证，真实 Torra/RSS 写动作保持关闭。
+- 419 项 Python 回归、60 条 v2 机器契约、前端类型检查和生产构建通过；资源身份/执行状态、正常保护一致性、用户/技术原因分层、首页精确定位、北京时间自然日、事件幂等、qB 动作预览、日历完整搜索索引、RSS 精确搜索/身份回填/单条匹配/确认下载、追更海报补齐均使用临时台账、临时活动日志和脱敏夹具验证，真实 Torra/RSS 写动作保持关闭。
 - Torra 分析、下载和 job 查询测试全部使用假 session；质量观察与调度使用假任务链证据、假 Torra/qB 客户端和临时 SQLite，覆盖双闸门、并发 1、批量 2、公平游标、限额、截止点与租约恢复，没有连接真实外部服务。
-- 阶段 6 的 GET/PATCH/POST 契约、202 + Location、错误状态映射、跨匹配幂等冲突和独立下载闸门已通过模拟 API 测试；候选下载不会因分析闸门开启而自动执行。
-- 正式 GHCR 镜像只由 GitHub Actions 构建；版本标签和 SHA 镜像保持不可变，容器冒烟成功后才将同一 digest 提升为 `latest`。部署后仍需重复只读、重启和 schema 验收。
+- 阶段 6 的 GET/PATCH/POST 契约、可解引用的 201/202 Location、错误状态映射、完整请求幂等冲突、租约回收终态和独立下载闸门已通过模拟 API 测试；候选下载不会因分析闸门开启而自动执行。
+- 正式 GHCR 镜像只由 GitHub Actions 的 `main` 推送构建；完整 SHA 标签首次构建后复用既有 digest，不允许重跑覆盖，amd64 与 arm64 容器冒烟成功且该提交仍是远端 `main` 头后才将同一 digest 提升为 `latest`。部署后仍需重复只读、重启和 schema 验收。
+- 正式镜像把完整 Git 提交 SHA 注入 `/healthz.revision`；fnOS 验收必须核对该值，不能只凭 200 健康状态判断容器已经更新。

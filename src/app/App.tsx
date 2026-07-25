@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AppTopNav, type AppNavigate, type PageId, type TaskNavigationTarget, type ThemeMode } from '../components/layout/AppTopNav';
 import { MediaHall } from '../components/media-hall/MediaHall';
 import { CalendarPage } from '../components/pages/CalendarPage';
 import { ControlRoom } from '../components/pages/ControlRoom';
 import { DiscoverPage } from '../components/pages/DiscoverPage';
 import { Overview } from '../components/pages/Overview';
+import { MediaOverviewPage } from '../components/pages/MediaOverviewPage';
 import { SettingsPage } from '../components/pages/SettingsPage';
 import { SubscriptionSettingsPage } from '../components/pages/SubscriptionSettingsPage';
 import { TasksCenter } from '../components/pages/TasksCenter';
@@ -15,6 +16,7 @@ import type { HomeSummaryResponse } from '../types/homeSummary';
 import { defaultVisualFx, normalizeVisualFx } from '../types/visualFx';
 import { readLocalStorage, writeLocalStorage } from '../utils/storage';
 import { pathForNavigation, readNavigation } from './navigation';
+import { initializeHistoryEntry, saveCurrentScrollPosition, scrollPositionFromHistoryState, writePath } from './urlState';
 
 const VISUAL_FX_VERSION = '4';
 const THEME_STORAGE_KEY = 'mcc-ui-theme';
@@ -30,6 +32,7 @@ export function App() {
   const [navigation] = useState(readNavigation);
   const [page, setPage] = useState<PageId>(navigation.page);
   const [navigationTarget, setNavigationTarget] = useState<TaskNavigationTarget | null>(navigation.target);
+  const [historyRevision, setHistoryRevision] = useState(0);
   const [theme, setTheme] = useState<ThemeMode>(initialTheme);
   const [homeSummary, setHomeSummary] = useState<HomeSummaryResponse | null>(null);
   const [visualFx, setVisualFx] = useState(() => {
@@ -63,6 +66,7 @@ export function App() {
       preset: Number.isFinite(legacyPreset) ? legacyPreset : defaultVisualFx.preset
     });
   });
+  const pendingScrollRef = useRef<number | null>(0);
 
   const loadHomeSummary = async (signal: AbortSignal) => {
     try {
@@ -99,28 +103,94 @@ export function App() {
   }, [page, theme]);
 
   useEffect(() => {
-    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-  }, [page]);
+    initializeHistoryEntry();
+    const previousRestoration = window.history.scrollRestoration;
+    window.history.scrollRestoration = 'manual';
+    let frame = 0;
+    const handleScroll = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(saveCurrentScrollPosition);
+    };
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      saveCurrentScrollPosition();
+      window.removeEventListener('scroll', handleScroll);
+      window.history.scrollRestoration = previousRestoration;
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const targetScroll = pendingScrollRef.current ?? 0;
+    pendingScrollRef.current = null;
+    let cancelled = false;
+    let attempts = 0;
+    let timer = 0;
+
+    const restore = () => {
+      if (cancelled) return;
+      window.scrollTo({ top: targetScroll, left: 0, behavior: 'auto' });
+      const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      if (targetScroll > maxScroll && attempts < 12) {
+        attempts += 1;
+        timer = window.setTimeout(restore, 100);
+      }
+    };
+
+    const frame = window.requestAnimationFrame(restore);
+    const cancelRestore = () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+    window.addEventListener('pointerdown', cancelRestore, { once: true });
+    window.addEventListener('touchstart', cancelRestore, { once: true, passive: true });
+    window.addEventListener('wheel', cancelRestore, { once: true, passive: true });
+    return () => {
+      cancelRestore();
+      window.removeEventListener('pointerdown', cancelRestore);
+      window.removeEventListener('touchstart', cancelRestore);
+      window.removeEventListener('wheel', cancelRestore);
+    };
+  }, [historyRevision, page]);
 
   useEffect(() => {
-    const handlePopState = () => {
+    const handlePopState = (event: PopStateEvent) => {
       const next = readNavigation();
+      pendingScrollRef.current = scrollPositionFromHistoryState(event.state) ?? 0;
       setPage(next.page);
-      setNavigationTarget(['tasks', 'subscriptions'].includes(next.page) ? next.target : null);
+      setNavigationTarget(['tasks', 'subscriptions', 'media'].includes(next.page) ? next.target : null);
+      setHistoryRevision((current) => current + 1);
     };
     window.addEventListener('popstate', handlePopState);
     if (!navigation.canonical) {
       const canonicalPath = pathForNavigation(navigation.page, navigation.target).split('?')[0];
-      window.history.replaceState({}, '', `${canonicalPath}${navigation.search}`);
+      writePath(`${canonicalPath}${navigation.search}`, 'replace');
     }
     return () => window.removeEventListener('popstate', handlePopState);
   }, [navigation]);
 
   const navigate: AppNavigate = (nextPage, target) => {
+    pendingScrollRef.current = 0;
     setPage(nextPage);
-    const nextTarget = ['tasks', 'subscriptions'].includes(nextPage) ? target ?? null : null;
+    const nextTarget = ['tasks', 'subscriptions', 'media'].includes(nextPage) ? target ?? null : null;
     setNavigationTarget(nextTarget);
-    window.history.pushState({}, '', pathForNavigation(nextPage, nextTarget));
+    writePath(pathForNavigation(nextPage, nextTarget), 'push');
+    setHistoryRevision((current) => current + 1);
+  };
+
+  const navigatePath = (path: string) => {
+    const url = new URL(path, window.location.href);
+    if (url.origin !== window.location.origin) {
+      window.location.assign(url.href);
+      return;
+    }
+    pendingScrollRef.current = 0;
+    writePath(`${url.pathname}${url.search}${url.hash}`, 'push');
+    const next = readNavigation();
+    setPage(next.page);
+    setNavigationTarget(['tasks', 'subscriptions', 'media'].includes(next.page) ? next.target : null);
+    setHistoryRevision((current) => current + 1);
   };
 
   return (
@@ -133,7 +203,8 @@ export function App() {
         showThemeToggle={page !== 'hall'}
         theme={theme}
       />
-      {page === 'overview' && <Overview onNavigate={navigate} />}
+      {page === 'overview' && <Overview onNavigate={navigate} onNavigatePath={navigatePath} />}
+      {page === 'media' && <MediaOverviewPage target={navigationTarget} onNavigate={navigate} onNavigatePath={navigatePath} />}
       {page === 'hall' && (
         <MediaHall
           visualFx={visualFx}
@@ -153,7 +224,7 @@ export function App() {
         />
       )}
       {page === 'subscription-settings' && <SubscriptionSettingsPage onNavigate={navigate} />}
-      {page === 'rss-library' && <RssSeedLibraryPage />}
+      {page === 'rss-library' && <RssSeedLibraryPage onNavigate={navigate} />}
       {page === 'settings' && <SettingsPage />}
     </div>
   );

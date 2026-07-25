@@ -2692,6 +2692,67 @@ def build_subscription_calendar_entries_for_item(item, year, month, media_filter
     return entries, ""
 
 
+CALENDAR_BUILD_MAX_WORKERS = 8
+CALENDAR_ERROR_SENSITIVE_PATTERN = re.compile(
+    r"(?:https?://|token|cookie|passkey|password|secret|authorization|bearer|[a-z]:[\\/]|/(?:[^/\s]+/)+)",
+    re.IGNORECASE,
+)
+
+
+def _calendar_public_error(item, error=""):
+    title = str((item or {}).get("title") or (item or {}).get("name") or "订阅").strip()[:80]
+    if CALENDAR_ERROR_SENSITIVE_PATTERN.search(title):
+        title = "订阅"
+    message = str(error or "").strip()
+    if not message:
+        return ""
+    if CALENDAR_ERROR_SENSITIVE_PATTERN.search(message):
+        return f"{title} 日历生成失败"
+    return message[:240]
+
+
+def build_subscription_calendar_entries_for_items(
+    items,
+    year,
+    month,
+    media_filter="all",
+    max_workers=CALENDAR_BUILD_MAX_WORKERS,
+):
+    values = [item for item in (items or []) if isinstance(item, dict)]
+    if not values:
+        return [], []
+
+    def generate(index, item):
+        try:
+            rows, error = build_subscription_calendar_entries_for_item(
+                item,
+                year,
+                month,
+                media_filter,
+            )
+            safe_rows = [row for row in (rows or []) if isinstance(row, dict)]
+            return index, safe_rows, _calendar_public_error(item, error)
+        except Exception:
+            return index, [], _calendar_public_error(item, "日历生成失败")
+
+    worker_count = max(1, min(CALENDAR_BUILD_MAX_WORKERS, int(max_workers or 1), len(values)))
+    results = {}
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [executor.submit(generate, index, item) for index, item in enumerate(values)]
+        for future in as_completed(futures):
+            index, rows, error = future.result()
+            results[index] = (rows, error)
+
+    entries = []
+    errors = []
+    for index in range(len(values)):
+        rows, error = results.get(index, ([], ""))
+        entries.extend(rows)
+        if error:
+            errors.append(error)
+    return entries, errors
+
+
 def build_subscription_calendar(year=None, month=None, media_type="all"):
     now = datetime.now(BEIJING_TZ)
     try:
@@ -2706,17 +2767,12 @@ def build_subscription_calendar(year=None, month=None, media_type="all"):
     media_filter = "tv" if str(media_type or "").lower() == "tv" else ("movie" if str(media_type or "").lower() == "movie" else "all")
     data = load_subscription_items(with_progress=False)
     items = [item for item in (data.get("items") or []) if isinstance(item, dict)]
-    entries = []
-    errors = []
-    for item in items:
-        try:
-            rows, error = build_subscription_calendar_entries_for_item(item, year_value, month_value, media_filter)
-            entries.extend(rows)
-            if error:
-                errors.append(error)
-        except Exception as exc:
-            title = item.get("title") or item.get("name") or ""
-            errors.append(f"{title or '订阅'} 日历生成失败：{exc}")
+    entries, errors = build_subscription_calendar_entries_for_items(
+        items,
+        year_value,
+        month_value,
+        media_filter,
+    )
     entries.sort(key=lambda row: (
         row.get("date") or "",
         str(row.get("title") or ""),

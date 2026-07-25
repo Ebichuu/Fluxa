@@ -160,7 +160,7 @@ def _protected_stage(stage, _status, _evidence_state, _expired, _planned_at):
             "protected",
             _text(stage.get("reasonCode")) or "QUALITY_PROTECTED",
             _text(stage.get("reasonText") or stage.get("detail") or "版本被正常保护，未覆盖已有资源"),
-            "已保留低分源文件，可进入存储清理",
+            "已保留更高质量版本，无需处理",
         )
 
 
@@ -228,8 +228,8 @@ def _stage_outcome(stage, status, evidence_state, expired, planned_at):
     resolvers = (
         _protected_stage,
         _scheduled_stage,
-        _blocked_stage,
         _expired_stage,
+        _blocked_stage,
         _waiting_stage,
         _missing_stage,
         _completed_stage,
@@ -296,7 +296,8 @@ def _task_action(item, classified):
     blocked = _text(item.get("state")).lower() == "blocked"
     protected_or_waiting = any(result["healthState"] in {"protected", "waiting"} for result in classified)
     has_action = any(result["healthState"] == "action_required" for result in classified)
-    if not has_action and (not blocked or protected_or_waiting):
+    has_insufficient = any(result["healthState"] == "evidence_insufficient" for result in classified)
+    if not has_action and (not blocked or protected_or_waiting or has_insufficient):
         return None
     result = _first_result(classified, "action_required")
     return _outcome(
@@ -343,7 +344,7 @@ def _task_protected(item, classified):
         "protected",
         result.get("reasonCode") or _text(item.get("reasonCode")) or "QUALITY_PROTECTED",
         result.get("reasonText") or _text(item.get("reasonText")) or "版本被正常保护，未覆盖已有资源",
-        "已保留低分源文件，可进入存储清理",
+        "已保留更高质量版本，无需处理",
     )
 
 
@@ -374,6 +375,8 @@ def _execution_state(item, stages, classified, identity_state):
     if any(result.get("healthState") == "waiting" for result in classified):
         return "waiting"
     if _text(item.get("state")).lower() == "blocked":
+        if any(result.get("healthState") == "evidence_insufficient" for result in classified):
+            return "waiting"
         return "suspected_blocked" if identity_state == "unidentified" else "action_required"
     if classified and all(result.get("healthState") == "normal" for result in classified):
         return "normal"

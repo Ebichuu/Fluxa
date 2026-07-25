@@ -51,6 +51,22 @@
   --theme-success: #7ad7c2;
   --theme-warning: #f4d28a;
   --theme-danger: #ff5367;
+  --surface-page: var(--theme-bg);
+  --surface-primary: var(--theme-surface);
+  --surface-interactive: var(--theme-surface-subtle);
+  --surface-hover: var(--theme-surface-hover);
+  --surface-disabled: color-mix(in srgb, var(--theme-surface) 58%, transparent);
+  --border-subtle: var(--theme-border);
+  --border-interactive: var(--theme-border-strong);
+  --text-primary: var(--theme-text-strong);
+  --text-secondary: var(--theme-muted);
+  --text-label: var(--theme-faint);
+  --state-danger: var(--theme-danger);
+  --state-processing: #6f9fd8;
+  --state-protected: #8496ab;
+  --state-normal-dot: #78aa8a;
+  --overlay-surface: var(--theme-surface-strong);
+  --overlay-backdrop: rgba(0, 0, 0, 0.58);
   font-family: "Segoe UI", "Microsoft YaHei UI", "Noto Sans SC", sans-serif;
   background: #010304;
   color: var(--ink);
@@ -58,6 +74,17 @@
 
 * {
   box-sizing: border-box;
+}
+
+.relative-time {
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+.relative-time:focus-visible {
+  outline: 2px solid var(--theme-focus);
+  outline-offset: 2px;
+  border-radius: 3px;
 }
 
 html,
@@ -111,6 +138,7 @@ body {
   --theme-success: #177d72;
   --theme-warning: #9a6500;
   --theme-danger: #c9344e;
+  --overlay-backdrop: rgba(31, 35, 41, 0.28);
 }
 
 button,

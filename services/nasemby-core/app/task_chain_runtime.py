@@ -13,6 +13,7 @@ from app import discover_runtime
 from app.evidence_ownership_runtime import adjudicate_task_evidence, compare_legacy_ownership
 from app.episode_evidence_runtime import build_episode_evidence
 from app.task_exception_runtime import protection_rule
+from app.task_public_runtime import present_task_chain
 
 
 STATE_PRIORITY = {"blocked": 0, "active": 1, "waiting": 2, "completed": 3}
@@ -1007,7 +1008,7 @@ def register_task_chain(app: Flask, subscription_loader=None, clock=None):
     @app.get("/api/tasks/chain")
     def task_chain():
         try:
-            return jsonify(service.get_chain())
+            return jsonify(present_task_chain(service.get_chain()))
         except Exception:
             return jsonify({
                 "code": "TASK_CHAIN_READ_FAILED",

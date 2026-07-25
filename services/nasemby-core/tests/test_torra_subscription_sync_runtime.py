@@ -11,6 +11,7 @@ from app.contract_mapping import map_subscription_item
 from app.http_runtime import configure_http_runtime
 from app.subscription_compat_runtime import _push_preview
 from app.subscription_repository import SubscriptionRepository
+from app.subscription_reconciliation_runtime import torra_public_subscription_key
 from app.torra_subscription_sync_runtime import (
     TorraSubscriptionSyncService,
     normalize_torra_subscription,
@@ -103,6 +104,17 @@ class TorraSubscriptionSyncRuntimeTests(IsolatedActivityLogMixin, unittest.TestC
             self.assertTrue(replay["replayed"])
             self.assertEqual(len(repository.load_payload()["items"]), 2)
             self.assertEqual(synced["summary"]["remoteMissing"], 1)
+            stored_keys = {
+                item["subscription_key"]
+                for item in repository.load_payload()["items"]
+            }
+            self.assertEqual(stored_keys, {
+                torra_public_subscription_key("remote-movie"),
+                torra_public_subscription_key("remote-tv"),
+            })
+            public_items = [map_subscription_item(item) for item in repository.load_payload()["items"]]
+            self.assertNotIn("remote-movie", str(public_items))
+            self.assertNotIn("remote-tv", str(public_items))
 
     def test_disabled_import_does_not_access_torra(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -152,6 +164,47 @@ class TorraSubscriptionSyncRuntimeTests(IsolatedActivityLogMixin, unittest.TestC
             self.assertIsNone(response)
             self.assertEqual(error[0], "TORRA_SYNC_IDENTITY_CONFLICT")
             self.assertEqual(repository.list_torra_links(), [])
+
+    def test_preview_redacts_legacy_torra_key_in_same_target_conflict(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SubscriptionRepository(Path(directory) / "media_control_center.sqlite3")
+            legacy_remote_id = "a1b2c3d4e5"
+            legacy_key = f"torra:{legacy_remote_id}"
+            repository.upsert_item({
+                "subscription_key": legacy_key,
+                "title": "鏉′欢鍐茬獊鍓ч泦",
+                "media_type": "tv",
+                "tmdb_id": "404",
+                "target_season": 2,
+                "origin": "torra",
+                "read_only": True,
+            }, legacy_key)
+            client = FakeTorraClient([
+                {
+                    "id": legacy_remote_id,
+                    "name": "鏉′欢鍐茬獾鍓ч泦",
+                    "media_type": "tv",
+                    "tmdb_id": 404,
+                    "season_number": 2,
+                },
+                {
+                    "id": "second-remote-private",
+                    "name": "鏉′欢鍐茬獾鍓ч泦",
+                    "media_type": "tv",
+                    "tmdb_id": 404,
+                    "season_number": 2,
+                },
+            ])
+            preview = self.service(repository, client).preview()
+
+            self.assertEqual(preview["summary"]["conflicts"], 1)
+            conflict = preview["conflictItems"][0]
+            self.assertEqual(
+                conflict["subscriptionKey"],
+                torra_public_subscription_key(legacy_remote_id),
+            )
+            self.assertNotIn(legacy_remote_id, str(conflict))
+            self.assertNotIn(legacy_key, str(conflict))
 
     def test_routes_return_stable_upstream_and_conflict_errors(self):
         class FailingClient:

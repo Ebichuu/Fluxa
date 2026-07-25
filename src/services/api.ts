@@ -10,7 +10,9 @@ import type { HomeSummaryResponse } from '../types/homeSummary';
 import type { RuntimeSettingsResponse, RuntimeSettingsUpdate } from '../types/runtimeSettings';
 import type {
   AutomationAction,
+  CreateRssMatchInput,
   RssIdentityBackfillResponse,
+  RssMatch,
   RssMatchListResponse,
   RssMatchRunResponse,
   RssSeedItem,
@@ -42,6 +44,7 @@ import type {
   TorraPushResult,
   MediaCategory
 } from '../types/subscriptions';
+import type { MediaOverviewResponse, MediaSearchResponse } from '../types/mediaSearch';
 import type {
   MoviePilotPreview,
   MoviePilotPushResult,
@@ -147,6 +150,15 @@ export function getHealth(options?: RequestOptions): Promise<HealthResponse> {
 
 export function getHomeSummary(options?: RequestOptions): Promise<HomeSummaryResponse> {
   return readJson<HomeSummaryResponse>('/api/v2/home/summary', options);
+}
+
+export function searchMediaEverywhere(query: string, limit = 10, options?: RequestOptions): Promise<MediaSearchResponse> {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  return readJson<MediaSearchResponse>(`/api/v2/search?${params.toString()}`, options);
+}
+
+export function getMediaOverview(mediaKey: string, options?: RequestOptions): Promise<MediaOverviewResponse> {
+  return readJson<MediaOverviewResponse>(`/api/v2/media/${encodeURIComponent(mediaKey)}`, options);
 }
 
 export function getIntegrationSummary(probe = false, options?: RequestOptions): Promise<IntegrationSummary> {
@@ -263,7 +275,10 @@ export function getTaskChainV2(query: TaskChainQuery | TaskChainHealthState = {}
   const params = new URLSearchParams();
   if (input.healthState) params.set('healthState', input.healthState);
   if (input.identityState) params.set('identityState', input.identityState);
+  input.identityStates?.forEach((value) => params.append('identityState', value));
   if (input.executionState) params.set('executionState', input.executionState);
+  if (input.userState) params.set('userState', input.userState);
+  if (input.completedDate) params.set('completedDate', input.completedDate);
   if (input.chainId) params.set('chainId', input.chainId);
   if (input.targetKey) params.set('targetKey', input.targetKey);
   if (input.subscriptionId) params.set('subscriptionId', input.subscriptionId);
@@ -324,6 +339,27 @@ export function getSubscriptionCalendarSummary(
 ): Promise<SubscriptionCalendarTimelineResponse> {
   return readConditionalJson<SubscriptionCalendarTimelineResponse>(
     `/api/v2/calendar?year=${year}&month=${month}&type=${mediaType}&view=summary`,
+    options
+  );
+}
+
+export function getSubscriptionCalendarRangeSummary(
+  from: string,
+  to: string,
+  mediaType: 'all' | 'movie' | 'tv' = 'all',
+  options?: RequestOptions
+): Promise<SubscriptionCalendarTimelineResponse> {
+  const [year = '', month = ''] = from.split('-');
+  const query = new URLSearchParams({
+    year,
+    month: String(Number(month)),
+    type: mediaType,
+    view: 'summary',
+    from,
+    to
+  });
+  return readConditionalJson<SubscriptionCalendarTimelineResponse>(
+    `/api/v2/calendar?${query.toString()}`,
     options
   );
 }
@@ -500,6 +536,13 @@ export function getRssMatches(input: { status?: string; limit?: number; offset?:
   return readJson<RssMatchListResponse>(`/api/v2/rss-matches?${query.toString()}`, options);
 }
 
+export function createRssMatch(
+  input: CreateRssMatchInput,
+  options?: RequestOptions
+): Promise<RssMatch> {
+  return postJson<RssMatch>('/api/v2/rss-matches', input, options);
+}
+
 export function startRssMatchAnalysis(
   matchId: string,
   idempotencyKey: string,
@@ -508,6 +551,18 @@ export function startRssMatchAnalysis(
   return postJson<AutomationAction>(
     `/api/v2/rss-matches/${encodeURIComponent(matchId)}/torra-rewash-analyses`,
     { idempotencyKey },
+    options
+  );
+}
+
+export function startRssMatchDownload(
+  matchId: string,
+  input: { confirm: true; idempotencyKey: string; analysisActionId: string },
+  options?: RequestOptions
+): Promise<AutomationAction> {
+  return postJson<AutomationAction>(
+    `/api/v2/rss-matches/${encodeURIComponent(matchId)}/torra-rewashes`,
+    input,
     options
   );
 }

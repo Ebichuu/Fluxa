@@ -530,19 +530,60 @@
 
 @media (max-width: 900px) {
   .ops-service-grid {
-    display: flex;
+    display: grid;
     min-width: 0;
-    gap: 10px;
-    overflow-x: auto;
-    padding: 2px 2px 8px;
-    scroll-padding-inline: 2px;
-    scroll-snap-type: x proximity;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    overflow: visible;
+    padding: 0;
   }
 
   .ops-service-card {
-    min-width: min(280px, calc(100vw - 54px));
-    flex: 0 0 min(280px, calc(100vw - 54px));
-    scroll-snap-align: start;
+    min-width: 0;
+    min-height: 74px;
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    grid-template-rows: 1fr;
+    gap: 8px;
+    padding: 10px;
+    border-radius: 12px;
+  }
+
+  .ops-service-card:hover,
+  .ops-service-card:focus-visible,
+  .ops-service-card--selected {
+    transform: none;
+  }
+
+  .ops-service-card__order,
+  .ops-service-card__metric,
+  .ops-service-card__spark,
+  .ops-service-card__copy small {
+    display: none;
+  }
+
+  .ops-service-card__icon {
+    width: 34px;
+    height: 34px;
+    grid-column: 1;
+    grid-row: 1;
+    align-self: center;
+    border-radius: 9px;
+  }
+
+  .ops-service-card__copy {
+    grid-column: 2;
+    grid-row: 1;
+    gap: 0;
+  }
+
+  .ops-service-card__copy strong {
+    font-size: 14px;
+  }
+
+  .ops-service-card__state {
+    grid-column: 3;
+    grid-row: 1;
+    align-self: center;
   }
 
   .ops-control-foot {
@@ -560,9 +601,17 @@
     flex: 1;
   }
 
+  .ops-service-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .ops-service-card {
-    min-height: 164px;
-    padding: 13px;
+    min-height: 64px;
+  }
+
+  .ops-service-card__state {
+    gap: 0;
+    font-size: 0;
   }
 
   .ops-inspector__actions,

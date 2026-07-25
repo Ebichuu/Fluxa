@@ -786,6 +786,14 @@ class PrivateRssRepository:
             ).fetchone()
         return self._match(row)
 
+    def get_match_for_item_unit(self, item_id, unit_key):
+        with closing(self.runtime.connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM rss_subscription_matches WHERE item_id=? AND unit_key=?",
+                (str(item_id), str(unit_key)),
+            ).fetchone()
+        return self._match(row)
+
     def update_match(self, match_id, status, trigger_action_id=None):
         status = str(status or "").strip().lower()
         if status not in MATCH_STATUSES:

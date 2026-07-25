@@ -100,18 +100,15 @@ def _item_snapshot(row, chain_item=None):
         "missingEpisodes": _missing_episodes(row),
         "torra": {
             "status": "linked" if source_ids.get("torraId") or row.get("torra_remote_id") else "not_linked",
-            "remoteId": str(source_ids.get("torraId") or row.get("torra_remote_id") or ""),
             "detail": str((steps.get("subscription") or {}).get("detail") or "Torra 尚未关联"),
         },
         "qb": {
             "status": str(qb.get("status") or "unknown"),
             "detail": str(qb.get("detail") or "未接入 qB 任务证据"),
-            "hashes": [str(value) for value in (source_ids.get("qbHashes") or [])],
         },
         "cloud115": {
             "status": str(cloud.get("status") or "unknown"),
             "detail": str(cloud.get("detail") or "未接入 115 记录"),
-            "ids": [str(value) for value in (source_ids.get("symediaIds") or [])],
         },
         "library": {
             "status": str(library.get("status") or ("done" if mapped.get("inLibrary") else "waiting")),
@@ -176,11 +173,16 @@ class SubscriptionWorkbenchService:
             for row in (raw.get("items") or [])
             if isinstance(row, dict)
         ]
-        by_key = {
-            str(discover_runtime.get_subscription_item_key(row) or ""): row
-            for row in rows
-            if discover_runtime.get_subscription_item_key(row)
-        }
+        by_key = {}
+        for row in rows:
+            storage_key = str(discover_runtime.get_subscription_item_key(row) or "")
+            if not storage_key:
+                continue
+            row["_visual_storage_key"] = storage_key
+            by_key[storage_key] = row
+            public_key = str((map_subscription_item(row) or {}).get("id") or "")
+            if public_key:
+                by_key[public_key] = row
         reconciliation_service = self.app.extensions.get("mcc_subscription_reconciliation")
         if reconciliation_service:
             try:
@@ -216,7 +218,10 @@ class SubscriptionWorkbenchService:
             return "unchanged", None
         if row.get("_visual_read_only"):
             return "updated", self._visual_response_item(key, visuals)
-        saved = discover_runtime.supplement_subscription_visuals(key, visuals)
+        saved = discover_runtime.supplement_subscription_visuals(
+            str(row.get("_visual_storage_key") or key),
+            visuals,
+        )
         if not saved:
             return "unchanged", None
         return "updated", self._visual_response_item(key, visuals, map_subscription_item(saved) or {})
@@ -255,8 +260,8 @@ class SubscriptionWorkbenchService:
         if reconciliation_service:
             try:
                 reconciliation = reconciliation_service.snapshot()
-            except Exception as exc:
-                reconciliation_error = str(exc) or "追更对账读取失败"
+            except Exception:
+                reconciliation_error = "追更对账读取失败"
         chain = {}
         chain_error = ""
         task_service = self.app.extensions.get("mcc_task_chain_service")
@@ -268,8 +273,8 @@ class SubscriptionWorkbenchService:
                     for item in (chain_payload.get("items") or [])
                     if isinstance(item, dict) and item.get("sourceIds", {}).get("subscriptionId")
                 }
-            except Exception as exc:
-                chain_error = str(exc) or "任务链读取失败"
+            except Exception:
+                chain_error = "任务链读取失败"
 
         reconciliation_items = {
             str(item.get("localId") or ""): item
@@ -334,7 +339,7 @@ class SubscriptionWorkbenchService:
                 "torraSyncState": "current",
                 "torraMappingStatus": "mapped",
                 "reconciliationState": recon.get("reconciliationState"),
-                "fulfillmentState": recon.get("fulfillmentState"),
+                "fulfillmentState": fulfillment_state,
                 "healthState": recon.get("healthState"),
                 "reasonCode": recon.get("reasonCode"),
                 "reasonText": recon.get("reasonText"),
@@ -352,6 +357,18 @@ class SubscriptionWorkbenchService:
             "movie": sum(item.get("mediaType") == "movie" for item in mapped_items),
             "tv": sum(item.get("mediaType") == "tv" for item in mapped_items),
             "pending": sum(item.get("chainState") not in {"completed"} for item in mapped_items),
+            "following": sum(item.get("fulfillmentState") == "following" for item in mapped_items),
+            "completed": sum(
+                item.get("fulfillmentState") == "completed"
+                or (not item.get("fulfillmentState") and item.get("chainState") == "completed")
+                for item in mapped_items
+            ),
+            "actionRequired": sum(
+                item.get("healthState") == "action_required"
+                or item.get("fulfillmentState") == "blocked"
+                or bool(item.get("blockingReason"))
+                for item in mapped_items
+            ),
             "inLibrary": sum(item.get("inLibrary") is True or item.get("library", {}).get("status") == "done" for item in mapped_items),
         }
         filtered_items = mapped_items

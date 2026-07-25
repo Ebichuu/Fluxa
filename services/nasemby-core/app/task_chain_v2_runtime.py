@@ -11,6 +11,12 @@ from flask import Flask, Response, jsonify, request
 from app.http_runtime import current_request_id
 from app.resource_identity_runtime import artifact_key, chain_id, media_key, target_key
 from app.task_exception_runtime import classify_stage, classify_task
+from app.task_public_runtime import (
+    present_migration_preview,
+    present_services,
+    present_task_item,
+    public_subscription_ref,
+)
 
 
 HEALTH_PRIORITY = {
@@ -20,6 +26,9 @@ HEALTH_PRIORITY = {
     "protected": 3,
     "normal": 4,
 }
+USER_STATES = ("action_required", "in_progress", "completed", "no_action")
+USER_STATE_PRIORITY = {state: index for index, state in enumerate(USER_STATES)}
+BEIJING_TZ = timezone(timedelta(hours=8))
 STATE_PRIORITY = {"blocked": 0, "active": 1, "waiting": 2, "completed": 3}
 EVIDENCE_PRIORITY = {"verified": 0, "inferred": 1, "missing": 2}
 STATUS_PRIORITY = {"blocked": 0, "active": 1, "waiting": 2, "unknown": 3, "done": 4}
@@ -246,6 +255,159 @@ def _chain_progress(stages: list[dict], items: list[dict]) -> int:
     return round(completed / len(stages) * 100)
 
 
+def _stage_by_name(item: dict, *names: str) -> dict:
+    wanted = set(names)
+    return next((
+        stage for stage in item.get("stages") or []
+        if str(stage.get("stage") or stage.get("key") or "") in wanted
+    ), {})
+
+
+def _subscription_keys(*values) -> set[str]:
+    keys = set()
+    for value in values:
+        raw = str(value or "").strip()
+        if not raw:
+            continue
+        keys.add(raw)
+        public = public_subscription_ref(raw)
+        if public:
+            keys.add(public)
+    return keys
+
+
+def _stage_is_current(stage: dict, *health_states: str) -> bool:
+    return str(stage.get("healthState") or "") in health_states
+
+
+def _has_current_stage(item: dict, *names: str) -> bool:
+    wanted = set(names)
+    return any(
+        str(stage.get("stage") or stage.get("key") or "") in wanted
+        and str(stage.get("evidence") or "") in {"verified", "inferred"}
+        and _stage_is_current(stage, "normal", "waiting", "protected", "action_required")
+        for stage in item.get("stages") or []
+        if isinstance(stage, dict)
+    )
+
+
+def _completed_at(item: dict) -> str:
+    completed = [
+        str(stage.get("observedAt") or "")
+        for stage in item.get("stages") or []
+        if str(stage.get("stage") or "") in {"library", "symedia", "strm", "emby"}
+        and str(stage.get("status") or "") == "done"
+        and str(stage.get("observedAt") or "")
+    ]
+    return max(completed, default=str(item.get("updatedAt") or ""))
+
+
+def _user_state(item: dict) -> str:
+    execution = str(item.get("executionState") or "")
+    health = str(item.get("healthState") or "")
+    stages = [stage for stage in item.get("stages") or [] if isinstance(stage, dict)]
+    if execution in {"action_required", "confirmed_failed"} or health == "action_required":
+        return "action_required"
+    if (
+        _has_current_stage(item, "download")
+        and int(item.get("activeDownloadTasks") or 0) > 0
+    ) or any(
+        str(stage.get("status") or "") == "active" and _stage_is_current(stage, "waiting")
+        for stage in stages
+    ):
+        return "in_progress"
+    if health == "evidence_insufficient" and str(item.get("identityState") or "") in {"unidentified", "conflict"}:
+        return "no_action"
+    library = _stage_by_name(item, "library", "symedia", "strm")
+    if (
+        str(library.get("status") or "") == "done"
+        and str(library.get("evidence") or "") in {"verified", "inferred"}
+        and _stage_is_current(library, "normal")
+    ) or (str(item.get("state") or "") == "completed" and health == "normal"):
+        return "completed"
+    return "no_action"
+
+
+def _result_text(item: dict, user_state: str) -> str:
+    if str(item.get("healthState") or "") == "protected" or str(item.get("executionState") or "") == "protected":
+        return "已保留更高质量版本 · 无需处理"
+    if user_state == "action_required":
+        return str(item.get("userReasonText") or item.get("reasonText") or "当前任务需要处理")
+
+    parts = []
+    download_counts_are_current = _has_current_stage(item, "download")
+    active_downloads = int(item.get("activeDownloadTasks") or 0) if download_counts_are_current else 0
+    completed_downloads = int(item.get("completedDownloadTasks") or 0) if download_counts_are_current else 0
+    download = _stage_by_name(item, "download")
+    cloud = _stage_by_name(item, "cloud115")
+    library = _stage_by_name(item, "library", "symedia", "strm")
+
+    if active_downloads > 0:
+        parts.append(f"正在下载 {active_downloads} 个")
+    elif completed_downloads > 0:
+        parts.append(f"已下载 {completed_downloads} 个")
+    elif str(download.get("status") or "") == "done" and _stage_is_current(download, "normal"):
+        parts.append("下载已完成")
+
+    if (
+        str(cloud.get("status") or "") == "done"
+        and str(cloud.get("evidence") or "") == "verified"
+        and _stage_is_current(cloud, "normal")
+    ):
+        parts.append("已进入 115")
+    if (
+        str(library.get("status") or "") == "done"
+        and str(library.get("evidence") or "") in {"verified", "inferred"}
+        and _stage_is_current(library, "normal")
+    ):
+        parts.append("已入库")
+    if item.get("embyIndexed") is True and str(item.get("healthState") or "") != "evidence_insufficient":
+        parts.append("Emby 已识别")
+
+    if parts:
+        return " · ".join(parts)
+    if user_state == "in_progress":
+        return str(item.get("userReasonText") or item.get("reasonText") or "正在处理")
+    if user_state == "completed":
+        return "处理已完成"
+    return "暂无需要处理的操作"
+
+
+def _primary_action(item: dict, services: dict, user_state: str) -> dict:
+    qb_control = item.get("qbControl") or {}
+    if user_state == "in_progress" and qb_control.get("canPause"):
+        return {"kind": "pause_download", "label": "暂停下载", "available": True, "reason": "qB 任务正在下载"}
+    if user_state != "action_required":
+        return {"kind": "none", "label": "", "available": False, "reason": "当前无需人工处理"}
+
+    if qb_control.get("canResume"):
+        return {"kind": "resume_download", "label": "恢复下载", "available": True, "reason": "qB 任务当前可恢复"}
+
+    stage = next((
+        row for row in item.get("stages") or []
+        if row.get("healthState") == "action_required"
+    ), {})
+    stage_name = str(stage.get("stage") or "")
+    if stage_name == "download" and str(((services.get("qb") or {}).get("webUrl") or "")):
+        return {"kind": "open_qb", "label": "打开 qB 检查", "available": True, "reason": "需要在下载器中确认文件或任务状态"}
+    if stage_name in {"resource", "cloud115"} and str(((services.get("torra") or {}).get("webUrl") or "")):
+        return {"kind": "open_torra", "label": "打开 Torra 检查", "available": True, "reason": "需要核对 Torra 获取或秒传状态"}
+    if stage_name in {"library", "symedia", "strm"}:
+        return {"kind": "view_details", "label": "查看入库失败原因", "available": True, "reason": "Fluxa 已保留安全诊断信息"}
+    return {"kind": "view_details", "label": "查看处理方法", "available": True, "reason": "当前没有可直接安全执行的自动动作"}
+
+
+def _apply_user_projection(item: dict, services: dict) -> dict:
+    user_state = _user_state(item)
+    return {
+        **item,
+        "userState": user_state,
+        "resultText": _result_text(item, user_state),
+        "completedAt": _completed_at(item) if user_state == "completed" else "",
+        "primaryAction": _primary_action(item, services, user_state),
+    }
+
+
 def _merge_group(items: list[dict], observed_at: str, fresh_until: str, now_value: datetime) -> dict:
     primary = dict(_primary_item(items))
     source_ids = _source_ids(items)
@@ -295,10 +457,12 @@ def _merge_group(items: list[dict], observed_at: str, fresh_until: str, now_valu
         "activeDownloadTasks": sum(
             int(item.get("activeDownloadTasks") or (item.get("qbControl") or {}).get("active") or 0)
             for item in items
+            if _has_current_stage(item, "download")
         ),
         "completedDownloadTasks": sum(
             int(item.get("completedDownloadTasks") or (item.get("qbControl") or {}).get("completed") or 0)
             for item in items
+            if _has_current_stage(item, "download")
         ),
     }
     merged["concurrentDownloadCount"] = merged["activeDownloadTasks"]
@@ -339,12 +503,21 @@ def adapt_task_chain(chain: dict, *, now: datetime | None = None, health_filter:
             continue
         adapted = _adapt_item(item, observed_at, fresh_until, now_value)
         grouped.setdefault(adapted["chainId"], []).append(adapted)
-    all_items = [_merge_group(items, observed_at, fresh_until, now_value) for items in grouped.values()]
+    services = chain.get("services") or {}
+    all_items = [
+        _apply_user_projection(_merge_group(items, observed_at, fresh_until, now_value), services)
+        for items in grouped.values()
+    ]
     all_items.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
     all_items.sort(key=lambda item: (
+        USER_STATE_PRIORITY.get(str(item.get("userState") or ""), len(USER_STATE_PRIORITY)),
         HEALTH_PRIORITY.get(str(item.get("healthState") or ""), len(HEALTH_PRIORITY)),
         EXECUTION_PRIORITY.get(str(item.get("executionState") or ""), len(EXECUTION_PRIORITY)),
     ))
+    user_counts = {
+        state: sum(item.get("userState") == state for item in all_items)
+        for state in USER_STATES
+    }
     health_counts = {
         state: sum(item.get("healthState") == state for item in all_items)
         for state in HEALTH_PRIORITY
@@ -373,19 +546,21 @@ def adapt_task_chain(chain: dict, *, now: datetime | None = None, health_filter:
         "healthCounts": health_counts,
         "identityCounts": identity_counts,
         "executionCounts": execution_counts,
+        "userCounts": user_counts,
         "generatedAt": str(chain.get("generatedAt") or observed_at),
         "contractVersion": 2,
     }
 
 
 def _summary_item(item: dict) -> dict:
+    item = present_task_item(item)
     fields = (
         "id", "title", "mediaType", "tmdbId", "seasonNumber", "episodeNumber", "posterUrl",
         "origin", "origins", "channel", "state", "confidence", "progress", "currentStep",
         "embyIndexed", "embyEvidenceScope", "qbControl", "acquisition", "updatedAt", "chainId", "mediaKey",
         "targetKey", "subscriptionId", "healthState", "observedAt", "freshUntil", "source",
         "reasonCode", "reasonText", "userReasonText", "recommendedAction", "retryEligible", "plannedRetryAt",
-        "identityState", "executionState",
+        "identityState", "executionState", "userState", "resultText", "completedAt", "primaryAction",
         "relatedRecords", "activeDownloadTasks", "completedDownloadTasks", "concurrentDownloadCount",
     )
     result = {field: item.get(field) for field in fields if field in item}
@@ -404,6 +579,7 @@ def _version(payload: dict) -> str:
         "healthCounts": payload.get("healthCounts") or {},
         "identityCounts": payload.get("identityCounts") or {},
         "executionCounts": payload.get("executionCounts") or {},
+        "userCounts": payload.get("userCounts") or {},
         "originCounts": payload.get("originCounts") or {},
         "stageCounts": payload.get("stageCounts") or {},
         "services": payload.get("services") or {},
@@ -414,6 +590,10 @@ def _version(payload: dict) -> str:
             "healthState": item.get("healthState"),
             "identityState": item.get("identityState"),
             "executionState": item.get("executionState"),
+            "userState": item.get("userState"),
+            "resultText": item.get("resultText"),
+            "completedAt": item.get("completedAt"),
+            "primaryAction": item.get("primaryAction") or {},
             "reasonCode": item.get("reasonCode"),
             "artifactKeys": item.get("artifactKeys") or [],
             "activeDownloadTasks": item.get("activeDownloadTasks") or 0,
@@ -484,22 +664,27 @@ class TaskChainV2Service:
 
     def summary(self, *, force=False):
         payload = self.full_snapshot(force=force)
-        return {
+        result = {
             key: payload.get(key)
             for key in (
                 "contractVersion", "generatedAt", "version", "counts", "healthCounts",
                 "identityCounts", "executionCounts", "originCounts", "stageCounts",
-                "services", "ledger",
+                "userCounts", "services", "ledger",
             )
             if key in payload
         }
+        result["services"] = present_services(payload.get("services"))
+        return result
 
     def list_items(
         self,
         *,
         health_state="",
         identity_state="",
+        identity_states=None,
         execution_state="",
+        user_state="",
+        completed_date="",
         chain_id_value="",
         target_key_value="",
         subscription_id="",
@@ -517,21 +702,32 @@ class TaskChainV2Service:
             chain_id_value = self.repository.resolve_chain_id(chain_id_value)
         if health_state:
             items = [item for item in items if item.get("healthState") == health_state]
-        if identity_state:
-            items = [item for item in items if item.get("identityState") == identity_state]
+        wanted_identity_states = set(identity_states or ([identity_state] if identity_state else []))
+        if wanted_identity_states:
+            items = [item for item in items if item.get("identityState") in wanted_identity_states]
         if execution_state:
             items = [item for item in items if item.get("executionState") == execution_state]
+        if user_state:
+            items = [item for item in items if item.get("userState") == user_state]
+        if completed_date:
+            items = [
+                item for item in items
+                if (parsed := _parse_datetime(item.get("completedAt")))
+                and parsed.astimezone(BEIJING_TZ).strftime("%Y-%m-%d") == completed_date
+            ]
         if chain_id_value:
             items = [item for item in items if item.get("chainId") == chain_id_value]
         if target_key_value:
             items = [item for item in items if item.get("targetKey") == target_key_value]
         if subscription_id:
+            requested_keys = _subscription_keys(subscription_id)
             items = [
                 item for item in items
-                if subscription_id in {
-                    str(item.get("subscriptionId") or ""),
-                    *(str(value) for value in (item.get("sourceIds") or {}).get("subscriptionIds") or []),
-                }
+                if not requested_keys.isdisjoint(_subscription_keys(
+                    item.get("subscriptionId"),
+                    (item.get("sourceIds") or {}).get("subscriptionId"),
+                    *((item.get("sourceIds") or {}).get("subscriptionIds") or []),
+                ))
             ]
         if tmdb_id:
             items = [item for item in items if str(item.get("tmdbId") or "") == tmdb_id]
@@ -575,7 +771,7 @@ class TaskChainV2Service:
         ), None)
         return {
             **self.summary(force=False),
-            "item": item,
+            "item": present_task_item(item) if item else None,
         }
 
     def migration_preview(self):
@@ -643,12 +839,21 @@ def register_task_chain_v2(app: Flask, repository=None, clock=None):
         allowed = set(HEALTH_PRIORITY)
         if health_state and health_state not in allowed:
             return _error("TASK_HEALTH_FILTER_INVALID", "健康状态筛选无效", 400)
-        identity_state = str(request.args.get("identityState") or "").strip()
-        if identity_state and identity_state not in IDENTITY_STATES:
+        identity_states = [str(value or "").strip() for value in request.args.getlist("identityState") if str(value or "").strip()]
+        if any(identity_state not in IDENTITY_STATES for identity_state in identity_states):
             return _error("TASK_IDENTITY_FILTER_INVALID", "身份状态筛选无效", 400)
         execution_state = str(request.args.get("executionState") or "").strip()
         if execution_state and execution_state not in EXECUTION_STATES:
             return _error("TASK_EXECUTION_FILTER_INVALID", "执行状态筛选无效", 400)
+        user_state = str(request.args.get("userState") or "").strip()
+        if user_state and user_state not in USER_STATES:
+            return _error("TASK_USER_STATE_FILTER_INVALID", "任务状态筛选无效", 400)
+        completed_date = str(request.args.get("completedDate") or "").strip()
+        if completed_date:
+            try:
+                datetime.strptime(completed_date, "%Y-%m-%d")
+            except ValueError:
+                return _error("TASK_COMPLETED_DATE_INVALID", "完成日期筛选无效", 400)
         try:
             offset = _integer_query("offset", 0, 0, 1_000_000)
             limit = _integer_query("limit", 20, 1, 100)
@@ -663,8 +868,10 @@ def register_task_chain_v2(app: Flask, repository=None, clock=None):
         try:
             payload = service.list_items(
                 health_state=health_state,
-                identity_state=identity_state,
+                identity_states=identity_states,
                 execution_state=execution_state,
+                user_state=user_state,
+                completed_date=completed_date,
                 chain_id_value=str(request.args.get("chainId") or "").strip(),
                 target_key_value=str(request.args.get("targetKey") or "").strip(),
                 subscription_id=str(request.args.get("subscriptionId") or "").strip(),
@@ -694,9 +901,9 @@ def register_task_chain_v2(app: Flask, repository=None, clock=None):
     @app.get("/api/v2/tasks/ledger/migrations/preview")
     def task_ledger_migration_preview_v2():
         try:
-            return jsonify(service.migration_preview())
-        except RuntimeError as exc:
-            return _error("TASK_LEDGER_NOT_AVAILABLE", str(exc), 503)
+            return jsonify(present_migration_preview(service.migration_preview()))
+        except RuntimeError:
+            return _error("TASK_LEDGER_NOT_AVAILABLE", "任务台账暂不可用", 503)
         except Exception:
             return _error("TASK_LEDGER_MIGRATION_PREVIEW_FAILED", "任务台账迁移预检失败", 502)
 

@@ -7,6 +7,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from app.private_rss_parser import extract_media_identity, extract_release_scope
+from app.torra_subscription_keys import (
+    resolve_torra_subscription_key,
+    torra_internal_unit_key,
+    torra_public_match_keys,
+    torra_public_subscription_key,
+    torra_public_unit_key,
+)
 
 
 ACTIVE_WATCH_STATES = {"observing_upgrade", "search_due", "search_running"}
@@ -14,6 +21,14 @@ YEAR_PATTERN = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
 LATIN_BOUNDARY = re.compile(r"(?<![a-z0-9]){}(?![a-z0-9])", re.IGNORECASE)
 QB_EPISODE_PATTERN = re.compile(r"S0*(\d{1,2})E0*(\d{1,4})(?:[-~]E?0*(\d{1,4}))?", re.IGNORECASE)
 ANALYSIS_ACTION_TYPE = "rewash-analysis"
+DOWNLOAD_ACTION_TYPE = "rewash-download"
+MANUAL_SUBSCRIPTION_SOURCE = "manual-subscription"
+PERMANENT_RECLAIM_CONTEXT_CODES = {
+    "window_expired": "RSS_REWASH_WINDOW_EXPIRED",
+    "watch_unit_missing": "RSS_REWASH_WATCH_UNIT_MISSING",
+    "subscription_missing": "RSS_REWASH_SUBSCRIPTION_MISSING",
+    "torra_subscription_missing": "RSS_REWASH_TORRA_SUBSCRIPTION_MISSING",
+}
 
 
 def _text(value):
@@ -132,6 +147,10 @@ def _subscription_aliases(subscription):
                     )
                 else:
                     aliases.append(_text(value))
+    for key in ("tmdb_title", "match_title"):
+        value = subscription.get(key)
+        if isinstance(value, str) and value.strip():
+            aliases.append(value.strip())
     return (
         list(dict.fromkeys(value for value in canonical if value)),
         list(dict.fromkeys(value for value in aliases if value)),
@@ -262,6 +281,74 @@ class RssSubscriptionMatchRuntime:
         local = self._local_subscriptions()
         return {**self._torra_subscriptions(), **local}
 
+    def _subscription_context(self, subscription_id):
+        subscription_id = _text(subscription_id)
+        local_subscriptions = self._local_subscriptions()
+        if not subscription_id.startswith("torra:"):
+            subscription = local_subscriptions.get(subscription_id)
+            if not subscription:
+                return None, "subscription_missing"
+            return {
+                "subscription": subscription,
+                "internalKey": subscription_id,
+                "publicKey": subscription_id,
+                "torraRows": None,
+            }, ""
+
+        torra = getattr(self.analysis, "torra", None) if self.analysis else None
+        if torra is None:
+            return None, "torra_unavailable"
+        try:
+            if hasattr(torra, "is_configured") and not torra.is_configured():
+                return None, "torra_unavailable"
+            rows = torra.list_subscriptions()
+        except Exception:
+            return None, "torra_unavailable"
+        resolved = resolve_torra_subscription_key(subscription_id, rows)
+        if resolved.get("status") == "conflict":
+            return None, "torra_subscription_key_conflict"
+        if resolved.get("status") != "resolved":
+            return None, "subscription_missing"
+        internal_key = next((
+            candidate
+            for candidate in (
+                subscription_id,
+                resolved["canonicalKey"],
+                resolved["publicKey"],
+            )
+            if candidate in local_subscriptions
+        ), resolved["canonicalKey"])
+        subscription = dict(local_subscriptions.get(internal_key) or resolved["item"])
+        subscription["key"] = internal_key
+        subscription.setdefault("source", "torra")
+        return {
+            "subscription": subscription,
+            "internalKey": internal_key,
+            "publicKey": resolved["publicKey"],
+            "canonicalKey": resolved["canonicalKey"],
+            "torraRows": rows,
+        }, ""
+
+    @staticmethod
+    def _public_match_keys(unit):
+        internal_key = _text(unit.get("subscription_key"))
+        unit_key = _text(unit.get("unit_key"))
+        torra_id = _text(unit.get("torra_subscription_id"))
+        if not internal_key.startswith("torra:") or not torra_id:
+            return internal_key, unit_key
+        public_key = torra_public_subscription_key(torra_id)
+        return public_key, torra_public_unit_key(unit_key, internal_key, public_key)
+
+    @staticmethod
+    def _public_match(match):
+        if not match:
+            return match
+        value = dict(match)
+        value["subscriptionId"], value["unitId"] = torra_public_match_keys(
+            value.get("subscriptionId"), value.get("unitId")
+        )
+        return value
+
     @staticmethod
     def _subscription_season(subscription):
         for key in ("target_season", "season_number", "current_season", "latest_season", "season"):
@@ -294,6 +381,41 @@ class RssSubscriptionMatchRuntime:
             else:
                 years.update(_year(value) for value in season_years.values() if _year(value))
         return years
+
+    def _torra_owner_matches(self, subscription, unit, torra_row):
+        expected_type = _media_type(subscription.get("media_type") or subscription.get("mediaType"))
+        if not expected_type:
+            expected_type = "tv" if unit.get("season_number") is not None else "movie"
+        torra_type = _media_type(torra_row.get("media_type") or torra_row.get("mediaType"))
+        if torra_type and torra_type != expected_type:
+            return False
+
+        expected_season = _int(unit.get("season_number"))
+        torra_season = self._subscription_season(torra_row)
+        if (
+            expected_type == "tv"
+            and expected_season > 0
+            and torra_season is not None
+            and torra_season > 0
+            and torra_season != expected_season
+        ):
+            return False
+
+        subscription_tmdb = _tmdb_id(subscription)
+        torra_tmdb = _tmdb_id(torra_row)
+        if subscription_tmdb and torra_tmdb:
+            return subscription_tmdb == torra_tmdb
+
+        subscription_titles = sum(_subscription_aliases(subscription), [])
+        torra_titles = sum(_subscription_aliases(torra_row), [])
+        if subscription_titles and torra_titles:
+            return any(
+                _contains_title(torra_title, subscription_title)
+                or _contains_title(subscription_title, torra_title)
+                for subscription_title in subscription_titles
+                for torra_title in torra_titles
+            )
+        return True
 
     def _identity_backfill_candidates(self, item, subscriptions):
         item_type = _media_type(item.get("media_type") or item.get("mediaType"))
@@ -561,10 +683,11 @@ class RssSubscriptionMatchRuntime:
                     confidence="fallback",
                 )
             for candidate in candidates:
+                subscription_key, unit_key = self._public_match_keys(candidate["unit"])
                 match = self.rss_repository.create_match(
                     item["id"],
-                    candidate["unit"]["subscription_key"],
-                    candidate["unit"]["unit_key"],
+                    subscription_key,
+                    unit_key,
                     candidate["reason"],
                     connection=connection,
                 )
@@ -584,6 +707,92 @@ class RssSubscriptionMatchRuntime:
         with self.rss_repository.runtime.transaction(immediate=True) as connection:
             return self.match_inserted_rows(connection, rows)
 
+    def create_manual_match(self, item_id, subscription_id, unit_id):
+        item_id = _text(item_id)
+        subscription_id = _text(subscription_id)
+        unit_id = _text(unit_id)
+        if not all((item_id, subscription_id, unit_id)):
+            return {"status": "invalid", "reason": "required_fields_missing"}
+
+        item = self.rss_repository.get_item(item_id, public=False)
+        if not item:
+            return {"status": "missing", "reason": "item_missing"}
+        context, context_error = self._subscription_context(subscription_id)
+        if context_error == "torra_unavailable":
+            return {"status": "blocked", "reason": "torra_unavailable"}
+        if context_error == "torra_subscription_key_conflict":
+            return {"status": "conflict", "reason": context_error}
+        if not context:
+            return {"status": "missing", "reason": "subscription_missing"}
+        subscription = context["subscription"]
+        internal_unit_id = torra_internal_unit_key(
+            unit_id, context["internalKey"], context["publicKey"]
+        )
+        unit = self.watch_repository.get_watch_unit(internal_unit_id)
+        if not unit:
+            return {"status": "missing", "reason": "watch_unit_missing"}
+        if _text(unit.get("subscription_key")) != context["internalKey"]:
+            return {"status": "invalid", "reason": "watch_unit_owner_mismatch"}
+
+        current = _as_utc(self.clock())
+        ends_at = _as_utc(unit.get("observation_ends_at"))
+        if (
+            unit.get("state") not in ACTIVE_WATCH_STATES
+            or not _text(unit.get("baseline_ready_at"))
+            or not current
+            or not ends_at
+            or ends_at <= current
+        ):
+            return {"status": "blocked", "reason": "watch_unit_inactive"}
+
+        torra_id = _text(unit.get("torra_subscription_id"))
+        torra = getattr(self.analysis, "torra", None) if self.analysis else None
+        if not torra_id or torra is None:
+            return {"status": "blocked", "reason": "torra_subscription_missing"}
+        try:
+            if hasattr(torra, "is_configured") and not torra.is_configured():
+                return {"status": "blocked", "reason": "torra_unavailable"}
+            torra_rows = context.get("torraRows") or torra.list_subscriptions()
+        except Exception:
+            return {"status": "blocked", "reason": "torra_unavailable"}
+        torra_row = next(
+            (
+                row for row in torra_rows if isinstance(row, dict)
+                and _text(row.get("id")) == torra_id
+            ),
+            None,
+        )
+        if not torra_row:
+            return {"status": "blocked", "reason": "torra_subscription_missing"}
+        if context["internalKey"].startswith("torra:") and context["internalKey"] not in {
+            context.get("canonicalKey"),
+            context.get("publicKey"),
+        }:
+            return {"status": "invalid", "reason": "torra_subscription_owner_mismatch"}
+        if not self._torra_owner_matches(subscription, unit, torra_row):
+            return {"status": "invalid", "reason": "torra_subscription_owner_mismatch"}
+
+        candidate = self._candidate(item, subscription, unit)
+        if not candidate:
+            return {"status": "invalid", "reason": "item_not_compatible"}
+        public_unit_id = torra_public_unit_key(
+            internal_unit_id, context["internalKey"], context["publicKey"]
+        )
+        existing = self.rss_repository.get_match_for_item_unit(item_id, public_unit_id)
+        if not existing and public_unit_id != internal_unit_id:
+            existing = self.rss_repository.get_match_for_item_unit(item_id, internal_unit_id)
+        if existing:
+            if existing.get("subscriptionId") not in {context["internalKey"], context["publicKey"]}:
+                return {"status": "conflict", "reason": "match_owner_conflict"}
+            return {"status": "existing", "match": self._public_match(existing)}
+        match = self.rss_repository.create_match(
+            item_id,
+            context["publicKey"],
+            public_unit_id,
+            {**candidate["reason"], "matchSource": "manual"},
+        )
+        return {"status": "created", "match": match}
+
     def _analysis_config(self, require_rss_gate=True):
         if not self.analysis:
             return {}, "analysis_not_configured"
@@ -599,17 +808,29 @@ class RssSubscriptionMatchRuntime:
         return config, ""
 
     def _local_analysis_context(self, match):
-        unit = self.watch_repository.get_watch_unit(match.get("unitId"))
+        subscription_id = _text(match.get("subscriptionId"))
+        unit = None
+        if not subscription_id.startswith("torra:"):
+            unit = self.watch_repository.get_watch_unit(match.get("unitId"))
+            if not unit:
+                return None, "watch_unit_missing"
+        context, context_error = self._subscription_context(subscription_id)
+        if context_error:
+            return None, context_error
+        internal_unit_id = torra_internal_unit_key(
+            match.get("unitId"), context["internalKey"], context["publicKey"]
+        )
+        unit = unit or self.watch_repository.get_watch_unit(internal_unit_id)
         if not unit:
+            return None, "watch_unit_missing"
+        if _text(unit.get("subscription_key")) != context["internalKey"]:
             return None, "watch_unit_missing"
         ends_at = _as_utc(unit.get("observation_ends_at"))
         current = _as_utc(self.clock())
-        if unit.get("state") not in ACTIVE_WATCH_STATES or not ends_at or not current or ends_at < current:
+        if unit.get("state") not in ACTIVE_WATCH_STATES or not ends_at or not current or ends_at <= current:
             self.rss_repository.update_match(match["id"], "expired")
             return None, "window_expired"
-        subscription = self._subscriptions().get(unit["subscription_key"])
-        if not subscription:
-            return None, "subscription_missing"
+        subscription = context["subscription"]
         torra_id = _text(unit.get("torra_subscription_id"))
         if not torra_id:
             return None, "torra_subscription_missing"
@@ -661,10 +882,10 @@ class RssSubscriptionMatchRuntime:
     def _claim_analysis(self, context, config, idempotency_key, source):
         return self.watch_repository.claim_action(
             idempotency_key,
-            context["unit"]["subscription_key"],
+            context["match"]["subscriptionId"],
             "torra",
             ANALYSIS_ACTION_TYPE,
-            unit_key=context["unit"]["unit_key"],
+            unit_key=context["match"]["unitId"],
             request_summary={"matchId": context["match"]["id"], "source": source},
             cooldown_seconds=max(60, _int(config.get("torra_quality_min_interval_minutes") or 60)) * 60,
             rate_limits={
@@ -672,6 +893,19 @@ class RssSubscriptionMatchRuntime:
                 "daily": max(1, _int(config.get("torra_quality_daily_limit") or 30)),
             },
             require_idle=True,
+        )
+
+    def _cancel_reclaimed_context(self, claim, reason):
+        code = PERMANENT_RECLAIM_CONTEXT_CODES[reason]
+        return self.watch_repository.complete_action(
+            claim["action"]["action_id"],
+            "cancelled",
+            {
+                "reason": "rss_reclaim_context_invalid",
+                "contextReason": reason,
+            },
+            error_code=code,
+            error_message="RSS 匹配上下文已不可用",
         )
 
     def _submit_analysis(self, context, action):
@@ -717,6 +951,7 @@ class RssSubscriptionMatchRuntime:
                 "selectedCandidates": selection["selected_candidates"],
                 "rowCount": selection["row_count"],
                 "selectedCount": selection["selected_count"],
+                "upgradeOptions": selection.get("upgrade_options") or [],
             },
         )
         next_status = "ignored" if selection["selected_count"] == 0 else "triggered"
@@ -812,6 +1047,8 @@ class RssSubscriptionMatchRuntime:
             return {"status": "blocked", "reason": reason}
         context, reason = self._local_analysis_context(match)
         if reason:
+            if preclaimed and reason in PERMANENT_RECLAIM_CONTEXT_CODES:
+                self._cancel_reclaimed_context(preclaimed, reason)
             return {"status": "blocked", "reason": reason}
         reason = self._safe_provider_preflight(context)
         if reason:
@@ -822,6 +1059,110 @@ class RssSubscriptionMatchRuntime:
         if claim["disposition"] not in {"claimed", "reclaimed"}:
             return {"status": claim["disposition"]}
         return self._submit_analysis(context, claim["action"])
+
+    def prepare_download(self, match_id, analysis_action_id, idempotency_key):
+        match = self.rss_repository.get_match(match_id)
+        if not match:
+            return {"status": "missing", "reason": "match_missing"}
+        if match.get("status") in {"ignored", "expired"}:
+            return {"status": "blocked", "reason": "match_not_ready"}
+
+        analysis_action = self.watch_repository.get_action(analysis_action_id)
+        analysis_summary = analysis_action.get("request_summary") if analysis_action else {}
+        if (
+            not analysis_action
+            or analysis_action.get("provider") != "torra"
+            or analysis_action.get("action_type") != ANALYSIS_ACTION_TYPE
+            or analysis_action.get("subscription_key") != match.get("subscriptionId")
+            or analysis_action.get("unit_key") != match.get("unitId")
+            or not isinstance(analysis_summary, dict)
+            or analysis_summary.get("matchId") != match.get("id")
+        ):
+            return {"status": "blocked", "reason": "analysis_action_missing"}
+        if analysis_action.get("status") != "succeeded":
+            return {"status": "blocked", "reason": "analysis_action_not_ready"}
+
+        result = analysis_action.get("response_summary") or {}
+        selected = result.get("selectedCandidates")
+        if not _text(result.get("analysisId")) or not isinstance(selected, dict) or not selected:
+            return {"status": "blocked", "reason": "analysis_has_no_upgrade"}
+
+        existing = self.watch_repository.get_action_by_idempotency(idempotency_key)
+        if existing:
+            summary = existing.get("request_summary") or {}
+            if (
+                existing.get("provider") != "torra"
+                or existing.get("action_type") != DOWNLOAD_ACTION_TYPE
+                or existing.get("subscription_key") != match.get("subscriptionId")
+                or existing.get("unit_key") != match.get("unitId")
+                or not isinstance(summary, dict)
+                or summary.get("source") != MANUAL_SUBSCRIPTION_SOURCE
+                or summary.get("analysisActionId") != analysis_action.get("action_id")
+            ):
+                return {"status": "conflict", "reason": "idempotency_conflict"}
+
+        return {
+            "status": "ready",
+            "matchId": match["id"],
+            "subscriptionId": match["subscriptionId"],
+            "unitId": match["unitId"],
+            "analysisActionId": analysis_action["action_id"],
+        }
+
+    def record_download(self, match_id, analysis_action_id, download_action):
+        action = download_action if isinstance(download_action, dict) else {}
+        match = self.rss_repository.get_match(match_id)
+        analysis_action = self.watch_repository.get_action(analysis_action_id)
+        analysis_summary = analysis_action.get("request_summary") if analysis_action else {}
+        summary = action.get("request_summary") or {}
+        if (
+            not match
+            or not analysis_action
+            or analysis_action.get("provider") != "torra"
+            or analysis_action.get("action_type") != ANALYSIS_ACTION_TYPE
+            or analysis_action.get("status") != "succeeded"
+            or analysis_action.get("subscription_key") != match.get("subscriptionId")
+            or analysis_action.get("unit_key") != match.get("unitId")
+            or not isinstance(analysis_summary, dict)
+            or analysis_summary.get("matchId") != match.get("id")
+            or action.get("provider") != "torra"
+            or action.get("action_type") != DOWNLOAD_ACTION_TYPE
+            or action.get("subscription_key") != match.get("subscriptionId")
+            or action.get("unit_key") != match.get("unitId")
+            or not isinstance(summary, dict)
+            or summary.get("source") != MANUAL_SUBSCRIPTION_SOURCE
+            or summary.get("analysisActionId") != _text(analysis_action_id)
+        ):
+            return {"status": "conflict", "reason": "download_action_mismatch"}
+
+        action_id = _text(action.get("action_id"))
+        if not action_id:
+            return {"status": "conflict", "reason": "download_action_missing"}
+        next_status = "triggered" if action.get("status") in {"failed", "cancelled"} else "confirmed"
+        now = _as_utc(self.clock()) or datetime.now(timezone.utc)
+        updated_at = now.isoformat().replace("+00:00", "Z")
+        with self.rss_repository.runtime.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT match_status FROM rss_subscription_matches WHERE id=?",
+                (str(match_id),),
+            ).fetchone()
+            if not row:
+                return {"status": "missing", "reason": "match_missing"}
+            current = _text(row["match_status"])
+            if current in {"ignored", "expired"}:
+                return {"status": "blocked", "reason": "match_not_ready"}
+            if current == "confirmed":
+                next_status = "confirmed"
+            connection.execute(
+                "UPDATE rss_subscription_matches "
+                "SET match_status=?, trigger_action_id=?, updated_at=? WHERE id=?",
+                (next_status, action_id, updated_at, str(match_id)),
+            )
+        return {
+            "status": next_status,
+            "matchId": str(match_id),
+            "actionId": action_id,
+        }
 
     def wake_pending_candidates(self, limit=2):
         results = []

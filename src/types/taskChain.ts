@@ -5,6 +5,8 @@ export type TaskChainEvidence = 'verified' | 'inferred' | 'missing';
 export type TaskChainHealthState = 'normal' | 'waiting' | 'protected' | 'action_required' | 'evidence_insufficient';
 export type TaskChainIdentityState = 'unidentified' | 'linked' | 'conflict';
 export type TaskChainExecutionState = 'normal' | 'waiting' | 'protected' | 'suspected_blocked' | 'action_required' | 'confirmed_failed';
+export type TaskChainUserState = 'action_required' | 'in_progress' | 'completed' | 'no_action';
+export type TaskChainPrimaryActionKind = 'none' | 'reidentify' | 'resume_download' | 'pause_download' | 'retry_stage' | 'refresh_source' | 'open_qb' | 'open_torra' | 'view_subscription' | 'view_details';
 
 export interface TorraSecuploadRun {
   runId: string;
@@ -143,6 +145,15 @@ export interface TaskChainItem {
   technicalReasonText?: string;
   identityState?: TaskChainIdentityState;
   executionState?: TaskChainExecutionState;
+  userState?: TaskChainUserState;
+  resultText?: string;
+  completedAt?: string;
+  primaryAction?: {
+    kind: TaskChainPrimaryActionKind;
+    label: string;
+    available: boolean;
+    reason: string;
+  };
   recommendedAction?: string;
   retryEligible?: boolean;
   plannedRetryAt?: string;
@@ -198,6 +209,7 @@ export interface TaskChainResponse {
   healthCounts?: Record<TaskChainHealthState, number>;
   identityCounts?: Record<TaskChainIdentityState, number>;
   executionCounts?: Record<TaskChainExecutionState, number>;
+  userCounts?: Record<TaskChainUserState, number>;
   originCounts?: Record<'subscription' | 'download' | 'library', number>;
   stageCounts?: Record<string, Record<string, number>>;
 }
@@ -211,7 +223,10 @@ export type TaskChainSummaryResponse = Omit<TaskChainResponse, 'items' | 'page'>
 export interface TaskChainQuery {
   healthState?: TaskChainHealthState;
   identityState?: TaskChainIdentityState;
+  identityStates?: TaskChainIdentityState[];
   executionState?: TaskChainExecutionState;
+  userState?: TaskChainUserState;
+  completedDate?: string;
   chainId?: string;
   targetKey?: string;
   subscriptionId?: string;

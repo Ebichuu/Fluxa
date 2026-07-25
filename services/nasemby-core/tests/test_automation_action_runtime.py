@@ -12,6 +12,7 @@ if str(MODULE_ROOT) not in sys.path:
 
 from app.main import create_app
 from app.quality_watch_repository import QualityWatchRepository
+from app.subscription_reconciliation_runtime import torra_public_subscription_key
 
 
 class AutomationActionRuntimeTests(unittest.TestCase):
@@ -51,6 +52,51 @@ class AutomationActionRuntimeTests(unittest.TestCase):
             self.assertNotIn("must-not-escape", serialized)
             self.assertNotIn("tracker.example", serialized)
             self.assertNotIn("torra.example", serialized)
+
+    def test_legacy_torra_action_redacts_internal_analysis_and_remote_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = QualityWatchRepository(Path(directory) / "media_control_center.sqlite3")
+            remote_id = "remote-private-id"
+            internal_key = f"torra:{remote_id}"
+            public_key = torra_public_subscription_key(remote_id)
+            claimed = repository.claim_action(
+                "automation-action-torra-legacy",
+                internal_key,
+                "torra",
+                "rewash-analysis",
+                unit_key=f"{internal_key}:s1:e1",
+            )
+            action_id = claimed["action"]["action_id"]
+            repository.complete_action(action_id, "succeeded", {
+                "analysisId": "analysis-private-id",
+                "analysisActionId": "analysis-action-private-id",
+                "remoteId": remote_id,
+                "torraRemoteId": remote_id,
+                "selectedCandidates": {"row-private": "candidate-private"},
+                "selectedCount": 1,
+                "rowCount": 1,
+            })
+            client = create_app(
+                access_environment={},
+                quality_watch_repository=repository,
+            ).test_client()
+
+            response = client.get(f"/api/v2/automation-actions/{action_id}")
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["subscriptionId"], public_key)
+            self.assertEqual(payload["unitId"], f"{public_key}:s1:e1")
+            self.assertEqual(payload["result"], {"selectedCount": 1, "rowCount": 1})
+            serialized = response.get_data(as_text=True)
+            for private_value in (
+                remote_id,
+                "analysis-private-id",
+                "analysis-action-private-id",
+                "row-private",
+                "candidate-private",
+            ):
+                self.assertNotIn(private_value, serialized)
 
     def test_missing_action_is_404_and_auth_is_enforced_by_application(self):
         with tempfile.TemporaryDirectory() as directory:

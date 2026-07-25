@@ -9,7 +9,15 @@ import {
   Search,
   Settings2
 } from 'lucide-react';
-import { getRuntimeSettings, saveRuntimeSettings } from '../../services/api';
+import {
+  getEmbyOverview,
+  getIntegrationSummary,
+  getQbittorrentSummary,
+  getRuntimeSettings,
+  getSymediaSummary,
+  getTorraSummary,
+  saveRuntimeSettings
+} from '../../services/api';
 import type {
   RuntimeSettingField,
   RuntimeSettingGroup,
@@ -27,6 +35,54 @@ function valuesFrom(payload: RuntimeSettingsResponse) {
 function fieldMatches(field: RuntimeSettingField, query: string) {
   const haystack = `${field.label} ${field.description} ${field.key}`.toLocaleLowerCase('zh-CN');
   return haystack.includes(query);
+}
+
+const disabledEffects: Record<string, string> = {
+  MCC_SUBSCRIPTION_SCHEDULER_ENABLED: '关闭后停止后台定时扫描，仍可手动更新追更。',
+  MCC_TORRA_SUBSCRIPTION_SYNC_ENABLED: '关闭后停止刷新 Torra 镜像状态，不会删除两边已有订阅。',
+  NASEMBY_CORE_WRITE_ENABLED: '关闭后进入只读模式，已有追更和历史记录保留。',
+  MCC_PRIVATE_RSS_ENABLED: '关闭后停止 RSS 采集，已收集的种子记录保留。',
+  MCC_TORRA_QUALITY_WATCH_ENABLED: '关闭后停止创建新的质量观察，已有下载和入库不受影响。',
+  MCC_TORRA_REWASH_DOWNLOAD_ENABLED: '关闭后仍可分析候选，但不会允许确认下载。',
+  TORRA_PUSH_ENABLED: '关闭后新追更不再推送到 Torra，Torra 现有订阅不受影响。',
+  MCC_CLOUD_TRANSFER_ENABLED: '关闭后不再允许云盘转存，已完成文件不会删除。'
+};
+
+function fieldImpact(field: RuntimeSettingField) {
+  const disabled = disabledEffects[field.key] ?? '关闭后不再执行此能力，已有数据不会自动删除。';
+  return {
+    enabled: `开启后：${field.description}`,
+    disabled,
+    applies: field.restartRequired ? '保存后需重启 Fluxa 生效。' : '保存后立即用于后续请求。'
+  };
+}
+
+async function verifyRuntimeGroup(groupId: string) {
+  if (groupId === 'emby') {
+    const result = await getEmbyOverview();
+    return result.configured && result.connected ? '连接验证成功' : `配置已保存，但 Emby ${result.configured ? '暂不可用' : '尚未配置完整'}`;
+  }
+  if (groupId === 'qbittorrent') {
+    const result = await getQbittorrentSummary();
+    return result.configured && result.connected ? '连接验证成功' : `配置已保存，但 qBittorrent ${result.configured ? '暂不可用' : '尚未配置完整'}`;
+  }
+  if (groupId === 'torra') {
+    const result = await getTorraSummary();
+    return result.configured && result.connected ? '连接验证成功' : `配置已保存，但 Torra ${result.configured ? '暂不可用' : '尚未配置完整'}`;
+  }
+  if (groupId === 'symedia') {
+    const result = await getSymediaSummary();
+    return result.configured && result.connected ? '连接验证成功' : `配置已保存，但 Symedia ${result.configured ? '暂不可用' : '尚未配置完整'}`;
+  }
+  const integrationId = ({ cloud: 'cloud115', telegram: 'telegram', hdhive: 'hdhive', moviepilot: 'moviepilot' } as const)[groupId as 'cloud' | 'telegram' | 'hdhive' | 'moviepilot'];
+  if (!integrationId) return '';
+  const summary = await getIntegrationSummary(true);
+  const service = summary.services.find((item) => item.id === integrationId);
+  if (!service) return '';
+  if (!service.configured) return `配置已保存，但 ${service.name} 尚未配置完整`;
+  if (service.connected === true) return '连接验证成功';
+  if (service.connected === false) return `配置已保存，但 ${service.name} 暂不可用`;
+  return `配置已保存；主动连接验证当前未开启`;
 }
 
 export function RuntimeSettingsPanel() {
@@ -124,9 +180,15 @@ export function RuntimeSettingsPanel() {
     setSavingGroup(group.id);
     setMessages((current) => ({ ...current, [group.id]: '' }));
     saveRuntimeSettings({ values: nextValues, clearSecrets: nextClears })
-      .then((next) => {
+      .then(async (next) => {
         setPayload(next);
-        setValues(valuesFrom(next));
+        setValues((current) => {
+          const merged = valuesFrom(next);
+          dirty.forEach((key) => {
+            if (!groupKeys.has(key)) merged[key] = current[key] ?? '';
+          });
+          return merged;
+        });
         setDirty((current) => {
           const result = new Set(current);
           groupKeys.forEach((key) => result.delete(key));
@@ -137,10 +199,16 @@ export function RuntimeSettingsPanel() {
           groupKeys.forEach((key) => result.delete(key));
           return result;
         });
-        const restart = next.restartRequired?.length
-          ? `已保存，${next.restartRequired.length} 项重启后生效`
-          : '已保存并应用';
-        setMessages((current) => ({ ...current, [group.id]: restart }));
+        const restartRequired = next.restartRequired ?? [];
+        if (restartRequired.length) {
+          setMessages((current) => ({ ...current, [group.id]: `已保存，${restartRequired.length} 项重启后生效` }));
+          return;
+        }
+        const verification = await verifyRuntimeGroup(group.id).catch(() => '配置已保存，但连接验证未完成');
+        setMessages((current) => ({
+          ...current,
+          [group.id]: verification ? `已保存并应用 · ${verification}` : '已保存并应用'
+        }));
       })
       .catch((reason: unknown) => {
         const message = reason instanceof Error ? reason.message : '保存失败';
@@ -211,6 +279,7 @@ export function RuntimeSettingsPanel() {
                   <div className="runtime-settings__fields">
                     {group.fields.map((field) => {
                       const markedForClear = clearSecrets.has(field.key);
+                      const impact = field.type === 'boolean' ? fieldImpact(field) : null;
                       return (
                         <label className={`runtime-setting runtime-setting--${field.type}`} key={field.key}>
                           <span className="runtime-setting__label">
@@ -220,15 +289,24 @@ export function RuntimeSettingsPanel() {
                           </span>
                           <small className="runtime-setting__description">{field.description}</small>
                           {field.type === 'boolean' ? (
-                            <span className="runtime-setting__switch">
-                              <input
-                                checked={(values[field.key] ?? 'false') === 'true'}
-                                disabled={Boolean(savingGroup)}
-                                type="checkbox"
-                                onChange={(event) => changeValue(field.key, event.target.checked ? 'true' : 'false')}
-                              />
-                              <span>{(values[field.key] ?? 'false') === 'true' ? '已开启' : '已关闭'}</span>
-                            </span>
+                            <>
+                              <span className="runtime-setting__switch">
+                                <input
+                                  checked={(values[field.key] ?? 'false') === 'true'}
+                                  disabled={Boolean(savingGroup)}
+                                  type="checkbox"
+                                  onChange={(event) => changeValue(field.key, event.target.checked ? 'true' : 'false')}
+                                />
+                                <span>{(values[field.key] ?? 'false') === 'true' ? '已开启' : '已关闭'}</span>
+                              </span>
+                              {impact && (
+                                <span className="runtime-setting__impact">
+                                  <small>{impact.enabled}</small>
+                                  <small>{impact.disabled}</small>
+                                  <small>{impact.applies}</small>
+                                </span>
+                              )}
+                            </>
                           ) : (
                             <span className="runtime-setting__control">
                               <input
@@ -273,7 +351,7 @@ export function RuntimeSettingsPanel() {
                   <footer className="runtime-settings__group-foot">
                     <span className={messages[group.id]?.includes('失败') ? 'is-error' : ''}>{messages[group.id] || (groupDirty ? '有未保存修改' : '配置已同步')}</span>
                     <button
-                      className="tool-link"
+                      className="ops-action-button ops-action-button--primary"
                       disabled={!groupDirty || Boolean(savingGroup)}
                       type="button"
                       onClick={() => saveGroup(group)}

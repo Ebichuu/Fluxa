@@ -302,6 +302,151 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
         self.assertEqual(response.get_json()["code"], "TMDB_AUTH_FAILED")
         self.assertIn("更新", response.get_json()["error"])
 
+    def test_discover_browse_source_statuses_cover_empty_unconfigured_and_unavailable(self):
+        app = create_app(access_environment={})
+        empty = {
+            "success": True,
+            "source": "TMDB",
+            "items": [],
+            "page": 1,
+            "total_pages": 1,
+            "total_results": 0,
+        }
+        with patch.object(discover_runtime, "fetch_tmdb", return_value=empty):
+            body = app.test_client().get("/api/discover/browse?source=tmdb").get_json()
+        self.assertEqual(body["sourceStatuses"], [{
+            "key": "tmdb",
+            "label": "TMDB",
+            "status": "available",
+            "count": 0,
+            "message": "已搜索，未找到结果",
+        }])
+
+        with patch.object(
+            discover_runtime,
+            "load_tmdb_config",
+            return_value={"api_key": "", "api_token": "", "api_base_url": "https://api.themoviedb.org/3"},
+        ):
+            body = app.test_client().get("/api/discover/browse?source=tmdb").get_json()
+        self.assertEqual(body["sourceStatuses"][0]["status"], "not_configured")
+
+        with patch.object(discover_runtime, "fetch_tmdb", side_effect=OSError("https://secret.test?token=hidden")):
+            response = app.test_client().get("/api/discover/browse?source=tmdb")
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.get_json()["sourceStatuses"][0]["status"], "unavailable")
+        self.assertNotIn("secret.test", json.dumps(response.get_json(), ensure_ascii=False))
+
+    def test_discover_search_source_statuses_cover_empty_unconfigured_and_unavailable(self):
+        app = create_app(access_environment={})
+        empty = {
+            "success": True,
+            "source": "TMDB",
+            "items": [],
+            "page": 1,
+            "total_pages": 1,
+            "total_results": 0,
+        }
+        with patch.object(discover_runtime, "load_tmdb_config", return_value={"api_token": "configured"}), patch.object(
+            discover_runtime, "search_media", return_value=empty
+        ):
+            body = app.test_client().get("/api/discover/search?query=test").get_json()
+        self.assertEqual(body["sourceStatuses"][0], {
+            "key": "tmdb",
+            "label": "TMDB",
+            "status": "available",
+            "count": 0,
+            "message": "已搜索，未找到结果",
+        })
+
+        with patch.object(discover_runtime, "load_tmdb_config", return_value={"api_key": "", "api_token": ""}):
+            body = app.test_client().get("/api/discover/search?query=test").get_json()
+        self.assertEqual(body["sourceStatuses"][0]["status"], "not_configured")
+
+        with patch.object(discover_runtime, "load_tmdb_config", return_value={"api_token": "configured"}), patch.object(
+            discover_runtime, "search_media", side_effect=RuntimeError("Bearer hidden")
+        ):
+            response = app.test_client().get("/api/discover/search?query=test")
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.get_json()["sourceStatuses"][0]["status"], "unavailable")
+        self.assertNotIn("Bearer hidden", json.dumps(response.get_json(), ensure_ascii=False))
+
+    def test_resource_search_source_statuses_are_derived_and_sanitized(self):
+        app = create_app(access_environment={})
+        upstream = {
+            "success": True,
+            "title": "测试剧",
+            "media_type": "tv",
+            "items": [],
+            "sources": [
+                {"key": "pansou", "label": "频道搜索", "count": 0},
+                {"key": "hdhive", "label": "HDHiveAPI", "count": 0, "configured": False},
+                {
+                    "key": "private-source-id",
+                    "label": "https://secret.example/rss?token=hidden",
+                    "count": 0,
+                    "enabled": False,
+                },
+            ],
+            "errors": ["频道搜索失败：https://user:password@secret.example?passkey=hidden"],
+        }
+        with patch.object(discover_runtime, "search_resources", return_value=upstream):
+            body = app.test_client().get("/api/discover/resources/search?title=test&type=tv").get_json()
+
+        statuses = {item["key"]: item for item in body["sourceStatuses"]}
+        self.assertEqual(statuses["pansou"]["status"], "unavailable")
+        self.assertEqual(statuses["hdhive"]["status"], "not_configured")
+        self.assertEqual(statuses["resource-source-3"]["status"], "disabled")
+        self.assertEqual(statuses["resource-source-3"]["label"], "资源来源 3")
+        serialized = json.dumps(body, ensure_ascii=False)
+        self.assertNotIn("secret.example", serialized)
+        self.assertNotIn("hidden", serialized)
+        self.assertNotIn("private-source-id", serialized)
+
+    def test_resource_search_empty_result_reports_each_available_source(self):
+        app = create_app(access_environment={})
+        upstream = {
+            "success": True,
+            "title": "测试剧",
+            "media_type": "tv",
+            "items": [],
+            "sources": [
+                {"key": "all", "label": "全部", "count": 0},
+                {"key": "pansou", "label": "频道搜索", "count": 0},
+                {"key": "hdhive", "label": "HDHiveAPI", "count": 0},
+            ],
+            "errors": [],
+        }
+        with patch.object(discover_runtime, "search_resources", return_value=upstream):
+            body = app.test_client().get("/api/discover/resources/search?title=test&type=tv").get_json()
+
+        self.assertEqual(body["sources"], upstream["sources"])
+        self.assertEqual(
+            [(item["key"], item["status"], item["message"]) for item in body["sourceStatuses"]],
+            [
+                ("pansou", "available", "已搜索，未找到结果"),
+                ("hdhive", "available", "已搜索，未找到结果"),
+            ],
+        )
+
+    def test_resource_search_exception_has_sanitized_unavailable_source_status(self):
+        app = create_app(access_environment={})
+        with patch.object(
+            discover_runtime,
+            "search_resources",
+            side_effect=RuntimeError("https://secret.example?token=hidden"),
+        ):
+            response = app.test_client().get("/api/discover/resources/search?title=test")
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.get_json()["sourceStatuses"], [{
+            "key": "resource-search",
+            "label": "资源搜索",
+            "status": "unavailable",
+            "count": 0,
+            "message": "来源暂不可用，请稍后重试",
+        }])
+        self.assertNotIn("secret.example", json.dumps(response.get_json(), ensure_ascii=False))
+
     def test_detail_calendar_and_resource_payloads_use_react_whitelists(self):
         detail = map_subscription_detail({
             "success": True,

@@ -10,7 +10,8 @@ const canonicalRoutes: Record<PageId, string> = {
   subscriptions: '/following',
   'subscription-settings': '/following/settings',
   'rss-library': '/rss-library',
-  settings: '/settings'
+  settings: '/settings',
+  media: '/media'
 };
 
 const legacyRoutes: Record<string, PageId> = {
@@ -35,13 +36,18 @@ function optionalString(value: string | null) {
 
 export function readNavigation(location: Location = window.location): NavigationState {
   const pathname = location.pathname.replace(/\/+$/, '') || '/';
-  const page = (Object.entries(canonicalRoutes).find(([, route]) => route === pathname)?.[0] as PageId | undefined)
+  const mediaRoute = pathname.match(/^\/media\/(movie|tv)\/(\d+)$/);
+  const page = (mediaRoute ? 'media' : Object.entries(canonicalRoutes).find(([, route]) => route === pathname)?.[0] as PageId | undefined)
     ?? legacyRoutes[pathname]
     ?? 'overview';
   const query = new URLSearchParams(location.search);
   const season = Number(query.get('seasonNumber'));
-  const target: TaskNavigationTarget | null = ['tasks', 'subscriptions'].includes(page) && (
+  const target: TaskNavigationTarget | null = page === 'media' && mediaRoute ? {
+    mediaType: mediaRoute[1] as 'movie' | 'tv',
+    tmdbId: mediaRoute[2]
+  } : ['tasks', 'subscriptions'].includes(page) && (
     query.has('chainId') || query.has('targetKey') || query.has('subscriptionId') || query.has('tmdbId') || query.has('title')
+    || query.has('userState') || query.has('completedDate') || query.has('advanced') || query.has('identityState')
   ) ? {
     mediaType: query.get('mediaType') === 'movie' ? 'movie' : query.get('mediaType') === 'tv' ? 'tv' : undefined,
     chainId: optionalString(query.get('chainId')),
@@ -49,18 +55,29 @@ export function readNavigation(location: Location = window.location): Navigation
     subscriptionId: optionalString(query.get('subscriptionId')),
     tmdbId: optionalString(query.get('tmdbId')),
     title: optionalString(query.get('title')),
-    seasonNumber: Number.isFinite(season) && season > 0 ? season : undefined
+    seasonNumber: Number.isFinite(season) && season > 0 ? season : undefined,
+    userState: ['action_required', 'in_progress', 'completed', 'no_action'].includes(query.get('userState') || '')
+      ? query.get('userState') as TaskNavigationTarget['userState']
+      : undefined,
+    completedDate: optionalString(query.get('completedDate')),
+    advanced: query.get('advanced') === '1',
+    identityStates: query.getAll('identityState').filter((value): value is 'unidentified' | 'linked' | 'conflict' => (
+      ['unidentified', 'linked', 'conflict'].includes(value)
+    ))
   } : null;
 
   return {
     page,
     target,
-    canonical: canonicalRoutes[page] === pathname,
+    canonical: page === 'media' ? Boolean(mediaRoute) : canonicalRoutes[page] === pathname,
     search: location.search
   };
 }
 
 export function pathForNavigation(page: PageId, target?: TaskNavigationTarget | null) {
+  if (page === 'media' && target?.mediaType && target.tmdbId && /^\d+$/.test(target.tmdbId)) {
+    return `/media/${target.mediaType}/${target.tmdbId}`;
+  }
   const route = canonicalRoutes[page];
   const query = new URLSearchParams();
   if (['tasks', 'subscriptions'].includes(page) && target) {
@@ -71,6 +88,10 @@ export function pathForNavigation(page: PageId, target?: TaskNavigationTarget | 
     if (target.tmdbId) query.set('tmdbId', target.tmdbId);
     if (target.title) query.set('title', target.title);
     if (target.seasonNumber != null) query.set('seasonNumber', String(target.seasonNumber));
+    if (target.userState) query.set('userState', target.userState);
+    if (target.completedDate) query.set('completedDate', target.completedDate);
+    if (target.advanced) query.set('advanced', '1');
+    target.identityStates?.forEach((value) => query.append('identityState', value));
   }
   const search = query.toString();
   return search ? `${route}?${search}` : route;

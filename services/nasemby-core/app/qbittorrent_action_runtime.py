@@ -7,6 +7,7 @@ import re
 from flask import Flask, jsonify, request
 
 from app.activity_log import write_activity
+from app.task_public_runtime import public_qb_task_ref, safe_public_text
 
 
 HASH_PATTERN = re.compile(r"^[a-f0-9]{40}$", re.IGNORECASE)
@@ -52,7 +53,7 @@ def _is_paused(task: dict) -> bool:
 
 
 def _safe_title(value) -> str:
-    title = value.strip() if isinstance(value, str) else ""
+    title = safe_public_text(value)
     return title[:120] or "未命名媒体任务"
 
 
@@ -67,6 +68,34 @@ def _idempotency_key(action: str, hashes: list[str], tasks: dict[str, dict]) -> 
     }
     content = json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return f"qb:{hashlib.sha256(content.encode('utf-8')).hexdigest()[:24]}"
+
+
+def _task_reference_lookup(tasks: dict[str, dict]) -> dict[str, str]:
+    lookup = {hash_value: hash_value for hash_value in tasks}
+    for hash_value in tasks:
+        public_ref = public_qb_task_ref(hash_value)
+        existing = lookup.get(public_ref)
+        if existing and existing != hash_value:
+            raise QbittorrentActionError(
+                "qBittorrent 任务公开引用发生冲突",
+                409,
+                "QB_TASK_REFERENCE_CONFLICT",
+            )
+        lookup[public_ref] = hash_value
+    return lookup
+
+
+def _resolve_task_references(references: list[str], tasks: dict[str, dict]) -> tuple[list[str], list[str]]:
+    lookup = _task_reference_lookup(tasks)
+    resolved = []
+    missing = []
+    for reference in references:
+        hash_value = lookup.get(reference)
+        if not hash_value:
+            missing.append(reference)
+        elif hash_value not in resolved:
+            resolved.append(hash_value)
+    return resolved, missing
 
 
 class QbittorrentActionService:
@@ -84,7 +113,7 @@ class QbittorrentActionService:
                 400,
                 "QB_ACTION_INVALID",
             )
-        hashes = validate_action_hashes(input_data.get("hashes"))
+        references = validate_action_hashes(input_data.get("hashes"))
         before = self.client.summary()
         base = {
             "action": action,
@@ -93,7 +122,7 @@ class QbittorrentActionService:
             "requiresConfirmation": True,
             "cooldownSeconds": 0,
             "idempotencyKey": "",
-            "affected": {"requested": len(hashes), "eligible": 0, "skipped": 0, "missing": 0},
+            "affected": {"requested": len(references), "eligible": 0, "skipped": 0, "missing": 0},
             "targets": [],
         }
         if not before.get("configured"):
@@ -102,27 +131,28 @@ class QbittorrentActionService:
             return {
                 **base,
                 "reasonCode": "QB_UNAVAILABLE",
-                "reasonText": before.get("error") or "qBittorrent 当前不可用",
+                "reasonText": safe_public_text(before.get("error"), "qBittorrent 当前不可用"),
             }
 
         before_by_hash = {
             str(task.get("hash") or "").lower(): task
             for task in before.get("tasks") or []
         }
-        missing = [hash_value for hash_value in hashes if hash_value not in before_by_hash]
+        hashes, missing = _resolve_task_references(references, before_by_hash)
+        reference_lookup = _task_reference_lookup(before_by_hash)
         targets = [{
-            "hashPrefix": hash_value[:8],
-            "name": _safe_title(before_by_hash.get(hash_value, {}).get("name")),
-            "state": str(before_by_hash.get(hash_value, {}).get("state") or ""),
-            "status": str(before_by_hash.get(hash_value, {}).get("status") or ""),
-            "outcome": "missing" if hash_value in missing else "unchanged",
-        } for hash_value in hashes]
+            "hashPrefix": public_qb_task_ref(raw_hash)[:8] if raw_hash else "",
+            "name": _safe_title(before_by_hash.get(raw_hash, {}).get("name")),
+            "state": str(before_by_hash.get(raw_hash, {}).get("state") or ""),
+            "status": str(before_by_hash.get(raw_hash, {}).get("status") or ""),
+            "outcome": "missing" if not raw_hash else "unchanged",
+        } for reference in references for raw_hash in [reference_lookup.get(reference)]]
         if missing:
             return {
                 **base,
                 "reasonCode": "QB_TASK_NOT_FOUND",
                 "reasonText": "部分 qBittorrent 任务已不存在，请刷新任务链后重试",
-                "affected": {"requested": len(hashes), "eligible": 0, "skipped": 0, "missing": len(missing)},
+                "affected": {"requested": len(references), "eligible": 0, "skipped": 0, "missing": len(missing)},
                 "targets": targets,
             }
 
@@ -132,8 +162,10 @@ class QbittorrentActionService:
             if (_is_paused(before_by_hash[hash_value])) == (action == "resume")
         ]
         skipped = [hash_value for hash_value in hashes if hash_value not in eligible]
-        for target, hash_value in zip(targets, hashes):
-            target["outcome"] = "will_change" if hash_value in eligible else "unchanged"
+        eligible_refs = {public_qb_task_ref(hash_value) for hash_value in eligible}
+        raw_eligible_refs = set(eligible)
+        for target, reference in zip(targets, references):
+            target["outcome"] = "will_change" if reference in eligible_refs | raw_eligible_refs else "unchanged"
         verb = "暂停" if action == "pause" else "恢复"
         key = _idempotency_key(action, hashes, before_by_hash)
         if not eligible:
@@ -162,7 +194,7 @@ class QbittorrentActionService:
                 400,
                 "QB_ACTION_INVALID",
             )
-        hashes = validate_action_hashes(input_data.get("hashes"))
+        references = validate_action_hashes(input_data.get("hashes"))
         title = _safe_title(input_data.get("title"))
         before = self.client.summary()
         if not before.get("configured"):
@@ -173,7 +205,7 @@ class QbittorrentActionService:
             )
         if not before.get("connected"):
             raise QbittorrentActionError(
-                before.get("error") or "qBittorrent 当前不可用",
+                safe_public_text(before.get("error"), "qBittorrent 当前不可用"),
                 503,
                 "QB_UNAVAILABLE",
             )
@@ -182,7 +214,7 @@ class QbittorrentActionService:
             str(task.get("hash") or "").lower(): task
             for task in before.get("tasks") or []
         }
-        missing = [hash_value for hash_value in hashes if hash_value not in before_by_hash]
+        hashes, missing = _resolve_task_references(references, before_by_hash)
         if missing:
             raise QbittorrentActionError(
                 "部分 qBittorrent 任务已不存在，请刷新任务链后重试",
@@ -221,7 +253,7 @@ class QbittorrentActionService:
                 "idempotencyKey": idempotency_key,
                 "tasks": [
                     {
-                        "hash": hash_value,
+                        "hash": public_qb_task_ref(hash_value),
                         "status": before_by_hash[hash_value].get("status") or "",
                         "state": before_by_hash[hash_value].get("state") or "",
                         "outcome": "skipped",
@@ -231,7 +263,7 @@ class QbittorrentActionService:
             }
 
         verb = "暂停" if action == "pause" else "恢复"
-        short_hashes = "、".join(hash_value[:8] for hash_value in eligible)
+        short_hashes = "、".join(public_qb_task_ref(hash_value)[:8] for hash_value in eligible)
         self._activity(
             action,
             "start",
@@ -240,7 +272,7 @@ class QbittorrentActionService:
         try:
             self.client.set_paused(action, eligible)
         except Exception as exc:
-            message = str(exc) or "qBittorrent 动作提交失败"
+            message = safe_public_text(exc, "qBittorrent 动作提交失败")
             self._activity(action, "error", f"{title}：{message}")
             raise QbittorrentActionError(message, 502, "QB_ACTION_FAILED") from exc
 
@@ -259,7 +291,7 @@ class QbittorrentActionService:
                 "idempotencyKey": idempotency_key,
                 "tasks": [
                     {
-                        "hash": hash_value,
+                        "hash": public_qb_task_ref(hash_value),
                         "status": before_by_hash[hash_value].get("status") or "",
                         "state": before_by_hash[hash_value].get("state") or "",
                         "outcome": "skipped" if hash_value in skipped else "failed",
@@ -281,7 +313,7 @@ class QbittorrentActionService:
                 reached_target = _is_paused(current) if action == "pause" else not _is_paused(current)
                 outcome = "success" if reached_target else "failed"
             tasks.append({
-                "hash": hash_value,
+                "hash": public_qb_task_ref(hash_value),
                 "status": current.get("status") or "",
                 "state": current.get("state") or "",
                 "outcome": outcome,

@@ -11,6 +11,22 @@ from app.contract_mapping import map_discover_payload, sanitize_resource_payload
 
 DISCOVER_SOURCES = {"tmdb", "daily", "douban", "tencent", "youku", "iqiyi", "mango", "streaming"}
 CORE_DISCOVER_SOURCES = {"tmdb", "streaming", "douban", "platform-hot", "daily-airing"}
+SOURCE_STATUS_VALUES = {"available", "unavailable", "disabled", "not_configured"}
+DISCOVER_SOURCE_LABELS = {
+    "tmdb": "TMDB",
+    "daily": "全球日播",
+    "douban": "豆瓣",
+    "tencent": "腾讯视频",
+    "youku": "优酷",
+    "iqiyi": "爱奇艺",
+    "mango": "芒果",
+    "streaming": "海外流媒体",
+}
+RESOURCE_SOURCE_LABELS = {
+    "pansou": "频道搜索",
+    "hdhive": "HDHiveAPI",
+    "tmdb": "TMDB",
+}
 PLATFORM_LABELS = {
     "tencent": "腾讯视频",
     "youku": "优酷",
@@ -109,12 +125,59 @@ def _raw_discover(source, query):
     raise LookupError("不支持的 NasEmby 发现来源")
 
 
-def _discover_error(code, message, status=502):
-    return jsonify({"code": code, "error": message}), status
+def _nonnegative_integer(value, fallback=0):
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _source_status(key, label, status, count=0, message=""):
+    normalized_status = status if status in SOURCE_STATUS_VALUES else "unavailable"
+    normalized_count = _nonnegative_integer(count)
+    if not message:
+        if normalized_status == "available":
+            message = f"已找到 {normalized_count} 条结果" if normalized_count else "已搜索，未找到结果"
+        elif normalized_status == "disabled":
+            message = "来源已停用"
+        elif normalized_status == "not_configured":
+            message = "来源尚未配置"
+        else:
+            message = "来源暂不可用，请稍后重试"
+    return {
+        "key": key,
+        "label": label,
+        "status": normalized_status,
+        "count": normalized_count,
+        "message": message,
+    }
+
+
+def _discover_source_status(source, status="available", count=0, message=""):
+    return _source_status(
+        source,
+        DISCOVER_SOURCE_LABELS.get(source, "内容发现"),
+        status,
+        count,
+        message,
+    )
+
+
+def _map_discover_with_status(payload, source):
+    mapped = map_discover_payload(payload, source)
+    count = _nonnegative_integer(mapped.get("totalResults"), len(mapped.get("results") or []))
+    mapped["sourceStatuses"] = [_discover_source_status(source, "available", count)]
+    return mapped
+
+
+def _discover_error(code, message, status=502, source_statuses=None):
+    payload = {"code": code, "error": message}
+    if source_statuses is not None:
+        payload["sourceStatuses"] = source_statuses
+    return jsonify(payload), status
 
 
 def _tmdb_not_configured(source):
-    labels = {"tmdb": "TMDB", "daily": "全球日播", "streaming": "海外流媒体"}
     return jsonify({
         "configured": False,
         "results": [],
@@ -123,9 +186,152 @@ def _tmdb_not_configured(source):
         "totalResults": 0,
         "hasNext": False,
         "hasPrev": False,
-        "sourceLabel": labels.get(source, source),
+        "sourceLabel": DISCOVER_SOURCE_LABELS.get(source, source),
         "message": "请在控制室配置 TMDB API Key 或 Bearer Token",
+        "sourceStatuses": [_discover_source_status(source, "not_configured")],
     })
+
+
+def _resource_source_key(value):
+    text = str(value or "").strip().lower()
+    aliases = {
+        "telegram": "pansou",
+        "tg": "pansou",
+        "channel": "pansou",
+        "频道搜索": "pansou",
+        "hdhiveapi": "hdhive",
+        "影巢": "hdhive",
+    }
+    return aliases.get(text, text)
+
+
+def _safe_resource_identity(source, index):
+    raw_key = str(source.get("key") or source.get("source_key") or source.get("source") or "").strip()
+    raw_label = str(source.get("label") or source.get("source_label") or "").strip()
+    canonical_key = _resource_source_key(raw_key or raw_label)
+    if canonical_key in RESOURCE_SOURCE_LABELS:
+        return canonical_key, RESOURCE_SOURCE_LABELS[canonical_key], raw_key, raw_label
+
+    sensitive = re.compile(r"(?:https?://|token|cookie|passkey|password|secret|credential|authorization|bearer|private)", re.I)
+    safe_key = canonical_key if re.fullmatch(r"[a-z][a-z0-9_-]{0,39}", canonical_key) and not sensitive.search(canonical_key) else ""
+    safe_label = raw_label if (
+        0 < len(raw_label) <= 40
+        and re.fullmatch(r"[\w\-\s\u4e00-\u9fff·]+", raw_label, re.UNICODE)
+        and not sensitive.search(raw_label)
+    ) else ""
+    return (
+        safe_key or f"resource-source-{index}",
+        safe_label or f"资源来源 {index}",
+        raw_key,
+        raw_label,
+    )
+
+
+def _resource_error_text(error):
+    if isinstance(error, dict):
+        return " ".join(str(error.get(key) or "") for key in ("source", "source_key", "key", "label", "message", "error"))
+    return str(error or "")
+
+
+def _resource_error_status(text):
+    lowered = str(text or "").lower()
+    if any(marker in lowered for marker in ("未配置", "尚未配置", "not configured", "missing config")):
+        return "not_configured"
+    if any(marker in lowered for marker in ("已禁用", "已停用", "disabled")):
+        return "disabled"
+    if any(marker in lowered for marker in (
+        "失败", "不可用", "异常", "超时", "拒绝", "鉴权", "error", "failed", "unavailable", "timeout", "refused", "unreachable",
+    )):
+        return "unavailable"
+    return "available"
+
+
+def _resource_error_matches(text, raw_key, raw_label, output_key):
+    lowered = str(text or "").lower()
+    candidates = {raw_key.lower(), raw_label.lower(), output_key.lower()}
+    if output_key == "pansou":
+        candidates.update({"频道搜索", "telegram", "pansou"})
+    elif output_key == "hdhive":
+        candidates.update({"hdhive", "hdhiveapi", "影巢"})
+    elif output_key == "tmdb":
+        candidates.add("tmdb")
+    return any(candidate and candidate in lowered for candidate in candidates)
+
+
+def _explicit_resource_status(source):
+    raw_status = str(source.get("status") or "").strip().lower()
+    if raw_status in SOURCE_STATUS_VALUES:
+        return raw_status
+    if source.get("enabled") is False:
+        return "disabled"
+    if source.get("configured") is False:
+        return "not_configured"
+    if source.get("available") is False:
+        return "unavailable"
+    return "available"
+
+
+def _resource_source_contract(payload, requested_source=""):
+    root = payload if isinstance(payload, dict) else {}
+    raw_sources = root.get("sources") if isinstance(root.get("sources"), list) else []
+    errors = [_resource_error_text(error) for error in root.get("errors", [])] if isinstance(root.get("errors"), list) else []
+    statuses = []
+    safe_sources = []
+    represented_error_indexes = set()
+
+    for index, source in enumerate(raw_sources, start=1):
+        if not isinstance(source, dict):
+            continue
+        output_key, output_label, raw_key, raw_label = _safe_resource_identity(source, index)
+        if output_key == "all" or raw_key.lower() == "all":
+            safe_sources.append({
+                "key": "all",
+                "label": "全部",
+                "count": _nonnegative_integer(source.get("count")),
+            })
+            continue
+        status = _explicit_resource_status(source)
+        if status == "available":
+            for error_index, error_text in enumerate(errors):
+                if _resource_error_matches(error_text, raw_key, raw_label, output_key):
+                    represented_error_indexes.add(error_index)
+                    classified = _resource_error_status(error_text)
+                    if classified != "available":
+                        status = classified
+                        break
+        count = _nonnegative_integer(source.get("count"))
+        safe_sources.append({"key": output_key, "label": output_label, "count": count})
+        statuses.append(_source_status(output_key, output_label, status, count))
+
+    for error_index, error_text in enumerate(errors):
+        if error_index in represented_error_indexes:
+            continue
+        classified = _resource_error_status(error_text)
+        for key, label in RESOURCE_SOURCE_LABELS.items():
+            if _resource_error_matches(error_text, "", label, key) and not any(item["key"] == key for item in statuses):
+                statuses.append(_source_status(key, label, classified, 0))
+                represented_error_indexes.add(error_index)
+                break
+
+    unresolved_error = any(
+        index not in represented_error_indexes and _resource_error_status(error_text) != "available"
+        for index, error_text in enumerate(errors)
+    )
+    if unresolved_error:
+        statuses.append(_source_status("resource-search", "资源搜索", "unavailable", 0))
+
+    if not statuses:
+        requested_key = _resource_source_key(requested_source)
+        if requested_key in RESOURCE_SOURCE_LABELS:
+            key = requested_key
+            label = RESOURCE_SOURCE_LABELS[key]
+        else:
+            key = "resource-search"
+            label = "资源搜索"
+        count = len(root.get("items") or []) if isinstance(root.get("items"), list) else 0
+        statuses.append(_source_status(key, label, "available", count))
+
+    return statuses, safe_sources
 
 
 def register_discover_compat(app: Flask):
@@ -136,35 +342,41 @@ def register_discover_compat(app: Flask):
             source = "tmdb"
         try:
             loader, query = _browse_target(source, request.args)
-            return jsonify(map_discover_payload(loader(query), source))
+            return jsonify(_map_discover_with_status(loader(query), source))
         except HTTPError as error:
             if source in {"tmdb", "daily", "streaming"} and error.code in {401, 403}:
                 return _discover_error(
                     "TMDB_AUTH_FAILED",
                     "TMDB 鉴权失败，请在控制室更新 API Key 或 Bearer Token",
+                    source_statuses=[_discover_source_status(source, "unavailable")],
                 )
             if source in {"tmdb", "daily", "streaming"} and error.code == 429:
-                return _discover_error("TMDB_RATE_LIMITED", "TMDB 请求过于频繁，请稍后重试", 503)
-            labels = {"tmdb": "TMDB", "daily": "全球日播", "streaming": "海外流媒体"}
+                return _discover_error(
+                    "TMDB_RATE_LIMITED",
+                    "TMDB 请求过于频繁，请稍后重试",
+                    503,
+                    [_discover_source_status(source, "unavailable", message="请求过于频繁，请稍后重试")],
+                )
             return _discover_error(
                 "NASEMBY_DISCOVER_UNAVAILABLE",
-                f"{labels.get(source, '内容发现')}服务暂不可用，请稍后重试",
+                f"{DISCOVER_SOURCE_LABELS.get(source, '内容发现')}服务暂不可用，请稍后重试",
+                source_statuses=[_discover_source_status(source, "unavailable")],
             )
         except RuntimeError:
             if source in {"tmdb", "daily", "streaming"} and not discover_runtime.tmdb_credentials_available(
                 discover_runtime.load_tmdb_config()
             ):
                 return _tmdb_not_configured(source)
-            labels = {"tmdb": "TMDB", "daily": "全球日播", "streaming": "海外流媒体"}
             return _discover_error(
                 "NASEMBY_DISCOVER_UNAVAILABLE",
-                f"{labels.get(source, '内容发现')}服务暂不可用，请检查上游连接或鉴权配置",
+                f"{DISCOVER_SOURCE_LABELS.get(source, '内容发现')}服务暂不可用，请检查上游连接或鉴权配置",
+                source_statuses=[_discover_source_status(source, "unavailable")],
             )
         except Exception:
-            labels = {"tmdb": "TMDB", "daily": "全球日播", "streaming": "海外流媒体"}
             return _discover_error(
                 "NASEMBY_DISCOVER_UNAVAILABLE",
-                f"{labels.get(source, '内容发现')}服务暂不可用，请检查上游连接或鉴权配置",
+                f"{DISCOVER_SOURCE_LABELS.get(source, '内容发现')}服务暂不可用，请检查上游连接或鉴权配置",
+                source_statuses=[_discover_source_status(source, "unavailable")],
             )
 
     @app.get("/api/discover/trending", endpoint="mcc_compat_discover_trending")
@@ -182,18 +394,26 @@ def register_discover_compat(app: Flask):
     def discover_search():
         query = str(request.args.get("query") or "").strip()
         if not query:
-            return jsonify({"configured": True, "results": []})
+            return jsonify({
+                "configured": True,
+                "results": [],
+                "sourceStatuses": [_discover_source_status("tmdb", "available", message="请输入关键词后搜索")],
+            })
         try:
             if not discover_runtime.tmdb_credentials_available(discover_runtime.load_tmdb_config()):
-                return jsonify({"configured": False, "results": []})
+                return _tmdb_not_configured("tmdb")
             payload = discover_runtime.search_media({
                 "title": query[:200],
                 "page": _bounded_positive(request.args.get("page"), 1, 500),
                 "limit": "16",
             })
-            return jsonify(map_discover_payload(payload, "tmdb"))
+            return jsonify(_map_discover_with_status(payload, "tmdb"))
         except Exception:
-            return _discover_error("NASEMBY_DISCOVER_SEARCH_UNAVAILABLE", "内容搜索服务暂不可用")
+            return _discover_error(
+                "NASEMBY_DISCOVER_SEARCH_UNAVAILABLE",
+                "内容搜索服务暂不可用",
+                source_statuses=[_discover_source_status("tmdb", "unavailable")],
+            )
 
     @app.get("/api/discover/resources/search", endpoint="mcc_compat_discover_resources_search")
     def discover_resources_search():
@@ -214,9 +434,26 @@ def register_discover_compat(app: Flask):
         if re.fullmatch(r"[a-z0-9_-]{1,40}", source, re.I):
             query["source"] = source
         try:
-            return jsonify(sanitize_resource_payload(discover_runtime.search_resources(query)))
+            raw_payload = discover_runtime.search_resources(query)
+            payload = sanitize_resource_payload(raw_payload)
+            source_statuses, safe_sources = _resource_source_contract(raw_payload, source)
+            payload["sourceStatuses"] = source_statuses
+            if safe_sources:
+                payload["sources"] = safe_sources
+            return jsonify(payload)
         except Exception:
-            return _discover_error("NASEMBY_RESOURCE_SEARCH_UNAVAILABLE", "资源搜索服务暂不可用")
+            requested_key = _resource_source_key(source)
+            if requested_key in RESOURCE_SOURCE_LABELS:
+                key = requested_key
+                label = RESOURCE_SOURCE_LABELS[key]
+            else:
+                key = "resource-search"
+                label = "资源搜索"
+            return _discover_error(
+                "NASEMBY_RESOURCE_SEARCH_UNAVAILABLE",
+                "资源搜索服务暂不可用",
+                source_statuses=[_source_status(key, label, "unavailable")],
+            )
 
     @app.get("/api/internal/nasemby-core/discover/search", endpoint="mcc_compat_internal_discover_search")
     def internal_discover_search():

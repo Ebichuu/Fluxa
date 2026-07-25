@@ -10,6 +10,10 @@ from flask import has_request_context, jsonify, request
 from app.activity_log import write_activity
 from app.http_runtime import current_request_id
 from app.torra_read_runtime import subscription_matches
+from app.torra_subscription_keys import (
+    torra_public_storage_key,
+    torra_public_subscription_key,
+)
 
 
 def _truthy(value):
@@ -107,6 +111,25 @@ def _target_for_item(item):
         ),
         "year": str(item.get("year") or "").strip(),
     }
+
+
+def _public_conflict_subscription_key(value, *remote_ids):
+    """Project a conflict key without changing the internal matching key.
+
+    Older local mirrors can still store ``torra:<remote-id>``.  The shared
+    helper intentionally treats a ten-character hexadecimal suffix as an
+    already-public key, so pass a known raw remote id explicitly when the
+    conflict row lets us identify it.  For all other keys the helper keeps
+    the existing public-key behaviour.
+    """
+    key = str(value or "").strip()
+    if not key.startswith("torra:"):
+        return key
+    for remote_id in remote_ids:
+        candidate = str(remote_id or "").strip()
+        if candidate and key == f"torra:{candidate}":
+            return torra_public_storage_key(key, candidate)
+    return torra_public_storage_key(key)
 
 
 def normalize_torra_subscription(row):
@@ -230,13 +253,18 @@ class TorraSubscriptionSyncService:
                 if local_key:
                     counts["duplicates"] += 1
                 else:
-                    local_key = f"torra:{remote_id}"
+                    local_key = torra_public_subscription_key(remote_id)
                     counts["new"] += 1
             previous_remote = used_local_keys.get(local_key)
             if previous_remote and previous_remote != remote_id:
                 counts["conflicts"] += 1
                 conflicts.append({
-                    "subscriptionKey": local_key,
+                    "subscriptionKey": _public_conflict_subscription_key(
+                        local_key,
+                        previous_remote,
+                        remote_id,
+                        (local_item or {}).get("torra_remote_id"),
+                    ),
                     "remoteRefs": [_remote_reference(previous_remote), _remote_reference(remote_id)],
                     "title": candidate["item"]["title"],
                 })

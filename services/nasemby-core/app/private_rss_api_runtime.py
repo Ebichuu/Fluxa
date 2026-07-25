@@ -16,6 +16,115 @@ from app.rss_subscription_match_runtime import (
     RssSubscriptionMatchRuntime,
     register_rss_subscription_match,
 )
+from app.task_public_runtime import safe_public_text
+from app.torra_subscription_keys import torra_public_match_keys
+
+
+RSS_MATCH_PUBLIC_FIELDS = (
+    "id",
+    "itemId",
+    "subscriptionId",
+    "unitId",
+    "status",
+    "reason",
+    "triggerActionId",
+    "createdAt",
+    "updatedAt",
+)
+RSS_MATCH_IDENTITY_BASES = {"tmdb", "standard-title-map", "title", "title-alias"}
+RSS_MATCH_MEDIA_TYPES = {"movie", "tv"}
+RSS_MATCH_SOURCES = {"manual"}
+RSS_MATCH_NUMBER_FIELDS = {
+    "year": ("item", "subscription"),
+    "season": ("item", "unit"),
+    "episode": ("start", "end", "unit"),
+}
+
+
+def _public_reason_number(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        number = int(value)
+    else:
+        return None
+    return number if 0 < number <= 1_000_000 else None
+
+
+def _public_match_reason(reason, hidden_refs=()):
+    source = reason if isinstance(reason, dict) else {}
+    result = {}
+
+    identity_source = source.get("identity")
+    if isinstance(identity_source, dict):
+        identity = {}
+        basis = str(identity_source.get("basis") or "").strip().lower()
+        if basis in RSS_MATCH_IDENTITY_BASES:
+            identity["basis"] = basis
+        tmdb_id = str(identity_source.get("tmdbId") or "").strip()
+        if tmdb_id.isdigit() and len(tmdb_id) <= 24:
+            identity["tmdbId"] = tmdb_id
+        alias_value = identity_source.get("alias")
+        alias = safe_public_text(alias_value) if isinstance(alias_value, str) else ""
+        for hidden in sorted(set(hidden_refs), key=len, reverse=True):
+            if hidden:
+                alias = alias.replace(hidden, "[已隐藏]")
+        if alias:
+            identity["alias"] = alias
+        if identity:
+            result["identity"] = identity
+
+    media_type = str(source.get("mediaType") or "").strip().lower()
+    if media_type in RSS_MATCH_MEDIA_TYPES:
+        result["mediaType"] = media_type
+
+    for section, fields in RSS_MATCH_NUMBER_FIELDS.items():
+        section_source = source.get(section)
+        if not isinstance(section_source, dict):
+            continue
+        projected = {}
+        for field in fields:
+            number = _public_reason_number(section_source.get(field))
+            if number is not None:
+                projected[field] = number
+        if projected:
+            result[section] = projected
+
+    match_source = str(source.get("matchSource") or "").strip().lower()
+    if match_source in RSS_MATCH_SOURCES:
+        result["matchSource"] = match_source
+    return result
+
+
+def _present_rss_match(match):
+    if not isinstance(match, dict):
+        return None
+    value = {field: match.get(field) for field in RSS_MATCH_PUBLIC_FIELDS}
+    value["subscriptionId"], value["unitId"] = torra_public_match_keys(
+        match.get("subscriptionId"), match.get("unitId")
+    )
+    internal_key = str(match.get("subscriptionId") or "").strip()
+    hidden_refs = []
+    if internal_key != value["subscriptionId"]:
+        hidden_refs.extend((
+            internal_key,
+            internal_key.removeprefix("torra:"),
+            str(match.get("unitId") or "").strip(),
+        ))
+    value["reason"] = _public_match_reason(match.get("reason"), hidden_refs)
+    return value
+
+
+def _present_rss_match_list(payload):
+    value = dict(payload) if isinstance(payload, dict) else {}
+    value["items"] = [
+        presented
+        for presented in (_present_rss_match(match) for match in value.get("items") or [])
+        if presented is not None
+    ]
+    return value
 
 
 def _truthy(value):
@@ -93,6 +202,18 @@ class PrivateRssService:
         if not self.match_runtime:
             raise RuntimeError("RSS identity matcher is not initialized")
         return self.match_runtime.match_existing_items(limit)
+
+    def create_match(self, body):
+        if not self.match_runtime:
+            raise RuntimeError("RSS matcher is not initialized")
+        body = body if isinstance(body, dict) else {}
+        if set(body) - {"rssItemId", "subscriptionId", "unitId"}:
+            return {"status": "invalid", "reason": "unsupported_fields"}
+        return self.match_runtime.create_manual_match(
+            body.get("rssItemId"),
+            body.get("subscriptionId"),
+            body.get("unitId"),
+        )
 
 
 def register_private_rss(
@@ -258,12 +379,55 @@ def register_private_rss(
     @app.get("/api/v2/rss-matches")
     def rss_matches_list():
         try:
-            return jsonify(service.repository.list_matches(
+            return jsonify(_present_rss_match_list(service.repository.list_matches(
                 status=request.args.get("status") or "",
                 limit=request.args.get("limit") or 50,
                 offset=request.args.get("offset") or 0,
-            ))
+            )))
         except (TypeError, ValueError):
             return _error("RSS_MATCH_QUERY_INVALID", "RSS 匹配查询参数无效", 422)
+
+    @app.get("/api/v2/rss-matches/<match_id>")
+    def rss_matches_detail(match_id):
+        match = service.repository.get_match(match_id)
+        return jsonify(_present_rss_match(match)) if match else _error("RSS_MATCH_NOT_FOUND", "RSS 匹配不存在", 404)
+
+    @app.post("/api/v2/rss-matches")
+    def rss_matches_create():
+        try:
+            result = service.create_match(request.get_json(silent=True))
+        except Exception:
+            return _error("RSS_MATCH_CREATE_FAILED", "RSS 匹配建立失败", 500)
+        reason = result.get("reason")
+        if result.get("status") == "missing":
+            messages = {
+                "item_missing": "RSS 种子条目不存在",
+                "subscription_missing": "追更不存在或当前不可读取",
+                "watch_unit_missing": "观察单元不存在",
+            }
+            return _error("RSS_MATCH_TARGET_NOT_FOUND", messages.get(reason, "RSS 匹配目标不存在"), 404)
+        if result.get("status") == "blocked":
+            messages = {
+                "watch_unit_inactive": "当前没有有效的质量观察窗口",
+                "torra_subscription_missing": "Torra 追更归属尚未确认",
+                "torra_unavailable": "Torra 当前不可用",
+            }
+            return _error("RSS_MATCH_NOT_READY", messages.get(reason, "RSS 匹配当前不可建立"), 409)
+        if result.get("status") == "conflict":
+            return _error("RSS_MATCH_CONFLICT", "该种子已归属其他追更观察单元", 409)
+        if result.get("status") == "invalid":
+            messages = {
+                "required_fields_missing": "需要指定种子、追更和观察单元",
+                "unsupported_fields": "请求包含不支持的字段",
+                "watch_unit_owner_mismatch": "观察单元不属于当前追更",
+                "torra_subscription_owner_mismatch": "Torra 追更归属不一致",
+                "item_not_compatible": "种子身份、类型或季集与当前追更不一致",
+            }
+            return _error("RSS_MATCH_INVALID", messages.get(reason, "RSS 匹配参数无效"), 422)
+        match = _present_rss_match(result.get("match") or {})
+        response = jsonify(match)
+        response.status_code = 200 if result.get("status") == "existing" else 201
+        response.headers["Location"] = f"/api/v2/rss-matches/{match.get('id', '')}"
+        return response
 
     return service

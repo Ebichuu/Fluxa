@@ -6,6 +6,7 @@ import {
   ChevronRight,
   CircleHelp,
   Clock3,
+  Filter,
   Library,
   ListChecks,
   Radio,
@@ -13,7 +14,12 @@ import {
   ShieldCheck,
   X
 } from 'lucide-react';
-import { getSubscriptionCalendarDateDetail, getSubscriptionCalendarSummary } from '../../services/api';
+import { currentHistoryEntryIs, writeUrlQuery, type UrlHistoryMode } from '../../app/urlState';
+import {
+  getSubscriptionCalendarDateDetail,
+  getSubscriptionCalendarRangeSummary,
+  getSubscriptionCalendarSummary
+} from '../../services/api';
 import type {
   SubscriptionCalendarDayPreview,
   SubscriptionCalendarDaySummary,
@@ -22,7 +28,6 @@ import type {
   SubscriptionHealthState
 } from '../../types/subscriptions';
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
-import { ConfirmDialog } from '../layout/ConfirmDialog';
 import type { AppNavigate } from '../layout/AppTopNav';
 import { HealthBadge } from '../status/HealthBadge';
 
@@ -34,6 +39,20 @@ type CalendarMediaType = 'all' | 'movie' | 'tv';
 type CalendarView = 'month' | 'week';
 type CalendarStatus = 'all' | SubscriptionCalendarStatus;
 type CalendarPosterItem = Pick<SubscriptionCalendarEntry, 'posterUrl' | 'title'> | Pick<SubscriptionCalendarDayPreview, 'posterUrl' | 'title'>;
+type CalendarUrlState = {
+  year: number;
+  month: number;
+  view: CalendarView;
+  mediaType: CalendarMediaType;
+  status: CalendarStatus;
+  query: string;
+  date: string;
+  detailOpen: boolean;
+};
+type CalendarUrlPatch = Partial<Omit<CalendarUrlState, 'date'>> & { date?: string | null };
+
+const calendarDateHistoryKind = 'calendar:date';
+const calendarRequestOptions = (signal: AbortSignal) => ({ signal, timeoutMs: 45_000 });
 
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
 
@@ -44,6 +63,13 @@ function toDateKey(year: number, month: number, day: number) {
 function dateParts(key: string) {
   const [year, month, day] = key.split('-').map(Number);
   return { year, month, day };
+}
+
+function validDateKey(value: string | null) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return '';
+  const { year, month, day } = dateParts(value);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() + 1 === month && parsed.getUTCDate() === day ? value : '';
 }
 
 function shiftDateKey(key: string, days: number) {
@@ -96,6 +122,32 @@ const statusLabel: Record<CalendarStatus, string> = {
 const statusHealth: Record<Exclude<CalendarStatus, 'all'>, SubscriptionHealthState> = {
   upcoming: 'waiting', acquiring: 'waiting', library: 'normal', protected: 'protected', missing: 'action_required', unknown: 'evidence_insufficient'
 };
+const mobilePrimaryStatuses: CalendarStatus[] = ['all', 'upcoming', 'acquiring', 'library', 'missing'];
+const mobileAdvancedStatuses: CalendarStatus[] = ['protected', 'unknown'];
+
+function readCalendarUrlState(todayKey: string, location: Location = window.location): CalendarUrlState {
+  const params = new URLSearchParams(location.search);
+  const date = validDateKey(params.get('date'));
+  const dateFallback = date ? dateParts(date) : dateParts(todayKey);
+  const parsedYear = Number(params.get('year'));
+  const parsedMonth = Number(params.get('month'));
+  const year = Number.isInteger(parsedYear) && parsedYear >= 1970 && parsedYear <= 2200 ? parsedYear : dateFallback.year;
+  const month = Number.isInteger(parsedMonth) && parsedMonth >= 1 && parsedMonth <= 12 ? parsedMonth : dateFallback.month;
+  const view = params.get('view') === 'week' ? 'week' : 'month';
+  const mediaType = params.get('type') === 'movie' ? 'movie' : params.get('type') === 'tv' ? 'tv' : 'all';
+  const statusValue = params.get('status');
+  const status = statusValue && Object.prototype.hasOwnProperty.call(statusLabel, statusValue) ? statusValue as CalendarStatus : 'all';
+  return {
+    year,
+    month,
+    view,
+    mediaType,
+    status,
+    query: params.get('q') ?? '',
+    date,
+    detailOpen: Boolean(date && params.get('detail') === '1')
+  };
+}
 
 function EntryPoster({ entry }: { entry: CalendarPosterItem }) {
   const [imageFailed, setImageFailed] = useState(false);
@@ -110,50 +162,190 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
   const now = new Date();
   const todayKey = shanghaiDateKey(now);
   const today = dateParts(todayKey);
-  const [year, setYear] = useState(today.year);
-  const [month, setMonth] = useState(today.month);
+  const [initialUrlState] = useState(() => readCalendarUrlState(todayKey));
+  const [year, setYear] = useState(initialUrlState.year);
+  const [month, setMonth] = useState(initialUrlState.month);
   const [days, setDays] = useState<SubscriptionCalendarDaySummary[]>([]);
+  const [searchIndex, setSearchIndex] = useState<SubscriptionCalendarDayPreview[]>([]);
   const [detailEntries, setDetailEntries] = useState<SubscriptionCalendarEntry[]>([]);
-  const [mediaType, setMediaType] = useState<CalendarMediaType>('all');
-  const [calendarView, setCalendarView] = useState<CalendarView>('month');
-  const [status, setStatus] = useState<CalendarStatus>('all');
-  const [query, setQuery] = useState('');
-  const [selectedDate, setSelectedDate] = useState(todayKey);
-  const [detailDate, setDetailDate] = useState('');
+  const [mediaType, setMediaType] = useState<CalendarMediaType>(initialUrlState.mediaType);
+  const [calendarView, setCalendarView] = useState<CalendarView>(initialUrlState.view);
+  const [status, setStatus] = useState<CalendarStatus>(initialUrlState.status);
+  const [query, setQuery] = useState(initialUrlState.query);
+  const [selectedDate, setSelectedDate] = useState(
+    initialUrlState.date || (initialUrlState.year === today.year && initialUrlState.month === today.month
+      ? todayKey
+      : toDateKey(initialUrlState.year, initialUrlState.month, 1))
+  );
+  const [detailDate, setDetailDate] = useState(initialUrlState.detailOpen ? initialUrlState.date : '');
   const [mode, setMode] = useState<'loading' | 'live' | 'error'>('loading');
   const [detailMode, setDetailMode] = useState<'idle' | 'loading' | 'live' | 'error'>('idle');
   const [calendarErrors, setCalendarErrors] = useState<string[]>([]);
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const detailRequestRef = useRef<AbortController | null>(null);
+  const detailPanelRef = useRef<HTMLElement | null>(null);
+  const mobileFilterTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const mobileFilterSheetRef = useRef<HTMLElement | null>(null);
+  const visibleWeekStart = calendarView === 'week' ? weekStart(selectedDate) : '';
+  const visibleWeekEnd = visibleWeekStart ? shiftDateKey(visibleWeekStart, 6) : '';
+
+  const writeCalendarUrlState = (patch: CalendarUrlPatch, mode: UrlHistoryMode, entryKind?: string) => {
+    const nextDate = Object.prototype.hasOwnProperty.call(patch, 'date') ? patch.date || '' : selectedDate;
+    const nextDetailOpen = Object.prototype.hasOwnProperty.call(patch, 'detailOpen')
+      ? Boolean(patch.detailOpen)
+      : Boolean(detailDate);
+    writeUrlQuery({
+      year: patch.year ?? year,
+      month: patch.month ?? month,
+      view: patch.view ?? calendarView,
+      type: patch.mediaType ?? mediaType,
+      status: patch.status ?? status,
+      q: patch.query ?? query,
+      date: nextDate || null,
+      detail: nextDetailOpen && nextDate ? 1 : null
+    }, mode, entryKind);
+  };
 
   useEffect(() => {
     const controller = new AbortController();
     setMode('loading');
     setCalendarErrors([]);
-    getSubscriptionCalendarSummary(year, month, mediaType, { signal: controller.signal })
+    const request = calendarView === 'week'
+      ? getSubscriptionCalendarRangeSummary(visibleWeekStart, visibleWeekEnd, mediaType, calendarRequestOptions(controller.signal))
+      : getSubscriptionCalendarSummary(year, month, mediaType, calendarRequestOptions(controller.signal));
+    request
       .then((payload) => {
+        if (controller.signal.aborted) return;
         setDays(payload.calendar.days ?? []);
+        setSearchIndex(payload.calendar.searchIndex ?? []);
         setCalendarErrors(payload.calendar.errors ?? []);
         setMode('live');
       })
       .catch(() => {
         if (!controller.signal.aborted) {
           setDays([]);
+          setSearchIndex([]);
           setMode('error');
         }
       });
     return () => controller.abort();
-  }, [mediaType, month, year]);
+  }, [calendarView, mediaType, month, visibleWeekEnd, visibleWeekStart, year]);
 
-  useEffect(() => () => detailRequestRef.current?.abort(), []);
+  const requestDateDetail = (dateKey: string, requestedMediaType: CalendarMediaType) => {
+    detailRequestRef.current?.abort();
+    const controller = new AbortController();
+    detailRequestRef.current = controller;
+    setSelectedDate(dateKey);
+    setDetailDate(dateKey);
+    setDetailEntries([]);
+    setDetailMode('loading');
+    getSubscriptionCalendarDateDetail(dateKey, requestedMediaType, calendarRequestOptions(controller.signal))
+      .then((payload) => {
+        if (controller.signal.aborted) return;
+        setDetailEntries(payload.calendar.entries);
+        setDetailMode('live');
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setDetailMode('error');
+      });
+  };
+
+  useEffect(() => {
+    const applyUrlState = () => {
+      const next = readCalendarUrlState(todayKey);
+      setYear(next.year);
+      setMonth(next.month);
+      setCalendarView(next.view);
+      setMediaType(next.mediaType);
+      setStatus(next.status);
+      setQuery(next.query);
+      setSelectedDate(next.date || (next.year === today.year && next.month === today.month
+        ? todayKey
+        : toDateKey(next.year, next.month, 1)));
+      if (next.detailOpen && next.date) {
+        requestDateDetail(next.date, next.mediaType);
+      } else {
+        detailRequestRef.current?.abort();
+        setDetailDate('');
+        setDetailEntries([]);
+        setDetailMode('idle');
+      }
+    };
+
+    if (initialUrlState.detailOpen && initialUrlState.date) requestDateDetail(initialUrlState.date, initialUrlState.mediaType);
+    window.addEventListener('popstate', applyUrlState);
+    return () => {
+      detailRequestRef.current?.abort();
+      window.removeEventListener('popstate', applyUrlState);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!mobileFiltersOpen) return;
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const focusableSelector = 'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    const frame = window.requestAnimationFrame(() => {
+      mobileFilterSheetRef.current?.querySelector<HTMLElement>(focusableSelector)?.focus();
+    });
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setMobileFiltersOpen(false);
+        return;
+      }
+      if (event.key !== 'Tab' || !mobileFilterSheetRef.current) return;
+      const focusable = Array.from(
+        mobileFilterSheetRef.current.querySelectorAll<HTMLElement>(focusableSelector)
+      );
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!mobileFilterSheetRef.current.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    const wideViewport = window.matchMedia('(min-width: 701px)');
+    const handleWideViewport = () => {
+      if (wideViewport.matches) setMobileFiltersOpen(false);
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    wideViewport.addEventListener('change', handleWideViewport);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', handleKeyDown);
+      wideViewport.removeEventListener('change', handleWideViewport);
+      (previouslyFocused ?? mobileFilterTriggerRef.current)?.focus({ preventScroll: true });
+    };
+  }, [mobileFiltersOpen]);
 
   const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN');
+  const filteredIndex = useMemo(() => searchIndex.filter((entry) => (
+    (status === 'all' || entry.status === status)
+    && (!normalizedQuery || (entry.title + ' ' + entry.episodeLabel).toLocaleLowerCase('zh-CN').includes(normalizedQuery))
+  )), [normalizedQuery, searchIndex, status]);
+  const filteredIndexByDate = useMemo(() => {
+    const grouped = new Map<string, SubscriptionCalendarDayPreview[]>();
+    filteredIndex.forEach((entry) => {
+      if (!entry.date) return;
+      grouped.set(entry.date, [...(grouped.get(entry.date) ?? []), entry]);
+    });
+    return grouped;
+  }, [filteredIndex]);
   const visibleDays = useMemo(() => days.filter((day) => {
     const matchesStatus = status === 'all' || day.statusCounts[status] > 0;
-    const matchesQuery = !normalizedQuery || day.preview.some((entry) => (
-      (entry.title + ' ' + entry.episodeLabel).toLocaleLowerCase('zh-CN').includes(normalizedQuery)
-    ));
+    const matchesQuery = !normalizedQuery || filteredIndexByDate.has(day.date);
     return matchesStatus && matchesQuery;
-  }), [days, normalizedQuery, status]);
+  }), [days, filteredIndexByDate, normalizedQuery, status]);
 
   const daysByDate = useMemo(() => new Map(visibleDays.map((day) => [day.date, day])), [visibleDays]);
 
@@ -181,6 +373,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
       setYear(next.getUTCFullYear());
       setMonth(next.getUTCMonth() + 1);
       setSelectedDate(nextKey);
+      writeCalendarUrlState({ year: next.getUTCFullYear(), month: next.getUTCMonth() + 1, date: nextKey, detailOpen: false }, 'push');
       return;
     }
     const nextKey = shiftDateKey(selectedDate, delta * 7);
@@ -188,31 +381,19 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     setSelectedDate(nextKey);
     setYear(next.year);
     setMonth(next.month);
+    writeCalendarUrlState({ year: next.year, month: next.month, date: nextKey, detailOpen: false }, 'push');
   };
 
   const goToday = () => {
     setYear(today.year);
     setMonth(today.month);
     setSelectedDate(todayKey);
+    writeCalendarUrlState({ year: today.year, month: today.month, date: todayKey, detailOpen: false }, 'push');
   };
 
   const openDate = (dateKey: string) => {
-    detailRequestRef.current?.abort();
-    const controller = new AbortController();
-    detailRequestRef.current = controller;
-    setSelectedDate(dateKey);
-    setDetailDate(dateKey);
-    setDetailEntries([]);
-    setDetailMode('loading');
-    getSubscriptionCalendarDateDetail(dateKey, mediaType, { signal: controller.signal })
-      .then((payload) => {
-        if (controller.signal.aborted) return;
-        setDetailEntries(payload.calendar.entries);
-        setDetailMode('live');
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setDetailMode('error');
-      });
+    writeCalendarUrlState({ date: dateKey, detailOpen: true }, 'push', calendarDateHistoryKind);
+    requestDateDetail(dateKey, mediaType);
   };
 
   const closeDetail = () => {
@@ -220,6 +401,73 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     setDetailDate('');
     setDetailEntries([]);
     setDetailMode('idle');
+    if (currentHistoryEntryIs(calendarDateHistoryKind)) {
+      window.history.back();
+    } else {
+      writeCalendarUrlState({ date: selectedDate, detailOpen: false }, 'replace');
+    }
+  };
+
+  useEffect(() => {
+    if (!detailDate) return undefined;
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    const focusableSelector = 'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    document.body.style.overflow = 'hidden';
+    const frame = window.requestAnimationFrame(() => {
+      detailPanelRef.current?.querySelector<HTMLElement>(focusableSelector)?.focus();
+    });
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeDetail();
+        return;
+      }
+      if (event.key !== 'Tab' || !detailPanelRef.current) return;
+      const focusable = Array.from(
+        detailPanelRef.current.querySelectorAll<HTMLElement>(focusableSelector)
+      );
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!detailPanelRef.current.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', handleKeyDown);
+      previouslyFocused?.focus({ preventScroll: true });
+    };
+  }, [detailDate]);
+
+  const changeCalendarView = (next: CalendarView) => {
+    setCalendarView(next);
+    writeCalendarUrlState({ view: next }, 'replace');
+  };
+
+  const changeMediaType = (next: CalendarMediaType) => {
+    setMediaType(next);
+    writeCalendarUrlState({ mediaType: next }, 'replace');
+  };
+
+  const changeStatus = (next: CalendarStatus) => {
+    setStatus(next);
+    writeCalendarUrlState({ status: next }, 'replace');
+  };
+
+  const changeQuery = (next: string) => {
+    setQuery(next);
+    writeCalendarUrlState({ query: next }, 'replace');
   };
 
   const selectedEntries = useMemo(() => detailEntries.filter((entry) => {
@@ -243,14 +491,14 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
 
   return (
     <main className="work-page work-page--fill ops-page ops-page--calendar">
-      <section className="ops-hero ops-hero--calendar">
+      <section className="ops-hero ops-hero--calendar ops-hero--compact">
         <div>
           <p className="ops-eyebrow">播出 · 获取 · 入库</p>
           <h1>日历</h1>
           <p className="ops-page-subtitle">什么时候播、何时开始获取、何时真正可看。</p>
           <p className="ops-deck">只有明确到具体季集的证据才会改变状态；季包完成不会批量标记单集。</p>
         </div>
-        <div className="ops-calendar-stats" aria-label="本月追更统计">
+        <div className="ops-calendar-stats" aria-label={calendarView === 'week' ? '本周追更统计' : '本月追更统计'}>
           <div><Radio size={15} /><span>待播出</span><strong>{counts.upcoming}</strong></div>
           <div><Clock3 size={15} /><span>正在获取</span><strong>{counts.acquiring}</strong></div>
           <div><Library size={15} /><span>已入库</span><strong>{counts.library}</strong></div>
@@ -267,9 +515,9 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
             <div><small>{calendarView === 'month' ? '月视图' : '周视图'}</small><h2>{year} 年 {month} 月</h2></div>
           </div>
           <div className="ops-calendar-controls">
-            <div className="ops-calendar-type" role="tablist" aria-label="日历视图">
+            <div className="ops-calendar-type ops-calendar-view-switch" role="tablist" aria-label="日历视图">
               {([['month', '月'], ['week', '周']] as const).map(([value, label]) => (
-                <button aria-selected={calendarView === value} className={calendarView === value ? 'is-active' : undefined} key={value} role="tab" tabIndex={calendarView === value ? 0 : -1} type="button" onClick={() => setCalendarView(value)} onKeyDown={handleHorizontalTabKeyDown}>{label}</button>
+                <button aria-selected={calendarView === value} className={calendarView === value ? 'is-active' : undefined} key={value} role="tab" tabIndex={calendarView === value ? 0 : -1} type="button" onClick={() => changeCalendarView(value)} onKeyDown={handleHorizontalTabKeyDown}>{label}</button>
               ))}
             </div>
             <button aria-label="上一周期" className="ops-icon-button" title="上一周期" type="button" onClick={() => shiftPeriod(-1)}><ChevronLeft aria-hidden="true" size={14} /></button>
@@ -280,17 +528,33 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         </header>
 
         <div className="calendar-filterbar">
-          <label className="calendar-search"><Search aria-hidden="true" size={14} /><input aria-label="搜索日历作品" placeholder="搜索本月预览作品" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
+          <label className="calendar-search"><Search aria-hidden="true" size={14} /><input aria-label="搜索日历作品" placeholder="搜索当前范围作品" value={query} onChange={(event) => changeQuery(event.target.value)} /></label>
           <div className="ops-calendar-type" role="tablist" aria-label="媒体类型">
             {([['all', '全部'], ['tv', '电视剧'], ['movie', '电影']] as const).map(([value, label]) => (
-              <button aria-selected={mediaType === value} className={mediaType === value ? 'is-active' : undefined} key={value} role="tab" tabIndex={mediaType === value ? 0 : -1} type="button" onClick={() => setMediaType(value)} onKeyDown={handleHorizontalTabKeyDown}>{label}</button>
+              <button aria-selected={mediaType === value} className={mediaType === value ? 'is-active' : undefined} key={value} role="tab" tabIndex={mediaType === value ? 0 : -1} type="button" onClick={() => changeMediaType(value)} onKeyDown={handleHorizontalTabKeyDown}>{label}</button>
             ))}
           </div>
           <div className="calendar-status-filters" role="tablist" aria-label="日历状态">
             {(Object.keys(statusLabel) as CalendarStatus[]).map((value) => (
-              <button aria-selected={status === value} className={status === value ? 'is-active' : undefined} key={value} role="tab" tabIndex={status === value ? 0 : -1} type="button" onClick={() => setStatus(value)} onKeyDown={handleHorizontalTabKeyDown}>{statusLabel[value]}</button>
+              <button aria-selected={status === value} className={status === value ? 'is-active' : undefined} key={value} role="tab" tabIndex={status === value ? 0 : -1} type="button" onClick={() => changeStatus(value)} onKeyDown={handleHorizontalTabKeyDown}>{statusLabel[value]}</button>
             ))}
           </div>
+        </div>
+        <div className="ops-mobile-filter-summary ops-mobile-filter-summary--calendar">
+          <span>
+            <small>当前筛选</small>
+            <strong>{calendarView === 'month' ? '月视图' : '周视图'} · {mediaType === 'all' ? '全部类型' : mediaType === 'tv' ? '电视剧' : '电影'} · {statusLabel[status]}{query ? ` · “${query}”` : ''}</strong>
+          </span>
+          <button
+            aria-controls="calendar-mobile-filter-sheet"
+            aria-expanded={mobileFiltersOpen}
+            className="ops-mobile-filter-button"
+            ref={mobileFilterTriggerRef}
+            type="button"
+            onClick={() => setMobileFiltersOpen(true)}
+          >
+            <Filter aria-hidden="true" size={15} />筛选
+          </button>
         </div>
 
         {calendarErrors.length > 0 && <p className="ops-calendar-error">部分追更缺少播出日期，当前只显示可验证记录。</p>}
@@ -304,27 +568,37 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
               {visibleCells.map((dateKey, index) => {
                 if (!dateKey) return <div aria-hidden="true" className="calendar-cell calendar-cell--empty" key={'empty-' + index} />;
                 const day = daysByDate.get(dateKey);
-                const preview = (day?.preview ?? []).filter((entry) => (
-                  (status === 'all' || entry.status === status)
-                  && (!normalizedQuery || (entry.title + ' ' + entry.episodeLabel).toLocaleLowerCase('zh-CN').includes(normalizedQuery))
-                ));
-                const mobilePoster = preview[0] ?? day?.preview[0];
+                const filteredPreview = filteredIndexByDate.get(dateKey) ?? [];
+                const filtersActive = Boolean(normalizedQuery || status !== 'all');
+                const preview = filtersActive ? filteredPreview : (day?.preview ?? []);
+                const filteredCount = filtersActive ? filteredPreview.length : day?.total ?? 0;
+                const filteredStatusCounts = filtersActive
+                  ? filteredPreview.reduce((result, entry) => ({ ...result, [entry.status]: result[entry.status] + 1 }), {
+                      upcoming: 0,
+                      acquiring: 0,
+                      library: 0,
+                      protected: 0,
+                      missing: 0,
+                      unknown: 0
+                    })
+                  : day?.statusCounts;
+                const mobilePoster = preview[0];
                 const outsideMonth = dateParts(dateKey).month !== month;
                 const cellClass = (dateKey === todayKey ? 'calendar-cell calendar-cell--today' : 'calendar-cell') + (outsideMonth ? ' calendar-cell--outside' : '');
                 return (
                   <div className={cellClass} key={dateKey} role="gridcell">
                     <button className="calendar-cell__date" type="button" onClick={() => openDate(dateKey)}>{dateParts(dateKey).day}</button>
-                    {day && (
-                      <button aria-label={dateKey + '，共 ' + day.total + ' 条'} className="calendar-cell__mobile-summary" type="button" onClick={() => openDate(dateKey)}>
+                    {filteredCount > 0 && (
+                      <button aria-label={dateKey + '，当前筛选共 ' + filteredCount + ' 条'} className="calendar-cell__mobile-summary" type="button" onClick={() => openDate(dateKey)}>
                         {mobilePoster && <EntryPoster entry={mobilePoster} />}
                         <span aria-hidden="true" className="calendar-cell__mobile-states">
-                          <i className={day.statusCounts.library ? 'is-library' : undefined} />
-                          <i className={day.statusCounts.acquiring ? 'is-acquiring' : undefined} />
-                          <i className={day.statusCounts.protected ? 'is-protected' : undefined} />
-                          <i className={day.statusCounts.missing ? 'is-missing' : undefined} />
-                          <i className={day.statusCounts.unknown ? 'is-unknown' : undefined} />
+                          <i className={filteredStatusCounts?.library ? 'is-library' : undefined} />
+                          <i className={filteredStatusCounts?.acquiring ? 'is-acquiring' : undefined} />
+                          <i className={filteredStatusCounts?.protected ? 'is-protected' : undefined} />
+                          <i className={filteredStatusCounts?.missing ? 'is-missing' : undefined} />
+                          <i className={filteredStatusCounts?.unknown ? 'is-unknown' : undefined} />
                         </span>
-                        <b>{day.total}</b>
+                        <b>{filteredCount}</b>
                       </button>
                     )}
                     {preview.slice(0, 3).map((entry) => (
@@ -333,7 +607,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                         <span className="calendar-entry__text"><strong>{entry.status === 'library' && <Check aria-hidden="true" size={11} />}{entry.title}</strong><small>{entry.episodeLabel} · {statusLabel[entry.status]}</small></span>
                       </button>
                     ))}
-                    {day && day.total > preview.slice(0, 3).length && <button className="calendar-cell__more" type="button" onClick={() => openDate(dateKey)}>查看 {day.total} 条</button>}
+                    {filteredCount > preview.slice(0, 3).length && <button className="calendar-cell__more" type="button" onClick={() => openDate(dateKey)}>查看 {filteredCount} 条</button>}
                   </div>
                 );
               })}
@@ -346,12 +620,87 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         </footer>
       </section>
 
-      <ConfirmDialog labelledBy="calendar-detail-title" open={Boolean(detailDate)} onClose={closeDetail}>
-        <div className="ops-confirm-dialog__signal"><CalendarDays aria-hidden="true" size={18} /></div>
-        <button aria-label="关闭当日详情" className="calendar-detail__close" title="关闭" type="button" onClick={closeDetail}><X size={16} /></button>
-        <h2 id="calendar-detail-title">{detailDate || '当日'} · {detailMode === 'live' ? selectedEntries.length + ' 条' : '读取中'}</h2>
-        <p>每条记录分别展示播出、获取和入库证据；季级完成不会替代单集证据。</p>
-        <div className="calendar-detail-list">
+      {mobileFiltersOpen && (
+        <div className="ops-filter-sheet-backdrop" onPointerDown={(event) => {
+          if (event.target === event.currentTarget) setMobileFiltersOpen(false);
+        }}>
+          <section
+            aria-labelledby="calendar-mobile-filter-title"
+            aria-modal="true"
+            className="ops-filter-sheet"
+            id="calendar-mobile-filter-sheet"
+            ref={mobileFilterSheetRef}
+            role="dialog"
+            tabIndex={-1}
+          >
+            <div aria-hidden="true" className="ops-filter-sheet__handle" />
+            <header className="ops-filter-sheet__header">
+              <div><small>日历</small><h2 id="calendar-mobile-filter-title">筛选日历</h2></div>
+              <button aria-label="关闭筛选" className="ops-filter-sheet__close" type="button" onClick={() => setMobileFiltersOpen(false)}><X aria-hidden="true" size={18} /></button>
+            </header>
+            <div className="ops-filter-sheet__body">
+              <label className="ops-filter-sheet__search"><Search aria-hidden="true" size={15} /><input aria-label="搜索日历作品" placeholder="输入作品或集数" value={query} onChange={(event) => changeQuery(event.target.value)} /></label>
+              <fieldset className="ops-filter-sheet__group">
+                <legend>时间视图</legend>
+                <div className="ops-filter-sheet__options ops-filter-sheet__options--two">
+                  {([['month', '月视图'], ['week', '周视图']] as const).map(([value, label]) => (
+                    <button aria-pressed={calendarView === value} className={calendarView === value ? 'is-active' : undefined} key={value} type="button" onClick={() => changeCalendarView(value)}>{label}</button>
+                  ))}
+                </div>
+              </fieldset>
+              <fieldset className="ops-filter-sheet__group">
+                <legend>作品类型</legend>
+                <div className="ops-filter-sheet__options ops-filter-sheet__options--three">
+                  {([['all', '全部'], ['tv', '电视剧'], ['movie', '电影']] as const).map(([value, label]) => (
+                    <button aria-pressed={mediaType === value} className={mediaType === value ? 'is-active' : undefined} key={value} type="button" onClick={() => changeMediaType(value)}>{label}</button>
+                  ))}
+                </div>
+              </fieldset>
+              <fieldset className="ops-filter-sheet__group">
+                <legend>状态</legend>
+                <div className="ops-filter-sheet__options">
+                  {mobilePrimaryStatuses.map((value) => (
+                    <button aria-pressed={status === value} className={status === value ? 'is-active' : undefined} key={value} type="button" onClick={() => changeStatus(value)}>{statusLabel[value]}</button>
+                  ))}
+                </div>
+              </fieldset>
+              <fieldset className="ops-filter-sheet__group">
+                <legend>高级项</legend>
+                <div className="ops-filter-sheet__options ops-filter-sheet__options--two">
+                  {mobileAdvancedStatuses.map((value) => (
+                    <button aria-pressed={status === value} className={status === value ? 'is-active' : undefined} key={value} type="button" onClick={() => changeStatus(value)}>{statusLabel[value]}</button>
+                  ))}
+                </div>
+              </fieldset>
+            </div>
+            <footer className="ops-filter-sheet__footer">
+              <button className="ops-action-button ops-action-button--primary" type="button" onClick={() => setMobileFiltersOpen(false)}>完成</button>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {detailDate && (
+        <div className="calendar-detail-backdrop" onPointerDown={(event) => {
+          if (event.target === event.currentTarget) closeDetail();
+        }}>
+          <aside
+            aria-labelledby="calendar-detail-title"
+            aria-modal="true"
+            className="calendar-detail-panel"
+            ref={detailPanelRef}
+            role="dialog"
+          >
+            <header className="calendar-detail-panel__header">
+              <div className="calendar-detail-panel__signal"><CalendarDays aria-hidden="true" size={18} /></div>
+              <div>
+                <small>当日详情</small>
+                <h2 id="calendar-detail-title">{detailDate} · {detailMode === 'live' ? selectedEntries.length + ' 条' : '读取中'}</h2>
+                <p>播出、获取和入库证据按作品分别展示。</p>
+              </div>
+              <button aria-label="关闭当日详情" className="calendar-detail__close" title="关闭" type="button" onClick={closeDetail}><X size={16} /></button>
+            </header>
+            <div className="calendar-detail-list">
           {detailMode === 'loading' && <div className="calendar-empty"><strong>正在读取当日详情</strong></div>}
           {detailMode === 'error' && <div className="calendar-empty"><strong>当日详情读取失败</strong><span>关闭后重新打开该日期。</span></div>}
           {detailMode === 'live' && selectedEntries.map((entry) => {
@@ -377,8 +726,10 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
             );
           })}
           {detailMode === 'live' && selectedEntries.length === 0 && <div className="calendar-empty"><strong>当天没有符合筛选的记录</strong><span>清除状态或作品筛选后再查看。</span></div>}
+            </div>
+          </aside>
         </div>
-      </ConfirmDialog>
+      )}
     </main>
   );
 }

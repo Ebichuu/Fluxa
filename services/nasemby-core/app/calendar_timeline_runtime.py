@@ -4,6 +4,7 @@ import hashlib
 import json
 import threading
 import time
+from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 
 from flask import Flask, Response, jsonify, request
@@ -12,6 +13,7 @@ from app import discover_runtime
 from app.contract_mapping import map_calendar_payload
 from app.http_runtime import current_request_id
 from app.task_exception_runtime import protection_rule
+from app.task_public_runtime import public_subscription_ref
 
 
 ALLOWED_MEDIA_TYPES = {"all", "movie", "tv"}
@@ -19,6 +21,7 @@ ALLOWED_VIEWS = {"", "summary", "detail"}
 ACQUISITION_STAGES = {"resource", "download", "cloud115"}
 LIBRARY_STAGES = {"symedia", "strm", "library", "emby"}
 BEIJING_TZ = timezone(timedelta(hours=8))
+SNAPSHOT_CACHE_TTL_SECONDS = 300
 
 
 def _text(value) -> str:
@@ -70,7 +73,12 @@ def _month_keys(start: date, end: date) -> list[tuple[int, int]]:
     return values
 
 
-def _stage_time(item: dict, names: set[str], statuses: set[str]) -> tuple[str, str]:
+def _evidence_is_current(value: dict, current: datetime, fallback="") -> bool:
+    deadline = _as_datetime(value.get("freshUntil") or fallback)
+    return not deadline or deadline > current.astimezone(timezone.utc)
+
+
+def _stage_time(item: dict, names: set[str], statuses: set[str], current: datetime) -> tuple[str, str]:
     candidates = [
         stage
         for stage in item.get("stages") or []
@@ -79,11 +87,34 @@ def _stage_time(item: dict, names: set[str], statuses: set[str]) -> tuple[str, s
         and _text(stage.get("status")) in statuses
         and _text(stage.get("evidence")) != "missing"
         and _text(stage.get("observedAt"))
+        and _evidence_is_current(stage, current, item.get("freshUntil"))
     ]
     if not candidates:
         return "", ""
     stage = max(candidates, key=lambda row: _text(row.get("observedAt")))
     return _text(stage.get("observedAt")), _text(stage.get("source"))
+
+
+def _subscription_keys(*values) -> set[str]:
+    keys = set()
+    for value in values:
+        raw = _text(value)
+        if not raw:
+            continue
+        keys.add(raw)
+        public = public_subscription_ref(raw)
+        if public:
+            keys.add(public)
+    return keys
+
+
+def _task_subscription_keys(item: dict) -> set[str]:
+    source_ids = item.get("sourceIds") or {}
+    return _subscription_keys(
+        item.get("subscriptionId"),
+        source_ids.get("subscriptionId"),
+        *(source_ids.get("subscriptionIds") or []),
+    )
 
 
 def _matches_identity(entry: dict, item: dict) -> bool:
@@ -94,11 +125,7 @@ def _matches_identity(entry: dict, item: dict) -> bool:
             return False
     else:
         entry_key = _text(entry.get("key"))
-        source_keys = {
-            _text(item.get("subscriptionId")),
-            *(_text(value) for value in (item.get("sourceIds") or {}).get("subscriptionIds") or []),
-        }
-        if not entry_key or entry_key not in source_keys:
+        if not entry_key or _subscription_keys(entry_key).isdisjoint(_task_subscription_keys(item)):
             return False
     entry_media = _text(entry.get("mediaType"))
     if entry_media and entry_media != _text(item.get("mediaType")):
@@ -114,14 +141,11 @@ def _matches_identity(entry: dict, item: dict) -> bool:
 
 
 def _match_rank(entry: dict, item: dict) -> tuple[int, str]:
-    same_subscription = _text(entry.get("key")) in {
-        _text(item.get("subscriptionId")),
-        *(_text(value) for value in (item.get("sourceIds") or {}).get("subscriptionIds") or []),
-    }
+    same_subscription = not _subscription_keys(entry.get("key")).isdisjoint(_task_subscription_keys(item))
     return (0 if same_subscription else 1, _text(item.get("updatedAt")))
 
 
-def _episode_rows(entry: dict, item: dict) -> list[dict]:
+def _episode_rows(entry: dict, item: dict, current: datetime) -> list[dict]:
     season = _integer(entry.get("seasonNumber"))
     episode = _integer(entry.get("episodeNumber"))
     if not episode and episode != 0:
@@ -133,6 +157,7 @@ def _episode_rows(entry: dict, item: dict) -> list[dict]:
         and _text(row.get("numberingScheme")) in {"season_episode", "special"}
         and _integer(row.get("seasonNumber")) == season
         and _integer(row.get("episodeStart")) <= episode <= _integer(row.get("episodeEnd"))
+        and _evidence_is_current(row, current, item.get("freshUntil"))
     ]
 
 
@@ -204,7 +229,7 @@ def _empty_task() -> dict:
     }
 
 
-def _public_task(entry: dict, items: list[dict]) -> dict:
+def _public_task(entry: dict, items: list[dict], current: datetime) -> dict:
     matches = [item for item in items if isinstance(item, dict) and _matches_identity(entry, item)]
     if not matches:
         return _empty_task()
@@ -215,8 +240,10 @@ def _public_task(entry: dict, items: list[dict]) -> dict:
         "freshUntil": _text(item.get("freshUntil")),
     }
     if _text(entry.get("mediaType")) != "tv":
-        acquired_at, acquisition_source = _stage_time(item, ACQUISITION_STAGES, {"active", "done", "blocked"})
-        library_at, library_source = _stage_time(item, LIBRARY_STAGES, {"done"})
+        acquired_at, acquisition_source = _stage_time(
+            item, ACQUISITION_STAGES, {"active", "done", "blocked"}, current
+        )
+        library_at, library_source = _stage_time(item, LIBRARY_STAGES, {"done"}, current)
         return {
             **common,
             "healthState": _text(item.get("healthState")) or "evidence_insufficient",
@@ -228,7 +255,7 @@ def _public_task(entry: dict, items: list[dict]) -> dict:
             "libraryAt": library_at,
             "librarySource": library_source,
         }
-    episode_rows = _episode_rows(entry, item)
+    episode_rows = _episode_rows(entry, item, current)
     acquired_at, acquisition_source = _latest_episode_time(
         episode_rows,
         ACQUISITION_STAGES,
@@ -302,8 +329,8 @@ def _is_pre_subscription_episode(entry: dict) -> bool:
     return bool(created_at and aired_at and aired_at < created_at)
 
 
-def _summary_calendar(calendar: dict) -> dict:
-    today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+def _summary_calendar(calendar: dict, current: datetime) -> dict:
+    today = current.astimezone(BEIJING_TZ).strftime("%Y-%m-%d")
     grouped = {}
     for entry in calendar.get("entries") or []:
         grouped.setdefault(_text(entry.get("date")), []).append(entry)
@@ -333,6 +360,14 @@ def _summary_calendar(calendar: dict) -> dict:
         **calendar,
         "entries": [],
         "days": days,
+        "searchIndex": [{
+            "date": entry.get("date"),
+            "key": entry.get("key"),
+            "title": entry.get("title"),
+            "episodeLabel": entry.get("episodeLabel"),
+            "mediaType": entry.get("mediaType"),
+            "status": _entry_status(entry, today),
+        } for entry in calendar.get("entries") or []],
         "view": "summary",
     }
 
@@ -376,11 +411,23 @@ def _calendar_entry_identity(entry: dict) -> tuple:
 
 
 class CalendarTimelineService:
-    def __init__(self, app: Flask, calendar_loader=None):
+    def __init__(self, app: Flask, calendar_loader=None, clock=None):
         self.app = app
         self.calendar_loader = calendar_loader or discover_runtime.build_subscription_calendar
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._torra_cache = {}
         self._torra_cache_lock = threading.RLock()
+        self._snapshot_cache = {}
+        self._snapshot_cache_lock = threading.RLock()
+
+    def cached_snapshot(self, year: int, month: int, media_type: str) -> dict | None:
+        key = (int(year), int(month), str(media_type or "all"))
+        with self._snapshot_cache_lock:
+            cached = self._snapshot_cache.get(key)
+            if not cached or time.monotonic() - cached[0] >= SNAPSHOT_CACHE_TTL_SECONDS:
+                self._snapshot_cache.pop(key, None)
+                return None
+            return deepcopy(cached[1])
 
     def _torra_calendar_entries(self, year: int, month: int, media_type: str) -> tuple[list[dict], list[str]]:
         cache_key = (year, month, media_type)
@@ -399,8 +446,7 @@ class CalendarTimelineService:
         if snapshot.get("sourceError"):
             return [], ["Torra 只读追更暂时无法读取"]
 
-        raw_entries = []
-        errors = []
+        source_items = []
         seen_targets = set()
         for row in snapshot.get("items") or []:
             item = _torra_calendar_source_item(row)
@@ -412,18 +458,13 @@ class CalendarTimelineService:
             if target in seen_targets:
                 continue
             seen_targets.add(target)
-            try:
-                rows, error = discover_runtime.build_subscription_calendar_entries_for_item(
-                    item,
-                    year,
-                    month,
-                    media_type,
-                )
-            except Exception:
-                rows, error = [], ""
-            raw_entries.extend(rows)
-            if error:
-                errors.append(error)
+            source_items.append(item)
+        raw_entries, errors = discover_runtime.build_subscription_calendar_entries_for_items(
+            source_items,
+            year,
+            month,
+            media_type,
+        )
 
         payload = {
             "success": True,
@@ -515,6 +556,8 @@ class CalendarTimelineService:
         end: date | None = None,
         detail_date: date | None = None,
     ) -> dict:
+        current = self.clock()
+        cacheable = start is None and end is None and detail_date is None
         if detail_date:
             start = end = detail_date
             year, month = detail_date.year, detail_date.month
@@ -525,11 +568,11 @@ class CalendarTimelineService:
         raw_entries = [_normalize_entry_evidence({
             **entry,
             "airAt": f"{entry.get('date')}T00:00:00+08:00" if entry.get("date") else "",
-            **_public_task(entry, task_items),
+            **_public_task(entry, task_items, current),
         }) for entry in calendar.get("entries") or []]
         excluded_before_subscription = sum(_is_pre_subscription_episode(entry) for entry in raw_entries)
         entries = [entry for entry in raw_entries if not _is_pre_subscription_episode(entry)]
-        today = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+        today = current.astimezone(BEIJING_TZ).strftime("%Y-%m-%d")
         entries = [{**entry, "status": _entry_status(entry, today)} for entry in entries]
         calendar = {
             **calendar,
@@ -552,8 +595,22 @@ class CalendarTimelineService:
                 },
             },
         }
+        full_stable = json.dumps(calendar, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        full_version = hashlib.sha256(
+            f"{task_payload.get('version') or ''}|{full_stable}".encode("utf-8")
+        ).hexdigest()[:24]
+        if cacheable:
+            with self._snapshot_cache_lock:
+                self._snapshot_cache[(year, month, media_type)] = (
+                    time.monotonic(),
+                    {
+                        "ok": True,
+                        "version": full_version,
+                        "calendar": deepcopy(calendar),
+                    },
+                )
         if view == "summary":
-            calendar = _summary_calendar(calendar)
+            calendar = _summary_calendar(calendar, current)
         stable = json.dumps(calendar, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         version = hashlib.sha256(
             f"{task_payload.get('version') or ''}|{stable}".encode("utf-8")
@@ -565,8 +622,8 @@ def _error(code: str, message: str, status: int):
     return jsonify({"code": code, "error": message, "request_id": current_request_id()}), status
 
 
-def register_calendar_timeline(app: Flask, calendar_loader=None):
-    service = CalendarTimelineService(app, calendar_loader=calendar_loader)
+def register_calendar_timeline(app: Flask, calendar_loader=None, clock=None):
+    service = CalendarTimelineService(app, calendar_loader=calendar_loader, clock=clock)
     app.extensions["mcc_calendar_timeline"] = service
 
     @app.get("/api/v2/calendar")

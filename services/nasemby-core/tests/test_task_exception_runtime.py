@@ -36,6 +36,25 @@ class TaskExceptionRuntimeTests(unittest.TestCase):
         self.assertEqual(result["healthState"], "evidence_insufficient")
         self.assertEqual(result["reasonCode"], "EVIDENCE_EXPIRED")
 
+    def test_expired_blocked_stage_is_not_actionable(self):
+        expired = stage(
+            "blocked",
+            reasonCode="DOWNLOAD_STALLED",
+            freshUntil="2026-07-22T05:59:00Z",
+        )
+
+        stage_result = classify_stage(expired, now=NOW)
+        task_result = classify_task({
+            "state": "blocked",
+            "confidence": "strong",
+            "stages": [expired],
+        }, now=NOW)
+
+        self.assertEqual(stage_result["healthState"], "evidence_insufficient")
+        self.assertEqual(stage_result["reasonCode"], "EVIDENCE_EXPIRED")
+        self.assertEqual(task_result["healthState"], "evidence_insufficient")
+        self.assertEqual(task_result["executionState"], "waiting")
+
     def test_active_stage_is_waiting_even_without_downstream_evidence(self):
         result = classify_stage(stage("waiting", evidence="missing", reasonText="等待秒传"), now=NOW)
         self.assertEqual(result["healthState"], "waiting")
@@ -56,7 +75,7 @@ class TaskExceptionRuntimeTests(unittest.TestCase):
             now=NOW,
         )
         self.assertEqual(result["healthState"], "protected")
-        self.assertEqual(result["recommendedAction"], "已保留低分源文件，可进入存储清理")
+        self.assertEqual(result["recommendedAction"], "已保留更高质量版本，无需处理")
         self.assertFalse(result["retryEligible"])
 
     def test_legacy_blocked_task_keeps_protected_execution_state(self):

@@ -446,6 +446,70 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
             "error": "任务链读取失败",
         })
 
+    def test_v1_route_presents_only_opaque_external_references(self):
+        from flask import Flask
+
+        from app.task_chain_runtime import register_task_chain
+
+        raw_qb = "a" * 40
+        raw_torra = "torra-private-id"
+        raw_symedia = "symedia-private:/storage/private/file.mkv"
+        application = Flask(f"{__name__}-public")
+        application.extensions.update({
+            "mcc_qbittorrent_client": object(),
+            "mcc_torra_client": object(),
+            "mcc_symedia_client": object(),
+            "mcc_emby_client": object(),
+        })
+        service = register_task_chain(application, subscription_loader=lambda: [])
+        service.get_chain = lambda: {
+            "generatedAt": "2026-07-26T03:00:00Z",
+            "counts": {"total": 1},
+            "services": {
+                "qb": {"connected": True, "total": 1, "webUrl": "http://qb.private"},
+                "torra": {"connected": True, "total": 1, "webUrl": "http://torra.private"},
+            },
+            "evidenceOwnership": {
+                "summary": {"strong": 1},
+                "records": [{"artifactKey": f"artifact:{raw_qb}", "source": "qBittorrent"}],
+            },
+            "items": [{
+                "id": f"qb:{raw_qb}",
+                "title": "测试任务",
+                "mediaType": "tv",
+                "tmdbId": "101",
+                "seasonNumber": 1,
+                "sourceIds": {
+                    "subscriptionId": f"torra:{raw_torra}",
+                    "torraId": raw_torra,
+                    "qbHashes": [raw_qb],
+                    "symediaIds": [raw_symedia],
+                },
+                "steps": [{
+                    "key": "library",
+                    "label": "入库",
+                    "status": "blocked",
+                    "detail": "/storage/private/file.mkv 处理失败 http://internal/job/1",
+                    "source": "Symedia",
+                }],
+                "suggestion": {"label": "打开工具", "url": "http://qb.private"},
+            }],
+        }
+
+        response = application.test_client().get("/api/tasks/chain")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        serialized = response.get_data(as_text=True)
+        for private_value in (raw_qb, raw_torra, raw_symedia, "qb.private", "torra.private", "/storage/private"):
+            self.assertNotIn(private_value, serialized)
+        item = payload["items"][0]
+        self.assertEqual(len(item["sourceIds"]["qbHashes"][0]), 40)
+        self.assertTrue(item["sourceIds"]["torraId"].startswith("torra:"))
+        self.assertTrue(item["sourceIds"]["symediaIds"][0].startswith("symedia:"))
+        self.assertIsNone(item["suggestion"])
+        self.assertEqual(payload["services"]["qb"]["webUrl"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

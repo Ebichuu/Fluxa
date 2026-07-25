@@ -16,6 +16,7 @@ from app.subscription_automation_runtime import (
     SubscriptionAutomationDependencies,
     SubscriptionAutomationService,
 )
+from app.subscription_reconciliation_runtime import torra_public_subscription_key
 from app.torra_quality_runtime import TorraQualityClient
 
 
@@ -53,8 +54,11 @@ class FakeTorra:
 
 
 class FakeQb:
+    def __init__(self):
+        self.tasks = []
+
     def summary(self):
-        return {"connected": True, "tasks": []}
+        return {"connected": True, "tasks": list(self.tasks)}
 
 
 def success_job():
@@ -150,6 +154,39 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
         updater(item)
         return item
 
+    def _rss_match_with_analysis(self, suffix):
+        source = self.rss.save_source({
+            "name": f"RSS {suffix}",
+            "feedUrl": f"https://tracker.example/{suffix}.xml",
+        })
+        self.rss.upsert_items(source["id"], [{
+            "fingerprint": f"rss-download-{suffix}",
+            "title": f"测试剧 S01E01 {suffix}",
+        }])
+        item = self.rss.search_items(source_id=source["id"])["items"][0]
+        match = self.rss.create_match(
+            item["id"],
+            "tv:202",
+            self.unit["unit_key"],
+            {"identity": {"basis": "title"}},
+        )
+        claimed = self.repository.claim_action(
+            f"rss-download-analysis-{suffix}",
+            "tv:202",
+            "torra",
+            "rewash-analysis",
+            unit_key=self.unit["unit_key"],
+            request_summary={"source": "manual-rss", "matchId": match["id"]},
+        )
+        analysis_id = claimed["action"]["action_id"]
+        self.repository.complete_action(analysis_id, "succeeded", {
+            "analysisId": f"analysis-{suffix}",
+            "selectedCandidates": {f"row-{suffix}": f"candidate-{suffix}"},
+            "selectedCount": 1,
+        })
+        self.rss.update_match(match["id"], "triggered", analysis_id)
+        return match, analysis_id
+
     def test_settings_validate_and_persist_effective_deadline_schedule(self):
         current = self.client.get("/api/v2/subscription-automation/settings")
         self.assertEqual(current.status_code, 200)
@@ -198,6 +235,92 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
         self.assertEqual(self.repository.get_watch_unit(self.unit["unit_key"])["state"], "observing_upgrade")
         self.assertEqual(self.subscriptions[0]["torra_quality_watch"]["window_hours"], 24)
 
+    def test_torra_only_quality_watch_is_readable_without_local_subscription(self):
+        torra_unit = self.repository.ensure_watch_unit(
+            "torra:torra-202", "tv", 1, 2, window_hours=48, torra_subscription_id="torra-202"
+        )
+        torra_unit = self.repository.mark_baseline_ready(torra_unit["unit_key"])
+        public_key = torra_public_subscription_key("torra-202")
+        public_unit_key = torra_unit["unit_key"].replace("torra:torra-202", public_key, 1)
+
+        response = self.client.get(f"/api/v2/subscriptions/{public_key}/quality-watch")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["readOnly"])
+        self.assertEqual(response.get_json()["subscriptionId"], public_key)
+        self.assertEqual(response.get_json()["units"][0]["id"], public_unit_key)
+        self.assertNotIn("torra-202", response.get_data(as_text=True))
+
+        analysis = self.client.post(
+            f"/api/v2/subscriptions/{public_key}/torra-rewash-analyses",
+            json={"idempotencyKey": "torra-public-analysis-0001", "unitId": public_unit_key},
+        )
+        self.assertEqual(analysis.status_code, 202)
+        self.assertEqual(self.torra.analyses, ["torra-202"])
+        self.assertEqual(analysis.get_json()["subscriptionId"], public_key)
+        self.assertEqual(analysis.get_json()["unitId"], public_unit_key)
+        self.assertNotIn("torra-202", analysis.get_data(as_text=True))
+
+        missing_units = self.client.get("/api/v2/subscriptions/torra:unknown/quality-watch")
+        self.assertEqual(missing_units.status_code, 404)
+        self.assertEqual(missing_units.get_json()["code"], "SUBSCRIPTION_NOT_FOUND")
+
+        collision_remote_id = public_key.removeprefix("torra:")
+        self.torra.rows.append({"id": collision_remote_id, "is_running": False, "is_mutating": False})
+        collision = self.client.get(f"/api/v2/subscriptions/{public_key}/quality-watch")
+        self.assertEqual(collision.status_code, 409)
+        self.assertEqual(collision.get_json()["code"], "TORRA_SUBSCRIPTION_KEY_CONFLICT")
+
+        update = self.client.patch(
+            f"/api/v2/subscriptions/{public_key}/quality-watch",
+            json={"paused": True},
+        )
+        self.assertEqual(update.status_code, 404)
+
+    def test_imported_torra_mirror_quality_watch_supports_new_and_legacy_local_keys(self):
+        for index, storage_mode in enumerate(("public", "legacy"), start=2):
+            with self.subTest(storage_mode=storage_mode):
+                remote_id = f"torra-mirror-{storage_mode}"
+                public_key = torra_public_subscription_key(remote_id)
+                stored_key = public_key if storage_mode == "public" else f"torra:{remote_id}"
+                self.torra.rows.append({"id": remote_id, "is_running": False, "is_mutating": False})
+                self.subscriptions.append({
+                    "key": stored_key,
+                    "subscription_key": stored_key,
+                    "title": f"镜像剧 {storage_mode}",
+                    "media_type": "tv",
+                    "tmdb_id": str(300 + index),
+                    "target_season": 1,
+                    "origin": "torra",
+                    "read_only": True,
+                    "torra_remote_id": remote_id,
+                })
+                unit = self.repository.ensure_watch_unit(
+                    stored_key,
+                    "tv",
+                    1,
+                    index,
+                    window_hours=48,
+                    torra_subscription_id=remote_id,
+                )
+                unit = self.repository.mark_baseline_ready(unit["unit_key"])
+                public_unit_key = unit["unit_key"].replace(stored_key, public_key, 1)
+
+                status = self.client.get(f"/api/v2/subscriptions/{public_key}/quality-watch")
+                paused = self.client.patch(
+                    f"/api/v2/subscriptions/{public_key}/quality-watch",
+                    json={"paused": True},
+                )
+
+                self.assertEqual(status.status_code, 200)
+                self.assertEqual(status.get_json()["subscriptionId"], public_key)
+                self.assertEqual(status.get_json()["units"][0]["id"], public_unit_key)
+                self.assertEqual(paused.status_code, 200)
+                self.assertEqual(self.repository.get_watch_unit(unit["unit_key"])["state"], "paused")
+                self.assertIn("torra_quality_watch", self.subscriptions[-1])
+                self.assertNotIn(remote_id, status.get_data(as_text=True))
+                self.assertNotIn(remote_id, paused.get_data(as_text=True))
+
     def test_manual_analysis_is_gated_idempotent_async_and_redacted(self):
         self.environment["MCC_TORRA_QUALITY_WATCH_ENABLED"] = "false"
         disabled = self.client.post(
@@ -217,6 +340,7 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
             json={"idempotencyKey": "analysis-manual-0001", "unitId": self.unit["unit_key"]},
         )
         self.assertEqual(replayed.status_code, 202)
+        self.assertEqual(replayed.get_json()["id"], accepted.get_json()["id"])
         self.assertEqual(len(self.torra.analyses), 1)
         action_id = accepted.get_json()["id"]
         action = self.repository.get_action(action_id)
@@ -226,7 +350,29 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
         public = self.client.get(accepted.headers["Location"])
         serialized = public.get_data(as_text=True)
         self.assertEqual(public.get_json()["result"]["selectedCount"], 1)
+        self.assertEqual(public.get_json()["result"]["upgradeOptions"][0]["scoreGain"], 10.0)
         self.assertNotIn("candidate-private", serialized)
+
+    def test_manual_analysis_rejects_cross_source_idempotency_collision(self):
+        idempotency_key = "analysis-cross-source-collision"
+        existing = self.repository.claim_action(
+            idempotency_key,
+            "tv:202",
+            "torra",
+            "rewash-analysis",
+            unit_key=self.unit["unit_key"],
+            request_summary={"source": "manual-rss", "matchId": "rss-match-other"},
+        )["action"]
+        self.repository.complete_action(existing["action_id"], "cancelled")
+
+        response = self.client.post(
+            "/api/v2/subscriptions/tv:202/torra-rewash-analyses",
+            json={"idempotencyKey": idempotency_key, "unitId": self.unit["unit_key"]},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["code"], "TORRA_REWASH_IDEMPOTENCY_CONFLICT")
+        self.assertEqual(self.torra.analyses, [])
 
     def test_download_uses_server_selection_and_independent_confirmation_gate(self):
         analysis = self.repository.claim_action(
@@ -274,6 +420,25 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
         replayed = self.client.post("/api/v2/subscriptions/tv:202/torra-rewashes", json=body)
         self.assertEqual(replayed.status_code, 202)
         self.assertEqual(replayed.get_json()["id"], accepted.get_json()["id"])
+
+        other_analysis = self.repository.claim_action(
+            "analysis-ready-0002",
+            "tv:202",
+            "torra",
+            "rewash-analysis",
+            unit_key=self.unit["unit_key"],
+        )["action"]
+        self.repository.complete_action(other_analysis["action_id"], "succeeded", {
+            "analysisId": "analysis-other",
+            "selectedCandidates": {"row-other": "candidate-other"},
+            "selectedCount": 1,
+        })
+        conflict = self.client.post(
+            "/api/v2/subscriptions/tv:202/torra-rewashes",
+            json={**body, "analysisActionId": other_analysis["action_id"]},
+        )
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(conflict.get_json()["code"], "TORRA_REWASH_IDEMPOTENCY_CONFLICT")
         self.assertEqual(
             self.torra.downloads,
             [("torra-202", "analysis-private", {"row-private": "candidate-private"})],
@@ -312,6 +477,470 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
         self.assertEqual(conflict.status_code, 409)
         self.assertEqual(conflict.get_json()["code"], "TORRA_REWASH_IDEMPOTENCY_CONFLICT")
         self.assertEqual(self.torra.analyses, ["torra-202"])
+
+    def test_rss_match_download_requires_confirmation_and_replays_without_resubmitting(self):
+        match, analysis_id = self._rss_match_with_analysis("success")
+        self.environment["MCC_TORRA_REWASH_DOWNLOAD_ENABLED"] = "true"
+        body = {
+            "confirm": True,
+            "idempotencyKey": "rss-download-success-0001",
+            "analysisActionId": analysis_id,
+        }
+
+        unconfirmed = self.client.post(
+            f"/api/v2/rss-matches/{match['id']}/torra-rewashes",
+            json={**body, "confirm": False},
+        )
+        self.assertEqual(unconfirmed.status_code, 422)
+        self.assertEqual(unconfirmed.get_json()["code"], "TORRA_REWASH_CONFIRMATION_REQUIRED")
+
+        accepted = self.client.post(f"/api/v2/rss-matches/{match['id']}/torra-rewashes", json=body)
+        replayed = self.client.post(f"/api/v2/rss-matches/{match['id']}/torra-rewashes", json=body)
+
+        self.assertEqual((accepted.status_code, replayed.status_code), (202, 202))
+        self.assertEqual(replayed.get_json()["id"], accepted.get_json()["id"])
+        self.assertEqual(
+            self.torra.downloads,
+            [("torra-202", "analysis-success", {"row-success": "candidate-success"})],
+        )
+        stored = self.rss.get_match(match["id"])
+        self.assertEqual(stored["status"], "confirmed")
+        self.assertEqual(stored["triggerActionId"], accepted.get_json()["id"])
+        listed = self.client.get("/api/v2/rss-matches?status=confirmed").get_json()["items"]
+        self.assertEqual(listed[0]["triggerActionId"], accepted.get_json()["id"])
+        self.assertNotIn("candidate-success", accepted.get_data(as_text=True))
+
+    def test_rss_match_download_rejects_expired_observation_window(self):
+        match, analysis_id = self._rss_match_with_analysis("expired-window")
+        self.environment["MCC_TORRA_REWASH_DOWNLOAD_ENABLED"] = "true"
+        self.now[0] += timedelta(hours=49)
+
+        response = self.client.post(
+            f"/api/v2/rss-matches/{match['id']}/torra-rewashes",
+            json={
+                "confirm": True,
+                "idempotencyKey": "rss-download-expired-window",
+                "analysisActionId": analysis_id,
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["code"], "QUALITY_WATCH_WINDOW_EXPIRED")
+        self.assertEqual(self.torra.downloads, [])
+
+    def test_rss_match_download_rejects_at_observation_deadline(self):
+        match, analysis_id = self._rss_match_with_analysis("window-deadline")
+        self.environment["MCC_TORRA_REWASH_DOWNLOAD_ENABLED"] = "true"
+        self.now[0] = datetime.fromisoformat(
+            self.unit["observation_ends_at"].replace("Z", "+00:00")
+        )
+
+        response = self.client.post(
+            f"/api/v2/rss-matches/{match['id']}/torra-rewashes",
+            json={
+                "confirm": True,
+                "idempotencyKey": "rss-download-window-deadline",
+                "analysisActionId": analysis_id,
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["code"], "QUALITY_WATCH_WINDOW_EXPIRED")
+        self.assertEqual(self.torra.downloads, [])
+
+    def test_reclaimed_download_rechecks_torra_before_resubmitting(self):
+        match, analysis_id = self._rss_match_with_analysis("reclaimed-torra")
+        self.environment["MCC_TORRA_REWASH_DOWNLOAD_ENABLED"] = "true"
+        idempotency_key = "rss-download-reclaimed-torra"
+        self.repository.claim_action(
+            idempotency_key,
+            "tv:202",
+            "torra",
+            "rewash-download",
+            unit_key=self.unit["unit_key"],
+            request_summary={
+                "source": "manual-subscription",
+                "unitId": self.unit["unit_key"],
+                "analysisActionId": analysis_id,
+            },
+        )
+        self.now[0] += timedelta(seconds=61)
+        self.torra.rows[0]["is_running"] = True
+
+        response = self.client.post(
+            f"/api/v2/rss-matches/{match['id']}/torra-rewashes",
+            json={
+                "confirm": True,
+                "idempotencyKey": idempotency_key,
+                "analysisActionId": analysis_id,
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["code"], "TORRA_REWASH_BUSY")
+        self.assertEqual(self.torra.downloads, [])
+        stored = self.repository.get_action_by_idempotency(idempotency_key)
+        self.assertEqual(stored["status"], "claimed")
+        self.assertEqual(
+            self.repository.find_inflight_action("torra", "rewash-download")["action_id"],
+            stored["action_id"],
+        )
+
+    def test_reclaimed_download_rechecks_qb_before_resubmitting(self):
+        match, analysis_id = self._rss_match_with_analysis("reclaimed-qb")
+        self.environment["MCC_TORRA_REWASH_DOWNLOAD_ENABLED"] = "true"
+        idempotency_key = "rss-download-reclaimed-qb"
+        self.repository.claim_action(
+            idempotency_key,
+            "tv:202",
+            "torra",
+            "rewash-download",
+            unit_key=self.unit["unit_key"],
+            request_summary={
+                "source": "manual-subscription",
+                "unitId": self.unit["unit_key"],
+                "analysisActionId": analysis_id,
+            },
+        )
+        self.now[0] += timedelta(seconds=61)
+        self.qb.tasks = [{
+            "name": f"{self.subscriptions[0]['title']} S01E01",
+            "status": "downloading",
+        }]
+
+        response = self.client.post(
+            f"/api/v2/rss-matches/{match['id']}/torra-rewashes",
+            json={
+                "confirm": True,
+                "idempotencyKey": idempotency_key,
+                "analysisActionId": analysis_id,
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["code"], "TORRA_REWASH_QB_BUSY")
+        self.assertEqual(self.torra.downloads, [])
+        stored = self.repository.get_action_by_idempotency(idempotency_key)
+        self.assertEqual(stored["status"], "claimed")
+        self.assertEqual(
+            self.repository.find_inflight_action("torra", "rewash-download")["action_id"],
+            stored["action_id"],
+        )
+
+    def test_reclaimed_download_http_cancels_expired_window(self):
+        _match, analysis_id = self._rss_match_with_analysis("http-expired-window")
+        self.environment["MCC_TORRA_REWASH_DOWNLOAD_ENABLED"] = "true"
+        idempotency_key = "download-http-reclaim-expired"
+        action = self.repository.claim_action(
+            idempotency_key,
+            "tv:202",
+            "torra",
+            "rewash-download",
+            unit_key=self.unit["unit_key"],
+            request_summary={
+                "source": "manual-subscription",
+                "unitId": self.unit["unit_key"],
+                "analysisActionId": analysis_id,
+            },
+        )["action"]
+        self.now[0] += timedelta(hours=49)
+
+        response = self.client.post(
+            "/api/v2/subscriptions/tv:202/torra-rewashes",
+            json={
+                "confirm": True,
+                "idempotencyKey": idempotency_key,
+                "analysisActionId": analysis_id,
+                "unitId": self.unit["unit_key"],
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["code"], "QUALITY_WATCH_WINDOW_EXPIRED")
+        stored = self.repository.get_action(action["action_id"])
+        self.assertEqual(stored["status"], "cancelled")
+        self.assertEqual(stored["error_code"], "QUALITY_WATCH_WINDOW_EXPIRED")
+        self.assertIsNone(self.repository.find_inflight_action("torra", "rewash-download"))
+        self.assertEqual(self.torra.downloads, [])
+
+    def test_reclaimed_download_http_cancels_missing_torra_subscription(self):
+        _match, analysis_id = self._rss_match_with_analysis("http-missing-torra")
+        self.environment["MCC_TORRA_REWASH_DOWNLOAD_ENABLED"] = "true"
+        idempotency_key = "download-http-reclaim-missing-torra"
+        action = self.repository.claim_action(
+            idempotency_key,
+            "tv:202",
+            "torra",
+            "rewash-download",
+            unit_key=self.unit["unit_key"],
+            request_summary={
+                "source": "manual-subscription",
+                "unitId": self.unit["unit_key"],
+                "analysisActionId": analysis_id,
+            },
+        )["action"]
+        self.torra.rows = []
+        self.now[0] += timedelta(seconds=61)
+
+        response = self.client.post(
+            "/api/v2/subscriptions/tv:202/torra-rewashes",
+            json={
+                "confirm": True,
+                "idempotencyKey": idempotency_key,
+                "analysisActionId": analysis_id,
+                "unitId": self.unit["unit_key"],
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["code"], "TORRA_REWASH_SUBSCRIPTION_MISSING")
+        stored = self.repository.get_action(action["action_id"])
+        self.assertEqual(stored["status"], "cancelled")
+        self.assertEqual(stored["error_code"], "TORRA_REWASH_SUBSCRIPTION_MISSING")
+        self.assertIsNone(self.repository.find_inflight_action("torra", "rewash-download"))
+        self.assertEqual(self.torra.downloads, [])
+
+    def test_reclaimed_analysis_http_cancels_missing_torra_subscription(self):
+        idempotency_key = "analysis-http-reclaim-missing-torra"
+        action = self.repository.claim_action(
+            idempotency_key,
+            "tv:202",
+            "torra",
+            "rewash-analysis",
+            unit_key=self.unit["unit_key"],
+            request_summary={
+                "source": "manual-subscription",
+                "unitId": self.unit["unit_key"],
+            },
+        )["action"]
+        self.torra.rows = []
+        self.now[0] += timedelta(seconds=61)
+
+        response = self.client.post(
+            "/api/v2/subscriptions/tv:202/torra-rewash-analyses",
+            json={"idempotencyKey": idempotency_key, "unitId": self.unit["unit_key"]},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["code"], "TORRA_REWASH_SUBSCRIPTION_MISSING")
+        stored = self.repository.get_action(action["action_id"])
+        self.assertEqual(stored["status"], "cancelled")
+        self.assertEqual(stored["error_code"], "TORRA_REWASH_SUBSCRIPTION_MISSING")
+        self.assertIsNone(self.repository.find_inflight_action("torra", "rewash-analysis"))
+        self.assertEqual(self.torra.analyses, [])
+
+    def test_reclaimed_analysis_http_keeps_temporary_provider_error_retryable(self):
+        idempotency_key = "analysis-http-reclaim-torra-busy"
+        action = self.repository.claim_action(
+            idempotency_key,
+            "tv:202",
+            "torra",
+            "rewash-analysis",
+            unit_key=self.unit["unit_key"],
+            request_summary={
+                "source": "manual-subscription",
+                "unitId": self.unit["unit_key"],
+            },
+        )["action"]
+        self.torra.rows[0]["is_running"] = True
+        self.now[0] += timedelta(seconds=61)
+
+        response = self.client.post(
+            "/api/v2/subscriptions/tv:202/torra-rewash-analyses",
+            json={"idempotencyKey": idempotency_key, "unitId": self.unit["unit_key"]},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["code"], "TORRA_REWASH_BUSY")
+        stored = self.repository.get_action(action["action_id"])
+        self.assertEqual(stored["status"], "claimed")
+        self.assertEqual(
+            self.repository.find_inflight_action("torra", "rewash-analysis")["action_id"],
+            stored["action_id"],
+        )
+        self.assertEqual(self.torra.analyses, [])
+
+    def test_reclaimed_download_resume_rejects_expired_observation_window(self):
+        _match, analysis_id = self._rss_match_with_analysis("resume-expired-window")
+        self.environment["MCC_TORRA_REWASH_DOWNLOAD_ENABLED"] = "true"
+        idempotency_key = "rss-download-resume-expired"
+        claimed = self.repository.claim_action(
+            idempotency_key,
+            "tv:202",
+            "torra",
+            "rewash-download",
+            unit_key=self.unit["unit_key"],
+            request_summary={
+                "source": "manual-subscription",
+                "unitId": self.unit["unit_key"],
+                "analysisActionId": analysis_id,
+            },
+        )["action"]
+        self.now[0] += timedelta(hours=49)
+
+        with self.assertRaises(AutomationApiError) as raised:
+            self.service.resume_action(claimed)
+
+        self.assertEqual(raised.exception.code, "QUALITY_WATCH_WINDOW_EXPIRED")
+        self.assertEqual(self.torra.downloads, [])
+        stored = self.repository.get_action(claimed["action_id"])
+        self.assertEqual(stored["status"], "cancelled")
+        self.assertEqual(stored["error_code"], "QUALITY_WATCH_WINDOW_EXPIRED")
+        self.assertEqual(stored["response_summary"]["reason"], "reclaim_context_invalid")
+        self.assertIsNone(self.repository.find_inflight_action("torra", "rewash-download"))
+
+    def test_reclaimed_download_resume_cancels_missing_subscription_and_unit(self):
+        cases = [
+            ("missing-subscription", "tv:missing", self.unit["unit_key"], "SUBSCRIPTION_NOT_FOUND"),
+            ("missing-unit", "tv:202", "tv:202:missing", "QUALITY_WATCH_UNIT_NOT_FOUND"),
+        ]
+        self.environment["MCC_TORRA_REWASH_DOWNLOAD_ENABLED"] = "true"
+        for suffix, subscription_key, unit_key, expected_code in cases:
+            with self.subTest(suffix=suffix):
+                action = self.repository.claim_action(
+                    f"download-reclaim-{suffix}",
+                    subscription_key,
+                    "torra",
+                    "rewash-download",
+                    unit_key=unit_key,
+                    request_summary={
+                        "source": "manual-subscription",
+                        "unitId": unit_key,
+                        "analysisActionId": "analysis-missing",
+                    },
+                )["action"]
+                self.now[0] += timedelta(seconds=61)
+
+                with self.assertRaises(AutomationApiError) as raised:
+                    self.service.resume_action(action)
+
+                self.assertEqual(raised.exception.code, expected_code)
+                stored = self.repository.get_action(action["action_id"])
+                self.assertEqual(stored["status"], "cancelled")
+                self.assertEqual(stored["error_code"], expected_code)
+                self.assertIsNone(self.repository.find_inflight_action("torra", "rewash-download"))
+
+    def test_reclaimed_download_resume_cancels_unusable_analysis(self):
+        analysis = self.repository.claim_action(
+            "analysis-unusable-for-reclaim",
+            "tv:202",
+            "torra",
+            "rewash-analysis",
+            unit_key=self.unit["unit_key"],
+        )["action"]
+        self.repository.complete_action(analysis["action_id"], "failed")
+        action = self.repository.claim_action(
+            "download-reclaim-unusable-analysis",
+            "tv:202",
+            "torra",
+            "rewash-download",
+            unit_key=self.unit["unit_key"],
+            request_summary={
+                "source": "manual-subscription",
+                "unitId": self.unit["unit_key"],
+                "analysisActionId": analysis["action_id"],
+            },
+        )["action"]
+        self.environment["MCC_TORRA_REWASH_DOWNLOAD_ENABLED"] = "true"
+        self.now[0] += timedelta(seconds=61)
+
+        with self.assertRaises(AutomationApiError) as raised:
+            self.service.resume_action(action)
+
+        self.assertEqual(raised.exception.code, "TORRA_ANALYSIS_ACTION_NOT_READY")
+        stored = self.repository.get_action(action["action_id"])
+        self.assertEqual(stored["status"], "cancelled")
+        self.assertEqual(stored["error_code"], "TORRA_ANALYSIS_ACTION_NOT_READY")
+        self.assertIsNone(self.repository.find_inflight_action("torra", "rewash-download"))
+
+    def test_reclaimed_download_resume_cancels_missing_analysis(self):
+        action = self.repository.claim_action(
+            "download-reclaim-missing-analysis",
+            "tv:202",
+            "torra",
+            "rewash-download",
+            unit_key=self.unit["unit_key"],
+            request_summary={
+                "source": "manual-subscription",
+                "unitId": self.unit["unit_key"],
+                "analysisActionId": "analysis-does-not-exist",
+            },
+        )["action"]
+        self.environment["MCC_TORRA_REWASH_DOWNLOAD_ENABLED"] = "true"
+        self.now[0] += timedelta(seconds=61)
+
+        with self.assertRaises(AutomationApiError) as raised:
+            self.service.resume_action(action)
+
+        self.assertEqual(raised.exception.code, "TORRA_ANALYSIS_ACTION_NOT_FOUND")
+        stored = self.repository.get_action(action["action_id"])
+        self.assertEqual(stored["status"], "cancelled")
+        self.assertEqual(stored["error_code"], "TORRA_ANALYSIS_ACTION_NOT_FOUND")
+        self.assertIsNone(self.repository.find_inflight_action("torra", "rewash-download"))
+
+    def test_reclaimed_download_resume_keeps_temporary_provider_error_retryable(self):
+        match, analysis_id = self._rss_match_with_analysis("resume-torra-busy")
+        self.assertIsNotNone(match)
+        action = self.repository.claim_action(
+            "download-reclaim-resume-torra-busy",
+            "tv:202",
+            "torra",
+            "rewash-download",
+            unit_key=self.unit["unit_key"],
+            request_summary={
+                "source": "manual-subscription",
+                "unitId": self.unit["unit_key"],
+                "analysisActionId": analysis_id,
+            },
+        )["action"]
+        self.environment["MCC_TORRA_REWASH_DOWNLOAD_ENABLED"] = "true"
+        self.torra.is_configured = lambda: False
+        self.now[0] += timedelta(seconds=61)
+
+        with self.assertRaises(AutomationApiError) as torra_error:
+            self.service.resume_action(action)
+
+        self.assertEqual(torra_error.exception.code, "TORRA_REWASH_UPSTREAM_UNAVAILABLE")
+        stored = self.repository.get_action(action["action_id"])
+        self.assertEqual(stored["status"], "claimed")
+        self.assertEqual(
+            self.repository.find_inflight_action("torra", "rewash-download")["action_id"],
+            stored["action_id"],
+        )
+
+        self.torra.is_configured = lambda: True
+        self.qb.summary = lambda: {"connected": False, "tasks": []}
+        self.now[0] += timedelta(seconds=61)
+        with self.assertRaises(AutomationApiError) as qb_error:
+            self.service.resume_action(stored)
+
+        self.assertEqual(qb_error.exception.code, "TORRA_REWASH_UPSTREAM_UNAVAILABLE")
+        stored = self.repository.get_action(action["action_id"])
+        self.assertEqual(stored["status"], "claimed")
+        self.assertEqual(
+            self.repository.find_inflight_action("torra", "rewash-download")["action_id"],
+            stored["action_id"],
+        )
+        self.assertEqual(self.torra.downloads, [])
+
+    def test_rss_match_download_rejects_analysis_from_another_match(self):
+        match, _analysis_id = self._rss_match_with_analysis("target")
+        _other_match, other_analysis_id = self._rss_match_with_analysis("other")
+        self.environment["MCC_TORRA_REWASH_DOWNLOAD_ENABLED"] = "true"
+
+        rejected = self.client.post(
+            f"/api/v2/rss-matches/{match['id']}/torra-rewashes",
+            json={
+                "confirm": True,
+                "idempotencyKey": "rss-download-wrong-analysis",
+                "analysisActionId": other_analysis_id,
+            },
+        )
+
+        self.assertEqual(rejected.status_code, 404)
+        self.assertEqual(rejected.get_json()["code"], "TORRA_ANALYSIS_ACTION_NOT_FOUND")
+        self.assertEqual(self.torra.downloads, [])
+        self.assertEqual(self.rss.get_match(match["id"])["status"], "triggered")
 
     def test_action_errors_use_contract_statuses_and_error_envelope(self):
         cases = []

@@ -1,9 +1,11 @@
 import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Ban, CalendarDays, Check, ChevronLeft, ChevronRight, Database, Download, FileSearch, Pause, Play, Plus, RefreshCcw, RotateCcw, Search, Send, SlidersHorizontal, Trash2, X } from 'lucide-react';
+import { Ban, Check, ChevronLeft, ChevronRight, Database, Download, FileSearch, Pause, Play, Plus, RefreshCcw, RotateCcw, Search, Send, SlidersHorizontal, Trash2, X } from 'lucide-react';
+import { currentHistoryEntryIs, writeUrlQuery, type UrlHistoryMode } from '../../app/urlState';
 import {
   backfillSubscriptionVisuals,
   blockSubscription,
   browseDiscover,
+  createRssMatch,
   deleteSubscription,
   getAutomationAction,
   getMoviePilotPreview,
@@ -26,14 +28,17 @@ import {
   setSubscriptionSeason,
   startTorraRewashAnalysis,
   startTorraRewashDownload,
+  startRssMatchAnalysis,
+  startRssMatchDownload,
   unblockSubscription,
   updateSubscriptionQualityWatch
 } from '../../services/api';
-import type { AutomationAction, RssSeedItem, RssSeedListResponse } from '../../types/rssSeedLibrary';
+import type { AutomationAction, RssMatch, RssSeedItem, RssSeedListResponse } from '../../types/rssSeedLibrary';
 import type {
   DiscoverBrowseParams,
   DiscoverResourceItem,
   DiscoverResourceResponse,
+  DiscoverSourceStatus,
   MoviePilotPreview,
   MoviePilotPushResult,
   QualityWatchResponse,
@@ -52,6 +57,7 @@ import type { AppNavigate, TaskNavigationTarget } from '../layout/AppTopNav';
 import { HealthBadge } from '../status/HealthBadge';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
 import { PosterImage } from '../layout/PosterImage';
+import { RelativeTime } from '../status/RelativeTime';
 
 interface DiscoverPageProps {
   navigationTarget?: TaskNavigationTarget | null;
@@ -233,6 +239,59 @@ const sourceFilterKeys: Record<DiscoverSource, FilterKey[]> = {
   mango: []
 };
 
+interface DiscoverUrlState {
+  filters: DiscoverBrowseParams;
+  query: string;
+  page: number;
+}
+
+function filterOptionValue(key: FilterKey, value: string | null, fallback: string) {
+  return filterGroups.find((group) => group.key === key)?.options.some((option) => option.value === value)
+    ? value as string
+    : fallback;
+}
+
+function readDiscoverUrlState(location: Location = window.location): DiscoverUrlState {
+  const query = new URLSearchParams(location.search);
+  const sourceValue = query.get('source');
+  const source = sources.some((item) => item.id === sourceValue) ? sourceValue as DiscoverSource : defaultFilters.source;
+  const typeValue = query.get('type');
+  const type = forcedTypeForSource(source, typeValue === 'movie' || typeValue === 'tv' ? typeValue : defaultFilters.type);
+  const parsedPage = Number(query.get('page'));
+  const page = Number.isInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+  return {
+    filters: {
+      ...defaultFilters,
+      source,
+      type,
+      trend: filterOptionValue('trend', query.get('trend'), defaultFilters.trend) as DiscoverBrowseParams['trend'],
+      sort: filterOptionValue('sort', query.get('sort'), defaultFilters.sort),
+      language: filterOptionValue('language', query.get('language'), defaultFilters.language),
+      year: filterOptionValue('year', query.get('year'), defaultFilters.year),
+      genre: filterOptionValue('genre', query.get('genre'), defaultFilters.genre),
+      provider: streamingPlatforms.some((item) => item.value === query.get('provider')) ? query.get('provider') as string : defaultFilters.provider,
+      page
+    },
+    query: query.get('q')?.trim() ?? '',
+    page
+  };
+}
+
+function writeDiscoverUrlState(state: DiscoverUrlState, mode: UrlHistoryMode) {
+  writeUrlQuery({
+    q: state.query || null,
+    source: state.filters.source === defaultFilters.source ? null : state.filters.source,
+    type: state.filters.type === defaultFilters.type ? null : state.filters.type,
+    trend: state.filters.trend === defaultFilters.trend ? null : state.filters.trend,
+    sort: state.filters.sort === defaultFilters.sort ? null : state.filters.sort,
+    language: state.filters.language === defaultFilters.language ? null : state.filters.language,
+    year: state.filters.year === defaultFilters.year ? null : state.filters.year,
+    genre: state.filters.genre === defaultFilters.genre ? null : state.filters.genre,
+    provider: state.filters.source === 'streaming' && state.filters.provider !== defaultFilters.provider ? state.filters.provider : null,
+    page: state.page > 1 ? state.page : null
+  }, mode);
+}
+
 function forcedTypeForSource(source: DiscoverSource, currentType: DiscoverBrowseParams['type']) {
   if (source === 'daily' || source === 'tencent' || source === 'youku' || source === 'iqiyi' || source === 'mango') return 'tv';
   return currentType;
@@ -326,6 +385,7 @@ function mapRssSeedsToResources(
       seasonEpisodes.set(item.seasonNumber, values);
     }
     return {
+      rssItemId: item.id,
       source: sourceKey,
       source_key: sourceKey,
       source_label: item.sourceName || 'RSS',
@@ -359,8 +419,38 @@ function mapRssSeedsToResources(
     sources,
     seasons,
     errors: [],
-    cache_hits: []
+    cache_hits: [],
+    sourceStatuses: [{
+      key: 'local-rss',
+      label: '本地 RSS 种子箱',
+      status: 'available',
+      count: items.length,
+      message: items.length > 0 ? `已找到 ${items.length} 条候选` : '已搜索，未找到匹配种子'
+    }]
   };
+}
+
+function discoverSourceLabel(source: DiscoverSource) {
+  return sources.find((item) => item.id === source)?.label ?? source;
+}
+
+function unavailableSourceStatus(key: string, label: string, message: string): DiscoverSourceStatus {
+  return { key, label, status: 'unavailable', count: 0, message };
+}
+
+function DiscoverSourceStatusList({ statuses }: { statuses: DiscoverSourceStatus[] }) {
+  if (statuses.length === 0) return null;
+  return (
+    <ul className="discover-source-statuses" aria-label="本次搜索来源状态">
+      {statuses.map((source) => (
+        <li className={`is-${source.status}`} key={source.key}>
+          <span aria-hidden="true" />
+          <strong>{source.label}</strong>
+          <small>{source.message || (source.count > 0 ? `找到 ${source.count} 条` : '已搜索，未找到结果')}</small>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 function mergeRssSeedResponses(payloads: RssSeedListResponse[]): RssSeedListResponse {
@@ -445,6 +535,32 @@ function fulfillmentLabel(item: SubscriptionItem) {
   return item.fulfillmentState ? labels[item.fulfillmentState] : resolvedSubscriptionStatus(item) === 'done' ? '已完成' : '追更中';
 }
 
+function subscriptionUserStatus(item: SubscriptionItem) {
+  if (item.healthState === 'action_required' || item.fulfillmentState === 'blocked') {
+    return item.blockingReason || item.reasonText || '当前追更需要处理';
+  }
+  if (item.reconciliationState === 'conflict') {
+    return '';
+  }
+  if (item.reconciliationState === 'remote_missing') {
+    return 'Torra 中已找不到这条追更，请检查是否被删除或替换';
+  }
+  if (item.readOnly || item.reconciliationState === 'only_torra') {
+    return item.fulfillmentState === 'completed'
+      ? '追更已在 Torra 完成，Fluxa 正在读取下载与入库结果'
+      : '追更已在 Torra 生效，Fluxa 正在读取下载与入库进度';
+  }
+  return item.blockingReason || '';
+}
+
+function subscriptionUserStatusTone(item: SubscriptionItem) {
+  return item.healthState === 'action_required'
+    || item.fulfillmentState === 'blocked'
+    || item.reconciliationState === 'remote_missing'
+    ? 'is-danger'
+    : 'is-neutral';
+}
+
 const terminalAutomationStates = new Set(['succeeded', 'failed', 'cancelled']);
 
 function watchStateLabel(state: string) {
@@ -473,7 +589,7 @@ function unitLabel(unit: QualityWatchResponse['units'][number]) {
 function automationStatusLabel(action: AutomationAction | null) {
   if (!action) return '';
   if (action.status === 'succeeded') {
-    if (action.type === 'rewash-download') return '候选下载已完成';
+    if (action.type === 'rewash-download') return 'Torra 已接收候选下载请求';
     return (action.result?.selectedCount ?? 0) > 0
       ? `分析已完成，发现 ${action.result?.selectedCount} 个升级候选`
       : '分析已完成，没有升级候选';
@@ -483,15 +599,84 @@ function automationStatusLabel(action: AutomationAction | null) {
   return action.type === 'rewash-download' ? '候选下载执行中' : 'Torra 分析执行中';
 }
 
+function matchingResourceUnits(
+  item: DiscoverResourceItem,
+  mediaType: DiscoverResult['mediaType'],
+  watch: QualityWatchResponse | null
+) {
+  if (!watch) return [];
+  const activeStates = new Set(['observing_upgrade', 'search_due', 'search_running']);
+  const season = item.season == null ? null : Number(item.season);
+  const episodes = item.episodes ?? [];
+  return watch.units.filter((unit) => {
+    if (!activeStates.has(unit.state) || !unit.baselineReadyAt) return false;
+    if (mediaType === 'movie') return unit.seasonNumber == null;
+    if (!Number.isInteger(season) || episodes.length === 0) return false;
+    return unit.seasonNumber === season
+      && unit.episodeNumber != null
+      && episodes.includes(unit.episodeNumber);
+  });
+}
+
+function readFollowingFilters() {
+  const query = new URLSearchParams(window.location.search);
+  const mediaType = query.get('mediaType');
+  const status = query.get('status');
+  const updated = query.get('updated');
+  return {
+    tab: mediaType === 'movie' || mediaType === 'tv' || mediaType === 'blocked' ? mediaType : 'tv' as SubscriptionTab,
+    keyword: query.get('q') || '',
+    year: query.get('year') || 'all',
+    status: status === 'pending' || status === 'done' ? status : 'all' as SubscriptionStatusFilter,
+    updated: updated === 'today' || updated === '3' || updated === '7' ? updated : 'all' as SubscriptionUpdateFilter,
+    missingEpisodesOnly: query.get('missingEpisodes') === '1'
+  };
+}
+
+function readFollowingDetailTarget(location: Location = window.location) {
+  const query = new URLSearchParams(location.search);
+  const seasonValue = query.get('seasonNumber');
+  const parsedSeason = Number(seasonValue);
+  return {
+    subscriptionId: query.get('subscriptionId')?.trim() || '',
+    tmdbId: query.get('tmdbId')?.trim() || '',
+    seasonNumber: seasonValue !== null && Number.isInteger(parsedSeason) && parsedSeason >= 0 ? parsedSeason : null
+  };
+}
+
+const followingDetailHistoryKind = 'following:detail';
+const followingListHistoryKind = 'following:list';
+const subscriptionPageSize = 24;
+const subscriptionFilterPageSize = 100;
+const subscriptionFilterMaxRows = 2000;
+
+function writeFollowingDetailTarget(item: SubscriptionItem | null, seasonNumber: number | null, mode: UrlHistoryMode) {
+  let entryKind: string | undefined = followingListHistoryKind;
+  if (item) {
+    entryKind = mode === 'push' || currentHistoryEntryIs(followingDetailHistoryKind)
+      ? followingDetailHistoryKind
+      : undefined;
+  }
+  writeUrlQuery({
+    subscriptionId: item?.id || null,
+    tmdbId: item?.tmdbId || null,
+    title: item?.title || null,
+    seasonNumber: item && seasonNumber != null ? seasonNumber : null
+  }, mode, entryKind);
+}
+
 export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'discover' }: DiscoverPageProps) {
   const subscriptionsOnly = view === 'subscriptions';
-  const [filters, setFilters] = useState<DiscoverBrowseParams>(defaultFilters);
-  const [query, setQuery] = useState('');
-  const [activeSearch, setActiveSearch] = useState('');
-  const [searchPage, setSearchPage] = useState(1);
+  const initialFollowingFilters = subscriptionsOnly ? readFollowingFilters() : null;
+  const [initialDiscoverState] = useState(() => subscriptionsOnly ? null : readDiscoverUrlState());
+  const [filters, setFilters] = useState<DiscoverBrowseParams>(initialDiscoverState?.filters ?? defaultFilters);
+  const [query, setQuery] = useState(initialDiscoverState?.query ?? '');
+  const [activeSearch, setActiveSearch] = useState(initialDiscoverState?.query ?? '');
+  const [searchPage, setSearchPage] = useState(initialDiscoverState?.page ?? 1);
   const [results, setResults] = useState<DiscoverResult[]>([]);
   const [configured, setConfigured] = useState(true);
   const [discoverError, setDiscoverError] = useState('');
+  const [discoverSourceStatuses, setDiscoverSourceStatuses] = useState<DiscoverSourceStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [pageInfo, setPageInfo] = useState({
     page: 1,
@@ -506,12 +691,13 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   const [subsError, setSubsError] = useState('');
   const [workbench, setWorkbench] = useState<SubscriptionWorkbenchResponse | null>(null);
   const [subscriptionCapabilities, setSubscriptionCapabilities] = useState<SubscriptionCapabilitiesResponse | null>(null);
-  const [subscriptionTab, setSubscriptionTab] = useState<SubscriptionTab>('tv');
-  const [subscriptionKeyword, setSubscriptionKeyword] = useState('');
+  const [subscriptionTab, setSubscriptionTab] = useState<SubscriptionTab>(initialFollowingFilters?.tab ?? 'tv');
+  const [subscriptionKeyword, setSubscriptionKeyword] = useState(initialFollowingFilters?.keyword ?? '');
   const deferredSubscriptionKeyword = useDeferredValue(subscriptionKeyword);
-  const [subscriptionYear, setSubscriptionYear] = useState('all');
-  const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatusFilter>('all');
-  const [subscriptionUpdate, setSubscriptionUpdate] = useState<SubscriptionUpdateFilter>('all');
+  const [subscriptionYear, setSubscriptionYear] = useState(initialFollowingFilters?.year ?? 'all');
+  const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatusFilter>(initialFollowingFilters?.status ?? 'all');
+  const [subscriptionUpdate, setSubscriptionUpdate] = useState<SubscriptionUpdateFilter>(initialFollowingFilters?.updated ?? 'all');
+  const [missingEpisodesOnly, setMissingEpisodesOnly] = useState(initialFollowingFilters?.missingEpisodesOnly ?? false);
   const [sweepMessage, setSweepMessage] = useState('');
   const [subscriptionAction, setSubscriptionAction] = useState('');
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -525,6 +711,12 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   const [resourceQueries, setResourceQueries] = useState<string[]>([]);
   const [resourceSource, setResourceSource] = useState('all');
   const [resourcePreview, setResourcePreview] = useState<DiscoverResourceItem | null>(null);
+  const [resourceActionItem, setResourceActionItem] = useState<DiscoverResourceItem | null>(null);
+  const [resourceUnitId, setResourceUnitId] = useState('');
+  const [resourceMatch, setResourceMatch] = useState<RssMatch | null>(null);
+  const [resourceActionBusy, setResourceActionBusy] = useState('');
+  const [resourceActionMessage, setResourceActionMessage] = useState('');
+  const [resourceQualityWatch, setResourceQualityWatch] = useState<QualityWatchResponse | null>(null);
   const [torraPushPreview, setTorraPushPreview] = useState<TorraPushPreviewResponse | null>(null);
   const [torraPushMessage, setTorraPushMessage] = useState('');
   const [torraPushBusy, setTorraPushBusy] = useState('');
@@ -532,7 +724,8 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   const [qualityWatchBusy, setQualityWatchBusy] = useState('');
   const [qualityWatchMessage, setQualityWatchMessage] = useState('');
   const [selectedUnitId, setSelectedUnitId] = useState('');
-  const [automationAction, setAutomationAction] = useState<AutomationAction | null>(null);
+  const [qualityAutomationAction, setQualityAutomationAction] = useState<AutomationAction | null>(null);
+  const [resourceAutomationAction, setResourceAutomationAction] = useState<AutomationAction | null>(null);
   const [moviePilotPreview, setMoviePilotPreview] = useState<MoviePilotPreview | null>(null);
   const [moviePilotBusy, setMoviePilotBusy] = useState('');
   const [moviePilotMessage, setMoviePilotMessage] = useState('');
@@ -541,12 +734,21 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   const [torraSyncBusy, setTorraSyncBusy] = useState('');
   const [torraSyncMessage, setTorraSyncMessage] = useState('');
   const [confirmation, setConfirmation] = useState<DiscoverConfirmation | null>(null);
-  const automationRequestRef = useRef<AbortController | null>(null);
+  const qualityAutomationRequestRef = useRef<AbortController | null>(null);
+  const resourceAutomationRequestRef = useRef<AbortController | null>(null);
+  const resourceQualityWatchRequestRef = useRef<AbortController | null>(null);
+  const resourceTargetSubscriptionIdRef = useRef('');
   const detailRequestRef = useRef<AbortController | null>(null);
   const resourceRequestRef = useRef<AbortController | null>(null);
+  const subsRequestRef = useRef<AbortController | null>(null);
   const resourcePanelRef = useRef<HTMLElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const posterBackfillAttemptedRef = useRef(new Set<string>());
+  const resourceAutomationInFlight = Boolean(
+    resourceAutomationAction && !terminalAutomationStates.has(resourceAutomationAction.status)
+  );
+  const resourceWorkflowLocked = Boolean(resourceActionBusy) || resourceAutomationInFlight;
+  const resourcePanelCloseLocked = Boolean(resourceActionBusy);
 
   const requestPosterBackfills = useCallback((ids: string[] = []) => {
     const pending = ids.filter((id) => id && !posterBackfillAttemptedRef.current.has(id));
@@ -567,65 +769,139 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       .catch(() => pending.forEach((id) => posterBackfillAttemptedRef.current.delete(id)));
   }, []);
 
-  const loadSubs = useCallback(() => {
+  const loadSubs = useCallback(async () => {
+    subsRequestRef.current?.abort();
+    const controller = new AbortController();
+    subsRequestRef.current = controller;
     setSubsLoading(true);
+    setSubsMoreLoading(false);
     setSubsError('');
-    const request = subscriptionsOnly
-      ? getSubscriptionWorkbench({
-          limit: 24,
-          offset: 0,
-          mediaType: subscriptionTab === 'blocked' ? undefined : subscriptionTab,
-          query: deferredSubscriptionKeyword
-        })
-      : getSubscriptionItems(true);
-    request
-      .then((payload) => {
-        if ('items' in payload) {
-          setWorkbench(payload);
-          setSubs(payload.items);
-          setBlockedTitles(payload.blockedTitles ?? []);
-          setTorraSyncStatus(payload.torraSync);
-          requestPosterBackfills(payload.posterBackfillIds);
-          return;
-        }
-        if (payload.subscriptions) {
-          setSubs(payload.subscriptions.items);
-          setBlockedTitles(payload.blockedTitles ?? []);
-        }
-      })
-      .catch((reason: unknown) => setSubsError(reason instanceof Error ? reason.message : '订阅工作台当前不可用'))
-      .finally(() => setSubsLoading(false));
-  }, [deferredSubscriptionKeyword, requestPosterBackfills, subscriptionTab, subscriptionsOnly]);
+    try {
+      if (!subscriptionsOnly) {
+        const payload = await getSubscriptionItems(true, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        setSubs(payload.subscriptions?.items ?? []);
+        setBlockedTitles(payload.blockedTitles ?? []);
+        return;
+      }
 
-  const loadMoreSubs = useCallback(() => {
+      const completeFilterResult = subscriptionTab !== 'blocked' && (
+        subscriptionYear !== 'all'
+        || subscriptionStatus !== 'all'
+        || subscriptionUpdate !== 'all'
+        || missingEpisodesOnly
+      );
+      const requestInput = {
+        limit: completeFilterResult ? subscriptionFilterPageSize : subscriptionPageSize,
+        offset: 0,
+        mediaType: subscriptionTab === 'blocked' ? undefined : subscriptionTab,
+        query: deferredSubscriptionKeyword
+      } as const;
+      const first = await getSubscriptionWorkbench(requestInput, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      if (completeFilterResult && first.page.total > subscriptionFilterMaxRows) {
+        throw new Error(`筛选范围超过 ${subscriptionFilterMaxRows} 条，请先输入标题缩小范围`);
+      }
+      let latest = first;
+      const allItems = [...first.items];
+      const seenItemKeys = new Set(first.items.map((item) => (
+        item.id || `${item.mediaType}:${item.tmdbId}:${item.seasonNumber ?? 0}:${item.title}`
+      )));
+      const posterBackfillIds = new Set(first.posterBackfillIds ?? []);
+
+      while (completeFilterResult && latest.page.nextOffset != null) {
+        if (allItems.length >= subscriptionFilterMaxRows) {
+          throw new Error(`筛选范围超过 ${subscriptionFilterMaxRows} 条，请先输入标题缩小范围`);
+        }
+        latest = await getSubscriptionWorkbench({
+          ...requestInput,
+          offset: latest.page.nextOffset
+        }, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        latest.items.forEach((item) => {
+          const key = item.id || `${item.mediaType}:${item.tmdbId}:${item.seasonNumber ?? 0}:${item.title}`;
+          if (seenItemKeys.has(key)) return;
+          seenItemKeys.add(key);
+          allItems.push(item);
+        });
+        latest.posterBackfillIds?.forEach((id) => posterBackfillIds.add(id));
+      }
+
+      const payload = completeFilterResult ? {
+        ...first,
+        items: allItems,
+        posterBackfillIds: [...posterBackfillIds],
+        page: {
+          ...first.page,
+          limit: allItems.length || requestInput.limit,
+          nextOffset: null,
+          hasMore: false
+        }
+      } : first;
+      setWorkbench(payload);
+      setSubs(payload.items);
+      setBlockedTitles(payload.blockedTitles ?? []);
+      setTorraSyncStatus(payload.torraSync);
+      requestPosterBackfills(payload.posterBackfillIds);
+    } catch (reason) {
+      if (!controller.signal.aborted) {
+        setSubsError(reason instanceof Error ? reason.message : '订阅工作台当前不可用');
+      }
+    } finally {
+      if (subsRequestRef.current === controller) {
+        subsRequestRef.current = null;
+        setSubsLoading(false);
+      }
+    }
+  }, [
+    deferredSubscriptionKeyword,
+    missingEpisodesOnly,
+    requestPosterBackfills,
+    subscriptionStatus,
+    subscriptionTab,
+    subscriptionUpdate,
+    subscriptionYear,
+    subscriptionsOnly
+  ]);
+
+  const loadMoreSubs = useCallback(async () => {
     const page = workbench?.page;
     const nextOffset = page?.nextOffset;
     if (!subscriptionsOnly || subscriptionTab === 'blocked' || !page || nextOffset == null || subsMoreLoading) return;
+    subsRequestRef.current?.abort();
+    const controller = new AbortController();
+    subsRequestRef.current = controller;
     setSubsMoreLoading(true);
-    getSubscriptionWorkbench({
-      limit: page.limit,
-      offset: nextOffset,
-      mediaType: subscriptionTab,
-      query: deferredSubscriptionKeyword
-    })
-      .then((payload) => {
-        setWorkbench(payload);
-        requestPosterBackfills(payload.posterBackfillIds);
-        setSubs((current) => {
-          const seen = new Set(current.map((item) => item.id || `${item.mediaType}:${item.tmdbId}:${item.seasonNumber ?? 0}:${item.title}`));
-          return [
-            ...current,
-            ...payload.items.filter((item) => {
-              const key = item.id || `${item.mediaType}:${item.tmdbId}:${item.seasonNumber ?? 0}:${item.title}`;
-              if (seen.has(key)) return false;
-              seen.add(key);
-              return true;
-            })
-          ];
-        });
-      })
-      .catch((reason: unknown) => setSubsError(reason instanceof Error ? reason.message : '更多追更读取失败'))
-      .finally(() => setSubsMoreLoading(false));
+    try {
+      const payload = await getSubscriptionWorkbench({
+        limit: page.limit,
+        offset: nextOffset,
+        mediaType: subscriptionTab,
+        query: deferredSubscriptionKeyword
+      }, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      setWorkbench(payload);
+      requestPosterBackfills(payload.posterBackfillIds);
+      setSubs((current) => {
+        const seen = new Set(current.map((item) => item.id || `${item.mediaType}:${item.tmdbId}:${item.seasonNumber ?? 0}:${item.title}`));
+        return [
+          ...current,
+          ...payload.items.filter((item) => {
+            const key = item.id || `${item.mediaType}:${item.tmdbId}:${item.seasonNumber ?? 0}:${item.title}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          })
+        ];
+      });
+    } catch (reason) {
+      if (!controller.signal.aborted) {
+        setSubsError(reason instanceof Error ? reason.message : '更多追更读取失败');
+      }
+    } finally {
+      if (subsRequestRef.current === controller) subsRequestRef.current = null;
+      if (!controller.signal.aborted) setSubsMoreLoading(false);
+    }
   }, [deferredSubscriptionKeyword, requestPosterBackfills, subsMoreLoading, subscriptionTab, subscriptionsOnly, workbench]);
 
   useEffect(() => {
@@ -637,6 +913,48 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     if (navigationTarget.mediaType) setSubscriptionTab(navigationTarget.mediaType);
     if (navigationTarget.title) setSubscriptionKeyword(navigationTarget.title);
   }, [navigationTarget, subscriptionsOnly]);
+
+  useEffect(() => {
+    if (subscriptionsOnly) return undefined;
+    const restore = () => {
+      const next = readDiscoverUrlState();
+      setFilters(next.filters);
+      setQuery(next.query);
+      setActiveSearch(next.query);
+      setSearchPage(next.page);
+    };
+    window.addEventListener('popstate', restore);
+    return () => window.removeEventListener('popstate', restore);
+  }, [subscriptionsOnly]);
+
+  useEffect(() => {
+    if (!subscriptionsOnly) return undefined;
+    const restore = () => {
+      const next = readFollowingFilters();
+      setSubscriptionTab(next.tab);
+      setSubscriptionKeyword(next.keyword);
+      setSubscriptionYear(next.year);
+      setSubscriptionStatus(next.status);
+      setSubscriptionUpdate(next.updated);
+      setMissingEpisodesOnly(next.missingEpisodesOnly);
+    };
+    window.addEventListener('popstate', restore);
+    return () => window.removeEventListener('popstate', restore);
+  }, [subscriptionsOnly]);
+
+  useEffect(() => {
+    if (!subscriptionsOnly) return;
+    const query = new URLSearchParams(window.location.search);
+    if (subscriptionTab === 'blocked') query.set('mediaType', 'blocked');
+    else query.set('mediaType', subscriptionTab);
+    if (subscriptionKeyword.trim()) query.set('q', subscriptionKeyword.trim()); else query.delete('q');
+    if (subscriptionYear !== 'all') query.set('year', subscriptionYear); else query.delete('year');
+    if (subscriptionStatus !== 'all') query.set('status', subscriptionStatus); else query.delete('status');
+    if (subscriptionUpdate !== 'all') query.set('updated', subscriptionUpdate); else query.delete('updated');
+    if (missingEpisodesOnly) query.set('missingEpisodes', '1'); else query.delete('missingEpisodes');
+    const search = query.toString();
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}${search ? `?${search}` : ''}`);
+  }, [missingEpisodesOnly, subscriptionKeyword, subscriptionStatus, subscriptionTab, subscriptionUpdate, subscriptionYear, subscriptionsOnly]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -664,13 +982,17 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   }, []);
 
   useEffect(() => () => {
-    automationRequestRef.current?.abort();
+    qualityAutomationRequestRef.current?.abort();
+    resourceAutomationRequestRef.current?.abort();
+    resourceQualityWatchRequestRef.current?.abort();
     detailRequestRef.current?.abort();
+    subsRequestRef.current?.abort();
   }, []);
 
   const applyPayload = useCallback((payload: Awaited<ReturnType<typeof browseDiscover>>) => {
     setConfigured(payload.configured);
     setResults(payload.results);
+    setDiscoverSourceStatuses(payload.sourceStatuses ?? []);
     setPageInfo({
       page: payload.page ?? 1,
       totalPages: Math.max(1, payload.totalPages ?? 1),
@@ -688,6 +1010,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     let cancelled = false;
     setLoading(true);
     setDiscoverError('');
+    setDiscoverSourceStatuses([]);
 
     browseDiscover(filters)
       .then((payload) => {
@@ -697,7 +1020,11 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
         if (!cancelled) {
           setConfigured(true);
           setResults([]);
-          setDiscoverError(reason instanceof Error ? reason.message : '内容来源暂不可用');
+          const message = reason instanceof Error ? reason.message : '内容来源暂不可用';
+          setDiscoverError(message);
+          setDiscoverSourceStatuses([
+            unavailableSourceStatus(filters.source, discoverSourceLabel(filters.source), message)
+          ]);
         }
       })
       .finally(() => {
@@ -715,6 +1042,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     let cancelled = false;
     setLoading(true);
     setDiscoverError('');
+    setDiscoverSourceStatuses([]);
 
     searchDiscover(activeSearch, searchPage)
       .then((payload) => {
@@ -724,7 +1052,9 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
         if (!cancelled) {
           setConfigured(true);
           setResults([]);
-          setDiscoverError(reason instanceof Error ? reason.message : '内容搜索暂不可用');
+          const message = reason instanceof Error ? reason.message : '内容搜索暂不可用';
+          setDiscoverError(message);
+          setDiscoverSourceStatuses([unavailableSourceStatus('tmdb', 'TMDB', message)]);
         }
       })
       .finally(() => {
@@ -737,9 +1067,17 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   }, [activeSearch, applyPayload, searchPage, subscriptionsOnly]);
 
   const subscribedKeys = useMemo(() => new Set(subs.map((item) => `${item.mediaType}:${item.tmdbId}`)), [subs]);
-  const subscriptionYears = useMemo(() => [
-    ...new Set(subs.map((item) => item.year).filter((year): year is string => Boolean(year)))
-  ].sort().reverse(), [subs]);
+  const subscriptionYears = useMemo(() => {
+    const latestYear = new Date().getFullYear() + 1;
+    const years = new Set(
+      Array.from({ length: latestYear - 1899 }, (_, index) => String(latestYear - index))
+    );
+    subs.forEach((item) => {
+      if (item.year) years.add(item.year);
+    });
+    if (/^\d{4}$/.test(subscriptionYear)) years.add(subscriptionYear);
+    return [...years].sort().reverse();
+  }, [subs, subscriptionYear]);
   const visibleSubscriptions = useMemo(() => {
     if (subscriptionTab === 'blocked') return [];
     const keyword = subscriptionKeyword.trim().toLowerCase();
@@ -747,6 +1085,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       if (item.mediaType !== subscriptionTab) return false;
       if (subscriptionYear !== 'all' && item.year !== subscriptionYear) return false;
       if (subscriptionStatus !== 'all' && resolvedSubscriptionStatus(item) !== subscriptionStatus) return false;
+      if (missingEpisodesOnly && (item.missingEpisodes?.length ?? 0) === 0) return false;
       const days = daysSinceSubscriptionUpdate(item.updatedAt);
       if (subscriptionUpdate === 'today' && days !== 0) return false;
       if (subscriptionUpdate === '3' && days > 3) return false;
@@ -757,7 +1096,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       }
       return true;
     });
-  }, [subs, subscriptionKeyword, subscriptionStatus, subscriptionTab, subscriptionUpdate, subscriptionYear]);
+  }, [missingEpisodesOnly, subs, subscriptionKeyword, subscriptionStatus, subscriptionTab, subscriptionUpdate, subscriptionYear]);
   const localWriteEnabled = subscriptionsOnly
     ? Boolean(workbench?.capabilities.find((capability) => capability.key === 'local_write')?.enabled)
     : true;
@@ -766,8 +1105,12 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     movie: subs.filter((item) => item.mediaType === 'movie').length,
     tv: subs.filter((item) => item.mediaType === 'tv').length,
     pending: subs.filter((item) => !item.inLibrary).length,
+    following: subs.filter((item) => item.fulfillmentState === 'following').length,
+    completed: subs.filter((item) => item.fulfillmentState === 'completed' || item.chainState === 'completed').length,
+    actionRequired: subs.filter((item) => item.healthState === 'action_required' || item.fulfillmentState === 'blocked').length,
     inLibrary: subs.filter((item) => item.inLibrary).length
   };
+  const subscriptionCountsUnavailable = subscriptionsOnly && !workbench;
   const reconciliationSummary = workbench?.reconciliation?.summary;
   const torraPushEnabled = Boolean(subscriptionCapabilities?.torraPush.enabled);
   const schedulerRunning = Boolean(subscriptionCapabilities?.scheduler.running);
@@ -785,25 +1128,26 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       : '已保存追更意图，已进入自动追更';
 
   const changeSource = (source: DiscoverSource) => {
+    const nextFilters = {
+      ...filters,
+      source,
+      type: forcedTypeForSource(source, filters.type),
+      page: 1
+    };
     setQuery('');
     setActiveSearch('');
     setSearchPage(1);
-    setFilters((current) => ({
-      ...current,
-      source,
-      type: forcedTypeForSource(source, current.type),
-      page: 1
-    }));
+    setFilters(nextFilters);
+    writeDiscoverUrlState({ filters: nextFilters, query: '', page: 1 }, 'push');
   };
 
   const updateFilter = (key: FilterKey, value: string) => {
+    const nextFilters = { ...filters, [key]: value, page: 1 };
+    setQuery('');
     setActiveSearch('');
     setSearchPage(1);
-    setFilters((current) => ({
-      ...current,
-      [key]: value,
-      page: 1
-    }));
+    setFilters(nextFilters);
+    writeDiscoverUrlState({ filters: nextFilters, query: '', page: 1 }, 'push');
   };
 
   const resetFilters = () => {
@@ -811,6 +1155,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     setActiveSearch('');
     setSearchPage(1);
     setFilters(defaultFilters);
+    writeDiscoverUrlState({ filters: defaultFilters, query: '', page: 1 }, 'push');
   };
 
   const runSearch = (event: FormEvent) => {
@@ -819,19 +1164,26 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     if (!keyword) {
       setActiveSearch('');
       setSearchPage(1);
+      const nextFilters = { ...filters, page: 1 };
+      setFilters(nextFilters);
+      writeDiscoverUrlState({ filters: nextFilters, query: '', page: 1 }, 'push');
       return;
     }
     setActiveSearch(keyword);
     setSearchPage(1);
+    writeDiscoverUrlState({ filters, query: keyword, page: 1 }, 'push');
   };
 
   const goPage = (nextPage: number) => {
     const page = Math.max(1, Math.min(pageInfo.totalPages, nextPage));
     if (activeSearch) {
       setSearchPage(page);
+      writeDiscoverUrlState({ filters, query: activeSearch, page }, 'push');
       return;
     }
-    setFilters((current) => ({ ...current, page }));
+    const nextFilters = { ...filters, page };
+    setFilters(nextFilters);
+    writeDiscoverUrlState({ filters: nextFilters, query: '', page }, 'push');
   };
 
   const subscribe = (result: DiscoverResult) => {
@@ -1017,15 +1369,22 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       .finally(() => setTorraPushBusy(''));
   };
 
-  const pollAutomationAction = async (actionId: string) => {
-    automationRequestRef.current?.abort();
+  const pollAutomationAction = async (
+    actionId: string,
+    requestRef: { current: AbortController | null },
+    setAction: (action: AutomationAction) => void,
+    onPollingIssue: (message: string) => void,
+    onUpdate?: (action: AutomationAction) => void
+  ) => {
+    requestRef.current?.abort();
     const controller = new AbortController();
-    automationRequestRef.current = controller;
+    requestRef.current = controller;
     try {
       for (let attempt = 0; attempt < 40; attempt += 1) {
         const action = await getAutomationAction(actionId, { signal: controller.signal });
         if (controller.signal.aborted) return;
-        setAutomationAction(action);
+        setAction(action);
+        onUpdate?.(action);
         if (terminalAutomationStates.has(action.status)) return;
         await new Promise<void>((resolve) => {
           const timer = window.setTimeout(resolve, 1500);
@@ -1035,13 +1394,17 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
           }, { once: true });
         });
       }
-      if (!controller.signal.aborted) setQualityWatchMessage('动作仍在后台执行，可稍后重新打开详情查看结果。');
+      if (!controller.signal.aborted) {
+        const message = '动作仍在后台执行，可稍后重新打开详情查看结果。';
+        onPollingIssue(message);
+      }
     } catch (reason) {
       if (!controller.signal.aborted) {
-        setQualityWatchMessage(reason instanceof Error ? reason.message : '自动化动作状态读取失败');
+        const message = reason instanceof Error ? reason.message : '自动化动作状态读取失败';
+        onPollingIssue(message);
       }
     } finally {
-      if (automationRequestRef.current === controller) automationRequestRef.current = null;
+      if (requestRef.current === controller) requestRef.current = null;
     }
   };
 
@@ -1061,32 +1424,52 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
 
   const startAnalysis = (item: SubscriptionItem) => {
     if (!item.id) return;
+    qualityAutomationRequestRef.current?.abort();
+    const controller = new AbortController();
+    qualityAutomationRequestRef.current = controller;
     setQualityWatchBusy(`analysis:${item.id}`);
     setQualityWatchMessage('正在提交 Torra 质量分析…');
-    setAutomationAction(null);
+    setQualityAutomationAction(null);
     startTorraRewashAnalysis(item.id, {
       idempotencyKey: createIdempotencyKey(),
       ...(selectedUnitId ? { unitId: selectedUnitId } : {})
-    })
+    }, { signal: controller.signal })
       .then((action) => {
-        setAutomationAction(action);
+        if (controller.signal.aborted) return;
+        setQualityAutomationAction(action);
         setQualityWatchMessage(automationStatusLabel(action));
-        void pollAutomationAction(action.id);
+        if (qualityAutomationRequestRef.current === controller) qualityAutomationRequestRef.current = null;
+        void pollAutomationAction(
+          action.id,
+          qualityAutomationRequestRef,
+          setQualityAutomationAction,
+          setQualityWatchMessage
+        );
       })
-      .catch((reason: unknown) => setQualityWatchMessage(reason instanceof Error ? reason.message : 'Torra 分析提交失败'))
-      .finally(() => setQualityWatchBusy(''));
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted) {
+          setQualityWatchMessage(reason instanceof Error ? reason.message : 'Torra 分析提交失败');
+        }
+      })
+      .finally(() => {
+        if (qualityAutomationRequestRef.current === controller) qualityAutomationRequestRef.current = null;
+        if (!controller.signal.aborted) setQualityWatchBusy('');
+      });
   };
 
   const startDownload = (item: SubscriptionItem) => {
-    if (!item.id || !automationAction || automationAction.status !== 'succeeded' || automationAction.type !== 'rewash-analysis') return;
+    if (!item.id || !qualityAutomationAction || qualityAutomationAction.status !== 'succeeded' || qualityAutomationAction.type !== 'rewash-analysis') return;
     const itemId = item.id;
-    const analysis = automationAction;
+    const analysis = qualityAutomationAction;
     setConfirmation({
       signal: '质量升级',
       title: `下载《${item.title}》的升级候选？`,
       description: '这会把人工分析选中的候选交给 Torra 下载，原有入库版本不会立即删除。',
       confirmLabel: '确认下载',
       onConfirm: () => {
+        qualityAutomationRequestRef.current?.abort();
+        const controller = new AbortController();
+        qualityAutomationRequestRef.current = controller;
         setQualityWatchBusy(`download:${itemId}`);
         setQualityWatchMessage('正在提交 Torra 候选下载…');
         startTorraRewashDownload(itemId, {
@@ -1094,14 +1477,28 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
           idempotencyKey: createIdempotencyKey(),
           analysisActionId: analysis.id,
           ...((analysis.unitId || selectedUnitId) ? { unitId: analysis.unitId || selectedUnitId } : {})
-        })
+        }, { signal: controller.signal })
           .then((action) => {
-            setAutomationAction(action);
+            if (controller.signal.aborted) return;
+            setQualityAutomationAction(action);
             setQualityWatchMessage(automationStatusLabel(action));
-            void pollAutomationAction(action.id);
+            if (qualityAutomationRequestRef.current === controller) qualityAutomationRequestRef.current = null;
+            void pollAutomationAction(
+              action.id,
+              qualityAutomationRequestRef,
+              setQualityAutomationAction,
+              setQualityWatchMessage
+            );
           })
-          .catch((reason: unknown) => setQualityWatchMessage(reason instanceof Error ? reason.message : 'Torra 候选下载提交失败'))
-          .finally(() => setQualityWatchBusy(''));
+          .catch((reason: unknown) => {
+            if (!controller.signal.aborted) {
+              setQualityWatchMessage(reason instanceof Error ? reason.message : 'Torra 候选下载提交失败');
+            }
+          })
+          .finally(() => {
+            if (qualityAutomationRequestRef.current === controller) qualityAutomationRequestRef.current = null;
+            if (!controller.signal.aborted) setQualityWatchBusy('');
+          });
       }
     });
   };
@@ -1143,8 +1540,11 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     });
   };
 
-  const closeDetail = () => {
-    automationRequestRef.current?.abort();
+  const closeDetail = (historyMode: UrlHistoryMode | false = 'push') => {
+    const urlTarget = readFollowingDetailTarget();
+    const hadDetailTarget = Boolean(detailId || urlTarget.subscriptionId || urlTarget.tmdbId);
+    qualityAutomationRequestRef.current?.abort();
+    qualityAutomationRequestRef.current = null;
     detailRequestRef.current?.abort();
     setDetailId(null);
     setDetail(null);
@@ -1156,44 +1556,210 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     setQualityWatchBusy('');
     setQualityWatchMessage('');
     setSelectedUnitId('');
-    setAutomationAction(null);
+    setQualityAutomationAction(null);
     setMoviePilotPreview(null);
     setMoviePilotBusy('');
     setMoviePilotMessage('');
+    if (!historyMode || !hadDetailTarget) return;
+    if (historyMode === 'push' && currentHistoryEntryIs(followingDetailHistoryKind)) {
+      window.history.back();
+    } else {
+      writeFollowingDetailTarget(null, null, 'replace');
+    }
   };
 
-  const openDetail = (item: SubscriptionItem) => {
+  const beginResourceAction = async (item: DiscoverResourceItem) => {
+    const subscriptionId = resourceTarget?.source === 'subscription' ? resourceTarget.sourceId : '';
+    if (!item.rssItemId || !subscriptionId || !resourceTarget || resourceWorkflowLocked) return;
+    resourceQualityWatchRequestRef.current?.abort();
+    resourceQualityWatchRequestRef.current = null;
+    resourceAutomationRequestRef.current?.abort();
+    const controller = new AbortController();
+    resourceAutomationRequestRef.current = controller;
+    setResourceActionItem(item);
+    setResourceMatch(null);
+    setResourceAutomationAction(null);
+    setResourceUnitId('');
+    setResourceActionBusy('prepare');
+    setResourceActionMessage('正在核对追更范围与观察单元…');
+    try {
+      const watch = resourceQualityWatch?.subscriptionId === subscriptionId
+        ? resourceQualityWatch
+        : await getSubscriptionQualityWatch(subscriptionId, { signal: controller.signal });
+      if (
+        controller.signal.aborted
+        || resourceTargetSubscriptionIdRef.current !== subscriptionId
+        || watch.subscriptionId !== subscriptionId
+      ) return;
+      setResourceQualityWatch(watch);
+      const units = matchingResourceUnits(item, resourceTarget.mediaType, watch);
+      setResourceUnitId(units[0]?.id || '');
+      setResourceActionMessage(units.length > 0
+        ? units.length === 1
+          ? `已定位到 ${unitLabel(units[0])}，可以检查可用版本`
+          : `这个种子覆盖 ${units.length} 个追更目标，请选择一个季集`
+        : '种子与当前有效观察单元无法唯一对应，请确认季集或等待首个版本入库');
+    } catch (reason) {
+      if (!controller.signal.aborted) {
+        setResourceActionMessage(reason instanceof Error ? reason.message : '质量观察状态读取失败');
+      }
+    } finally {
+      if (resourceAutomationRequestRef.current === controller) resourceAutomationRequestRef.current = null;
+      if (!controller.signal.aborted) setResourceActionBusy('');
+    }
+  };
+
+  const analyzeResourceMatch = async (restart = false) => {
+    const subscriptionId = resourceTarget?.source === 'subscription' ? resourceTarget.sourceId : '';
+    if (!resourceActionItem?.rssItemId || !subscriptionId || !resourceUnitId) return;
+    resourceAutomationRequestRef.current?.abort();
+    const controller = new AbortController();
+    resourceAutomationRequestRef.current = controller;
+    setResourceActionBusy('analysis');
+    setResourceActionMessage(restart ? '正在重新建立安全匹配…' : '正在建立安全匹配…');
+    setResourceAutomationAction(null);
+    try {
+      const match = await createRssMatch({
+        rssItemId: resourceActionItem.rssItemId,
+        subscriptionId,
+        unitId: resourceUnitId
+      }, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      setResourceMatch(match);
+      let action: AutomationAction;
+      if (match.triggerActionId && !restart) {
+        setResourceActionMessage('发现已有处理记录，正在恢复当前进度…');
+        action = await getAutomationAction(match.triggerActionId, { signal: controller.signal });
+      } else {
+        setResourceActionMessage(restart ? '正在重新提交 Torra 质量分析…' : '匹配已建立，正在提交 Torra 质量分析…');
+        action = await startRssMatchAnalysis(match.id, createIdempotencyKey(), { signal: controller.signal });
+      }
+      if (controller.signal.aborted) return;
+      setResourceMatch({ ...match, triggerActionId: action.id });
+      setResourceAutomationAction(action);
+      setResourceActionMessage(automationStatusLabel(action));
+      if (!terminalAutomationStates.has(action.status)) {
+        if (resourceAutomationRequestRef.current === controller) resourceAutomationRequestRef.current = null;
+        void pollAutomationAction(
+          action.id,
+          resourceAutomationRequestRef,
+          setResourceAutomationAction,
+          setResourceActionMessage,
+          (latest) => setResourceActionMessage(automationStatusLabel(latest))
+        );
+      }
+    } catch (reason) {
+      if (!controller.signal.aborted) {
+        setResourceActionMessage(reason instanceof Error ? reason.message : 'RSS 候选分析失败');
+      }
+    } finally {
+      if (resourceAutomationRequestRef.current === controller) resourceAutomationRequestRef.current = null;
+      if (!controller.signal.aborted) setResourceActionBusy('');
+    }
+  };
+
+  const confirmResourceDownload = () => {
+    if (
+      !resourceMatch
+      || !resourceAutomationAction
+      || resourceAutomationAction.type !== 'rewash-analysis'
+      || resourceAutomationAction.status !== 'succeeded'
+      || (resourceAutomationAction.result?.selectedCount ?? 0) < 1
+    ) return;
+    const match = resourceMatch;
+    const analysis = resourceAutomationAction;
+    setConfirmation({
+      signal: 'RSS 追更',
+      title: `下载《${resourceTarget?.title || '当前作品'}》的升级版本？`,
+      description: 'Fluxa 只会把本次 Torra 分析选中的升级版本交给 Torra，原有高质量版本不会被主动清理。',
+      confirmLabel: '确认交给 Torra',
+      onConfirm: () => {
+        resourceAutomationRequestRef.current?.abort();
+        const controller = new AbortController();
+        resourceAutomationRequestRef.current = controller;
+        setResourceActionBusy('download');
+        setResourceActionMessage('正在把升级版本交给 Torra…');
+        startRssMatchDownload(match.id, {
+          confirm: true,
+          idempotencyKey: createIdempotencyKey(),
+          analysisActionId: analysis.id
+        }, { signal: controller.signal })
+          .then((action) => {
+            if (controller.signal.aborted) return;
+            setResourceAutomationAction(action);
+            setResourceActionMessage(automationStatusLabel(action));
+            if (resourceAutomationRequestRef.current === controller) resourceAutomationRequestRef.current = null;
+            void pollAutomationAction(
+              action.id,
+              resourceAutomationRequestRef,
+              setResourceAutomationAction,
+              setResourceActionMessage,
+              (latest) => setResourceActionMessage(automationStatusLabel(latest))
+            );
+          })
+          .catch((reason: unknown) => {
+            if (!controller.signal.aborted) {
+              setResourceActionMessage(reason instanceof Error ? reason.message : 'Torra 候选下载提交失败');
+            }
+          })
+          .finally(() => {
+            if (resourceAutomationRequestRef.current === controller) resourceAutomationRequestRef.current = null;
+            if (!controller.signal.aborted) setResourceActionBusy('');
+          });
+      }
+    });
+  };
+
+  const openDetail = (
+    item: SubscriptionItem,
+    options: { seasonNumber?: number | null; historyMode?: UrlHistoryMode | false; toggle?: boolean } = {}
+  ) => {
     if (!item.id) {
       return;
     }
-    if (detailId === item.id) {
+    if (detailId === item.id && options.toggle !== false) {
       closeDetail();
       return;
     }
+    const requestedSeason = options.seasonNumber ?? item.seasonNumber ?? null;
+    const historyMode = options.historyMode === undefined
+      ? (detailId || currentHistoryEntryIs(followingDetailHistoryKind) ? 'replace' : 'push')
+      : options.historyMode;
+    qualityAutomationRequestRef.current?.abort();
+    qualityAutomationRequestRef.current = null;
     detailRequestRef.current?.abort();
     const controller = new AbortController();
+    detailRequestRef.current = controller;
     setDetailId(item.id);
     setDetail(null);
     setQualityWatch(null);
-    setAutomationAction(null);
+    setQualityAutomationAction(null);
     setMoviePilotPreview(null);
     setQualityWatchMessage('');
     setMoviePilotMessage('');
-    setDetailSeason(null);
+    setDetailSeason(requestedSeason);
     setSelectedUnitId('');
     setDetailLoading(true);
     setTorraPushPreview(null);
     setTorraPushMessage('');
+    if (historyMode) writeFollowingDetailTarget(item, requestedSeason, historyMode);
     Promise.allSettled([
-      getSubscriptionDetail(item.id, undefined, { signal: controller.signal }),
+      item.readOnly
+        ? Promise.resolve({ success: true, detail: null, seasons: [] } as SubscriptionDetailResponse)
+        : getSubscriptionDetail(item.id, requestedSeason ?? undefined, { signal: controller.signal }),
       getSubscriptionQualityWatch(item.id, { signal: controller.signal })
     ])
       .then(([detailResult, watchResult]) => {
         if (controller.signal.aborted) return;
         if (detailResult.status === 'fulfilled') {
           setDetail(detailResult.value);
-          const firstSeason = detailResult.value.seasons[0];
-          setDetailSeason(firstSeason?.seasonNumber ?? firstSeason?.season_number ?? null);
+          const requested = detailResult.value.seasons.find((season) => (
+            season.seasonNumber ?? season.season_number ?? 0
+          ) === requestedSeason);
+          const resolvedSeason = requested ?? detailResult.value.seasons[0];
+          const resolvedSeasonNumber = resolvedSeason?.seasonNumber ?? resolvedSeason?.season_number ?? null;
+          setDetailSeason(resolvedSeasonNumber);
+          if (resolvedSeasonNumber !== requestedSeason) writeFollowingDetailTarget(item, resolvedSeasonNumber, 'replace');
         } else {
           setDetail(null);
         }
@@ -1210,20 +1776,47 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       });
   };
 
+  const selectDetailSeason = (item: SubscriptionItem, seasonNumber: number) => {
+    setDetailSeason(seasonNumber);
+    writeFollowingDetailTarget(item, seasonNumber, 'replace');
+  };
+
   useEffect(() => {
-    if (!subscriptionsOnly || !navigationTarget || detailId) return;
-    const targetItem = subs.find((item) => (
-      (navigationTarget.subscriptionId && item.id === navigationTarget.subscriptionId)
-      || (navigationTarget.tmdbId && String(item.tmdbId || '') === navigationTarget.tmdbId
-        && (!navigationTarget.seasonNumber || item.seasonNumber === navigationTarget.seasonNumber))
-    ));
+    if (!subscriptionsOnly || !navigationTarget) return;
+    const urlTarget = readFollowingDetailTarget();
+    if (!urlTarget.subscriptionId && !urlTarget.tmdbId) return;
+    const targetSeason = urlTarget.seasonNumber ?? navigationTarget.seasonNumber ?? null;
+    const targetItem = subs.find((item) => urlTarget.subscriptionId && item.id === urlTarget.subscriptionId)
+      ?? subs.find((item) => urlTarget.tmdbId && String(item.tmdbId || '') === urlTarget.tmdbId && item.seasonNumber === targetSeason)
+      ?? subs.find((item) => urlTarget.tmdbId && String(item.tmdbId || '') === urlTarget.tmdbId);
     if (!targetItem) return;
-    openDetail(targetItem);
+    if (detailId === targetItem.id) {
+      if (targetSeason != null) setDetailSeason(targetSeason);
+      return;
+    }
+    openDetail(targetItem, { seasonNumber: targetSeason, historyMode: false, toggle: false });
     window.requestAnimationFrame(() => {
       document.querySelector<HTMLElement>(`[data-subscription-id="${CSS.escape(targetItem.id || '')}"]`)
         ?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     });
   }, [detailId, navigationTarget, subscriptionsOnly, subs]);
+
+  useEffect(() => {
+    if (!subscriptionsOnly) return undefined;
+    const restoreDetail = () => {
+      const target = readFollowingDetailTarget();
+      if (!target.subscriptionId && !target.tmdbId) {
+        closeDetail(false);
+        return;
+      }
+      const item = subs.find((candidate) => target.subscriptionId && candidate.id === target.subscriptionId)
+        ?? subs.find((candidate) => target.tmdbId && String(candidate.tmdbId || '') === target.tmdbId && candidate.seasonNumber === target.seasonNumber)
+        ?? subs.find((candidate) => target.tmdbId && String(candidate.tmdbId || '') === target.tmdbId);
+      if (item) openDetail(item, { seasonNumber: target.seasonNumber, historyMode: false, toggle: false });
+    };
+    window.addEventListener('popstate', restoreDetail);
+    return () => window.removeEventListener('popstate', restoreDetail);
+  }, [subscriptionsOnly, subs]);
 
   useEffect(() => {
     if (!resourceTarget) return undefined;
@@ -1243,6 +1836,12 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     result: DiscoverResult,
     querySource: string[] | Promise<string[]> = [result.title]
   ) => {
+    if (resourceWorkflowLocked) return false;
+    resourceQualityWatchRequestRef.current?.abort();
+    resourceQualityWatchRequestRef.current = null;
+    resourceTargetSubscriptionIdRef.current = result.source === 'subscription' ? (result.sourceId ?? '') : '';
+    resourceAutomationRequestRef.current?.abort();
+    resourceAutomationRequestRef.current = null;
     resourceRequestRef.current?.abort();
     const controller = new AbortController();
     resourceRequestRef.current = controller;
@@ -1252,6 +1851,13 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     setResourceQueries([result.title]);
     setResourceSource('all');
     setResourcePreview(null);
+    setResourceActionItem(null);
+    setResourceUnitId('');
+    setResourceMatch(null);
+    setResourceAutomationAction(null);
+    setResourceQualityWatch(null);
+    setResourceActionBusy('');
+    setResourceActionMessage('');
     setResourceLoading(true);
     Promise.resolve(querySource)
       .then((values) => {
@@ -1289,10 +1895,12 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
           resourceRequestRef.current = null;
         }
       });
+    return true;
   };
 
   const searchSubscriptionResources = (item: SubscriptionItem) => {
-    if (!item.id) return;
+    if (!item.id || resourceWorkflowLocked) return;
+    const subscriptionId = item.id;
     const target = {
       id: Number(item.tmdbId) || 0,
       mediaType: item.mediaType === 'tv' ? 'tv' : 'movie',
@@ -1318,23 +1926,61 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
         payload.detail?.originalTitle || ''
       ])
       .catch(() => [item.title]);
-    openResourceSearch(target, aliases);
+    if (!openResourceSearch(target, aliases)) return;
+    const controller = new AbortController();
+    resourceQualityWatchRequestRef.current = controller;
+    getSubscriptionQualityWatch(subscriptionId, { signal: controller.signal })
+      .then((watch) => {
+        if (
+          controller.signal.aborted
+          || resourceTargetSubscriptionIdRef.current !== subscriptionId
+          || watch.subscriptionId !== subscriptionId
+        ) return;
+        setResourceQualityWatch(watch);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (resourceQualityWatchRequestRef.current === controller) {
+          resourceQualityWatchRequestRef.current = null;
+        }
+      });
   };
 
   const closeResourceSearch = () => {
+    if (resourcePanelCloseLocked) return;
+    if (resourceAutomationInFlight) {
+      setSweepMessage(`《${resourceTarget?.title || '当前作品'}》的处理已在后台继续，可到任务中心查看任务记录。`);
+    } else if (resourceAutomationAction?.type === 'rewash-download') {
+      setSweepMessage(`《${resourceTarget?.title || '当前作品'}》的下载处理已有记录，可到任务中心查看后续。`);
+    }
+    resourceQualityWatchRequestRef.current?.abort();
+    resourceQualityWatchRequestRef.current = null;
+    resourceTargetSubscriptionIdRef.current = '';
+    resourceAutomationRequestRef.current?.abort();
+    resourceAutomationRequestRef.current = null;
     setResourceTarget(null);
     setResourceData(null);
     setResourceError('');
     setResourceQueries([]);
     setResourcePreview(null);
+    setResourceActionItem(null);
+    setResourceUnitId('');
+    setResourceMatch(null);
+    setResourceAutomationAction(null);
+    setResourceQualityWatch(null);
+    setResourceActionBusy('');
+    setResourceActionMessage('');
     resourceRequestRef.current?.abort();
     resourceRequestRef.current = null;
   };
 
   const updateProvider = (value: string) => {
+    const nextFilters = { ...filters, provider: value, page: 1 };
+    setQuery('');
     setActiveSearch('');
     setSearchPage(1);
-    setFilters((current) => ({ ...current, provider: value, page: 1 }));
+    setFilters(nextFilters);
+    writeDiscoverUrlState({ filters: nextFilters, query: '', page: 1 }, 'push');
   };
 
   const totalPages = Math.max(1, pageInfo.totalPages);
@@ -1348,6 +1994,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       ? rows
       : rows.filter((item) => (item.source_key || item.source) === resourceSource);
   }, [resourceData, resourceSource]);
+  const resourceSourceStatuses = resourceData?.sourceStatuses ?? [];
 
   const renderResourcePanel = (variant: 'subscription' | 'discover') => {
     if (!resourceTarget) return null;
@@ -1367,12 +2014,31 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             <h2>{resourceTarget.title}</h2>
             <p>{resourceLoading ? '正在查询本地种子箱…' : `已搜索：${resourceQueries.join(' / ')} · ${visibleResources.length} 条`}</p>
           </div>
-          <button aria-label="关闭资源搜索" className="tool-link" title="关闭" type="button" onClick={closeResourceSearch}>
+          <button
+            aria-label="关闭资源搜索"
+            className="tool-link"
+            disabled={resourcePanelCloseLocked}
+            title={resourcePanelCloseLocked
+              ? '正在提交，收到动作编号后可关闭'
+              : resourceAutomationInFlight
+                ? '关闭面板，动作会在后台继续'
+                : '关闭'}
+            type="button"
+            onClick={closeResourceSearch}
+          >
             <X aria-hidden="true" size={16} />
           </button>
         </header>
         {resourceLoading && <div className="discover-resource-empty">正在查询本地 RSS 种子箱…</div>}
-        {!resourceLoading && resourceError && <div className="discover-resource-empty">{resourceError}</div>}
+        {!resourceLoading && resourceError && (
+          <div className="discover-resource-empty" role="alert">
+            <strong>本地 RSS 种子搜索暂不可用</strong>
+            <span>{resourceError}</span>
+            <DiscoverSourceStatusList statuses={[
+              unavailableSourceStatus('local-rss', '本地 RSS 种子箱', resourceError)
+            ]} />
+          </div>
+        )}
         {!resourceLoading && resourceData && (
           <>
             {resourceData.sources.length > 0 && (
@@ -1412,8 +2078,16 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
               {visibleResources.map((item, index) => {
                 const previewText = resourcePreviewText(item);
                 const activePreview = resourcePreview === item;
+                const activeResourceAction = Boolean(
+                  item.rssItemId && resourceActionItem?.rssItemId === item.rssItemId
+                );
+                const resourceUnits = activeResourceAction && resourceTarget
+                  ? matchingResourceUnits(item, resourceTarget.mediaType, resourceQualityWatch)
+                  : [];
+                const resourceAction = activeResourceAction ? resourceAutomationAction : null;
+                const upgradeOptions = resourceAction?.result?.upgradeOptions ?? [];
                 return (
-                  <article className="discover-resource-row" key={`${item.source_key || item.source || 'rss'}-${item.title || index}-${item.date || index}`}>
+                  <article className="discover-resource-row" key={item.rssItemId || `${item.source_key || item.source || 'rss'}-${item.title || index}-${item.date || index}`}>
                     <div>
                       <strong>{resourceTitle(item)}</strong>
                       <small>{resourceMeta(item) || '来源信息未提供'}</small>
@@ -1429,17 +2103,105 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                         <FileSearch aria-hidden="true" size={14} />
                         预览
                       </button>
+                      {variant === 'subscription' && item.rssItemId && (
+                        <button
+                          className="ops-action-button ops-action-button--primary"
+                          disabled={resourceWorkflowLocked}
+                          type="button"
+                          onClick={() => void beginResourceAction(item)}
+                        >
+                          <RefreshCcw aria-hidden="true" size={14} />
+                          {activeResourceAction && resourceWorkflowLocked ? '处理中' : activeResourceAction ? '重新选择' : '用于追更'}
+                        </button>
+                      )}
                     </div>
                     {activePreview && previewText && (
                       <div className="discover-resource-preview"><pre>{previewText}</pre></div>
+                    )}
+                    {activeResourceAction && (
+                      <div className="discover-resource-workflow" role="status">
+                        <div className="discover-resource-workflow__head">
+                          <div>
+                            <strong>追更处理</strong>
+                            <small>{resourceActionMessage || '请选择要处理的季集目标'}</small>
+                          </div>
+                          {resourceMatch && <span className="state-chip state-chip--ok">匹配已建立</span>}
+                        </div>
+                        {resourceUnits.length > 0 && (
+                          <label>
+                            目标季集
+                            <select
+                              aria-label="选择 RSS 种子对应的追更季集"
+                              disabled={Boolean(resourceActionBusy) || Boolean(resourceMatch)}
+                              value={resourceUnitId}
+                              onChange={(event) => setResourceUnitId(event.target.value)}
+                            >
+                              {resourceUnits.map((unit) => (
+                                <option key={unit.id} value={unit.id}>{unitLabel(unit)}</option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
+                        {upgradeOptions.length > 0 && (
+                          <div className="discover-resource-workflow__options" aria-label="升级候选摘要">
+                            {upgradeOptions.map((option, optionIndex) => (
+                              <span key={`${option.currentScore}-${option.upgradeScore}-${optionIndex}`}>
+                                <b>{option.quality || `评分 ${option.currentScore} → ${option.upgradeScore}`}</b>
+                                <small>提升 {option.scoreGain}{option.size != null ? ` · ${String(option.size)}` : ''}</small>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <div className="discover-resource-workflow__actions">
+                          {(!resourceMatch || !resourceAction || ['failed', 'cancelled'].includes(resourceAction.status)) && (
+                            <button
+                              className="ops-action-button ops-action-button--primary"
+                              disabled={!resourceUnitId || Boolean(resourceActionBusy)}
+                              type="button"
+                              onClick={() => void analyzeResourceMatch(Boolean(resourceMatch?.triggerActionId))}
+                            >
+                              <RefreshCcw aria-hidden="true" size={14} />
+                              {resourceActionBusy === 'analysis' ? '正在检查' : resourceMatch ? '重新检查' : '检查可用版本'}
+                            </button>
+                          )}
+                          {resourceAction?.type === 'rewash-analysis'
+                            && resourceAction.status === 'succeeded'
+                            && (resourceAction.result?.selectedCount ?? 0) > 0 && (
+                            <button
+                              className="ops-action-button ops-action-button--primary"
+                              disabled={Boolean(resourceActionBusy)}
+                              type="button"
+                              onClick={confirmResourceDownload}
+                            >
+                              <Download aria-hidden="true" size={14} />
+                              确认下载
+                            </button>
+                          )}
+                          {resourceAction?.type === 'rewash-download' && (
+                            <button
+                              className="tool-link"
+                              type="button"
+                              onClick={() => onNavigate('tasks', {
+                                subscriptionId: resourceTarget.sourceId,
+                                tmdbId: resourceTarget.tmdbId,
+                                title: resourceTarget.title,
+                                seasonNumber: resourceTarget.seasonNumber
+                              })}
+                            >
+                              <Database aria-hidden="true" size={14} />查看任务后续
+                            </button>
+                          )}
+                        </div>
+                      </div>
                     )}
                   </article>
                 );
               })}
               {visibleResources.length === 0 && (
                 <div className="discover-resource-empty">
-                  <span>{variant === 'subscription' ? '没有找到与该订阅身份和季集相符的种子。' : '本地种子箱中没有匹配种子。'}</span>
+                  <strong>{variant === 'subscription' ? '暂未找到符合该追更身份和季集的种子' : '本地种子箱中暂未找到匹配种子'}</strong>
                   <small>已搜索：{resourceQueries.join(' / ')}</small>
+                  <DiscoverSourceStatusList statuses={resourceSourceStatuses} />
                 </div>
               )}
             </div>
@@ -1451,16 +2213,16 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
 
   return (
     <main className={subscriptionsOnly ? 'work-page ops-page ops-page--discover ops-page--subscriptions' : 'work-page ops-page ops-page--discover'}>
-      <section className="ops-hero ops-hero--discover">
+      <section className={subscriptionsOnly ? 'ops-hero ops-hero--discover ops-hero--compact' : 'ops-hero ops-hero--discover'}>
         <div>
           <p className="ops-eyebrow">{subscriptionsOnly ? '自动获取' : '找片'}</p>
           <h1>{subscriptionsOnly ? '订阅' : '发现'}</h1>
-          <p className="ops-discover-subtitle">{subscriptionsOnly ? '管理正在追的电影和剧集。' : '找到想看的内容，加入订阅即可。'}</p>
+          <p className={subscriptionsOnly ? 'ops-page-subtitle' : 'ops-discover-subtitle'}>{subscriptionsOnly ? '管理正在追的电影和剧集。' : '找到想看的内容，加入订阅即可。'}</p>
           <p className="ops-deck">{subscriptionsOnly ? '在这里查看进度、调整季数或重新交给 Torra；后续下载和入库会自动回到任务中心。' : '可以浏览榜单、国内平台和海外流媒体；加入订阅后由 PT 主线继续处理。'}</p>
         </div>
-        <div className="ops-discover-policy">
-          <span><Database size={15} />默认获取方式</span>
-          <strong>PT / Torra</strong>
+        <div className={subscriptionsOnly ? 'ops-discover-policy ops-discover-policy--compact' : 'ops-discover-policy'}>
+          <span><Database size={15} />{subscriptionsOnly ? '默认 PT / Torra' : '默认获取方式'}</span>
+          {!subscriptionsOnly && <strong>PT / Torra</strong>}
           <small><Send size={13} />{!subscriptionCapabilities ? '正在确认追更能力' : !torraPushEnabled ? '保存意图，暂不自动获取' : !schedulerRunning ? '保存后等待手动同步' : '保存后进入自动追更'}</small>
         </div>
       </section>
@@ -1563,14 +2325,26 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
         </section>
 
         {!configured && (
-          <div className="ops-panel ops-empty discover-empty">请在控制室配置 TMDB API Key 或 Bearer Token 后，这里会显示热门与搜索结果。</div>
+          <div className="ops-panel ops-empty discover-empty">
+            <strong>内容来源尚未配置</strong>
+            <span>请在控制室配置 TMDB API Key 或 Bearer Token，保存后再重新搜索。</span>
+            <DiscoverSourceStatusList statuses={discoverSourceStatuses} />
+          </div>
         )}
         {configured && !loading && discoverError && (
-          <div className="ops-panel ops-empty discover-empty" role="alert">{discoverError}</div>
+          <div className="ops-panel ops-empty discover-empty" role="alert">
+            <strong>本次搜索未完成</strong>
+            <span>{discoverError}</span>
+            <DiscoverSourceStatusList statuses={discoverSourceStatuses} />
+          </div>
         )}
         {configured && loading && <div className="ops-panel ops-empty discover-empty">正在读取内容来源…</div>}
         {configured && !loading && !discoverError && results.length === 0 && (
-          <div className="ops-panel ops-empty discover-empty">没有找到内容，换个关键词或筛选试试。</div>
+          <div className="ops-panel ops-empty discover-empty">
+            <strong>{activeSearch ? `没有找到“${activeSearch}”` : '当前筛选没有结果'}</strong>
+            <span>已完成本次来源查询；可以换关键词、类型或年份再试。</span>
+            <DiscoverSourceStatusList statuses={discoverSourceStatuses} />
+          </div>
         )}
 
         <div className="discover-grid">
@@ -1598,6 +2372,8 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                       <button
                         aria-expanded={resourceActive}
                         className={resourceActive ? 'tool-link discover-card__action discover-card__action--active' : 'tool-link discover-card__action'}
+                        disabled={resourceWorkflowLocked}
+                        title={resourceWorkflowLocked ? '当前追更操作完成后可切换资源' : '搜索本地 RSS 资源'}
                         type="button"
                         onClick={() => openResourceSearch(result)}
                       >
@@ -1641,47 +2417,58 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       <aside className={subscriptionsOnly ? 'ops-inspector ops-subscription-console discover-subs discover-subs--full' : 'ops-inspector ops-subscription-console discover-subs'} aria-label="我的订阅">
         <div className="activity-panel__head">
           <div><small>自动获取</small><h2>我的订阅</h2></div>
-          <span className="queue-count">{subscriptionsOnly ? (workbench?.page.total ?? workbenchStats.total) : subs.length} 条</span>
-          <button className="ops-action-button" type="button" onClick={() => onNavigate('subscription-settings')}>
-            <SlidersHorizontal aria-hidden="true" size={14} />
-            订阅设置
-          </button>
-          {subscriptionsOnly && <button className="ops-action-button" disabled={subsLoading} title="重新读取工作台状态和订阅链路" type="button" onClick={loadSubs}>
-            <RefreshCcw aria-hidden="true" size={14} />
-            {subsLoading ? '读取中' : '刷新'}
-          </button>}
-          <button className="ops-action-button" disabled={Boolean(subscriptionAction) || !localWriteEnabled} title={localWriteEnabled ? '更新已启用的自动订阅来源' : '本地订阅写入已关闭'} type="button" onClick={runSweep}>
-            <RefreshCcw aria-hidden="true" size={14} />
-            {subscriptionAction === 'run' ? '更新中' : '更新自动订阅来源'}
-          </button>
-          {subscriptionsOnly && <button className="ops-action-button" type="button" onClick={() => onNavigate('calendar')}>
-            <CalendarDays aria-hidden="true" size={14} />
-            日历视图
-          </button>}
+          <span className="queue-count">
+            {subscriptionCountsUnavailable
+              ? (subsLoading ? '读取中' : '—')
+              : `${subscriptionsOnly ? (workbench?.page.total ?? workbenchStats.total) : subs.length} 条`}
+          </span>
+          <div className="subscription-toolbar" aria-label="订阅操作">
+            <button
+              className="ops-action-button ops-action-button--primary subscription-toolbar__primary"
+              disabled={Boolean(subscriptionAction) || !localWriteEnabled}
+              title={localWriteEnabled ? '更新已启用的自动订阅来源' : '本地订阅写入已关闭'}
+              type="button"
+              onClick={runSweep}
+            >
+              <RefreshCcw aria-hidden="true" size={14} />
+              {subscriptionAction === 'run' ? '更新中' : '更新来源'}
+            </button>
+            <button aria-label="订阅设置" className="ops-icon-button subscription-toolbar__icon" title="订阅设置" type="button" onClick={() => onNavigate('subscription-settings')}>
+              <SlidersHorizontal aria-hidden="true" size={14} />
+            </button>
+            {subscriptionsOnly && <button aria-label="刷新追更状态" className="ops-icon-button subscription-toolbar__icon" disabled={subsLoading} title="重新读取工作台状态和订阅链路" type="button" onClick={loadSubs}>
+              <RefreshCcw aria-hidden="true" size={14} />
+            </button>}
+          </div>
         </div>
-        <div className="ops-subscription-policy"><strong>PT 优先</strong><span>Torra 推送保持安全开关控制</span></div>
+        {!subscriptionsOnly && <div className="ops-subscription-policy"><strong>PT 优先</strong><span>Torra 推送保持安全开关控制</span></div>}
         {subscriptionsOnly && workbench && (
-          <>
-            <section className="subscription-capabilities" aria-label="订阅工作台能力状态">
-              {workbench.capabilities.map((capability) => (
-                <div className={`subscription-capability is-${capability.state}`} key={capability.key} title={capability.detail}>
-                  <span aria-hidden="true" />
-                  <div><strong>{capability.label}</strong><small>{capability.detail}</small></div>
-                </div>
-              ))}
-            </section>
-            <section className="subscription-workbench-summary" aria-label="订阅统计">
-              <span><b>{workbenchStats.movie}</b>电影</span>
-              <span><b>{workbenchStats.tv}</b>剧集</span>
-              <span><b>{workbenchStats.pending}</b>待处理</span>
-              <span><b>{workbenchStats.inLibrary}</b>已入库</span>
-              <small>{subscriptionReadAtLabel(workbench.lastReadAt)}</small>
-            </section>
-          </>
+          <section className="subscription-workbench-summary" aria-label="订阅统计">
+            <span><b>{workbenchStats.following}</b>追更中</span>
+            <span><b>{workbenchStats.completed}</b>已完成</span>
+            <span><b>{workbenchStats.actionRequired}</b>需要处理</span>
+            <span><b>{workbenchStats.inLibrary}</b>已入库</span>
+            <small>{subscriptionReadAtLabel(workbench.lastReadAt)}</small>
+          </section>
         )}
         {sweepMessage && <p className="console-panel__hint">{sweepMessage}</p>}
         {subscriptionsOnly && (
-          <section className="torra-sync-panel" aria-label="Torra 订阅同步">
+          <details className="subscription-advanced">
+            <summary>
+              <span>高级诊断</span>
+              <small>连接、对账与 Torra 镜像</small>
+            </summary>
+            {workbench && (
+              <section className="subscription-capabilities" aria-label="订阅工作台能力状态">
+                {workbench.capabilities.map((capability) => (
+                  <div className={`subscription-capability is-${capability.state}`} key={capability.key} title={capability.detail}>
+                    <span aria-hidden="true" />
+                    <div><strong>{capability.label}</strong><small>{capability.detail}</small></div>
+                  </div>
+                ))}
+              </section>
+            )}
+            <section className="torra-sync-panel" aria-label="Torra 订阅同步">
             <header>
               <div>
                 <small>Fluxa / Torra 只读对账</small>
@@ -1736,13 +2523,14 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
               )}
               {!torraSyncStatus?.enabled && <button className="tool-link" type="button" onClick={() => onNavigate('settings')}>前往设置</button>}
             </footer>
-          </section>
+            </section>
+          </details>
         )}
         <div className="discover-sub-tabs" role="tablist" aria-label="订阅类型">
           {([
-            ['movie', '电影订阅', subscriptionsOnly ? workbenchStats.movie : subs.filter((item) => item.mediaType === 'movie').length],
-            ['tv', '电视剧订阅', subscriptionsOnly ? workbenchStats.tv : subs.filter((item) => item.mediaType === 'tv').length],
-            ['blocked', '被屏蔽', blockedTitles.length]
+            ['movie', '电影订阅', subscriptionCountsUnavailable ? '—' : subscriptionsOnly ? workbenchStats.movie : subs.filter((item) => item.mediaType === 'movie').length],
+            ['tv', '电视剧订阅', subscriptionCountsUnavailable ? '—' : subscriptionsOnly ? workbenchStats.tv : subs.filter((item) => item.mediaType === 'tv').length],
+            ['blocked', '被屏蔽', subscriptionCountsUnavailable ? '—' : blockedTitles.length]
           ] as const).map(([key, label, count]) => (
             <button
               aria-selected={subscriptionTab === key}
@@ -1753,7 +2541,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
               type="button"
               onClick={() => {
                 setSubscriptionTab(key);
-                closeDetail();
+                closeDetail('replace');
               }}
               onKeyDown={handleHorizontalTabKeyDown}
             >
@@ -1799,6 +2587,11 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                 <option value="all">全部年份</option>
                 {subscriptionYears.map((year) => <option key={year} value={year}>{year}</option>)}
               </select>
+              <button
+                className={missingEpisodesOnly ? 'is-active' : undefined}
+                type="button"
+                onClick={() => setMissingEpisodesOnly((current) => !current)}
+              >仅缺集</button>
             </div>
           </div>
         )}
@@ -1871,6 +2664,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
           const torraRoute = item.readOnly
             ? item.torraSyncState === 'remote_missing' ? 'Torra 远端已缺失' : 'Torra 已有订阅，只读同步'
             : '由 Fluxa 管理，可检查后推送';
+          const userStatus = subscriptionUserStatus(item);
           return (
             <div
               className={detailId === item.id ? 'discover-sub discover-sub--open' : 'discover-sub'}
@@ -1904,7 +2698,8 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                 <button
                   aria-label={`搜索 ${item.title} 的资源`}
                   className="tool-link"
-                  title="只读搜索资源"
+                  disabled={resourceWorkflowLocked}
+                  title={resourceWorkflowLocked ? '当前追更操作完成后可切换资源' : '只读搜索资源'}
                   type="button"
                   onClick={() => searchSubscriptionResources(item)}
                 >
@@ -1940,35 +2735,39 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
 
               {subscriptionsOnly && (
                 <div className="discover-sub__chain" aria-label={`${item.title} 处理状态`}>
-                  <span className={item.reconciliationState === 'linked' ? 'is-ok' : ['conflict', 'remote_missing'].includes(item.reconciliationState ?? '') ? 'is-warn' : undefined} title={item.reasonText}>
-                    <b>对账状态</b><small>{reconciliationLabel(item)}</small>
-                  </span>
                   <span className={item.fulfillmentState === 'completed' ? 'is-ok' : item.fulfillmentState === 'blocked' ? 'is-warn' : undefined}>
-                    <b>履约状态</b><small>{fulfillmentLabel(item)}</small>
+                    <b>当前进展</b><small>{fulfillmentLabel(item)}</small>
                   </span>
-                  <span>
-                    <b>健康状态</b><HealthBadge label={item.healthState ? undefined : '尚未确认'} state={item.healthState || 'evidence_insufficient'} />
+                  <span className={item.qb?.status === 'blocked' ? 'is-warn' : item.qb?.status === 'done' || item.qb?.status === 'active' ? 'is-ok' : undefined}>
+                    <b>下载</b><small>{item.qb?.detail || (item.inLibrary ? '已完成' : '等待下载任务')}</small>
                   </span>
-                  <span><b>范围</b><small>{item.scope || subscriptionScope}</small></span>
+                  <span className={item.library?.status === 'done' || item.inLibrary ? 'is-ok' : item.library?.status === 'blocked' ? 'is-warn' : undefined}>
+                    <b>入库</b><small>{item.library?.detail || libraryProgress}</small>
+                  </span>
                   <span className={(item.missingEpisodes?.length ?? 0) > 0 ? 'is-warn' : undefined}>
                     <b>缺集</b><small>{item.missingEpisodes?.length ? item.missingEpisodes.join('、') : item.inLibrary ? '无' : '尚未确认'}</small>
                   </span>
-                  <span
-                    className={item.reconciliationState === 'linked' ? 'is-ok' : ['conflict', 'remote_missing'].includes(item.reconciliationState ?? '') ? 'is-warn' : undefined}
-                    title={item.reasonText || item.torra?.detail}
-                  >
-                    <b>对账</b><small>{reconciliationLabel(item)}</small>
+                  <span>
+                    <b>最近检查</b><small><RelativeTime value={item.observedAt || item.updatedAt} /></small>
                   </span>
-                  <span className={item.qb?.status === 'blocked' ? 'is-warn' : item.qb?.status === 'done' || item.qb?.status === 'active' ? 'is-ok' : undefined} title={item.qb?.detail}>
-                    <b>qB</b><small>{item.qb?.detail || '未接入'}</small>
-                  </span>
-                  <span className={item.cloud115?.status === 'blocked' ? 'is-warn' : item.cloud115?.status === 'done' ? 'is-ok' : undefined} title={item.cloud115?.detail}>
-                    <b>115</b><small>{item.cloud115?.detail || '未接入'}</small>
-                  </span>
-                  <span className={item.library?.status === 'done' || item.inLibrary ? 'is-ok' : item.library?.status === 'blocked' ? 'is-warn' : undefined} title={item.library?.detail}>
-                    <b>入库</b><small>{item.library?.detail || (item.inLibrary ? '已入库' : '等待中')}</small>
-                  </span>
-                  {(item.blockingReason || item.reasonText) && <p><strong>当前状态</strong>{item.blockingReason || item.reasonText}</p>}
+                  {userStatus && <p className={subscriptionUserStatusTone(item)}><strong>当前状态</strong>{userStatus}</p>}
+                  <details className="discover-sub__advanced">
+                    <summary>高级诊断</summary>
+                    <div>
+                      <span className={item.reconciliationState === 'linked' ? 'is-ok' : ['conflict', 'remote_missing'].includes(item.reconciliationState ?? '') ? 'is-warn' : undefined} title={item.reasonText || item.torra?.detail}>
+                        <b>Fluxa / Torra</b><small>{reconciliationLabel(item)}</small>
+                      </span>
+                      <span><b>范围</b><small>{item.scope || subscriptionScope}</small></span>
+                      <span><b>健康证据</b><HealthBadge label={item.healthState ? undefined : '尚未确认'} state={item.healthState || 'evidence_insufficient'} /></span>
+                      <span title={item.torra?.detail}><b>Torra</b><small>{item.torra?.detail || torraRoute}</small></span>
+                      <span className={item.qb?.status === 'blocked' ? 'is-warn' : item.qb?.status === 'done' || item.qb?.status === 'active' ? 'is-ok' : undefined} title={item.qb?.detail}>
+                        <b>qB</b><small>{item.qb?.detail || '未接入'}</small>
+                      </span>
+                      <span className={item.cloud115?.status === 'blocked' ? 'is-warn' : item.cloud115?.status === 'done' ? 'is-ok' : undefined} title={item.cloud115?.detail}>
+                        <b>115</b><small>{item.cloud115?.detail || '暂无逐文件证据'}</small>
+                      </span>
+                    </div>
+                  </details>
                 </div>
               )}
 
@@ -1981,7 +2780,9 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                     <small className="sub-detail__hint">详情加载失败，稍后再试。</small>
                   )}
                   {!detailLoading && detail?.success && !detail.detail && (
-                    <small className="sub-detail__hint">没有 TMDB 匹配，暂无详情。</small>
+                    <small className="sub-detail__hint">
+                      {item.readOnly ? '这是 Torra 只读追更，Fluxa 正在读取下载与入库进度。' : '没有 TMDB 匹配，暂无详情。'}
+                    </small>
                   )}
                   {!detailLoading && detail?.success && detail.detail && (
                     <>
@@ -2014,7 +2815,13 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                           <span className={detailInfo?.inLibrary || item.inLibrary ? 'is-complete' : undefined}><b>04</b><strong>整理入库</strong><small>{libraryProgress}</small></span>
                         </div>
                         <footer>
-                          <button className="tool-link" type="button" onClick={() => searchSubscriptionResources(item)}>
+                          <button
+                            className="tool-link"
+                            disabled={resourceWorkflowLocked}
+                            title={resourceWorkflowLocked ? '当前追更操作完成后可切换资源' : '只读搜索资源'}
+                            type="button"
+                            onClick={() => searchSubscriptionResources(item)}
+                          >
                             <FileSearch aria-hidden="true" size={13} />搜索资源
                           </button>
                           <button
@@ -2067,7 +2874,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                                 role="tab"
                                 tabIndex={activeSeasonNumber === seasonNumber ? 0 : -1}
                                 type="button"
-                                onClick={() => setDetailSeason(seasonNumber)}
+                                onClick={() => selectDetailSeason(item, seasonNumber)}
                                 onKeyDown={handleHorizontalTabKeyDown}
                               >
                                 {seasonNumber === 0 ? '特别篇' : `S${String(seasonNumber).padStart(2, '0')}`}
@@ -2117,8 +2924,8 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                     <div className="quality-watch-panel__head">
                       <div><strong>质量观察与人工追更</strong><small>{qualityWatch ? `${qualityWatch.policy.windowHours} 小时观察窗口` : '读取中'}</small></div>
                       {qualityWatch && (
-                        <span className={qualityWatch.paused ? 'state-chip' : 'state-chip state-chip--ok'}>
-                          {qualityWatch.paused ? '已暂停' : '观察中'}
+                        <span className={qualityWatch.paused || qualityWatch.units.length === 0 ? 'state-chip' : 'state-chip state-chip--ok'}>
+                          {qualityWatch.paused ? '已暂停' : qualityWatch.units.length > 0 ? '观察中' : '等待基线'}
                         </span>
                       )}
                     </div>
@@ -2138,35 +2945,39 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                           ))}
                         </div>
                         <div className="quality-watch-panel__actions">
-                          <button
-                            className="tool-link"
-                            disabled={qualityWatchBusy === `update:${item.id}` || Boolean(automationAction && !terminalAutomationStates.has(automationAction.status))}
-                            type="button"
-                            onClick={() => updateQualityWatch(item, { paused: !qualityWatch.paused })}
-                          >
-                            {qualityWatch.paused ? <Play size={13} /> : <Pause size={13} />}
-                            {qualityWatch.paused ? '恢复观察' : '暂停观察'}
-                          </button>
-                          <button
-                            className="tool-link"
-                            disabled={qualityWatchBusy === `update:${item.id}` || Boolean(automationAction && !terminalAutomationStates.has(automationAction.status))}
-                            type="button"
-                            onClick={() => {
-                              const windowHours = qualityWatch.policy.windowHours === 24 ? 48 : 24;
-                              updateQualityWatch(item, { windowHours, scheduleMinutes: windowHours === 24 ? [720, 1440] : [720, 1440, 2880] });
-                            }}
-                          >
-                            <RotateCcw size={13} />切换 {qualityWatch.policy.windowHours === 24 ? '48' : '24'} 小时窗口
-                          </button>
+                          {!qualityWatch.readOnly && !item.readOnly && (
+                            <>
+                              <button
+                                className="tool-link"
+                                disabled={qualityWatchBusy === `update:${item.id}` || Boolean(qualityAutomationAction && !terminalAutomationStates.has(qualityAutomationAction.status))}
+                                type="button"
+                                onClick={() => updateQualityWatch(item, { paused: !qualityWatch.paused })}
+                              >
+                                {qualityWatch.paused ? <Play size={13} /> : <Pause size={13} />}
+                                {qualityWatch.paused ? '恢复观察' : '暂停观察'}
+                              </button>
+                              <button
+                                className="tool-link"
+                                disabled={qualityWatchBusy === `update:${item.id}` || Boolean(qualityAutomationAction && !terminalAutomationStates.has(qualityAutomationAction.status))}
+                                type="button"
+                                onClick={() => {
+                                  const windowHours = qualityWatch.policy.windowHours === 24 ? 48 : 24;
+                                  updateQualityWatch(item, { windowHours, scheduleMinutes: windowHours === 24 ? [720, 1440] : [720, 1440, 2880] });
+                                }}
+                              >
+                                <RotateCcw size={13} />切换 {qualityWatch.policy.windowHours === 24 ? '48' : '24'} 小时窗口
+                              </button>
+                            </>
+                          )}
                           <button
                             className="ops-action-button ops-action-button--primary"
-                            disabled={Boolean(qualityWatchBusy) || Boolean(automationAction && !terminalAutomationStates.has(automationAction.status)) || (qualityWatch.units.length > 1 && !selectedUnitId)}
+                            disabled={Boolean(qualityWatchBusy) || Boolean(qualityAutomationAction && !terminalAutomationStates.has(qualityAutomationAction.status)) || (qualityWatch.units.length > 1 && !selectedUnitId)}
                             type="button"
                             onClick={() => startAnalysis(item)}
                           >
                             <RefreshCcw size={13} />{qualityWatchBusy === `analysis:${item.id}` ? '正在提交' : '人工分析升级'}
                           </button>
-                          {automationAction?.status === 'succeeded' && automationAction.type === 'rewash-analysis' && (automationAction.result?.selectedCount ?? 0) > 0 && (
+                          {qualityAutomationAction?.status === 'succeeded' && qualityAutomationAction.type === 'rewash-analysis' && (qualityAutomationAction.result?.selectedCount ?? 0) > 0 && (
                             <button
                               className="ops-action-button"
                               disabled={Boolean(qualityWatchBusy)}
@@ -2177,14 +2988,14 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                             </button>
                           )}
                         </div>
-                        {automationAction && <p className="quality-watch-panel__status" role="status">{automationStatusLabel(automationAction)}</p>}
+                        {qualityAutomationAction && <p className="quality-watch-panel__status" role="status">{automationStatusLabel(qualityAutomationAction)}</p>}
                       </>
                     ) : (
                       <small className="sub-detail__hint">当前没有可操作的观察单元，等待首个版本或入库基线。</small>
                     )}
                     {qualityWatchMessage && <p className="quality-watch-panel__status" role="status">{qualityWatchMessage}</p>}
                   </section>
-                  <section className="sub-detail__section moviepilot-backup-panel">
+                  {!item.readOnly && <section className="sub-detail__section moviepilot-backup-panel">
                     <div className="quality-watch-panel__head">
                       <div><strong>MoviePilot 备用通道</strong><small>仅在 Torra 观察结束且主链空闲时可用</small></div>
                       {moviePilotPreview && <span className={moviePilotPreview.ready ? 'state-chip state-chip--ok' : 'state-chip'}>{moviePilotPreview.ready ? '可以备用' : '当前阻塞'}</span>}
@@ -2201,7 +3012,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                     </div>
                     {moviePilotPreview && <small className="sub-detail__hint">{moviePilotPreview.ready ? `模式：${moviePilotPreview.mode === 'search-existing' ? '已有订阅触发搜索' : '创建订阅并触发搜索'}` : moviePilotPreview.blockers.join('；')}</small>}
                     {moviePilotMessage && <p className="quality-watch-panel__status" role="status">{moviePilotMessage}</p>}
-                  </section>
+                  </section>}
                   {torraPushBusy === `preview:${item.id}` && (
                     <small className="sub-detail__hint">正在读取 Torra 分类、路径和在线查重结果…</small>
                   )}

@@ -198,6 +198,23 @@
   font-size: 11px;
 }
 
+.sub-config__toggles label > span {
+  display: grid;
+  gap: 3px;
+}
+
+.sub-config__toggles label > span strong {
+  color: var(--ops-ink-strong);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sub-config__toggles label > span small {
+  color: var(--ops-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .quality-settings__readonly {
   color: rgba(157, 184, 207, 0.68);
   font-size: 12px;
@@ -828,7 +845,7 @@
   border-radius: 7px;
   background: rgba(0, 0, 0, 0.16);
   color: var(--ops-ink);
-  font: 10px/1.3 var(--font-ui);
+  font: 12px/1.3 var(--font-ui);
 }
 
 .runtime-setting__control input:focus,
@@ -873,6 +890,25 @@
 .runtime-setting__switch input,
 .runtime-setting__secret-state input {
   accent-color: var(--ops-steel);
+}
+
+.runtime-setting__impact {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 3px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+}
+
+.runtime-setting__impact small {
+  color: var(--ops-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.runtime-setting__impact small:last-child {
+  color: var(--ops-faint);
+  font-size: 11px;
 }
 
 .runtime-setting__secret-state {

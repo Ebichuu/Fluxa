@@ -1,19 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Braces, CheckCircle2, CircleHelp, Clock3, Copy, Download, ExternalLink, HardDrive, Pause, Play, RefreshCcw, Rss, Server, ShieldCheck } from 'lucide-react';
+import { Activity, AlertTriangle, Braces, CheckCircle2, CircleHelp, Clock3, Copy, Download, ExternalLink, Filter, Pause, Play, RefreshCcw, Rss, Server, ShieldCheck, X } from 'lucide-react';
 import { getActivityLogs, getTaskChainDetailV2, getTaskChainV2, previewQbittorrentAction, runQbittorrentAction } from '../../services/api';
 import type { QbittorrentAction, QbittorrentActionPreview } from '../../types/qbittorrent';
-import type { TaskChainExecutionState, TaskChainHealthState, TaskChainItem, TaskChainListItem, TaskChainResponse, TaskChainStage, TaskChainState } from '../../types/taskChain';
+import type { TaskChainHealthState, TaskChainItem, TaskChainListItem, TaskChainResponse, TaskChainStage, TaskChainUserState } from '../../types/taskChain';
 import type { ActivityLogItem } from '../../types/operations';
 import { usePolling } from '../../hooks/usePolling';
-import { formatSpeed, formatTimeAgo } from '../../utils/formatters';
+import { currentHistoryEntryIs, writeUrlQuery } from '../../app/urlState';
+import { formatSpeed } from '../../utils/formatters';
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
 import type { AppNavigate, TaskNavigationTarget } from '../layout/AppTopNav';
-import { HealthBadge } from '../status/HealthBadge';
+import { RelativeTime } from '../status/RelativeTime';
 
-type FilterName = '全部' | '需要处理' | '疑似阻塞' | '证据不足' | '等待' | '正常保护' | '正常';
+type FilterName = '处理中' | '需要处理' | '已完成' | '无需处理';
 
-const filters: FilterName[] = ['全部', '需要处理', '疑似阻塞', '证据不足', '等待', '正常保护', '正常'];
+const filters: FilterName[] = ['处理中', '需要处理', '已完成', '无需处理'];
+const taskDetailHistoryKind = 'tasks:detail';
 
 const activityFilters = [
   { key: '', label: '全部' },
@@ -38,14 +40,7 @@ const activityActionLabels: Record<string, string> = {
   torra_sync_import: '导入订阅',
   torra_sync_run: '状态同步',
   torra_push_v2: '订阅推送',
-  private_rss_request: 'RSS 请求'
-};
-
-const stateLabel: Record<TaskChainState, string> = {
-  active: '进行中',
-  blocked: '卡住',
-  completed: '目标完成',
-  waiting: '等待中'
+  private_rss_request: '种子库操作'
 };
 
 const stageStatusLabel: Record<string, string> = {
@@ -53,8 +48,18 @@ const stageStatusLabel: Record<string, string> = {
   active: '处理中',
   blocked: '已阻塞',
   waiting: '等待中',
-  unknown: '证据不足'
+  unknown: '待确认'
 };
+
+function isUnknownStage(stage: TaskChainStage) {
+  const status = stage.status.toLowerCase();
+  return stage.healthState === 'evidence_insufficient' || status === 'unknown' || status.endsWith('_unknown');
+}
+
+function stageStatusText(status: string) {
+  const normalized = status.toLowerCase();
+  return stageStatusLabel[normalized] || (normalized.endsWith('_unknown') ? '待确认' : '状态待确认');
+}
 
 function resolvedHealth(item: TaskChainListItem | TaskChainItem): TaskChainHealthState {
   if (item.healthState) return item.healthState;
@@ -86,7 +91,7 @@ function stageItems(item: TaskChainListItem | TaskChainItem): TaskChainStage[] {
 
 function stageClass(stage: TaskChainStage) {
   if (stage.healthState === 'action_required' || stage.status === 'blocked') return 'ops-task-chain__step is-stuck';
-  if (stage.healthState === 'evidence_insufficient' || stage.status === 'unknown') return 'ops-task-chain__step is-unknown';
+  if (isUnknownStage(stage)) return 'ops-task-chain__step is-unknown';
   if (stage.healthState === 'protected') return 'ops-task-chain__step is-protected';
   if (stage.status === 'done') return 'ops-task-chain__step is-done';
   if (stage.status === 'active' || stage.status === 'waiting') return 'ops-task-chain__step is-now';
@@ -94,9 +99,9 @@ function stageClass(stage: TaskChainStage) {
 }
 
 function evidenceLabel(stage: TaskChainStage) {
-  if (stage.evidence === 'verified') return '已验证';
-  if (stage.evidence === 'inferred') return '推断证据';
-  return '证据不足';
+  if (stage.evidence === 'verified') return '已确认';
+  if (stage.evidence === 'inferred') return '系统判断';
+  return '待确认';
 }
 
 function stageDisplayLabel(stage: TaskChainStage) {
@@ -108,24 +113,12 @@ function stageDisplayLabel(stage: TaskChainStage) {
 
 function currentDetail(item: TaskChainListItem | TaskChainItem) {
   if (item.userReasonText || item.reasonText) return item.userReasonText || item.reasonText;
-  if (!item.stages?.length && !item.steps?.length) return '展开后查看完整阶段证据';
+  if (!item.stages?.length && !item.steps?.length) return '展开后查看完整处理进度';
   const stages = stageItems(item);
   const current = stages.find((stage) => stage.stage === item.currentStep)
     ?? stages.find((stage) => stage.status === 'blocked' || stage.status === 'active')
     ?? stages[stages.length - 1];
-  return item.userReasonText || item.reasonText || current?.userReasonText || current?.reasonText || '等待下一步证据';
-}
-
-function recommendedAction(item: TaskChainListItem | TaskChainItem, health: TaskChainHealthState) {
-  if (item.recommendedAction) return item.recommendedAction;
-  const current = stageItems(item).find((stage) => stage.stage === item.currentStep)
-    ?? stageItems(item).find((stage) => stage.recommendedAction);
-  if (current?.recommendedAction) return current.recommendedAction;
-  if (health === 'action_required') return '查看当前阶段证据并处理阻塞';
-  if (health === 'evidence_insufficient') return '刷新来源后重新检查';
-  if (health === 'waiting') return '等待当前阶段完成';
-  if (health === 'protected') return '已保留低分源文件，可进入存储清理';
-  return '';
+  return item.userReasonText || item.reasonText || current?.userReasonText || current?.reasonText || '等待下一步状态';
 }
 
 function guidanceIcon(health: TaskChainHealthState) {
@@ -145,37 +138,60 @@ function targetLabel(item: TaskChainListItem | TaskChainItem) {
 
 function stageStatusIcon(stage: TaskChainStage) {
   if (stage.healthState === 'action_required' || stage.status === 'blocked') return <AlertTriangle aria-hidden="true" size={14} />;
-  if (stage.healthState === 'evidence_insufficient' || stage.status === 'unknown') return <CircleHelp aria-hidden="true" size={14} />;
+  if (isUnknownStage(stage)) return <CircleHelp aria-hidden="true" size={14} />;
   if (stage.healthState === 'protected') return <ShieldCheck aria-hidden="true" size={14} />;
   if (stage.status === 'done') return <CheckCircle2 aria-hidden="true" size={14} />;
   return <Clock3 aria-hidden="true" size={14} />;
 }
 
-function healthForFilter(filter: FilterName): TaskChainHealthState | undefined {
+function userStateForFilter(filter: FilterName): TaskChainUserState {
   if (filter === '需要处理') return 'action_required';
-  if (filter === '证据不足') return 'evidence_insufficient';
-  if (filter === '等待') return 'waiting';
-  if (filter === '正常保护') return 'protected';
-  if (filter === '正常') return 'normal';
-  return undefined;
+  if (filter === '已完成') return 'completed';
+  if (filter === '无需处理') return 'no_action';
+  return 'in_progress';
 }
 
-function executionForFilter(filter: FilterName): TaskChainExecutionState | undefined {
-  return filter === '疑似阻塞' ? 'suspected_blocked' : undefined;
+function resolvedUserState(item: TaskChainListItem | TaskChainItem): TaskChainUserState {
+  if (item.userState) return item.userState;
+  const health = resolvedHealth(item);
+  if (health === 'action_required') return 'action_required';
+  if (item.state === 'active' || health === 'waiting') return 'in_progress';
+  if (item.state === 'completed' && health === 'normal') return 'completed';
+  return 'no_action';
 }
 
-function executionLabel(value?: TaskChainExecutionState) {
-  if (value === 'normal') return '正常';
-  if (value === 'waiting') return '等待中';
-  if (value === 'protected') return '正常保护';
-  if (value === 'suspected_blocked') return '疑似阻塞';
+function userStateLabel(value: TaskChainUserState): FilterName {
   if (value === 'action_required') return '需要处理';
-  if (value === 'confirmed_failed') return '确认失败';
-  return '';
+  if (value === 'in_progress') return '处理中';
+  if (value === 'completed') return '已完成';
+  return '无需处理';
+}
+
+function focusedUserState(items: Array<TaskChainListItem | TaskChainItem>): TaskChainUserState | null {
+  const states = items.map(resolvedUserState);
+  if (states.includes('action_required')) return 'action_required';
+  if (states.includes('in_progress')) return 'in_progress';
+  if (states.length > 0 && states.every((state) => state === 'completed')) return 'completed';
+  return states.length > 0 ? 'no_action' : null;
+}
+
+function shanghaiTodayKey() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).formatToParts(new Date());
+  const value = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value || '';
+  return `${value('year')}-${value('month')}-${value('day')}`;
 }
 
 export function TasksCenter({ target, onClearTarget, onNavigate }: { target: TaskNavigationTarget | null; onClearTarget: () => void; onNavigate: AppNavigate }) {
-  const [filter, setFilter] = useState<FilterName>('全部');
+  const initialFilter = target?.userState === 'action_required'
+    ? '需要处理'
+    : target?.userState === 'completed'
+      ? '已完成'
+      : target?.userState === 'no_action' || target?.advanced && target.identityStates?.length
+        ? '无需处理'
+        : '处理中';
+  const [filter, setFilter] = useState<FilterName>(initialFilter);
   const [chain, setChain] = useState<TaskChainResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -191,16 +207,26 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   const [activityCategory, setActivityCategory] = useState('');
   const [activities, setActivities] = useState<ActivityLogItem[]>([]);
   const [activityError, setActivityError] = useState('');
+  const [advancedOpen, setAdvancedOpen] = useState(Boolean(target?.advanced));
+  const [completedDate, setCompletedDate] = useState(target?.completedDate ?? '');
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const advancedOpenRef = useRef(Boolean(target?.advanced));
   const taskCardRefs = useRef(new Map<string, HTMLElement>());
+  const mobileFilterTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const mobileFilterSheetRef = useRef<HTMLElement | null>(null);
+  const todayKey = shanghaiTodayKey();
 
-  const focusActive = Boolean(target);
+  const focusActive = Boolean(target && (
+    target.chainId || target.targetKey || target.subscriptionId || target.tmdbId || target.title
+  ));
   const loadChain = async (signal: AbortSignal, offset = 0, append = false, refresh = false, invalidateDetails = false) => {
     setLoading(true);
     setError('');
     try {
       const payload = await getTaskChainV2({
-        healthState: focusActive ? undefined : healthForFilter(filter),
-        executionState: focusActive ? undefined : executionForFilter(filter),
+        userState: focusActive ? undefined : userStateForFilter(filter),
+        completedDate: focusActive ? undefined : completedDate || undefined,
+        identityStates: advancedOpen ? target?.identityStates : undefined,
         chainId: target?.chainId,
         targetKey: target?.targetKey,
         subscriptionId: target?.subscriptionId,
@@ -212,6 +238,13 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
         refresh
       }, { signal });
       if (!signal.aborted) {
+        if (focusActive && !target?.userState) {
+          const focusedState = focusedUserState(payload.items);
+          if (focusedState) {
+            const focusedFilter = userStateLabel(focusedState);
+            setFilter((current) => current === focusedFilter ? current : focusedFilter);
+          }
+        }
         if (append) setPageLimit((current) => Math.max(current, offset + payload.items.length));
         setChain((current) => append && current ? {
           ...payload,
@@ -236,11 +269,75 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     void loadChain(new AbortController().signal, offset, true);
   };
 
-  usePolling(loadChain, 30000, { key: `${filter}:${JSON.stringify(target)}` });
+  usePolling(loadChain, 30000, { key: `${filter}:${completedDate}:${advancedOpen}:${JSON.stringify(target)}` });
 
   useEffect(() => {
     setPageLimit(20);
-  }, [filter, target]);
+  }, [completedDate, filter, target]);
+
+  useEffect(() => {
+    if (target?.userState === 'action_required') setFilter('需要处理');
+    else if (target?.userState === 'completed') setFilter('已完成');
+    else if (target?.userState === 'no_action') setFilter('无需处理');
+    else if (target?.userState === 'in_progress') setFilter('处理中');
+    else if (target?.advanced && target.identityStates?.length) setFilter('无需处理');
+    const nextAdvancedOpen = Boolean(target?.advanced);
+    advancedOpenRef.current = nextAdvancedOpen;
+    setAdvancedOpen(nextAdvancedOpen);
+    setCompletedDate(target?.completedDate ?? '');
+    if (!(target?.chainId || target?.targetKey || target?.subscriptionId || target?.tmdbId || target?.title)) {
+      setExpandedChainId('');
+      setTechnicalChainId('');
+    }
+  }, [target]);
+
+  useEffect(() => {
+    if (!mobileFiltersOpen) return;
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const focusableSelector = 'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    const frame = window.requestAnimationFrame(() => {
+      mobileFilterSheetRef.current?.querySelector<HTMLElement>(focusableSelector)?.focus();
+    });
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setMobileFiltersOpen(false);
+        return;
+      }
+      if (event.key !== 'Tab' || !mobileFilterSheetRef.current) return;
+      const focusable = Array.from(
+        mobileFilterSheetRef.current.querySelectorAll<HTMLElement>(focusableSelector)
+      );
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!mobileFilterSheetRef.current.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    const wideViewport = window.matchMedia('(min-width: 701px)');
+    const handleWideViewport = () => {
+      if (wideViewport.matches) setMobileFiltersOpen(false);
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    wideViewport.addEventListener('change', handleWideViewport);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', handleKeyDown);
+      wideViewport.removeEventListener('change', handleWideViewport);
+      (previouslyFocused ?? mobileFilterTriggerRef.current)?.focus({ preventScroll: true });
+    };
+  }, [mobileFiltersOpen]);
 
   const loadActivities = async (signal: AbortSignal) => {
     try {
@@ -260,13 +357,10 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   const visible = items;
   const focusedTaskId = focusActive ? items[0]?.chainId || items[0]?.id || null : null;
   const counts = useMemo<Record<FilterName, number>>(() => ({
-    全部: chain?.counts.total ?? 0,
-    需要处理: chain?.healthCounts?.action_required ?? 0,
-    疑似阻塞: chain?.executionCounts?.suspected_blocked ?? 0,
-    证据不足: chain?.healthCounts?.evidence_insufficient ?? 0,
-    等待: chain?.healthCounts?.waiting ?? 0,
-    正常保护: chain?.healthCounts?.protected ?? 0,
-    正常: chain?.healthCounts?.normal ?? 0
+    处理中: chain?.userCounts?.in_progress ?? 0,
+    需要处理: chain?.userCounts?.action_required ?? 0,
+    已完成: chain?.userCounts?.completed ?? 0,
+    无需处理: chain?.userCounts?.no_action ?? 0
   }), [chain]);
 
   const secupload = chain?.services.torra.secupload115;
@@ -286,10 +380,12 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     secupload?.readable && !secupload.perFileEvidence ? 'Torra 当前只提供分类级运行记录，暂不支持逐文件确认。' : ''
   ].filter(Boolean).join(' ');
 
-  const loadDetail = async (item: TaskChainListItem) => {
+  const loadDetail = async (item: TaskChainListItem): Promise<TaskChainItem | undefined> => {
     const chainId = item.chainId || '';
     const snapshotVersion = chain?.version ?? '';
-    if (!chainId || details[chainId]?.snapshotVersion === snapshotVersion || detailLoading === chainId) return;
+    if (!chainId) return undefined;
+    if (details[chainId]?.snapshotVersion === snapshotVersion) return details[chainId].item;
+    if (detailLoading === chainId) return undefined;
     setDetailLoading(chainId);
     try {
       const payload = await getTaskChainDetailV2(chainId);
@@ -297,11 +393,78 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
         ...current,
         [chainId]: { snapshotVersion, item: payload.item }
       }));
+      return payload.item;
     } catch (reason) {
       setActionFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : '任务详情读取失败' });
+      return undefined;
     } finally {
       setDetailLoading('');
     }
+  };
+
+  const clearFocusedTarget = () => {
+    onClearTarget();
+    setExpandedChainId('');
+    setTechnicalChainId('');
+    writeUrlQuery({
+      chainId: null,
+      targetKey: null,
+      subscriptionId: null,
+      tmdbId: null,
+      title: null,
+      seasonNumber: null,
+      mediaType: null,
+      userState: userStateForFilter(filter),
+      completedDate: completedDate || null
+    }, 'replace');
+  };
+
+  const changeFilter = (name: FilterName) => {
+    if (target) onClearTarget();
+    setFilter(name);
+    setExpandedChainId('');
+    setTechnicalChainId('');
+    setCompletedDate('');
+    advancedOpenRef.current = false;
+    setAdvancedOpen(false);
+    writeUrlQuery({
+      userState: userStateForFilter(name),
+      completedDate: null,
+      advanced: null,
+      identityState: null,
+      chainId: null,
+      targetKey: null,
+      subscriptionId: null,
+      tmdbId: null,
+      title: null,
+      seasonNumber: null,
+      mediaType: null
+    }, 'replace');
+  };
+
+  const changeCompletedDate = (next: string) => {
+    if (target) onClearTarget();
+    setCompletedDate(next);
+    if (next) setFilter('已完成');
+    setExpandedChainId('');
+    setTechnicalChainId('');
+    writeUrlQuery({
+      userState: next ? 'completed' : userStateForFilter(filter),
+      completedDate: next || null,
+      chainId: null,
+      targetKey: null,
+      subscriptionId: null,
+      tmdbId: null,
+      title: null,
+      seasonNumber: null,
+      mediaType: null
+    }, 'replace');
+  };
+
+  const changeAdvancedVisibility = (next: boolean) => {
+    advancedOpenRef.current = next;
+    setAdvancedOpen(next);
+    writeUrlQuery({ advanced: next }, 'replace');
   };
 
   const toggleDetail = (item: TaskChainListItem) => {
@@ -309,8 +472,19 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     if (!chainId) return;
     const next = expandedChainId === chainId ? '' : chainId;
     setExpandedChainId(next);
-    if (!next) setTechnicalChainId('');
-    if (next) void loadDetail(item);
+    if (!next) {
+      setTechnicalChainId('');
+      if (currentHistoryEntryIs(taskDetailHistoryKind)) {
+        window.history.back();
+      } else if (focusActive) {
+        clearFocusedTarget();
+      } else {
+        writeUrlQuery({ chainId: null, targetKey: null }, 'replace');
+      }
+      return;
+    }
+    writeUrlQuery({ chainId, targetKey: item.targetKey || null }, 'push', taskDetailHistoryKind);
+    void loadDetail(item);
   };
 
   const copyTechnicalValue = async (label: string, value: string) => {
@@ -351,7 +525,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
 
   const prepareQbAction = async (item: TaskChainItem, action: QbittorrentAction) => {
     setActionPreviewBusy(item.id);
-    setActionFeedback(null);
+    setActionFeedback({ tone: 'success', message: '正在检查操作条件和影响范围…' });
     try {
       const preview = await previewQbittorrentAction({
         action,
@@ -379,7 +553,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     if (!pendingAction) return;
     const { item, action } = pendingAction;
     setActionBusy(item.id);
-    setActionFeedback(null);
+    setActionFeedback({ tone: 'success', message: '操作已收到，正在等待 qBittorrent 返回执行结果…' });
     try {
       const result = await runQbittorrentAction({
         action,
@@ -405,37 +579,67 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     }
   };
 
+  const executePrimaryAction = async (item: TaskChainListItem) => {
+    const action = item.primaryAction;
+    if (!action?.available || action.kind === 'none') return;
+    if (action.kind === 'open_qb') {
+      openTool(chain?.services.qb.webUrl || '');
+      return;
+    }
+    if (action.kind === 'open_torra') {
+      openTool(chain?.services.torra.webUrl || '');
+      return;
+    }
+    if (action.kind === 'view_details') {
+      toggleDetail(item);
+      return;
+    }
+    if (action.kind === 'pause_download' || action.kind === 'resume_download') {
+      const detail = await loadDetail(item);
+      if (detail) await prepareQbAction(detail, action.kind === 'pause_download' ? 'pause' : 'resume');
+      return;
+    }
+    toggleDetail(item);
+  };
+
   return (
     <main className="work-page ops-page ops-page--tasks">
-      <section className="ops-hero ops-hero--tasks">
+      <section className="ops-hero ops-hero--tasks ops-hero--compact">
         <div>
           <p className="ops-eyebrow">处理进度</p>
           <h1>任务中心</h1>
-          <p className="ops-page-subtitle">媒体任务，现在进行到哪一步。</p>
-          <p className="ops-deck">订阅、下载、进入 115 和整理入库集中显示；匹配依据和原工具入口放在任务详情中。</p>
+          <p className="ops-page-subtitle">{counts['需要处理']} 项需要处理 · {counts['处理中']} 个处理中</p>
         </div>
         <div className="ops-task-hero-status">
-          <span>{counts['需要处理'] > 0 ? `${counts['需要处理']} 项需要处理` : counts['证据不足'] > 0 ? '部分任务证据不足' : counts['等待'] > 0 ? '任务正在处理' : chain ? '当前任务状态正常' : '正在读取任务状态'}</span>
+          <span>{counts['需要处理'] > 0 ? `${counts['需要处理']} 项需要处理` : counts['处理中'] > 0 ? '任务正在处理' : chain ? '当前没有需要介入的问题' : '正在读取任务状态'}</span>
           <strong>{chain?.services.qb.connected ? formatSpeed(chain.services.qb.downloadSpeed) : '下载器待连接'}</strong>
-          <small>{chain ? `${chain.counts.active} 进行中 · ${chain.healthCounts?.action_required ?? 0} 项需处理 · ${formatTimeAgo(chain.generatedAt)}` : '正在汇总任务证据'}</small>
+          <small>{chain ? <>{counts['已完成']} 个已完成 · {counts['无需处理']} 个无需处理 · <RelativeTime value={chain.generatedAt} /></> : '正在汇总任务结果'}</small>
         </div>
       </section>
 
       <section className="ops-task-summary" aria-label="任务状态摘要">
-        <div><Rss size={16} /><span>已保存订阅</span><strong>{chain?.originCounts?.subscription ?? 0} 条主干</strong></div>
-        <div><Download size={16} /><span>正在下载</span><strong>{chain ? `${chain.services.torra.total} 个订阅 · ${chain.services.qb.active} 个活跃下载` : '读取中'}</strong></div>
-        <div><HardDrive size={16} /><span>Torra 秒传</span><strong>{secuploadSummary}</strong></div>
-        <div><Server size={16} /><span>整理与入库</span><strong>{chain ? `${chain.counts.completed} 个完成目标` : '读取中'}</strong></div>
+        <div><Download size={16} /><span>处理中</span><strong>{counts['处理中']}<em>个</em></strong></div>
+        <div><AlertTriangle size={16} /><span>需要处理</span><strong>{counts['需要处理']}<em>项</em></strong></div>
+        <div><Server size={16} /><span>已完成</span><strong>{counts['已完成']}<em>个</em></strong></div>
+        <div><ShieldCheck size={16} /><span>无需处理</span><strong>{counts['无需处理']}<em>个</em></strong></div>
       </section>
 
       {(identityPending > 0 || (secupload?.readable && !secupload.perFileEvidence)) && (
-        <section className="ops-task-focus" aria-label="任务证据说明">
+        <details
+          className="ops-task-diagnostics"
+          open={advancedOpen}
+          onToggle={(event) => {
+            const next = event.currentTarget.open;
+            if (next !== advancedOpenRef.current) changeAdvancedVisibility(next);
+          }}
+        >
+          <summary>高级诊断 · {identityPending + (secupload?.readable && !secupload.perFileEvidence ? 1 : 0)} 项</summary>
           <div>
-            <strong>{identityPending > 0 ? '任务身份尚未完成关联' : '秒传插件已接入'}</strong>
+            <strong>{identityPending > 0 ? `${identityPending} 条记录尚未完成身份整理` : 'Torra 秒传证据能力'}</strong>
             <span>{evidenceNotice}</span>
+            <small>{secuploadSummary}{secupload?.lastRunAt && <> · 最近运行 <RelativeTime value={secupload.lastRunAt} /></>}</small>
           </div>
-          {secupload?.lastRunAt && <small>秒传最近运行 {formatTimeAgo(secupload.lastRunAt)}</small>}
-        </section>
+        </details>
       )}
 
       <section className="ops-panel ops-task-workbench">
@@ -445,10 +649,23 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
               <strong>正在查看{target?.title ? `《${target.title}》` : '目标剧集'}的任务</strong>
               <span>{items.length > 0 ? `已定位 ${items.length} 条唯一链路` : '订阅已保存，但暂未形成关联任务'}</span>
             </div>
-            <button className="tool-link" type="button" onClick={onClearTarget}>查看全部任务</button>
+            <button className="tool-link" type="button" onClick={clearFocusedTarget}>查看全部任务</button>
           </div>
         )}
         <header className="ops-task-toolbar">
+          <div className="ops-mobile-filter-summary">
+            <span><small>当前筛选</small><strong>{filter}{completedDate ? ' · 今日完成' : ''}{advancedOpen ? ' · 高级诊断' : ''}</strong></span>
+            <button
+              aria-controls="task-mobile-filter-sheet"
+              aria-expanded={mobileFiltersOpen}
+              className="ops-mobile-filter-button"
+              ref={mobileFilterTriggerRef}
+              type="button"
+              onClick={() => setMobileFiltersOpen(true)}
+            >
+              <Filter aria-hidden="true" size={15} />筛选
+            </button>
+          </div>
           <div className="ops-task-tabs" role="tablist" aria-label="任务筛选">
             {filters.map((name) => (
               <button
@@ -458,19 +675,17 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                 role="tab"
                 tabIndex={filter === name ? 0 : -1}
                 type="button"
-                onClick={() => {
-                  if (focusActive) onClearTarget();
-                  setFilter(name);
-                }}
+                onClick={() => changeFilter(name)}
                 onKeyDown={handleHorizontalTabKeyDown}
               >
-                {name}<span className={['需要处理', '疑似阻塞', '证据不足'].includes(name) && counts[name] > 0 ? 'is-alert' : undefined}>{counts[name]}</span>
+                {name}<span className={name === '需要处理' && counts[name] > 0 ? 'is-alert' : undefined}>{counts[name]}</span>
               </button>
             ))}
           </div>
           <div className="ops-task-toolbar__actions">
-            <span>{chain ? `已显示 ${items.length} / ${chain.page?.total ?? chain.counts.total} 条 · ${formatTimeAgo(chain.generatedAt)}` : '正在读取统一任务链'}</span>
-            <button className="tool-link ops-task-advanced-link" type="button" onClick={() => onNavigate('rss-library')}><Rss aria-hidden="true" size={14} />种子库</button>
+            <span>{chain ? <>已显示 {items.length} / {chain.page?.total ?? chain.counts.total} 条 · <RelativeTime value={chain.generatedAt} /></> : '正在读取统一任务链'}</span>
+            <button className="tool-link ops-task-advanced-link" type="button" onClick={() => changeAdvancedVisibility(!advancedOpenRef.current)}><Braces aria-hidden="true" size={14} />高级诊断</button>
+            <button aria-label="打开 RSS 种子库" className="ops-icon-button" title="RSS 种子库" type="button" onClick={() => onNavigate('rss-library')}><Rss aria-hidden="true" size={14} /></button>
             <button aria-label="刷新任务链" aria-busy={loading} className="ops-icon-button" disabled={loading} title="刷新任务链" type="button" onClick={refreshChain}><RefreshCcw aria-hidden="true" size={16} /></button>
           </div>
         </header>
@@ -495,11 +710,15 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
             const detail = cachedDetail?.snapshotVersion === (chain?.version ?? '') ? cachedDetail.item : undefined;
             const expanded = expandedChainId === chainId;
             const health = resolvedHealth(item);
+            const userState = resolvedUserState(item);
             const stages = detail ? stageItems(detail) : [];
-            const nextAction = recommendedAction(detail ?? item, health);
+            const primaryAction = item.primaryAction;
+            const detailsArePrimaryAction = Boolean(
+              primaryAction?.available && primaryAction.kind === 'view_details'
+            );
             return (
               <article
-                className={`${health === 'action_required' ? 'ops-task-card ops-task-card--stuck' : 'ops-task-card'}${focusActive && chainId === focusedTaskId ? ' ops-task-card--focused' : ''}`}
+                className={`${userState === 'action_required' ? 'ops-task-card ops-task-card--stuck' : 'ops-task-card'}${focusActive && chainId === focusedTaskId ? ' ops-task-card--focused' : ''}`}
                 key={chainId}
                 ref={(element) => {
                   if (element) taskCardRefs.current.set(chainId, element);
@@ -509,14 +728,13 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
               >
               <div className="ops-task-card__head">
                 <div className="ops-task-card__status">
-                  <HealthBadge state={health} />
-                  <span className="ops-task-state">{executionLabel(item.executionState) || stateLabel[item.state]}</span>
+                  <span className={`ops-task-state ops-task-state--${userState.replace('_', '-')}`}>{userStateLabel(userState)}</span>
                 </div>
                 <div>
                   <h2>{item.title}</h2>
-                  <p>
+                  <p className="ops-task-card__result">{item.resultText || currentDetail(detail ?? item)}</p>
+                  <p className="ops-task-card__meta-line">
                     PT · {item.mediaType === 'movie' ? '电影' : item.mediaType === 'tv' ? `剧集${item.seasonNumber ? ` S${String(item.seasonNumber).padStart(2, '0')}` : ''}` : '未识别媒体'}
-                    {' · '}{item.confidence === 'strong' ? '已精确匹配' : item.confidence === 'fallback' ? '按标题推测' : '尚未接到链路'}
                   </p>
                   <div className="ops-task-card__identity">
                     <span>目标 <strong>{targetLabel(item)}</strong></span>
@@ -528,33 +746,31 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                 <strong>{item.progress}%</strong>
               </div>
 
-              {health !== 'normal' && (
-                <div className={`ops-task-guidance ops-task-guidance--${health.replace('_', '-')}`} role={health === 'action_required' ? 'alert' : 'status'}>
+              {userState === 'action_required' && (
+                <div className="ops-task-guidance ops-task-guidance--action-required" role="alert">
                   {guidanceIcon(health)}
-                    <div><strong>{item.executionState === 'suspected_blocked' ? '疑似阻塞' : '为什么'}</strong><span>{currentDetail(detail ?? item)}</span></div>
-                  {nextAction && <div><strong>下一步</strong><span>{nextAction}</span></div>}
+                  <div><strong>发生了什么</strong><span>{currentDetail(detail ?? item)}</span></div>
+                  <div><strong>建议处理</strong><span>{primaryAction?.label || '查看当前处理进度'}</span></div>
                 </div>
               )}
 
-              {expanded && detailLoading === chainId && <div className="ops-empty ops-task-empty">正在读取完整阶段证据…</div>}
-              {expanded && detail && <div className="ops-task-chain" aria-label="任务证据链">
+              {expanded && detailLoading === chainId && <div className="ops-empty ops-task-empty">正在读取完整处理进度…</div>}
+              {expanded && detail && <div className="ops-task-chain" aria-label="任务处理进度">
                 {stages.map((stage, index) => (
                   <div className={stageClass(stage)} key={`${stage.stage}-${index}`}>
                     <div className="ops-task-chain__evidence">
                       <span>{stageStatusIcon(stage)}{String(index + 1).padStart(2, '0')} · {evidenceLabel(stage)}</span>
-                      <em>{stageStatusLabel[stage.status] || stage.status}</em>
+                      <em>{stageStatusText(stage.status)}</em>
                     </div>
                     <strong>{stageDisplayLabel(stage)}</strong>
-                    <small>{stage.userReasonText || stage.reasonText || stageStatusLabel[stage.status] || '暂无阶段说明'}</small>
+                    <small>{stage.userReasonText || stage.reasonText || stageStatusText(stage.status)}</small>
                     {stage.recommendedAction && <small className="ops-task-chain__next">下一步：{stage.recommendedAction}</small>}
                     {stage.healthState === 'action_required' && !stage.actions.preview && !stage.actions.retry && (
                       <small className="ops-task-chain__unavailable">当前没有可在 Fluxa 内安全执行的重试，请查看证据或打开原工具。</small>
                     )}
                     <div className="ops-task-chain__meta">
-                      <span title={stage.reasonCode}>{stage.source || '未接入来源'}</span>
-                      <time dateTime={stage.observedAt} title={stage.freshUntil ? `证据有效至 ${stage.freshUntil}` : undefined}>
-                        {stage.observedAt ? formatTimeAgo(stage.observedAt) : '读取时间未知'}
-                      </time>
+                      <span>{stage.source || '未接入来源'}</span>
+                      <RelativeTime value={stage.observedAt} fallback="读取时间未知" />
                     </div>
                   </div>
                 ))}
@@ -581,6 +797,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                         ['qB 任务', detail.sourceIds.qbHashes.join('\n') || '无'],
                         ['入库记录', detail.sourceIds.symediaIds.join('\n') || '无'],
                         ['相关文件', detail.artifactKeys?.join('\n') || '无'],
+                        ['阶段代码', detail.stages?.map((stage) => `${stageDisplayLabel(stage)}：${stage.reasonCode || stage.status || '无'}`).join('\n') || '无'],
                         ['阶段原始原因', detail.stages?.map((stage) => `${stageDisplayLabel(stage)}：${stage.technicalReasonText || '无'}`).join('\n') || '无']
                       ].map(([label, value]) => (
                         <div key={label}>
@@ -609,34 +826,37 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
               </div>
 
               <div className="ops-task-card__foot">
-                <span>{item.relatedRecords && item.relatedRecords > 1 ? `已合并 ${item.relatedRecords} 条来源记录` : '唯一资源链路'}</span>
+                <span>{item.relatedRecords && item.relatedRecords > 1 ? `已合并 ${item.relatedRecords} 条来源记录` : item.completedAt ? <>完成于 <RelativeTime value={item.completedAt} /></> : '唯一资源链路'}</span>
                 <div className="ops-task-card__actions">
-                  <button className="ops-action-button" disabled={detailLoading === chainId} type="button" onClick={() => toggleDetail(item)}>
+                  <button
+                    className={detailsArePrimaryAction ? 'ops-action-button ops-action-button--primary' : 'ops-action-button'}
+                    disabled={detailLoading === chainId}
+                    type="button"
+                    onClick={() => toggleDetail(item)}
+                  >
                     {detailLoading === chainId ? '读取中' : expanded ? '收起详情' : '查看详情'}
                   </button>
+                  {primaryAction?.available && primaryAction.kind !== 'none' && primaryAction.kind !== 'view_details' && (
+                    <button
+                      className="ops-action-button ops-action-button--primary"
+                      disabled={Boolean(actionBusy) || Boolean(actionPreviewBusy) || detailLoading === chainId}
+                      type="button"
+                      onClick={() => void executePrimaryAction(item)}
+                    >
+                      {primaryAction.kind === 'pause_download' ? <Pause size={14} /> : primaryAction.kind === 'resume_download' ? <Play size={14} /> : <ExternalLink size={14} />}
+                      {primaryAction.label}
+                    </button>
+                  )}
                 </div>
               </div>
 
-              {expanded && detail && (detail.suggestion || detail.embyIndexed || detail.qbControl.total > 0) && (
+              {expanded && detail?.suggestion && !primaryAction?.available && (
                 <footer className="ops-task-card__foot">
-                  <span>{detail.embyIndexed ? (detail.embyEvidenceScope === 'episode' ? 'Emby 已收录该集' : 'Emby 已收录该作品') : currentDetail(detail)}</span>
+                  <span>更多操作</span>
                   <div className="ops-task-card__actions">
-                    {detail.qbControl.total > 0 && (
-                      <button
-                        className="ops-action-button ops-action-button--primary"
-                        disabled={Boolean(actionBusy) || Boolean(actionPreviewBusy)}
-                        type="button"
-                        onClick={() => void prepareQbAction(detail, detail.qbControl.canPause ? 'pause' : 'resume')}
-                      >
-                        {detail.qbControl.canPause ? <Pause size={14} /> : <Play size={14} />}
-                        {actionPreviewBusy === detail.id ? '正在预览' : actionBusy === detail.id ? '正在执行' : detail.qbControl.canPause ? '暂停下载' : '恢复下载'}
-                      </button>
-                    )}
-                    {detail.suggestion && (
-                      <button className="ops-action-button" disabled={!detail.suggestion.url || Boolean(actionBusy)} type="button" onClick={() => openTool(detail.suggestion!.url)}>
-                        <ExternalLink size={14} />{detail.suggestion.label}
-                      </button>
-                    )}
+                    <button className="ops-action-button" disabled={!detail.suggestion.url || Boolean(actionBusy)} type="button" onClick={() => openTool(detail.suggestion!.url)}>
+                      <ExternalLink size={14} />{detail.suggestion.label}
+                    </button>
                   </div>
                 </footer>
               )}
@@ -680,18 +900,78 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
             <article className={`ops-activity-item is-${item.status}`} key={`${item.ts}-${item.action}-${index}`}>
               <span><Activity size={13} /></span>
               <div>
-                <strong>{item.message || activityActionLabels[item.action] || item.action}</strong>
+                <strong>{item.message || activityActionLabels[item.action] || '系统操作'}</strong>
                 <small>
-                  {activityCategoryLabels[item.category] || item.category} · {activityActionLabels[item.action] || item.action}
-                  {typeof item.meta?.code === 'string' && ` · ${item.meta.code}`}
-                  {typeof item.meta?.request_id === 'string' && ` · 请求 ${item.meta.request_id}`}
+                  {activityCategoryLabels[item.category] || '系统'} · {activityActionLabels[item.action] || '系统操作'}
                 </small>
+                {advancedOpen && (typeof item.meta?.code === 'string' || typeof item.meta?.request_id === 'string') && (
+                  <small className="ops-activity-item__technical">
+                    技术字段：{typeof item.meta?.code === 'string' ? item.meta.code : '无'}
+                    {typeof item.meta?.request_id === 'string' && ` · 请求 ${item.meta.request_id}`}
+                  </small>
+                )}
               </div>
               <time>{item.time}</time>
             </article>
           ))}
         </div>
       </section>
+
+      {mobileFiltersOpen && (
+        <div className="ops-filter-sheet-backdrop" onPointerDown={(event) => {
+          if (event.target === event.currentTarget) setMobileFiltersOpen(false);
+        }}>
+          <section
+            aria-labelledby="task-mobile-filter-title"
+            aria-modal="true"
+            className="ops-filter-sheet"
+            id="task-mobile-filter-sheet"
+            ref={mobileFilterSheetRef}
+            role="dialog"
+            tabIndex={-1}
+          >
+            <div aria-hidden="true" className="ops-filter-sheet__handle" />
+            <header className="ops-filter-sheet__header">
+              <div><small>任务中心</small><h2 id="task-mobile-filter-title">筛选任务</h2></div>
+              <button aria-label="关闭筛选" className="ops-filter-sheet__close" type="button" onClick={() => setMobileFiltersOpen(false)}><X aria-hidden="true" size={18} /></button>
+            </header>
+            <div className="ops-filter-sheet__body">
+              <fieldset className="ops-filter-sheet__group">
+                <legend>处理状态</legend>
+                <div className="ops-filter-sheet__options">
+                  {filters.map((name) => (
+                    <button aria-pressed={filter === name} className={filter === name ? 'is-active' : undefined} key={name} type="button" onClick={() => changeFilter(name)}>
+                      <span>{name}</span><strong>{counts[name]}</strong>
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+              <fieldset className="ops-filter-sheet__group">
+                <legend>完成时间</legend>
+                <div className="ops-filter-sheet__options ops-filter-sheet__options--two">
+                  <button aria-pressed={!completedDate} className={!completedDate ? 'is-active' : undefined} type="button" onClick={() => changeCompletedDate('')}>全部时间</button>
+                  <button aria-pressed={completedDate === todayKey} className={completedDate === todayKey ? 'is-active' : undefined} type="button" onClick={() => changeCompletedDate(todayKey)}>今日完成</button>
+                </div>
+              </fieldset>
+              <fieldset className="ops-filter-sheet__group">
+                <legend>高级项</legend>
+                <button
+                  aria-pressed={advancedOpen}
+                  className={advancedOpen ? 'ops-filter-sheet__switch is-active' : 'ops-filter-sheet__switch'}
+                  type="button"
+                  onClick={() => changeAdvancedVisibility(!advancedOpenRef.current)}
+                >
+                  <span><strong>高级诊断</strong><small>显示身份整理与 Torra 证据能力</small></span>
+                  <i aria-hidden="true" />
+                </button>
+              </fieldset>
+            </div>
+            <footer className="ops-filter-sheet__footer">
+              <button className="ops-action-button ops-action-button--primary" type="button" onClick={() => setMobileFiltersOpen(false)}>完成</button>
+            </footer>
+          </section>
+        </div>
+      )}
 
       <ConfirmDialog
         busy={Boolean(actionBusy)}
