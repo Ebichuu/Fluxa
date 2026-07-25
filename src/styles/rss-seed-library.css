@@ -39,7 +39,7 @@
 
 .rss-ledger-strip span {
   color: var(--ops-muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .rss-ledger-strip strong {
@@ -177,7 +177,7 @@
   background: transparent;
   color: var(--ops-muted);
   cursor: pointer;
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .rss-window-tab:hover,
@@ -197,7 +197,7 @@
   padding: 0 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.045);
   color: var(--ops-muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .rss-index-head select,
@@ -214,7 +214,7 @@
   max-width: 180px;
   height: 28px;
   padding: 0 9px;
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .rss-index-filters {
@@ -290,7 +290,7 @@
 
 .rss-match-panel__head small {
   color: var(--ops-faint);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .rss-match-list {
@@ -316,7 +316,7 @@
 .rss-match-row strong {
   overflow: hidden;
   color: rgba(232, 236, 239, 0.75);
-  font-size: 9px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -325,7 +325,7 @@
 .rss-match-row > span {
   overflow: hidden;
   color: var(--ops-faint);
-  font-size: 7.5px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -396,7 +396,7 @@
 
 .rss-seed-time time {
   color: var(--ops-faint);
-  font-size: 8px;
+  font-size: 11px;
   text-align: right;
 }
 
@@ -416,7 +416,7 @@
 
 .rss-seed-meta span {
   color: var(--ops-muted);
-  font-size: 8.5px;
+  font-size: 11px;
 }
 
 .rss-seed-meta span + span::before {
@@ -440,7 +440,7 @@
   background: rgba(157, 184, 207, 0.045);
   color: rgba(192, 211, 226, 0.78);
   font-family: var(--font-code);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .rss-version-line .rss-version-muted {
@@ -460,7 +460,7 @@
   max-width: 110px;
   overflow: hidden;
   color: var(--ops-faint);
-  font-size: 8px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -470,7 +470,7 @@
   border-radius: 999px;
   padding: 4px 7px;
   color: var(--ops-muted);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .rss-identity-chip--identified {
@@ -498,7 +498,7 @@
   background: transparent;
   color: var(--rss-blue);
   cursor: pointer;
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .rss-seed-open:hover,
@@ -536,7 +536,7 @@
 
 .rss-source-head small {
   color: var(--ops-faint);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .rss-source-head strong {
@@ -579,13 +579,13 @@
 
 .rss-source-card__top strong {
   color: var(--ops-ink-strong);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .rss-source-card__top small,
 .rss-source-card__top > span:last-child {
   color: var(--ops-faint);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .rss-source-light {
@@ -610,7 +610,7 @@
   justify-content: space-between;
   margin-top: 10px;
   color: var(--ops-faint);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .rss-source-card__meta span {
@@ -622,7 +622,7 @@
 .rss-source-card > p {
   margin: 9px 0 0;
   color: var(--ops-rose);
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .rss-source-card__actions {
@@ -639,7 +639,7 @@
   background: transparent;
   color: var(--ops-muted);
   cursor: pointer;
-  font-size: 8.5px;
+  font-size: 11px;
 }
 
 .rss-source-card__actions button:hover,
@@ -677,7 +677,7 @@
   display: grid;
   gap: 5px;
   color: var(--ops-muted);
-  font-size: 8.5px;
+  font-size: 11px;
 }
 
 .rss-source-form input,
@@ -685,7 +685,7 @@
   width: 100%;
   min-height: 36px;
   padding: 0 10px;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .rss-source-form input:focus,
@@ -723,7 +723,7 @@
 .rss-source-form > p {
   margin: 0;
   color: var(--ops-faint);
-  font-size: 8px;
+  font-size: 12px;
   line-height: 1.6;
 }
 
@@ -757,7 +757,7 @@
 
 .rss-detail-head span {
   color: var(--rss-blue);
-  font-size: 9px;
+  font-size: 11px;
   letter-spacing: 0.12em;
 }
 
@@ -793,7 +793,7 @@
   gap: 7px;
   margin-bottom: 12px;
   color: var(--ops-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .rss-detail-notice--error {
@@ -816,7 +816,7 @@
   padding: 10px 11px;
   border-right: 1px solid var(--rss-line);
   border-bottom: 1px solid var(--rss-line);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -850,7 +850,7 @@
   margin: 0;
   overflow: auto;
   color: var(--ops-muted);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.75;
   white-space: pre-wrap;
 }
@@ -858,7 +858,7 @@
 .rss-detail-security {
   margin: 18px 0 0;
   color: var(--ops-faint);
-  font-size: 9px;
+  font-size: 11px;
   line-height: 1.6;
 }
 

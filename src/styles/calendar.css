@@ -125,7 +125,7 @@
 .calendar-entry small {
   overflow: hidden;
   color: var(--ops-faint);
-  font-size: 10px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -214,7 +214,7 @@
 
 .ops-calendar-stats span {
   color: var(--ops-muted);
-  font-size: 8.5px;
+  font-size: 11px;
 }
 
 .ops-calendar-stats strong {
@@ -275,7 +275,7 @@
 
 .ops-calendar-title small {
   color: var(--ops-muted);
-  font-size: 8px;
+  font-size: 11px;
   letter-spacing: 0.13em;
 }
 
@@ -307,7 +307,7 @@
   background: transparent;
   color: var(--ops-muted);
   font: inherit;
-  font-size: 8px;
+  font-size: 11px;
   cursor: pointer;
 }
 
@@ -330,7 +330,7 @@
 .ops-calendar-mode {
   margin-left: 5px;
   color: var(--ops-muted) !important;
-  font-size: 9px !important;
+  font-size: 11px !important;
 }
 
 .ops-calendar-error {
@@ -339,7 +339,7 @@
   border-bottom: 1px solid rgba(255, 83, 103, 0.1);
   background: rgba(255, 83, 103, 0.035);
   color: rgba(255, 119, 135, 0.74);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .calendar-filterbar {
@@ -393,7 +393,7 @@
   background: transparent;
   color: var(--ops-muted);
   font: inherit;
-  font-size: 9px;
+  font-size: 11px;
   cursor: pointer;
 }
 
@@ -420,7 +420,7 @@
 }
 
 .calendar-empty span {
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .ops-calendar-scroll {
@@ -439,7 +439,7 @@
   border: 0;
   background: #0b0c10;
   color: var(--ops-faint);
-  font-size: 8.5px;
+  font-size: 11px;
 }
 
 .ops-page--calendar .calendar-cell {
@@ -519,7 +519,7 @@
   background: transparent;
   color: var(--ops-muted);
   font: inherit;
-  font-size: 9px;
+  font-size: 11px;
   text-align: left;
   cursor: pointer;
 }
@@ -540,7 +540,7 @@
   padding: 10px 15px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
   color: var(--ops-muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .ops-calendar-legend span {
@@ -579,7 +579,7 @@
 .ops-calendar-legend strong {
   margin-left: auto;
   color: rgba(232, 236, 239, 0.58);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .calendar-detail__close {
@@ -652,7 +652,7 @@
 .calendar-detail-item > header small,
 .calendar-evidence-times small {
   color: var(--ops-muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .calendar-detail-item > header small {
@@ -685,7 +685,7 @@
 
 .calendar-evidence-times b {
   color: var(--ops-muted);
-  font-size: 8px;
+  font-size: 11px;
   font-weight: 500;
 }
 
@@ -700,7 +700,7 @@
 .calendar-detail-item__reason {
   margin: 0;
   color: var(--ops-muted);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.55;
 }
 
@@ -827,7 +827,7 @@
 
   .ops-page--calendar .calendar-grid__weekday {
     min-height: 26px;
-    font-size: 8px;
+    font-size: 11px;
   }
 
   .ops-page--calendar .calendar-cell {
@@ -839,7 +839,7 @@
   .ops-page--calendar .calendar-cell__date {
     width: 44px;
     height: 44px;
-    font-size: 10px;
+    font-size: 11px;
   }
 
   .calendar-grid:not(.calendar-grid--week) .calendar-entry,
@@ -921,7 +921,7 @@
     border-radius: 999px;
     padding: 0 4px;
     background: rgba(5, 7, 10, 0.86);
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 500;
     text-align: center;
   }

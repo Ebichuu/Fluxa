@@ -85,7 +85,7 @@
 .home-summary__headline > small {
   grid-column: 2;
   color: var(--ops-faint);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .home-summary__hero-actions {
@@ -173,7 +173,7 @@
 
 .home-metric small {
   color: var(--ops-muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .home-metric strong {
@@ -277,7 +277,7 @@
 .home-issue small {
   overflow: hidden;
   color: var(--ops-muted);
-  font-size: 10px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

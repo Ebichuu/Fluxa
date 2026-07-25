@@ -102,7 +102,7 @@
 
 .ops-task-summary span {
   color: var(--ops-muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .ops-task-summary strong {
@@ -146,7 +146,7 @@
 
 .ops-task-focus span {
   color: var(--ops-muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .ops-task-toolbar {
@@ -178,7 +178,7 @@
   color: var(--ops-faint);
   cursor: pointer;
   font-family: inherit;
-  font-size: 10px;
+  font-size: 11px;
   transition: background 0.18s, color 0.18s, transform 0.18s;
 }
 
@@ -213,7 +213,7 @@
 .ops-task-toolbar__actions > span {
   margin-right: 4px;
   color: var(--ops-muted);
-  font-size: 9.5px;
+  font-size: 11px;
 }
 
 .ops-task-list {
@@ -229,7 +229,7 @@
   gap: 12px;
   padding: 5px 14px 16px;
   color: var(--ops-muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .ops-activity-log {
@@ -245,7 +245,7 @@
 .ops-activity-log .ops-task-toolbar small,
 .ops-activity-log .ops-task-toolbar > span {
   color: var(--ops-muted);
-  font-size: 8px;
+  font-size: 11px;
   letter-spacing: 0.08em;
 }
 
@@ -306,7 +306,7 @@
 .ops-activity-item strong {
   overflow: hidden;
   color: rgba(232, 236, 239, 0.72);
-  font-size: 9.5px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -314,7 +314,7 @@
 .ops-activity-item small,
 .ops-activity-item time {
   color: var(--ops-muted);
-  font-size: 7.5px;
+  font-size: 11px;
 }
 
 .ops-activity-item time {
@@ -375,7 +375,7 @@
 .ops-task-card__head p {
   margin: 5px 0 0;
   color: var(--ops-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .ops-task-card__identity {
@@ -384,7 +384,7 @@
   gap: 4px 12px;
   margin-top: 8px;
   color: var(--ops-faint);
-  font-size: 8.5px;
+  font-size: 11px;
 }
 
 .ops-task-card__identity span {
@@ -417,7 +417,7 @@
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 999px;
   color: var(--ops-muted);
-  font-size: 8.5px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -447,7 +447,7 @@
   border-radius: 12px;
   background: rgba(255, 83, 103, 0.045);
   color: rgba(255, 126, 143, 0.78);
-  font-size: 9.5px;
+  font-size: 12px;
 }
 
 .ops-task-alert--evidence {
@@ -481,13 +481,13 @@
 
 .ops-task-guidance strong {
   color: currentColor;
-  font-size: 8px;
+  font-size: 11px;
   letter-spacing: 0.08em;
 }
 
 .ops-task-guidance span {
   color: var(--ops-muted);
-  font-size: 9.5px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -541,12 +541,12 @@
   gap: 5px;
   color: var(--ops-faint);
   font-family: var(--font-ui);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .ops-task-chain__evidence em {
   color: var(--ops-faint);
-  font-size: 7.5px;
+  font-size: 11px;
   font-style: normal;
   white-space: nowrap;
 }
@@ -559,13 +559,13 @@
 .ops-task-chain__step strong {
   margin-top: 5px;
   color: rgba(232, 236, 239, 0.74);
-  font-size: 10.5px;
+  font-size: 12px;
 }
 
 .ops-task-chain__step small {
   margin-top: 5px;
   color: var(--ops-faint);
-  font-size: 8.5px;
+  font-size: 12px;
   line-height: 1.4;
 }
 
@@ -589,7 +589,7 @@
   margin-top: auto;
   padding-top: 10px;
   color: var(--ops-faint);
-  font-size: 7.5px;
+  font-size: 11px;
 }
 
 .ops-task-chain__meta span {
@@ -668,7 +668,7 @@
 
 .ops-task-technical__list dt {
   color: var(--ops-faint);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .ops-task-technical__list dd {
@@ -679,7 +679,7 @@
   display: block;
   overflow-wrap: anywhere;
   color: var(--ops-muted);
-  font-size: 8.5px;
+  font-size: 12px;
   line-height: 1.45;
   white-space: pre-wrap;
 }
@@ -719,7 +719,7 @@
 .ops-task-card__foot > span {
   overflow: hidden;
   color: var(--ops-faint);
-  font-size: 8.5px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -737,7 +737,7 @@
   border-radius: 14px;
   background: rgba(157, 184, 207, 0.06);
   color: var(--ops-steel);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .ops-task-action-feedback--error {

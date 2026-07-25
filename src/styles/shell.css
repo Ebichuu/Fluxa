@@ -523,11 +523,11 @@
     height: 44px;
     gap: 3px;
     padding: 0 2px;
-    font-size: 10px;
+    font-size: 11px;
   }
 
   .app-shell:not(.app-shell--hall) .primary-nav .nav-item--active {
-    font-size: 10.5px;
+    font-size: 11px;
   }
 
   .nav-actions {

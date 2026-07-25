@@ -404,7 +404,7 @@
 
 .ops-settings-card__head small {
   color: var(--ops-muted);
-  font-size: 8px;
+  font-size: 11px;
   letter-spacing: 0.12em;
 }
 
@@ -416,7 +416,7 @@
 
 .ops-settings-card__head > strong {
   color: var(--ops-faint);
-  font-size: 8.5px;
+  font-size: 11px;
   font-weight: 600;
   text-align: right;
 }
@@ -486,12 +486,12 @@
 .ops-policy-row span small {
   margin-top: 4px;
   color: var(--ops-muted);
-  font-size: 8.5px;
+  font-size: 12px;
 }
 
 .ops-policy-row b {
   color: var(--ops-muted);
-  font-size: 9px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -531,7 +531,7 @@
 .ops-access-row small {
   overflow-wrap: anywhere;
   color: var(--ops-muted);
-  font-size: 8.5px;
+  font-size: 12px;
 }
 
 .ops-access-logout {
@@ -547,13 +547,13 @@
 .ops-access-error {
   margin: 10px 0 0;
   color: rgba(255, 119, 151, 0.82);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .ops-settings-note {
   margin: 10px 2px 0;
   color: var(--ops-faint);
-  font-size: 8.5px;
+  font-size: 12px;
   line-height: 1.55;
 }
 
@@ -584,7 +584,7 @@
 .ops-connection-group__head p {
   margin: 4px 0 0;
   color: var(--ops-muted);
-  font-size: 8.5px;
+  font-size: 12px;
 }
 
 .ops-env-row {
@@ -602,13 +602,13 @@
 
 .ops-env-row span {
   color: rgba(232, 236, 239, 0.54);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .ops-env-row code {
   color: var(--ops-muted);
   font-family: var(--font-code);
-  font-size: 7.5px;
+  font-size: 11px;
 }
 
 .ops-env-row i {
@@ -628,7 +628,7 @@
   gap: 9px;
   min-height: 70px;
   color: var(--ops-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .runtime-settings__head {
@@ -680,7 +680,7 @@
 .runtime-settings__toolbar-meta > span,
 .runtime-settings__technical-toggle {
   color: var(--ops-muted);
-  font-size: 9px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -742,7 +742,7 @@
 .runtime-settings__group-toggle small,
 .runtime-settings__group-toggle > span:last-child {
   color: var(--ops-muted);
-  font-size: 8.5px;
+  font-size: 11px;
 }
 
 .runtime-settings__group-toggle > span:last-child {
@@ -789,27 +789,27 @@
 
 .runtime-setting__label strong {
   color: var(--ops-ink-strong);
-  font-size: 10px;
+  font-size: 13px;
 }
 
 .runtime-setting__label code {
   overflow: hidden;
   color: var(--ops-muted);
   font-family: var(--font-code);
-  font-size: 7.5px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .runtime-setting__label small {
   color: var(--ops-steel);
-  font-size: 7.5px;
+  font-size: 11px;
 }
 
 .runtime-setting__description {
   min-height: 2.8em;
   color: var(--ops-muted);
-  font-size: 8.5px;
+  font-size: 12px;
   line-height: 1.4;
 }
 
@@ -867,7 +867,7 @@
   align-items: center;
   gap: 7px;
   color: var(--ops-muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .runtime-setting__switch input,
@@ -894,7 +894,7 @@
 
 .runtime-settings__group-foot > span {
   color: var(--ops-muted);
-  font-size: 8.5px;
+  font-size: 11px;
 }
 
 .runtime-settings__group-foot > span.is-error,
@@ -905,7 +905,7 @@
 .runtime-settings__empty {
   padding: 28px 0;
   text-align: center;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .ops-page--settings .sub-config {
