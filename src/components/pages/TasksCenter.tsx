@@ -112,7 +112,7 @@ function currentDetail(item: TaskChainListItem | TaskChainItem) {
   const stages = stageItems(item);
   const current = stages.find((stage) => stage.stage === item.currentStep)
     ?? stages.find((stage) => stage.status === 'blocked' || stage.status === 'active')
-    ?? stages.at(-1);
+    ?? stages[stages.length - 1];
   return item.userReasonText || item.reasonText || current?.userReasonText || current?.reasonText || '等待下一步证据';
 }
 

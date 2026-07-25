@@ -625,6 +625,7 @@
 .ops-page > * {
   position: relative;
   z-index: 1;
+  min-width: 0;
 }
 
 .ops-hero {
@@ -633,6 +634,10 @@
   gap: 28px;
   align-items: end;
   padding: 6px 2px 14px;
+}
+
+.ops-hero > * {
+  min-width: 0;
 }
 
 .ops-eyebrow {

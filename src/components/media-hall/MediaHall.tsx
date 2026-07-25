@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { getHomeMedia } from '../../services/api';
 import type { HomeMediaResponse } from '../../types/media';
 import type { VisualFxSettings } from '../../types/visualFx';
+import { readLocalStorage, writeLocalStorage } from '../../utils/storage';
 import { MineradioEmbed } from './MineradioEmbed';
 import { MediaQueuePanel } from './MediaQueuePanel';
 
@@ -15,7 +16,7 @@ export function MediaHall({ visualFx, onVisualFxChange }: MediaHallProps) {
   const [error, setError] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const [activeLibraryId, setActiveLibraryId] = useState<string | undefined>();
-  const [queuePanelPinned, setQueuePanelPinned] = useState(() => window.localStorage.getItem('mediaQueuePanelPinned') === '1');
+  const [queuePanelPinned, setQueuePanelPinned] = useState(() => readLocalStorage('mediaQueuePanelPinned') === '1');
   const [queuePanelTab, setQueuePanelTab] = useState<'libraries' | 'queue'>('libraries');
   const requestIdRef = useRef(0);
   const wheelLockRef = useRef(false);
@@ -50,7 +51,7 @@ export function MediaHall({ visualFx, onVisualFxChange }: MediaHallProps) {
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem('mediaQueuePanelPinned', queuePanelPinned ? '1' : '0');
+    writeLocalStorage('mediaQueuePanelPinned', queuePanelPinned ? '1' : '0');
   }, [queuePanelPinned]);
 
   const items = response?.items ?? [];

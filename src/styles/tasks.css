@@ -764,6 +764,21 @@
 
 @media (max-width: 640px) {
 
+  .ops-task-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .ops-task-toolbar__actions {
+    width: 100%;
+  }
+
+  .ops-task-toolbar__actions .ops-action-button {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
   .ops-task-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

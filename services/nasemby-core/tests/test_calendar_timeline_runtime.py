@@ -88,6 +88,7 @@ def calendar_loader(year, month, media_type):
             "season_number": 2,
             "episode_number": 3,
             "episode_label": "S02E03",
+            "poster_url": "https://image.tmdb.org/t/p/w342/example.jpg",
             "in_library": False,
         }],
         "stats": {"entries": 1, "titles": 1, "in_library": 0, "pending": 1},
@@ -191,7 +192,15 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
         self.assertEqual(summary.get_json()["calendar"]["entries"], [])
         self.assertEqual(summary.get_json()["calendar"]["days"][0]["date"], "2026-07-22")
         self.assertEqual(summary.get_json()["calendar"]["days"][0]["statusCounts"]["acquiring"], 1)
+        self.assertEqual(
+            summary.get_json()["calendar"]["days"][0]["preview"][0]["posterUrl"],
+            "https://image.tmdb.org/t/p/w342/example.jpg",
+        )
         self.assertEqual(len(detail.get_json()["calendar"]["entries"]), 1)
+        self.assertEqual(
+            detail.get_json()["calendar"]["entries"][0]["posterUrl"],
+            "https://image.tmdb.org/t/p/w342/example.jpg",
+        )
         self.assertEqual(detail.get_json()["calendar"]["view"], "detail")
 
     def test_past_episode_requires_explicit_follow_scope_before_marking_missing(self):

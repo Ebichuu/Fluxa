@@ -1987,6 +1987,72 @@
 
 @media (max-width: 640px) {
 
+  .ops-subscription-console {
+    max-height: none;
+    padding: 12px;
+  }
+
+  .ops-subscription-policy {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ops-subscription-policy span {
+    text-align: left;
+  }
+
+  .discover-sub .activity-row {
+    grid-template-columns: 40px repeat(4, 36px) minmax(0, 1fr);
+    align-items: start;
+    gap: 7px;
+  }
+
+  .discover-sub__poster {
+    width: 40px;
+    height: 56px;
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+
+  .discover-sub__open {
+    min-width: 0;
+    grid-column: 2 / -1;
+    grid-row: 1;
+  }
+
+  .discover-sub .activity-row__text strong {
+    display: -webkit-box;
+    overflow: hidden;
+    line-height: 1.35;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .discover-sub .activity-row > .tool-link {
+    width: 36px;
+    height: 36px;
+    grid-row: 2;
+  }
+
+  .discover-sub__chain {
+    margin-left: 0;
+  }
+
+  .torra-sync-panel > header small,
+  .torra-sync-panel > p,
+  .torra-sync-panel > header > span,
+  .torra-sync-panel__status > span,
+  .torra-sync-panel__preview > span {
+    font-size: 10px;
+  }
+
+  .torra-sync-panel > header strong,
+  .torra-sync-panel__status b,
+  .torra-sync-panel__preview b {
+    font-size: 12px;
+  }
+
   .ops-page--discover .discover-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

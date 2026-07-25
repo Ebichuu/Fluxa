@@ -13,6 +13,7 @@
 - Torra → qBittorrent → 115 → Symedia → Emby 的 PT 任务链观察，同时区分媒体身份、执行状态和用户介入优先级；Torra 已确认文件名与 Symedia 记录完全一致时可只读串链，没有 Torra 逐文件秒传证据时，不会由 qB 完成时间推断秒传中、已进入 115 或疑似阻塞。
 - 私人 PT RSS 种子库、本地全文搜索、订阅目标精确筛选、TMDB/IMDb 身份与有界历史回填；界面可区分回填尚未运行与运行后仍未识别。
 - 追更卡片按明确 TMDB 身份补齐空缺海报；无身份或仅 Torra 条目保持安全占位和只读边界。
+- 手机月历保留作品海报、状态和数量，控制室、追更与任务工具栏在 390px 窄屏下保持可读且无页面级横向溢出。
 - 按电影或季集隔离的质量观察、人工追更分析和候选下载。
 - MoviePilot 人工备用入口，以及 Emby、qB、Torra、Symedia 服务状态。
 - 深色/浅色工作台与独立 Mineradio 影院大厅。
@@ -123,7 +124,7 @@ Vite 会把 `/api` 和 `/mineradio` 代理到 Python。
 ## 本地检查
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 304 项
+python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前 332 项
 npm test
 npm run build
 docker compose config --services

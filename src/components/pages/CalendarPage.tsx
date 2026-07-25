@@ -308,6 +308,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                   (status === 'all' || entry.status === status)
                   && (!normalizedQuery || (entry.title + ' ' + entry.episodeLabel).toLocaleLowerCase('zh-CN').includes(normalizedQuery))
                 ));
+                const mobilePoster = preview[0] ?? day?.preview[0];
                 const outsideMonth = dateParts(dateKey).month !== month;
                 const cellClass = (dateKey === todayKey ? 'calendar-cell calendar-cell--today' : 'calendar-cell') + (outsideMonth ? ' calendar-cell--outside' : '');
                 return (
@@ -315,11 +316,14 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                     <button className="calendar-cell__date" type="button" onClick={() => openDate(dateKey)}>{dateParts(dateKey).day}</button>
                     {day && (
                       <button aria-label={dateKey + '，共 ' + day.total + ' 条'} className="calendar-cell__mobile-summary" type="button" onClick={() => openDate(dateKey)}>
-                        <span className={day.statusCounts.library ? 'is-library' : undefined} />
-                        <span className={day.statusCounts.acquiring ? 'is-acquiring' : undefined} />
-                        <span className={day.statusCounts.protected ? 'is-protected' : undefined} />
-                        <span className={day.statusCounts.missing ? 'is-missing' : undefined} />
-                        <span className={day.statusCounts.unknown ? 'is-unknown' : undefined} />
+                        {mobilePoster && <EntryPoster entry={mobilePoster} />}
+                        <span aria-hidden="true" className="calendar-cell__mobile-states">
+                          <i className={day.statusCounts.library ? 'is-library' : undefined} />
+                          <i className={day.statusCounts.acquiring ? 'is-acquiring' : undefined} />
+                          <i className={day.statusCounts.protected ? 'is-protected' : undefined} />
+                          <i className={day.statusCounts.missing ? 'is-missing' : undefined} />
+                          <i className={day.statusCounts.unknown ? 'is-unknown' : undefined} />
+                        </span>
                         <b>{day.total}</b>
                       </button>
                     )}
@@ -354,7 +358,11 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
             const currentStatus = entryStatus(entry, todayKey);
             return (
               <article className="calendar-detail-item" key={(entry.key || entry.title) + '-' + entry.episodeLabel}>
-                <header><div><strong>{entry.title}</strong><small>{entry.episodeLabel}{entry.episodeTitle ? ' · ' + entry.episodeTitle : ''}</small></div><HealthBadge state={currentStatus === 'missing' || currentStatus === 'unknown' || currentStatus === 'protected' ? statusHealth[currentStatus] : entry.healthState || statusHealth[currentStatus]} /></header>
+                <header>
+                  <EntryPoster entry={entry} />
+                  <div><strong>{entry.title}</strong><small>{entry.episodeLabel}{entry.episodeTitle ? ' · ' + entry.episodeTitle : ''}</small></div>
+                  <HealthBadge state={currentStatus === 'missing' || currentStatus === 'unknown' || currentStatus === 'protected' ? statusHealth[currentStatus] : entry.healthState || statusHealth[currentStatus]} />
+                </header>
                 <div className="calendar-evidence-times">
                   <span><b>播出</b><strong>{entry.date}</strong><small>TMDB 日历</small></span>
                   <span><b>获取</b><strong>{formatEvidenceTime(entry.acquiredAt)}</strong><small>{entry.acquisitionSource || '该集证据不足'}</small></span>

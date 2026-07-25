@@ -13,18 +13,15 @@ import { usePolling } from '../hooks/usePolling';
 import { getHomeSummary } from '../services/api';
 import type { HomeSummaryResponse } from '../types/homeSummary';
 import { defaultVisualFx, normalizeVisualFx } from '../types/visualFx';
+import { readLocalStorage, writeLocalStorage } from '../utils/storage';
 import { pathForNavigation, readNavigation } from './navigation';
 
 const VISUAL_FX_VERSION = '4';
 const THEME_STORAGE_KEY = 'mcc-ui-theme';
 
 function initialTheme(): ThemeMode {
-  try {
-    const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (saved === 'dark' || saved === 'light') return saved;
-  } catch {
-    // Theme switching still works for the current session when storage is unavailable.
-  }
+  const saved = readLocalStorage(THEME_STORAGE_KEY);
+  if (saved === 'dark' || saved === 'light') return saved;
 
   return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
@@ -37,10 +34,10 @@ export function App() {
   const [homeSummary, setHomeSummary] = useState<HomeSummaryResponse | null>(null);
   const [visualFx, setVisualFx] = useState(() => {
     try {
-      const saved = window.localStorage.getItem('hallVisualFx');
+      const saved = readLocalStorage('hallVisualFx');
       if (saved) {
         const parsed = JSON.parse(saved) as Partial<typeof defaultVisualFx>;
-        const shouldMigrateDefaults = window.localStorage.getItem('hallVisualFxVersion') !== VISUAL_FX_VERSION;
+        const shouldMigrateDefaults = readLocalStorage('hallVisualFxVersion') !== VISUAL_FX_VERSION;
         return normalizeVisualFx({
           ...parsed,
           point: parsed.point == null || parsed.point === 1 ? defaultVisualFx.point : parsed.point,
@@ -60,7 +57,7 @@ export function App() {
       // Ignore old or malformed local visual settings.
     }
 
-    const legacyPreset = Number(window.localStorage.getItem('hallVisualPreset'));
+    const legacyPreset = Number(readLocalStorage('hallVisualPreset'));
     return normalizeVisualFx({
       ...defaultVisualFx,
       preset: Number.isFinite(legacyPreset) ? legacyPreset : defaultVisualFx.preset
@@ -79,17 +76,13 @@ export function App() {
   usePolling(loadHomeSummary, 30_000);
 
   useEffect(() => {
-    window.localStorage.setItem('hallVisualFx', JSON.stringify(visualFx));
-    window.localStorage.setItem('hallVisualFxVersion', VISUAL_FX_VERSION);
-    window.localStorage.setItem('hallVisualPreset', String(visualFx.preset));
+    writeLocalStorage('hallVisualFx', JSON.stringify(visualFx));
+    writeLocalStorage('hallVisualFxVersion', VISUAL_FX_VERSION);
+    writeLocalStorage('hallVisualPreset', String(visualFx.preset));
   }, [visualFx]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
-    } catch {
-      // Keep the in-memory choice when storage is unavailable.
-    }
+    writeLocalStorage(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
   useEffect(() => {

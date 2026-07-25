@@ -11,7 +11,12 @@ import { usePolling } from '../../hooks/usePolling';
 import { formatSpeed, formatTimeAgo } from '../../utils/formatters';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
 
-type ServiceState = 'ok' | 'warn' | 'down' | 'idle';
+type ServiceState = 'ok' | 'warn' | 'down' | 'idle' | 'loading';
+
+interface ServiceFact {
+  label: string;
+  value: string;
+}
 
 interface ServiceModel {
   id: 'torra' | 'qb' | 'symedia' | 'emby';
@@ -23,7 +28,7 @@ interface ServiceModel {
   metric: string;
   metricLabel: string;
   checked: string;
-  meta: string[];
+  facts: ServiceFact[];
   icon: ReactNode;
   toolUrl: string;
   spark?: boolean;
@@ -49,6 +54,7 @@ export function ControlRoom() {
   const [embyRefreshFeedback, setEmbyRefreshFeedback] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
   const [servicesRefreshBusy, setServicesRefreshBusy] = useState(false);
   const [servicesRefreshFeedback, setServicesRefreshFeedback] = useState('');
+  const [servicesLoaded, setServicesLoaded] = useState(false);
 
   const refreshAll = async (signal: AbortSignal, reportResult = false) => {
     const options = { signal };
@@ -70,6 +76,7 @@ export function ControlRoom() {
       setQb(qbResult.value);
       setSpeedHistory((current) => [...current.slice(-19), qbResult.value.transfer.downloadSpeed]);
     }
+    setServicesLoaded(true);
     if (reportResult) {
       const failedCount = [torraResult, qbResult, symediaResult, embyResult, integrationsResult, capabilitiesResult]
         .filter((result) => result.status === 'rejected').length;
@@ -126,59 +133,71 @@ export function ControlRoom() {
   };
 
   const services = useMemo<ServiceModel[]>(() => {
-    const torraState: ServiceState = torra?.connected ? 'ok' : torra?.configured ? 'down' : 'idle';
-    const qbState: ServiceState = qb?.connected ? (qb.counts.stalled > 0 ? 'warn' : 'ok') : qb?.configured ? 'down' : 'idle';
-    const symediaState: ServiceState = symedia?.connected
+    const torraState: ServiceState = !torra ? servicesLoaded ? 'down' : 'loading' : torra.connected ? 'ok' : torra.configured ? 'down' : 'idle';
+    const qbState: ServiceState = !qb ? servicesLoaded ? 'down' : 'loading' : qb.connected ? (qb.counts.stalled > 0 ? 'warn' : 'ok') : qb.configured ? 'down' : 'idle';
+    const symediaState: ServiceState = !symedia ? servicesLoaded ? 'down' : 'loading' : symedia.connected
       ? symedia.totals.failedRecent > 0 ? 'warn' : 'ok'
-      : symedia?.configured ? 'down' : 'idle';
-    const embyState: ServiceState = emby?.connected ? 'ok' : emby?.configured ? 'down' : 'idle';
+      : symedia.configured ? 'down' : 'idle';
+    const embyState: ServiceState = !emby ? servicesLoaded ? 'down' : 'loading' : emby.connected ? 'ok' : emby.configured ? 'down' : 'idle';
     const latestTransfer = symedia?.latest?.[0];
     const recentEntry = emby?.recent?.[0];
 
     return [
       {
         id: 'torra', order: '01', name: 'Torra', role: 'PT 搜索、匹配与下载编排', state: torraState,
-        stateLabel: torra?.connected ? '在线' : torra?.configured ? '连接失败' : '未配置',
-        metric: torra?.connected ? String(torra.counts.active) : '—', metricLabel: `活跃订阅 / 总计 ${torra?.counts.total ?? 0}`,
-        checked: torra ? `检查于 ${formatTimeAgo(torra.lastCheckedAt)}` : '等待首次检查',
-        meta: torra?.connected ? [`已完结 ${torra.counts.completed}`, torra.counts.running ? `${torra.counts.running} 个搜索进行中` : '当前无搜索任务'] : [torra?.error || '等待 Torra 连接'],
+        stateLabel: !torra ? servicesLoaded ? '读取失败' : '读取中' : torra.connected ? '在线' : torra.configured ? '连接失败' : '未配置',
+        metric: torra?.connected ? String(torra.counts.active) : servicesLoaded ? '—' : '…', metricLabel: `活跃订阅 / 总计 ${torra?.counts.total ?? 0}`,
+        checked: torra ? formatTimeAgo(torra.lastCheckedAt) : servicesLoaded ? '本次检查未返回' : '等待首次检查',
+        facts: torra?.connected ? [
+          { label: '完成情况', value: `已完结 ${torra.counts.completed}` },
+          { label: '搜索任务', value: torra.counts.running ? `${torra.counts.running} 个正在进行` : '当前无搜索任务' }
+        ] : [{ label: '连接说明', value: torra?.error || (servicesLoaded ? '服务状态接口暂不可用' : '正在读取 Torra 状态') }],
         icon: <Rss aria-hidden="true" size={20} />, toolUrl: torra?.webUrl || ''
       },
       {
         id: 'qb', order: '02', name: 'qBittorrent', role: 'PT 下载、做种与任务状态', state: qbState,
-        stateLabel: qb?.connected ? (qb.counts.stalled > 0 ? '有卡住任务' : '在线') : qb?.configured ? '连接失败' : '未配置',
-        metric: qb?.connected ? formatSpeed(qb.transfer.downloadSpeed) : '—', metricLabel: `${qb?.counts.active ?? 0} 活跃 / ${qb?.counts.total ?? 0} 总任务`,
-        checked: qb ? `检查于 ${formatTimeAgo(qb.lastCheckedAt)}` : '等待首次检查',
-        meta: qb?.connected ? [`上传 ${formatSpeed(qb.transfer.uploadSpeed)}`, `卡住 ${qb.counts.stalled}`] : [qb?.error || '等待 qB 连接'],
+        stateLabel: !qb ? servicesLoaded ? '读取失败' : '读取中' : qb.connected ? (qb.counts.stalled > 0 ? '有卡住任务' : '在线') : qb.configured ? '连接失败' : '未配置',
+        metric: qb?.connected ? formatSpeed(qb.transfer.downloadSpeed) : servicesLoaded ? '—' : '…', metricLabel: `${qb?.counts.active ?? 0} 活跃 / ${qb?.counts.total ?? 0} 总任务`,
+        checked: qb ? formatTimeAgo(qb.lastCheckedAt) : servicesLoaded ? '本次检查未返回' : '等待首次检查',
+        facts: qb?.connected ? [
+          { label: '上传速度', value: formatSpeed(qb.transfer.uploadSpeed) },
+          { label: '卡住任务', value: `${qb.counts.stalled} 个` }
+        ] : [{ label: '连接说明', value: qb?.error || (servicesLoaded ? '服务状态接口暂不可用' : '正在读取 qB 状态') }],
         icon: <Download aria-hidden="true" size={20} />, toolUrl: qb?.webUrl || '', spark: true
       },
       {
         id: 'symedia', order: '03', name: 'Symedia', role: '识别、整理、STRM 与归档', state: symediaState,
-        stateLabel: symedia?.connected ? (symedia.totals.failedRecent > 0 ? '近期有失败' : '在线') : symedia?.configured ? '连接失败' : '未配置',
-        metric: symedia?.connected ? String(symedia.totals.processedToday ?? symedia.totals.today) : '—', metricLabel: `今日处理 / 累计 ${new Intl.NumberFormat('zh-CN').format(symedia?.totals.records ?? 0)}`,
-        checked: symedia?.connected && latestTransfer ? `最近：${latestTransfer.title}` : symedia ? `检查于 ${formatTimeAgo(symedia.lastCheckedAt)}` : '等待首次检查',
-        meta: symedia?.connected ? [
-          `成功归档 ${symedia.totals.archivedToday ?? 0} · 正常保护 ${symedia.totals.protectedToday ?? 0}`,
-          symedia.totals.failedRecent > 0 ? `真实失败 ${symedia.totals.failedRecent}` : latestTransfer?.seasonEpisode || '近期没有真实归档故障'
-        ] : [symedia?.error || '等待 Symedia 连接'],
+        stateLabel: !symedia ? servicesLoaded ? '读取失败' : '读取中' : symedia.connected ? (symedia.totals.failedRecent > 0 ? '近期有失败' : '在线') : symedia.configured ? '连接失败' : '未配置',
+        metric: symedia?.connected ? String(symedia.totals.processedToday ?? symedia.totals.today) : servicesLoaded ? '—' : '…', metricLabel: `今日处理 / 累计 ${new Intl.NumberFormat('zh-CN').format(symedia?.totals.records ?? 0)}`,
+        checked: symedia ? formatTimeAgo(symedia.lastCheckedAt) : servicesLoaded ? '本次检查未返回' : '等待首次检查',
+        facts: symedia?.connected ? [
+          { label: '今日结果', value: `成功归档 ${symedia.totals.archivedToday ?? 0} · 正常保护 ${symedia.totals.protectedToday ?? 0}` },
+          symedia.totals.failedRecent > 0
+            ? { label: '异常证据', value: `真实失败 ${symedia.totals.failedRecent}` }
+            : { label: '最近记录', value: latestTransfer ? `${latestTransfer.title}${latestTransfer.seasonEpisode ? ` · ${latestTransfer.seasonEpisode}` : ''}` : '近期没有真实归档故障' }
+        ] : [{ label: '连接说明', value: symedia?.error || (servicesLoaded ? '服务状态接口暂不可用' : '正在读取 Symedia 状态') }],
         icon: <Wrench aria-hidden="true" size={20} />, toolUrl: symedia?.webUrl || ''
       },
       {
         id: 'emby', order: '04', name: 'Emby', role: '最终媒体索引与播放', state: embyState,
-        stateLabel: emby?.connected ? '在线' : emby?.configured ? '连接失败' : '未配置',
-        metric: emby?.connected ? new Intl.NumberFormat('zh-CN').format(emby.counts?.episodes ?? 0) : '—', metricLabel: `${new Intl.NumberFormat('zh-CN').format(emby?.counts?.movies ?? 0)} 电影 / ${new Intl.NumberFormat('zh-CN').format(emby?.counts?.series ?? 0)} 剧集`,
-        checked: recentEntry ? `最近：${recentEntry.seriesName ? `${recentEntry.seriesName} ${recentEntry.title}` : recentEntry.title}` : '暂无最近入库',
-        meta: emby?.connected ? ['媒体库已连接', `最近记录 ${emby.recent?.length ?? 0} 条`] : [emby?.error || '等待 Emby 连接'],
+        stateLabel: !emby ? servicesLoaded ? '读取失败' : '读取中' : emby.connected ? '在线' : emby.configured ? '连接失败' : '未配置',
+        metric: emby?.connected ? new Intl.NumberFormat('zh-CN').format(emby.counts?.episodes ?? 0) : servicesLoaded ? '—' : '…', metricLabel: `${new Intl.NumberFormat('zh-CN').format(emby?.counts?.movies ?? 0)} 电影 / ${new Intl.NumberFormat('zh-CN').format(emby?.counts?.series ?? 0)} 剧集`,
+        checked: emby?.lastCheckedAt ? formatTimeAgo(emby.lastCheckedAt) : emby ? '暂无检查时间' : servicesLoaded ? '本次检查未返回' : '等待首次检查',
+        facts: emby?.connected ? [
+          { label: '媒体库状态', value: '索引连接可用' },
+          { label: '近期索引', value: recentEntry ? `${emby.recent?.length ?? 0} 条 · ${recentEntry.seriesName ? `${recentEntry.seriesName} ${recentEntry.title}` : recentEntry.title}` : '暂无最近入库记录' }
+        ] : [{ label: '连接说明', value: emby?.error || (servicesLoaded ? '服务状态接口暂不可用' : '正在读取 Emby 状态') }],
         icon: <Clapperboard aria-hidden="true" size={20} />, toolUrl: emby?.serverUrl || ''
       }
     ];
-  }, [qb, emby, torra, symedia]);
+  }, [qb, emby, servicesLoaded, torra, symedia]);
 
   const selected = services.find((service) => service.id === focusedService) ?? services[0];
   const onlineCount = services.filter((service) => service.state === 'ok' || service.state === 'warn').length;
   const warningCount = services.filter((service) => service.state === 'warn' || service.state === 'down').length;
-  const configuredCount = services.filter((service) => service.state !== 'idle').length;
+  const configuredCount = services.filter((service) => service.state !== 'idle' && service.state !== 'loading').length;
   const unconfiguredCount = services.length - configuredCount;
+  const servicesLoading = !servicesLoaded;
   const points = sparkPoints(speedHistory);
   const moviePilot = integrations?.services.find((service) => service.id === 'moviepilot');
   const moviePilotStatus: { label: string; tone: 'loading' | 'idle' | 'warn' | 'ok' | 'configured' } = !integrations
@@ -197,7 +216,7 @@ export function ControlRoom() {
       : subscriptionCapabilities.scheduler.running
         ? { label: '运行中', detail: subscriptionCapabilities.scheduler.lastRunAt ? `上次执行 ${formatTimeAgo(subscriptionCapabilities.scheduler.lastRunAt)}` : '已确认后台运行', tone: 'ok' as const }
         : { label: '未运行', detail: subscriptionCapabilities.scheduler.lastError || '已开启，但没有读到后台运行证据', tone: 'warn' as const };
-  const torraPushLabel = subscriptionCapabilities?.torraPush.enabled ? '已开启' : '已关闭';
+  const torraPushLabel = !subscriptionCapabilities ? '读取中' : subscriptionCapabilities.torraPush.enabled ? '已开启' : '已关闭';
 
   return (
     <main className="work-page ops-page ops-page--control">
@@ -209,8 +228,8 @@ export function ControlRoom() {
           <p className="ops-deck">遇到下载或入库问题时，先在这里找到需要处理的服务，再进入原工具查看详情。</p>
         </div>
         <div className="ops-hero-actions">
-          <div className={warningCount || unconfiguredCount ? 'ops-system-score ops-system-score--warn' : 'ops-system-score'}>
-            <small>核心服务</small><strong>{onlineCount} / 4 在线</strong><span>{warningCount ? `${warningCount} 项需检查` : unconfiguredCount ? `${unconfiguredCount} 项未配置` : '全部服务证据可用'}</span>
+          <div className={!servicesLoading && (warningCount || unconfiguredCount) ? 'ops-system-score ops-system-score--warn' : 'ops-system-score'}>
+            <small>核心服务</small><strong>{servicesLoading ? '正在读取' : `${onlineCount} / 4 在线`}</strong><span>{servicesLoading ? '正在汇总服务证据' : warningCount ? `${warningCount} 项需检查` : unconfiguredCount ? `${unconfiguredCount} 项未配置` : '全部服务证据可用'}</span>
           </div>
           <button aria-label="刷新全部服务" aria-busy={servicesRefreshBusy} className="ops-icon-button" disabled={servicesRefreshBusy} title="刷新全部服务" type="button" onClick={() => void refreshServices()}><RefreshCcw aria-hidden="true" size={18} /></button>
           {servicesRefreshFeedback && <small aria-live="polite">{servicesRefreshFeedback}</small>}
@@ -222,6 +241,7 @@ export function ControlRoom() {
           {services.map((service) => (
             <button
               className={selected.id === service.id ? `ops-service-card ops-service-card--${service.state} ops-service-card--selected` : `ops-service-card ops-service-card--${service.state}`}
+              aria-pressed={selected.id === service.id}
               key={service.id}
               type="button"
               onClick={() => setFocusedService(service.id)}
@@ -250,7 +270,7 @@ export function ControlRoom() {
           <dl className="ops-inspector__facts">
             <div><dt>连接状态</dt><dd>{selected.stateLabel}</dd></div>
             <div><dt>最近检查</dt><dd>{selected.checked}</dd></div>
-            {selected.meta.map((item, index) => <div key={`${selected.id}-${item}`}><dt>{index === 0 ? '运行信息' : '补充信息'}</dt><dd>{item}</dd></div>)}
+            {selected.facts.map((item) => <div key={`${selected.id}-${item.label}`}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}
           </dl>
           {selected.id === 'emby' && (
             <div className={`ops-emby-refresh-evidence ops-emby-refresh-evidence--${embyRefresh?.state || 'loading'}`}>
@@ -288,9 +308,9 @@ export function ControlRoom() {
             <summary>高级诊断</summary>
             <dl>
               <div><dt>证据来源</dt><dd>{selected.name}</dd></div>
-              <div><dt>配置状态</dt><dd>{selected.state === 'idle' ? '未配置' : '已配置'}</dd></div>
-              <div><dt>连接证据</dt><dd>{selected.state === 'ok' || selected.state === 'warn' ? '已获取' : '不可用'}</dd></div>
-              <div><dt>业务影响</dt><dd>{selected.state === 'ok' ? '当前未发现服务级异常' : selected.state === 'warn' ? '部分任务需继续观察' : selected.state === 'down' ? '相关任务可能无法继续' : '相关能力不可验证'}</dd></div>
+              <div><dt>配置状态</dt><dd>{selected.state === 'loading' ? '正在读取' : selected.state === 'idle' ? '未配置' : '已配置'}</dd></div>
+              <div><dt>连接证据</dt><dd>{selected.state === 'loading' ? '正在读取' : selected.state === 'ok' || selected.state === 'warn' ? '已获取' : '不可用'}</dd></div>
+              <div><dt>业务影响</dt><dd>{selected.state === 'loading' ? '正在汇总服务证据' : selected.state === 'ok' ? '当前未发现服务级异常' : selected.state === 'warn' ? '部分任务需继续观察' : selected.state === 'down' ? '相关任务可能无法继续' : '相关能力不可验证'}</dd></div>
             </dl>
             <p>服务地址和凭据只在设置页编辑；这里不回显 Token、Cookie 或密码。</p>
           </details>
@@ -300,7 +320,7 @@ export function ControlRoom() {
       <section className="ops-control-foot">
         <span className={`ops-control-foot__backup ops-control-foot__backup--${schedulerStatus.tone}`}><ShieldCheck aria-hidden="true" size={12} />追更调度 · {schedulerStatus.label}</span>
         <strong>{schedulerStatus.detail}</strong>
-        <span className={`ops-control-foot__backup ops-control-foot__backup--${subscriptionCapabilities?.torraPush.enabled ? 'ok' : 'idle'}`}>
+        <span className={`ops-control-foot__backup ops-control-foot__backup--${!subscriptionCapabilities ? 'loading' : subscriptionCapabilities.torraPush.enabled ? 'ok' : 'idle'}`}>
           <Rss aria-hidden="true" size={12} />Torra 推送 · {torraPushLabel}
         </span>
         <span className={`ops-control-foot__backup ops-control-foot__backup--${moviePilotStatus.tone}`}>
