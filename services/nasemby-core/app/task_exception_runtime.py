@@ -126,10 +126,14 @@ def _user_reason_text(stage: dict, state: str, value: str) -> str:
         if any(marker in text for marker in ("未找到", "未查询到", "识别", "TMDB", "媒体信息")):
             return "Symedia 未查询到对应媒体信息"
         return "Symedia 未完成媒体入库"
-    if state in {"action_required", "evidence_insufficient"} and (
+    if state == "evidence_insufficient" and (
         key == "cloud115" or source == "115" or "UPLOAD" in reason_code
     ):
-        return "115 处理未完成"
+        return "未找到 115 对应证据，状态无法确认"
+    if state == "action_required" and (
+        key == "cloud115" or source == "115" or "UPLOAD" in reason_code
+    ):
+        return "115 网盘转存或上传未完成"
     if state in {"action_required", "evidence_insufficient"} and (
         key == "download" or "qbittorrent" in source or "DOWNLOAD" in reason_code
     ):

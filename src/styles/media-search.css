@@ -380,7 +380,7 @@
   display: grid;
   gap: 4px;
   padding: 10px;
-  background: var(--surface-primary);
+  background: rgba(20, 24, 32, 0.6);
 }
 
 .media-overview-diagnostics dt,
@@ -390,11 +390,11 @@
 }
 
 .media-overview-diagnostics dt {
-  color: var(--text-label);
+  color: rgba(255, 255, 255, 0.62);
 }
 
 .media-overview-diagnostics dd {
-  color: var(--text-secondary);
+  color: rgba(255, 255, 255, 0.88);
 }
 
 @media (max-width: 1000px) {

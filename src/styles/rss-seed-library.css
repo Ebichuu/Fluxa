@@ -1127,7 +1127,7 @@
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.075);
   border-radius: 16px;
-  background: rgba(8, 10, 14, 0.42);
+  background: rgba(20, 24, 32, 0.5);
 }
 
 .rss-diagnostics {
@@ -1158,13 +1158,13 @@
 
 .rss-diagnostics > summary strong,
 .rss-source-disclosure > summary strong {
-  color: var(--ops-ink-strong);
+  color: rgba(255, 255, 255, 0.92);
   font-size: 13px;
 }
 
 .rss-diagnostics > summary small,
 .rss-source-disclosure > summary small {
-  color: var(--ops-faint);
+  color: rgba(255, 255, 255, 0.56);
   font-size: 11px;
 }
 

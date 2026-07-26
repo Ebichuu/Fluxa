@@ -150,7 +150,7 @@ def _episode_rows(entry: dict, item: dict, current: datetime) -> list[dict]:
     episode = _integer(entry.get("episodeNumber"))
     if not episode and episode != 0:
         return []
-    return [
+    all_matches = [
         row
         for row in item.get("episodeEvidence") or []
         if isinstance(row, dict)
@@ -159,6 +159,9 @@ def _episode_rows(entry: dict, item: dict, current: datetime) -> list[dict]:
         and _integer(row.get("episodeStart")) <= episode <= _integer(row.get("episodeEnd"))
         and _evidence_is_current(row, current, item.get("freshUntil"))
     ]
+    # 优先使用明确单集证据，避免季包/多集证据覆盖单集
+    explicit = [r for r in all_matches if _integer(r.get("episodeStart")) == episode == _integer(r.get("episodeEnd"))]
+    return explicit if explicit else all_matches
 
 
 def _latest_episode_time(rows: list[dict], stages: set[str], statuses: set[str]) -> tuple[str, str]:
@@ -172,7 +175,13 @@ def _latest_episode_time(rows: list[dict], stages: set[str], statuses: set[str])
     if not candidates:
         return "", ""
     latest = max(candidates, key=lambda row: _text(row.get("observedAt")))
-    return _text(latest.get("observedAt")), _text(latest.get("source"))
+    source = _text(latest.get("source"))
+    # 标注粒度：如果是季包/多集证据，在来源后附加范围说明
+    start = _integer(latest.get("episodeStart"))
+    end = _integer(latest.get("episodeEnd"))
+    if start and end and start < end:
+        source = f"{source}（第 {start}-{end} 集）" if source else f"第 {start}-{end} 集"
+    return _text(latest.get("observedAt")), source
 
 
 def _episode_health(entry: dict, rows: list[dict]) -> tuple[str, str, str]:

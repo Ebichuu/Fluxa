@@ -341,6 +341,12 @@
     transform: translateX(calc(-100% - 48px));
   }
 
+  .media-queue-panel__handle {
+    /* 移动端：让handle在面板收起时依然可见在屏幕左侧 */
+    right: auto;
+    left: calc(100% + 48px + 14px);
+  }
+
   .media-queue-panel__head {
     padding: 14px 14px 10px;
   }

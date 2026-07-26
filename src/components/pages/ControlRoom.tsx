@@ -145,7 +145,7 @@ export function ControlRoom() {
     return [
       {
         id: 'torra', order: '01', name: 'Torra', role: 'PT 搜索、匹配与下载编排', state: torraState,
-        stateLabel: !torra ? servicesLoaded ? '读取失败' : '读取中' : torra.connected ? '在线' : torra.configured ? '连接失败' : '未配置',
+        stateLabel: !torra ? servicesLoaded ? '读取失败' : '正在读取' : torra.connected ? '在线' : torra.configured ? '连接失败' : '未配置',
         metric: torra?.connected ? String(torra.counts.active) : servicesLoaded ? '—' : '…', metricLabel: `活跃订阅 / 总计 ${torra?.counts.total ?? 0}`,
         checked: torra ? formatTimeAgo(torra.lastCheckedAt) : servicesLoaded ? '本次检查未返回' : '等待首次检查',
         facts: torra?.connected ? [
@@ -156,7 +156,7 @@ export function ControlRoom() {
       },
       {
         id: 'qb', order: '02', name: 'qBittorrent', role: 'PT 下载、做种与任务状态', state: qbState,
-        stateLabel: !qb ? servicesLoaded ? '读取失败' : '读取中' : qb.connected ? (qb.counts.stalled > 0 ? '有卡住任务' : '在线') : qb.configured ? '连接失败' : '未配置',
+        stateLabel: !qb ? servicesLoaded ? '读取失败' : '正在读取' : qb.connected ? (qb.counts.stalled > 0 ? '有卡住任务' : '在线') : qb.configured ? '连接失败' : '未配置',
         metric: qb?.connected ? formatSpeed(qb.transfer.downloadSpeed) : servicesLoaded ? '—' : '…', metricLabel: `${qb?.counts.active ?? 0} 活跃 / ${qb?.counts.total ?? 0} 总任务`,
         checked: qb ? formatTimeAgo(qb.lastCheckedAt) : servicesLoaded ? '本次检查未返回' : '等待首次检查',
         facts: qb?.connected ? [
@@ -167,7 +167,7 @@ export function ControlRoom() {
       },
       {
         id: 'symedia', order: '03', name: 'Symedia', role: '识别、整理、STRM 与归档', state: symediaState,
-        stateLabel: !symedia ? servicesLoaded ? '读取失败' : '读取中' : symedia.connected ? (symedia.totals.failedRecent > 0 ? '近期有失败' : '在线') : symedia.configured ? '连接失败' : '未配置',
+        stateLabel: !symedia ? servicesLoaded ? '读取失败' : '正在读取' : symedia.connected ? (symedia.totals.failedRecent > 0 ? '近期有失败' : '在线') : symedia.configured ? '连接失败' : '未配置',
         metric: symedia?.connected ? String(symedia.totals.processedToday ?? symedia.totals.today) : servicesLoaded ? '—' : '…', metricLabel: `今日处理 / 累计 ${new Intl.NumberFormat('zh-CN').format(symedia?.totals.records ?? 0)}`,
         checked: symedia ? formatTimeAgo(symedia.lastCheckedAt) : servicesLoaded ? '本次检查未返回' : '等待首次检查',
         facts: symedia?.connected ? [
@@ -180,7 +180,7 @@ export function ControlRoom() {
       },
       {
         id: 'emby', order: '04', name: 'Emby', role: '最终媒体索引与播放', state: embyState,
-        stateLabel: !emby ? servicesLoaded ? '读取失败' : '读取中' : emby.connected ? '在线' : emby.configured ? '连接失败' : '未配置',
+        stateLabel: !emby ? servicesLoaded ? '读取失败' : '正在读取' : emby.connected ? '在线' : emby.configured ? '连接失败' : '未配置',
         metric: emby?.connected ? new Intl.NumberFormat('zh-CN').format(emby.counts?.episodes ?? 0) : servicesLoaded ? '—' : '…', metricLabel: `${new Intl.NumberFormat('zh-CN').format(emby?.counts?.movies ?? 0)} 电影 / ${new Intl.NumberFormat('zh-CN').format(emby?.counts?.series ?? 0)} 剧集`,
         checked: emby?.lastCheckedAt ? formatTimeAgo(emby.lastCheckedAt) : emby ? '暂无检查时间' : servicesLoaded ? '本次检查未返回' : '等待首次检查',
         facts: emby?.connected ? [
@@ -210,7 +210,7 @@ export function ControlRoom() {
           ? { label: '需检查', tone: 'warn' }
           : { label: '已配置', tone: 'configured' };
   const schedulerStatus = !subscriptionCapabilities
-    ? { label: '证据不足', detail: '调度状态尚未读取', tone: 'loading' as const }
+    ? { label: '正在读取', detail: '调度状态尚未读取', tone: 'loading' as const }
     : !subscriptionCapabilities.scheduler.configured || !subscriptionCapabilities.scheduler.enabled
       ? { label: '已关闭', detail: '自动追更调度当前不运行', tone: 'idle' as const }
       : subscriptionCapabilities.scheduler.running

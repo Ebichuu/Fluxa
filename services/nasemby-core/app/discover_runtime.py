@@ -2659,6 +2659,13 @@ def build_subscription_calendar_entries_for_item(item, year, month, media_filter
     season_episode_info = library_episode_info.get(str(int(season_number or 0))) or {}
     season_name = item.get("season_name") or season_data.get("name") or (f"第 {season_number} 季" if season_number else "特别篇")
     progress = subscription_calendar_progress_text(item)
+
+    # 回退到 TMDB 季海报（如果订阅项没有海报）
+    if not poster and season_data.get("poster_path"):
+        cfg = load_tmdb_config()
+        if tmdb_credentials_available(cfg):
+            poster = f"{cfg.get('image_base_url', 'https://image.tmdb.org/t/p')}/w500{season_data['poster_path']}"
+
     for episode in episodes:
         if not isinstance(episode, dict):
             continue

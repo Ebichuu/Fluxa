@@ -469,13 +469,13 @@
 .ops-inspector__diagnostics dd,
 .ops-inspector__diagnostics p {
   margin: 0;
-  color: var(--ops-muted);
+  color: rgba(255, 255, 255, 0.72);
   font-size: 12px;
   line-height: 1.5;
 }
 
 .ops-inspector__diagnostics dd {
-  color: var(--ops-ink-strong);
+  color: rgba(255, 255, 255, 0.92);
   text-align: right;
 }
 

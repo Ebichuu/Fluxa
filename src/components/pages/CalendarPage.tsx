@@ -116,11 +116,11 @@ function entryStatus(entry: SubscriptionCalendarEntry, todayKey: string): Exclud
 }
 
 const statusLabel: Record<CalendarStatus, string> = {
-  all: '全部', upcoming: '待播出', acquiring: '正在获取', library: '已入库', protected: '正常保护', missing: '逾期未获取', unknown: '状态未知'
+  all: '全部', upcoming: '待播出', acquiring: '正在获取', library: '已入库', protected: '正常保护', missing: '逾期未获取', unknown: '已播出 · 处理状态未关联'
 };
 
 const statusHealth: Record<Exclude<CalendarStatus, 'all'>, SubscriptionHealthState> = {
-  upcoming: 'waiting', acquiring: 'waiting', library: 'normal', protected: 'protected', missing: 'action_required', unknown: 'evidence_insufficient'
+  upcoming: 'waiting', acquiring: 'waiting', library: 'normal', protected: 'protected', missing: 'action_required', unknown: 'waiting'
 };
 const mobilePrimaryStatuses: CalendarStatus[] = ['all', 'upcoming', 'acquiring', 'library', 'missing'];
 const mobileAdvancedStatuses: CalendarStatus[] = ['protected', 'unknown'];
@@ -488,6 +488,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     unknown: result.unknown + (day.statusCounts.unknown ?? 0)
   }), { upcoming: 0, acquiring: 0, library: 0, protected: 0, missing: 0, unknown: 0 });
   const totalEntries = days.reduce((total, day) => total + day.total, 0);
+  const isLoading = mode === 'loading';
 
   return (
     <main className="work-page work-page--fill ops-page ops-page--calendar">
@@ -499,12 +500,12 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
           <p className="ops-deck">只有明确到具体季集的证据才会改变状态；季包完成不会批量标记单集。</p>
         </div>
         <div className="ops-calendar-stats" aria-label={calendarView === 'week' ? '本周追更统计' : '本月追更统计'}>
-          <div><Radio size={15} /><span>待播出</span><strong>{counts.upcoming}</strong></div>
-          <div><Clock3 size={15} /><span>正在获取</span><strong>{counts.acquiring}</strong></div>
-          <div><Library size={15} /><span>已入库</span><strong>{counts.library}</strong></div>
-          <div className="is-protected"><ShieldCheck size={15} /><span>正常保护</span><strong>{counts.protected}</strong></div>
-          <div className={counts.missing ? 'is-alert' : undefined}><ListChecks size={15} /><span>逾期未获取</span><strong>{counts.missing}</strong></div>
-          <div className="is-unknown"><CircleHelp size={15} /><span>状态未知</span><strong>{counts.unknown}</strong></div>
+          <div><Radio size={15} /><span>待播出</span><strong>{isLoading ? '—' : counts.upcoming}</strong></div>
+          <div><Clock3 size={15} /><span>正在获取</span><strong>{isLoading ? '—' : counts.acquiring}</strong></div>
+          <div><Library size={15} /><span>已入库</span><strong>{isLoading ? '—' : counts.library}</strong></div>
+          <div className={counts.missing ? 'is-alert' : undefined}><ListChecks size={15} /><span>逾期未获取</span><strong>{isLoading ? '—' : counts.missing}</strong></div>
+          <div className="is-protected"><ShieldCheck size={15} /><span>正常保护</span><strong>{isLoading ? '—' : counts.protected}</strong></div>
+          <div className="is-faint"><CircleHelp size={15} /><span>状态未关联</span><strong>{isLoading ? '—' : counts.unknown}</strong></div>
         </div>
       </section>
 

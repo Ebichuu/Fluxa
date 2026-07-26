@@ -2203,7 +2203,7 @@
 
 .discover-sub__advanced {
   grid-column: 1 / -1;
-  background: rgba(4, 7, 11, 0.4);
+  background: rgba(20, 24, 32, 0.5);
 }
 
 .discover-sub__advanced > summary {
@@ -2212,7 +2212,7 @@
   align-items: center;
   gap: 8px;
   padding: 7px 8px;
-  color: var(--ops-muted);
+  color: rgba(255, 255, 255, 0.68);
   cursor: pointer;
   font-size: 12px;
   list-style: none;
@@ -2235,7 +2235,7 @@
   min-width: 0;
   gap: 3px;
   padding: 8px;
-  background: rgba(4, 7, 11, 0.72);
+  background: rgba(18, 22, 30, 0.8);
 }
 
 .discover-sub__advanced > div > span.is-ok small {

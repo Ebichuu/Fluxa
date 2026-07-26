@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getHomeMedia } from '../../services/api';
 import type { HomeMediaResponse } from '../../types/media';
 import type { VisualFxSettings } from '../../types/visualFx';
@@ -54,18 +54,18 @@ export function MediaHall({ visualFx, onVisualFxChange }: MediaHallProps) {
     writeLocalStorage('mediaQueuePanelPinned', queuePanelPinned ? '1' : '0');
   }, [queuePanelPinned]);
 
-  const items = response?.items ?? [];
-  const libraries = response?.libraries ?? [];
-  const currentLibrary = libraries.find((library) => library.id === activeLibraryId);
-  const activeItem = items[activeIndex] ?? null;
+  const items = useMemo(() => response?.items ?? [], [response?.items]);
+  const libraries = useMemo(() => response?.libraries ?? [], [response?.libraries]);
+  const currentLibrary = useMemo(() => libraries.find((library) => library.id === activeLibraryId), [libraries, activeLibraryId]);
+  const activeItem = useMemo(() => items[activeIndex] ?? null, [items, activeIndex]);
 
-  const moveFocus = (delta: number) => {
+  const moveFocus = useCallback((delta: number) => {
     if (items.length === 0) {
       return;
     }
 
     setActiveIndex((current) => (current + delta + items.length) % items.length);
-  };
+  }, [items.length]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -79,9 +79,9 @@ export function MediaHall({ visualFx, onVisualFxChange }: MediaHallProps) {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [items.length]);
+  }, [moveFocus]);
 
-  const handleWheel = (event: React.WheelEvent<HTMLElement>) => {
+  const handleWheel = useCallback((event: React.WheelEvent<HTMLElement>) => {
     if (wheelLockRef.current || event.altKey) {
       return;
     }
@@ -91,14 +91,14 @@ export function MediaHall({ visualFx, onVisualFxChange }: MediaHallProps) {
     window.setTimeout(() => {
       wheelLockRef.current = false;
     }, 480);
-  };
+  }, [moveFocus]);
 
-  const handleSelectLibrary = (libraryId: string) => {
+  const handleSelectLibrary = useCallback((libraryId: string) => {
     if (libraryId && libraryId !== activeLibraryId) {
       setQueuePanelTab('queue');
       loadMedia(libraryId);
     }
-  };
+  }, [activeLibraryId]);
 
   return (
     <main className="media-hall media-hall--mineradio-embed" onWheel={handleWheel}>
