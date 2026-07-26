@@ -586,3 +586,19 @@
     min-height: 50px;
   }
 }
+
+@media (max-width: 340px) {
+  /* 320 宽度下品牌圆标会被压成空白圆形，改为只保留 Fluxa 文字 */
+  .brand-mark {
+    display: none;
+  }
+
+  /* 预留右侧 nav-actions（搜索/主题/设置按钮）宽度，避免品牌文字贴住按钮 */
+  .brand-lockup {
+    max-width: calc(100% - 160px);
+  }
+
+  .brand-title {
+    max-width: 100%;
+  }
+}

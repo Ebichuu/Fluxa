@@ -59,6 +59,14 @@
   color: var(--ops-rose) !important;
 }
 
+.rss-ledger-strip strong.rss-source-count {
+  font-size: 14px;
+}
+
+.rss-source-count em {
+  font-style: normal;
+}
+
 .rss-identity-run {
   margin: 0;
   padding: 10px 18px;

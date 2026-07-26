@@ -549,6 +549,77 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(blocked["userState"], "no_action")
         self.assertFalse(blocked["primaryAction"]["available"])
 
+    def test_upstream_stage_without_evidence_stays_neutral_when_downstream_completed(self):
+        # 场景：115/Symedia 下游已有完成证据，qB 无记录、订阅无本地记录，
+        # 唯一真失败是 Symedia 识别失败。上游缺证据阶段不得染成失败文案。
+        chain = FakeTaskChain().get_chain()
+        chain["items"][0]["state"] = "blocked"
+        chain["items"][0]["steps"] = [
+            {
+                "key": "subscription", "label": "订阅", "status": "unknown", "evidence": "missing",
+                "detail": "未关联订阅中枢", "source": "",
+            },
+            {
+                "key": "download", "label": "获取 / 下载", "status": "unknown", "evidence": "missing",
+                "detail": "未关联 Torra 或 qB 任务", "source": "",
+            },
+            {
+                "key": "cloud115", "label": "进入 115", "status": "done", "evidence": "verified",
+                "detail": "Symedia 已收到 1 条源文件记录", "source": "Symedia",
+                "timestamp": "2026-07-22T01:00:00Z",
+            },
+            {
+                "key": "library", "label": "入库", "status": "blocked", "evidence": "verified",
+                "detail": "0 成功 / 1 失败 · 未查询到媒体信息", "source": "Symedia",
+                "reasonCode": "SYMEDIA_LIBRARY_FAILED", "timestamp": "2026-07-22T01:10:00Z",
+            },
+        ]
+
+        item = adapt_task_chain(
+            chain,
+            now=datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+        )["items"][0]
+        stages = {stage["stage"]: stage for stage in item["stages"]}
+
+        for name in ("subscription", "download"):
+            self.assertEqual(stages[name]["healthState"], "evidence_insufficient")
+            self.assertIn("未关联", stages[name]["reasonText"])
+            self.assertIn("未关联", stages[name]["userReasonText"])
+            combined = f"{stages[name]['reasonText']} {stages[name]['userReasonText']} {stages[name]['recommendedAction']}"
+            self.assertNotIn("未正常继续", combined)
+            self.assertNotIn("刷新来源", combined)
+        self.assertEqual(stages["cloud115"]["healthState"], "normal")
+        self.assertEqual(stages["library"]["healthState"], "action_required")
+        self.assertEqual(stages["library"]["reasonText"], "Symedia 未查询到对应媒体信息")
+        # 真失败不被洗白：整链仍需要处理，且原因来自 Symedia
+        self.assertEqual(item["userState"], "action_required")
+        self.assertNotIn("未正常继续", item["resultText"])
+        self.assertIn("Symedia", item["resultText"])
+
+    def test_missing_upstream_evidence_without_downstream_completion_keeps_existing_copy(self):
+        # 没有下游完成证据时，缺证据的 qB 阶段维持原有口径（不因本次修正扩大改动）。
+        chain = FakeTaskChain().get_chain()
+        chain["items"][0]["state"] = "waiting"
+        chain["items"][0]["steps"] = [
+            {
+                "key": "download", "label": "获取 / 下载", "status": "unknown", "evidence": "missing",
+                "detail": "未关联 Torra 或 qB 任务", "source": "",
+            },
+            {
+                "key": "library", "label": "入库", "status": "waiting", "evidence": "missing",
+                "detail": "尚无 Symedia 入库记录", "source": "",
+            },
+        ]
+
+        item = adapt_task_chain(
+            chain,
+            now=datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+        )["items"][0]
+        download = next(stage for stage in item["stages"] if stage["stage"] == "download")
+
+        self.assertEqual(download["healthState"], "evidence_insufficient")
+        self.assertNotEqual(download["reasonCode"], "STAGE_EVIDENCE_NOT_LINKED")
+
     def test_stage_exposes_safe_user_reason_and_keeps_technical_reason(self):
         chain = FakeTaskChain().get_chain()
         chain["items"][0]["steps"] = [{

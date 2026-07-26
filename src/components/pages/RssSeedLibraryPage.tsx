@@ -667,7 +667,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
 
       <section className="rss-ledger-strip" aria-label="种子库状态">
         <div><span>本地种子</span><strong>{summary.items}</strong></div>
-        <div><span>RSS 来源</span><strong>{summary.activeSources}/{summary.sources}</strong></div>
+        <div><span>RSS 来源</span><strong className="rss-source-count">已启用 {summary.activeSources}/{summary.sources} · <em className={summary.errorSources ? 'rss-value--warn' : ''}>健康 {Math.max(0, summary.sources - summary.errorSources)}/{summary.sources}</em></strong></div>
         <div><span>异常来源</span><strong className={summary.errorSources ? 'rss-value--warn' : ''}>{summary.errorSources}</strong></div>
         <div><span>最近收集</span><strong>{summary.lastSuccessAt ? <RelativeTime value={summary.lastSuccessAt} /> : '尚未收集'}</strong></div>
       </section>

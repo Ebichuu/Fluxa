@@ -102,6 +102,36 @@ def _stage(step: dict, observed_at: str, fresh_until: str, now=None) -> dict:
     return result
 
 
+def _mark_unlinked_upstream_stages(stages: list[dict]) -> list[dict]:
+    """下游阶段已有完成证据时，缺少直接证据的上游阶段只标记"未关联到对应证据"。
+
+    不再使用"未正常继续"、"刷新来源"等失败/故障文案；健康态保持 evidence_insufficient，
+    也不据下游成功反推上游具体执行方式。真正有失败证据的阶段（action_required）不受影响。
+    """
+    completed_indexes = [
+        index for index, stage in enumerate(stages)
+        if str(stage.get("status") or "") == "done"
+        and str(stage.get("evidence") or "") in {"verified", "inferred"}
+        and str(stage.get("healthState") or "") == "normal"
+    ]
+    if not completed_indexes:
+        return stages
+    last_completed = max(completed_indexes)
+    for index, stage in enumerate(stages):
+        if (
+            index < last_completed
+            and str(stage.get("healthState") or "") == "evidence_insufficient"
+            and str(stage.get("evidence") or "") == "missing"
+        ):
+            stage.update({
+                "reasonCode": "STAGE_EVIDENCE_NOT_LINKED",
+                "reasonText": "未关联到对应证据",
+                "userReasonText": "未关联到对应证据",
+                "recommendedAction": "下游阶段已有完成证据，无需在此处理",
+            })
+    return stages
+
+
 def _adapt_item(item: dict, observed_at: str, fresh_until: str, now_value: datetime) -> dict:
     media = media_key(item.get("mediaType"), item.get("tmdbId"), item.get("title"))
     target = target_key(
@@ -416,10 +446,10 @@ def _merge_group(items: list[dict], observed_at: str, fresh_until: str, now_valu
     for item in items:
         for stage in item.get("stages") or []:
             stage_groups.setdefault(str(stage.get("stage") or "unknown"), []).append(stage)
-    stages = [
+    stages = _mark_unlinked_upstream_stages([
         _merge_stage(candidates)
         for _, candidates in sorted(stage_groups.items(), key=lambda row: (STAGE_ORDER.get(row[0], 100), row[0]))
-    ]
+    ])
     artifacts = _dedupe(value for item in items for value in item.get("artifactKeys") or [])
     episode_evidence = _episode_evidence(items)
     state = _merged_state(stages)

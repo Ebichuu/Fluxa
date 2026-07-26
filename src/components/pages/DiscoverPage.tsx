@@ -1210,6 +1210,20 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
         : !schedulerRunning
           ? '保存后等待手动同步'
           : '保存后进入自动追更';
+  // 发现页顶部说明随 manualFollow 状态变化；能力缺失时保持原文案回退
+  const discoverDeckText = manualFollowState === 'write_disabled'
+    ? '可以浏览榜单、国内平台和海外流媒体；追更写入已关闭，暂时无法加入追更。'
+    : manualFollowState === 'saved_only'
+      ? '可以浏览榜单、国内平台和海外流媒体；加入后仅保存到 Fluxa，暂不会自动获取。'
+      : '可以浏览榜单、国内平台和海外流媒体；加入追更后由 PT 主线继续处理。';
+  // 追更区域“自动获取”标注：仅在来源扫描（或推断的追更能力）真实可用时显示
+  const sourceScan = subscriptionCapabilities?.sourceScan;
+  const autoFetchActive = !subscriptionCapabilities
+    ? true
+    : sourceScan
+      ? sourceScan.enabled && sourceScan.running
+      : manualFollowState === 'queued_ready';
+  const followSectionTagLabel = autoFetchActive ? '自动获取' : '自动扫描已关闭';
   const recentFollows = useMemo(() => {
     if (subscriptionsOnly) return [];
     const updatedAtMs = (item: SubscriptionItem) => {
@@ -2318,10 +2332,10 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     <main className={subscriptionsOnly ? 'work-page ops-page ops-page--discover ops-page--subscriptions' : 'work-page ops-page ops-page--discover'}>
       <section className={subscriptionsOnly ? 'ops-hero ops-hero--discover ops-hero--compact' : 'ops-hero ops-hero--discover'}>
         <div>
-          <p className="ops-eyebrow">{subscriptionsOnly ? '自动获取' : '找片'}</p>
+          <p className="ops-eyebrow">{subscriptionsOnly ? followSectionTagLabel : '找片'}</p>
           <h1>{subscriptionsOnly ? '追更' : '发现'}</h1>
           <p className={subscriptionsOnly ? 'ops-page-subtitle' : 'ops-discover-subtitle'}>{subscriptionsOnly ? '管理正在追的电影和剧集。' : '找到想看的内容，加入追更即可。'}</p>
-          <p className="ops-deck">{subscriptionsOnly ? '在这里查看进度、调整季数或重新交给 Torra；后续下载和入库会自动回到任务中心。' : '可以浏览榜单、国内平台和海外流媒体；加入追更后由 PT 主线继续处理。'}</p>
+          <p className="ops-deck">{subscriptionsOnly ? '在这里查看进度、调整季数或重新交给 Torra；后续下载和入库会自动回到任务中心。' : discoverDeckText}</p>
         </div>
         <div className={subscriptionsOnly ? 'ops-discover-policy ops-discover-policy--compact' : 'ops-discover-policy'}>
           <span><Database size={15} />{subscriptionsOnly ? '默认 PT / Torra' : '默认获取方式'}</span>
@@ -2520,7 +2534,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       {!subscriptionsOnly && (
         <aside className="ops-inspector discover-recent-follows" aria-label="最近追更">
           <div className="activity-panel__head">
-            <div><small>自动获取</small><h2>最近追更</h2></div>
+            <div><small>{followSectionTagLabel}</small><h2>最近追更</h2></div>
           </div>
           {sweepMessage && <p className="console-panel__hint">{sweepMessage}</p>}
           {subsLoading && <p className="console-panel__hint">正在读取追更…</p>}
@@ -2574,7 +2588,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       {subscriptionsOnly && (
       <aside className="ops-inspector ops-subscription-console discover-subs discover-subs--full" aria-label="我的追更">
         <div className="activity-panel__head">
-          <div><small>自动获取</small><h2>我的追更</h2></div>
+          <div><small>{followSectionTagLabel}</small><h2>我的追更</h2></div>
           <span className="queue-count">
             {subscriptionCountsUnavailable
               ? (subsLoading ? '读取中' : '—')

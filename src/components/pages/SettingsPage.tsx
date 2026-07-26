@@ -332,7 +332,7 @@ export function SettingsPage() {
             <div><span><Settings2 size={16} /></span><div><small>获取路线</small><h2>获取通道</h2></div></div>
           </header>
           <div className="ops-policy-row ops-policy-row--primary">
-            <div><Database size={16} /><span><strong>PT / Torra</strong><small>订阅的默认自动获取通道</small></span></div>
+            <div><Database size={16} /><span><strong>PT / Torra</strong><small>订阅的默认获取通道；是否自动扫描由自动化开关决定</small></span></div>
             <b>始终优先</b>
           </div>
           <div className="ops-policy-row">

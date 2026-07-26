@@ -21,12 +21,16 @@ class FakeTaskChainService:
 
 
 class FakeRssRepository:
+    def __init__(self, error_sources=0):
+        self.error_sources = error_sources
+
     def summary(self, enabled):
-        return {"enabled": enabled, "items": 347, "matches": 0, "matcherRan": False, "errorSources": 0, "lastSuccessAt": "2026-07-22T01:55:00Z"}
+        return {"enabled": enabled, "items": 347, "matches": 0, "matcherRan": False, "errorSources": self.error_sources, "lastSuccessAt": "2026-07-22T01:55:00Z"}
 
 
 class FakeRssService:
-    repository = FakeRssRepository()
+    def __init__(self, error_sources=0):
+        self.repository = FakeRssRepository(error_sources)
 
     def collection_enabled(self):
         return True
@@ -206,8 +210,34 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         payload = app.test_client().get("/api/v2/home/summary").get_json()
 
         self.assertEqual(payload["healthState"], "action_required")
-        self.assertEqual(payload["counts"]["actionRequired"], 1)
+        # 服务异常保留在 issues（有自己的处理入口），不计入任务中心口径的角标计数
+        self.assertEqual(payload["counts"]["actionRequired"], 0)
         self.assertTrue(any(issue["source"] == "symedia" for issue in payload["issues"]))
+
+    def test_action_required_count_matches_task_center_and_keeps_rss_issue_deep_link(self):
+        # 口径：counts.actionRequired == 任务中心 userState=action_required 实际列出的任务链数量；
+        # RSS 来源失败仍出现在 issues 列表（深链去种子库），但不计入角标。
+        blocked = item(library_status="blocked")
+        blocked["state"] = "blocked"
+        blocked["steps"][-1].update({
+            "detail": "0 成功 / 1 失败 · 未查询到媒体信息",
+            "source": "Symedia",
+            "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+        })
+        app = self.build_app([blocked], scheduler_enabled=True, scheduler_started=True)
+        app.extensions["mcc_private_rss"] = FakeRssService(error_sources=1)
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+        focus = {value["key"]: value for value in result["focusItems"]}
+
+        self.assertEqual(result["counts"]["actionRequired"], 1)
+        self.assertEqual(focus["action_required"]["value"], 1)
+        self.assertEqual(focus["action_required"]["href"], "/tasks?userState=action_required")
+        rss_issue = next(value for value in result["issues"] if value["source"] == "private-rss")
+        self.assertEqual(rss_issue["reasonCode"], "RSS_COLLECTION_FAILED")
+        # issues 列表允许多于计数（RSS 项走自己的种子库入口）
+        self.assertEqual(result["issueTotal"], 2)
+        self.assertEqual(result["healthState"], "action_required")
 
     def test_collected_rss_without_matcher_run_is_neutral_diagnostic(self):
         app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)

@@ -424,11 +424,6 @@ class HomeSummaryService:
                     reason_text="RSS 状态暂时无法读取", observed_at=now, fresh_until=_fresh_until(now_value),
                 )
 
-        all_evidence = [result for _, _, result in visible_item_evidence] + [scheduler_evidence] + service_evidence
-        if identity_evidence:
-            all_evidence.append(identity_evidence)
-        if rss_evidence:
-            all_evidence.append(rss_evidence)
         # 秒传状态只通过关注项与 systemIssues 表达：
         # recovering 使用处理中语义，action_required 只影响秒传关注项本身，
         # 均不改变基线的红色真实异常计数口径。
@@ -448,8 +443,12 @@ class HomeSummaryService:
             if result["healthState"] == "action_required":
                 issues.append({**result, "targetKey": "", "chainId": "", "title": result["source"]})
 
+        # 口径统一：actionRequired 计数（首页指标与移动端角标共用，深链 /tasks?userState=action_required）
+        # 只统计任务中心该筛选实际会列出的任务链；RSS 来源失败、调度与服务异常
+        # 保留在 issues 列表（各自有独立深链），不再计入该计数。
         counts["actionRequired"] = sum(
-            result["healthState"] == "action_required" for result in all_evidence
+            str(item.get("userState") or "") == "action_required"
+            for _, item, _ in visible_item_evidence
         )
 
         services = chain.get("services") or {}
@@ -628,9 +627,10 @@ class HomeSummaryService:
             )
             for name in ("qb", "symedia", "torra", "emby")
         )
-        if counts["actionRequired"] > 0:
+        if issues:
             health_state = "action_required"
-            headline = f"有 {max(1, counts['actionRequired'])} 项需要处理"
+            # headline 跟随首页 issues 列表（含 RSS/服务/调度深链项），可以多于任务中心计数
+            headline = f"有 {len(issues)} 项需要处理"
         elif processing_targets > 0 or (counts["activeDownloadTasks"] or 0) > 0:
             health_state = "waiting"
             headline = f"有 {max(processing_targets, counts['activeDownloadTasks'] or 0)} 个任务正在处理"
