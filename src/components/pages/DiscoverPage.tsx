@@ -1144,7 +1144,8 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     });
   }, [missingEpisodesOnly, subs, subscriptionKeyword, subscriptionStatus, subscriptionTab, subscriptionUpdate, subscriptionYear]);
   const localWriteEnabled = subscriptionsOnly
-    ? Boolean(workbench?.capabilities.find((capability) => capability.key === 'local_write')?.enabled)
+    ? (subscriptionCapabilities?.localWrite.enabled
+      ?? Boolean(workbench?.capabilities.find((capability) => capability.key === 'local_write')?.enabled))
     : true;
   const workbenchStats = workbench?.stats ?? {
     total: subs.length,
