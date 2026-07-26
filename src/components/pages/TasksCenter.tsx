@@ -167,6 +167,13 @@ function userStateLabel(value: TaskChainUserState): FilterName {
   return '无需处理';
 }
 
+const userStateLabels: Record<TaskChainUserState, FilterName> = {
+  action_required: '需要处理',
+  in_progress: '处理中',
+  completed: '已完成',
+  no_action: '无需处理'
+};
+
 function focusedUserState(items: Array<TaskChainListItem | TaskChainItem>): TaskChainUserState | null {
   const states = items.map(resolvedUserState);
   if (states.includes('action_required')) return 'action_required';
@@ -204,7 +211,11 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   const [actionPreviewBusy, setActionPreviewBusy] = useState('');
   const [actionBusy, setActionBusy] = useState('');
   const [actionFeedback, setActionFeedback] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
-  const [activityCategory, setActivityCategory] = useState('');
+  const [activityCategory, setActivityCategory] = useState(() => new URLSearchParams(window.location.search).get('activityCategory') ?? '');
+  // 默认重点视图；raw 显示全部原始记录。
+  const [activityView, setActivityView] = useState<'important' | 'raw'>(() => (
+    new URLSearchParams(window.location.search).get('activityView') === 'raw' ? 'raw' : 'important'
+  ));
   const [activities, setActivities] = useState<ActivityLogItem[]>([]);
   const [activityError, setActivityError] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(Boolean(target?.advanced));
@@ -214,6 +225,9 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   const taskCardRefs = useRef(new Map<string, HTMLElement>());
   const mobileFilterTriggerRef = useRef<HTMLButtonElement | null>(null);
   const mobileFilterSheetRef = useRef<HTMLElement | null>(null);
+  // 快照差值只在相同全局口径（无定位、无分页追加、筛选未变）且 version 变化时计算。
+  const snapshotRef = useRef<{ scopeKey: string; version: string; userCounts: Record<TaskChainUserState, number> } | null>(null);
+  const [snapshotDelta, setSnapshotDelta] = useState<{ text: string; at: string } | null>(null);
   const todayKey = shanghaiTodayKey();
 
   const focusActive = Boolean(target && (
@@ -246,6 +260,25 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
           }
         }
         if (append) setPageLimit((current) => Math.max(current, offset + payload.items.length));
+        const scopeKey = `${filter}:${completedDate}:${advancedOpen}:${focusActive}`;
+        const nextVersion = payload.version ?? '';
+        const nextCounts = payload.userCounts;
+        if (!append && !focusActive && nextVersion && nextCounts) {
+          const previous = snapshotRef.current;
+          if (previous && previous.scopeKey === scopeKey && previous.version !== nextVersion) {
+            const deltas = (Object.entries(userStateLabels) as Array<[TaskChainUserState, string]>)
+              .map(([state, label]) => {
+                const diff = (nextCounts[state] ?? 0) - (previous.userCounts[state] ?? 0);
+                if (diff === 0) return '';
+                return `${label}${diff > 0 ? '增加' : '减少'} ${Math.abs(diff)}`;
+              })
+              .filter(Boolean);
+            const migrations = payload.ledger?.artifactMigrations ?? 0;
+            if (migrations > 0) deltas.push(`本轮已整理 ${migrations} 个历史产物身份`);
+            if (deltas.length) setSnapshotDelta({ text: `较上次：${deltas.join('、')}`, at: payload.generatedAt });
+          }
+          snapshotRef.current = { scopeKey, version: nextVersion, userCounts: nextCounts };
+        }
         setChain((current) => append && current ? {
           ...payload,
           items: [
@@ -341,7 +374,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
 
   const loadActivities = async (signal: AbortSignal) => {
     try {
-      const payload = await getActivityLogs(activityCategory, { signal });
+      const payload = await getActivityLogs(activityCategory, { signal, view: activityView });
       if (!signal.aborted) {
         setActivities(payload.logs);
         setActivityError('');
@@ -351,7 +384,17 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     }
   };
 
-  usePolling(loadActivities, 30000, { key: activityCategory });
+  usePolling(loadActivities, 30000, { key: `${activityCategory}:${activityView}` });
+
+  const changeActivityCategory = (key: string) => {
+    setActivityCategory(key);
+    writeUrlQuery({ activityCategory: key || null }, 'replace');
+  };
+
+  const changeActivityView = (view: 'important' | 'raw') => {
+    setActivityView(view);
+    writeUrlQuery({ activityView: view === 'raw' ? 'raw' : null }, 'replace');
+  };
 
   const items = chain?.items ?? [];
   const visible = items;
@@ -366,6 +409,10 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   const secupload = chain?.services.torra.secupload115;
   const latestUploadRun = secupload?.latestBatch ?? secupload?.latestRun;
   const identityPending = (chain?.identityCounts?.unidentified ?? 0) + (chain?.identityCounts?.conflict ?? 0);
+  // systemIssue 深链时优先展示对应问题；无深链时只展示非 normal 的问题。
+  const systemIssues = (chain?.systemIssues ?? []).filter((issue) => (
+    target?.systemIssue ? issue.id === target.systemIssue : issue.state !== 'normal' && issue.state !== 'unknown'
+  ));
   const secuploadSummary = !chain
     ? '读取中'
     : !secupload?.readable
@@ -624,6 +671,43 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
         <div><ShieldCheck size={16} /><span>无需处理</span><strong>{counts['无需处理']}<em>个</em></strong></div>
       </section>
 
+      {(loading || snapshotDelta) && (
+        <p className="ops-task-snapshot" role="status">
+          {loading ? '数据更新中…' : snapshotDelta && <>
+            {snapshotDelta.text} · 最近快照 <RelativeTime value={snapshotDelta.at} />
+          </>}
+        </p>
+      )}
+
+      {systemIssues.length > 0 && (
+        <section aria-label="系统问题" className={target?.systemIssue ? 'ops-system-issues ops-system-issues--focused' : 'ops-system-issues'}>
+          {systemIssues.map((issue) => {
+            const stateLabel = issue.state === 'recovering' ? '正在自动恢复' : issue.state === 'action_required' ? '需要处理' : issue.state === 'normal' ? '正常' : '状态未知';
+            return (
+              <article className={`ops-system-issue ops-system-issue--${issue.state}`} key={issue.id}>
+                <header>
+                  <strong>Torra 秒传 · {stateLabel}</strong>
+                  {(issue.failedTotal ?? 0) > 0 && <span>本批失败 {issue.failedTotal}</span>}
+                </header>
+                {issue.categories.map((category) => (
+                  <div className="ops-system-issue__category" key={category.id}>
+                    <strong>{category.label}{issue.state === 'recovering' ? ' 正在自动恢复' : ''}</strong>
+                    {category.latest.failed != null && <span>本批失败 {category.latest.failed}</span>}
+                    {category.recentFailedCounts.length > 0 && <span>近三批失败数：{category.recentFailedCounts.join(' → ')}</span>}
+                    {issue.nextRunAt && issue.state === 'recovering' && <span>下次自动重试：<RelativeTime value={issue.nextRunAt} /></span>}
+                    {category.retryPolicyText && <span>{category.retryPolicyText}</span>}
+                  </div>
+                ))}
+                {issue.primaryAction && issue.state !== 'normal' && (
+                  <span className="ops-system-issue__action">{issue.primaryAction.label}</span>
+                )}
+                {issue.evidenceLimitText && <small>{issue.evidenceLimitText}</small>}
+              </article>
+            );
+          })}
+        </section>
+      )}
+
       {(identityPending > 0 || (secupload?.readable && !secupload.perFileEvidence)) && (
         <details
           className="ops-task-diagnostics"
@@ -875,7 +959,10 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
       <section className="ops-panel ops-activity-log">
         <header className="ops-task-toolbar">
           <div><small>操作记录</small><h2>最近活动</h2></div>
-          <span>只读 · 最近 100 条</span>
+          <span className="ops-activity-view-toggle">
+            <button className={activityView === 'important' ? 'tool-link is-active' : 'tool-link'} type="button" onClick={() => changeActivityView('important')}>重点</button>
+            <button className={activityView === 'raw' ? 'tool-link is-active' : 'tool-link'} type="button" onClick={() => changeActivityView('raw')}>全部原始记录</button>
+          </span>
         </header>
         <div className="ops-activity-filters" role="tablist" aria-label="活动类型">
           {activityFilters.map((item) => (
@@ -886,7 +973,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
               role="tab"
               tabIndex={activityCategory === item.key ? 0 : -1}
               type="button"
-              onClick={() => setActivityCategory(item.key)}
+              onClick={() => changeActivityCategory(item.key)}
               onKeyDown={handleHorizontalTabKeyDown}
             >
               {item.label}
@@ -903,6 +990,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                 <strong>{item.message || activityActionLabels[item.action] || '系统操作'}</strong>
                 <small>
                   {activityCategoryLabels[item.category] || '系统'} · {activityActionLabels[item.action] || '系统操作'}
+                  {(item.repeatCount ?? 0) > 1 && ` · 重复 ${item.repeatCount} 次`}
                 </small>
                 {advancedOpen && (typeof item.meta?.code === 'string' || typeof item.meta?.request_id === 'string') && (
                   <small className="ops-activity-item__technical">

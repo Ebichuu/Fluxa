@@ -707,5 +707,131 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
             self.assertEqual(response.get_json()["code"], "NASEMBY_CORE_WRITE_DISABLED", path)
 
 
+class SubscriptionSaveActivationTests(IsolatedActivityLogMixin, unittest.TestCase):
+    """五类 activation 契约：从保存结果生成稳定 state 和用户文案。"""
+
+    def _save(self, data):
+        app = create_app(
+            access_environment={"NASEMBY_CORE_WRITE_ENABLED": "true"},
+            torra_client_factory=FakeTorraClient,
+        )
+        with patch.object(discover_runtime, "save_subscription_item", return_value=data):
+            response = app.test_client().post("/api/subscriptions/save", json={
+                "title": "测试剧集",
+                "mediaType": "tv",
+                "tmdbId": "202",
+            })
+        return response
+
+    @staticmethod
+    def _saved_data(**overrides):
+        data = {
+            "saved_item": {"key": "tv:202", "title": "测试剧集", "media_type": "tv", "tmdb_id": "202"},
+            "message": "保存订阅成功",
+            "replaced": False,
+            "subscription_task": {
+                "enabled": True,
+                "mode": "torra",
+                "task_label": "Torra 推送",
+                "queued": 1,
+                "skipped": 0,
+                "pushed": 0,
+                "fallback_pushed": 0,
+                "errors": [],
+                "background": True,
+            },
+        }
+        task_overrides = overrides.pop("task", {})
+        data.update(overrides)
+        data["subscription_task"] = {**data["subscription_task"], **task_overrides}
+        return data
+
+    def test_write_disabled_save_is_rejected_without_activation(self):
+        app = create_app(access_environment={}, torra_client_factory=FakeTorraClient)
+        response = app.test_client().post("/api/subscriptions/save", json={
+            "title": "测试剧集",
+            "mediaType": "tv",
+            "tmdbId": "202",
+        })
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["code"], "NASEMBY_CORE_WRITE_DISABLED")
+        self.assertNotIn("activation", response.get_json())
+
+    def test_saved_only_when_torra_push_gate_is_closed(self):
+        response = self._save(self._saved_data(task={
+            "enabled": False,
+            "queued": 0,
+            "reason": "允许向 Torra 创建订阅已关闭",
+        }))
+
+        self.assertEqual(response.status_code, 200)
+        activation = response.get_json()["activation"]
+        self.assertEqual(activation["state"], "saved_only")
+        self.assertEqual(activation["message"], "已保存到 Fluxa（仅保存），当前没有可运行的后续能力")
+        self.assertEqual(activation["provider"], "none")
+        self.assertFalse(activation["queued"])
+        self.assertEqual(activation["reason"], "允许向 Torra 创建订阅已关闭")
+
+    def test_saved_and_queued_when_push_enabled_even_if_source_scan_stopped(self):
+        # 后台来源扫描是否运行不参与手动加入结果；入队成功只返回 saved_and_queued
+        response = self._save(self._saved_data())
+
+        self.assertEqual(response.status_code, 200)
+        activation = response.get_json()["activation"]
+        self.assertEqual(activation["state"], "saved_and_queued")
+        self.assertEqual(activation["message"], "已保存，已进入后台队列：Torra 推送")
+        self.assertEqual(activation["provider"], "torra")
+        self.assertTrue(activation["queued"])
+        # 异步动作不得提前写成"已推送 Torra"
+        self.assertNotIn("已推送", activation["message"])
+        self.assertNotEqual(activation["state"], "saved_and_torra_pushed")
+
+    def test_already_exists_when_same_target_is_replaced(self):
+        response = self._save(self._saved_data(replaced=True))
+
+        self.assertEqual(response.status_code, 200)
+        activation = response.get_json()["activation"]
+        self.assertEqual(activation["state"], "already_exists")
+        self.assertEqual(activation["message"], "该追更已存在，未重复创建")
+        self.assertFalse(activation["queued"])
+
+    def test_saved_push_failed_when_sync_submit_explicitly_fails(self):
+        response = self._save(self._saved_data(task={
+            "queued": 0,
+            "errors": ["Torra推送失败: 测试剧集: https://torra.internal/api?token=secret-token 500"],
+        }))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        activation = body["activation"]
+        self.assertEqual(activation["state"], "saved_push_failed")
+        self.assertEqual(activation["message"], "已保存到 Fluxa，但同步提交失败，请稍后在追更页重试")
+        self.assertEqual(activation["provider"], "torra")
+        self.assertFalse(activation["queued"])
+        # 白名单脱敏：不公开内部队列键、URL、原始 ID 或错误堆栈
+        serialized = json.dumps(body, ensure_ascii=False)
+        self.assertNotIn("torra.internal", serialized)
+        self.assertNotIn("secret-token", serialized)
+
+    def test_saved_and_torra_pushed_only_with_confirmed_push(self):
+        response = self._save(self._saved_data(task={"queued": 0, "pushed": 1}))
+
+        self.assertEqual(response.status_code, 200)
+        activation = response.get_json()["activation"]
+        self.assertEqual(activation["state"], "saved_and_torra_pushed")
+        self.assertEqual(activation["message"], "已保存，Torra 已确认创建订阅")
+        self.assertEqual(activation["provider"], "torra")
+
+    def test_activation_exposes_only_whitelisted_fields(self):
+        data = self._saved_data()
+        data["subscription_task"]["internal_queue_key"] = "torra:tv:202"
+        response = self._save(data)
+
+        activation = response.get_json()["activation"]
+        self.assertEqual(set(activation), {"state", "message", "provider", "queued", "reason"})
+        self.assertNotIn("torra:tv:202", json.dumps(response.get_json(), ensure_ascii=False))
+
+
 if __name__ == "__main__":
     unittest.main()

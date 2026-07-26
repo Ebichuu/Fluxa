@@ -24,7 +24,76 @@ import type {
   RuntimeSettingsResponse
 } from '../../types/runtimeSettings';
 
-const initiallyOpen = new Set(['emby']);
+const initiallyOpen = new Set(['connection']);
+
+// 常用视图四组；未列出的字段全部进入"高级设置"，同一字段绝不重复出现。
+const COMMON_GROUPS: Array<{ id: string; title: string; note: string; keys: string[] }> = [
+  {
+    id: 'connection',
+    title: '连接',
+    note: 'Emby、qBittorrent、Torra、Symedia、TMDB 的核心地址和凭据',
+    keys: [
+      'EMBY_BASE_URL', 'EMBY_API_KEY', 'EMBY_USER_ID', 'EMBY_USERNAME', 'EMBY_PASSWORD',
+      'QB_BASE_URL', 'QB_USERNAME', 'QB_PASSWORD',
+      'TORRA_BASE_URL', 'TORRA_TOKEN', 'TORRA_USERNAME', 'TORRA_PASSWORD', 'TORRA_DOWNLOAD_ROOT', 'TORRA_DOWNLOADER_ID',
+      'SYMEDIA_BASE_URL', 'SYMEDIA_TOKEN', 'SYMEDIA_USERNAME', 'SYMEDIA_PASSWORD',
+      'TMDB_API_KEY', 'TMDB_API_TOKEN'
+    ]
+  },
+  {
+    id: 'automation',
+    title: '自动化',
+    note: '追更扫描、Torra 同步、RSS、质量观察、推送和云盘能力',
+    keys: [
+      'MCC_SUBSCRIPTION_SCHEDULER_ENABLED', 'MCC_TORRA_SUBSCRIPTION_SYNC_ENABLED',
+      'MCC_PRIVATE_RSS_ENABLED', 'MCC_TORRA_QUALITY_WATCH_ENABLED', 'MCC_TORRA_REWASH_DOWNLOAD_ENABLED',
+      'TORRA_PUSH_ENABLED', 'MCC_MOVIEPILOT_BACKUP_ENABLED',
+      'MCC_CLOUD_SEARCH_ENABLED', 'MCC_CLOUD_TRANSFER_ENABLED'
+    ]
+  },
+  {
+    id: 'notification',
+    title: '通知',
+    note: 'Telegram Bot、会话和订阅/转存通知',
+    keys: [
+      'ENV_TG_BOT_TOKEN', 'ENV_TG_ADMIN_USER_ID',
+      'ENV_TG_TRANSFER_NOTIFY_ENABLED', 'ENV_TG_TRANSFER_NOTIFY_CHAT_IDS',
+      'ENV_TG_SUBSCRIPTION_NOTIFY_ENABLED'
+    ]
+  },
+  {
+    id: 'security',
+    title: '安全',
+    note: '写入开关、外部管理权限和访问保护',
+    keys: [
+      'NASEMBY_CORE_WRITE_ENABLED', 'MCC_PRESERVED_CORE_API_ENABLED',
+      'MCC_INTEGRATION_PROBE_ENABLED', 'MCC_INTEGRATION_MANAGEMENT_ENABLED',
+      'MCC_TELEGRAM_MANAGEMENT_ENABLED', 'MCC_HDHIVE_MANAGEMENT_ENABLED'
+    ]
+  }
+];
+
+// 连接验证按变更字段前缀确定受影响服务，不依赖展示分组 ID。
+const VERIFY_PREFIXES: Array<{ prefixes: string[]; service: string }> = [
+  { prefixes: ['EMBY_'], service: 'emby' },
+  { prefixes: ['QB_'], service: 'qbittorrent' },
+  { prefixes: ['TORRA_'], service: 'torra' },
+  { prefixes: ['SYMEDIA_'], service: 'symedia' },
+  { prefixes: ['ENV_115_', 'ENV_123_', 'ENV_UPLOAD_'], service: 'cloud' },
+  { prefixes: ['ENV_TG_'], service: 'telegram' },
+  { prefixes: ['ENV_HDHIVE_'], service: 'hdhive' },
+  { prefixes: ['MOVIEPILOT_', 'ENV_MOVIEPILOT_'], service: 'moviepilot' }
+];
+
+function servicesForKeys(keys: string[]) {
+  const services = new Set<string>();
+  for (const key of keys) {
+    for (const { prefixes, service } of VERIFY_PREFIXES) {
+      if (prefixes.some((prefix) => key.startsWith(prefix))) services.add(service);
+    }
+  }
+  return [...services];
+}
 
 function valuesFrom(payload: RuntimeSettingsResponse) {
   return Object.fromEntries(
@@ -57,24 +126,24 @@ function fieldImpact(field: RuntimeSettingField) {
   };
 }
 
-async function verifyRuntimeGroup(groupId: string) {
-  if (groupId === 'emby') {
+async function verifyRuntimeService(serviceId: string) {
+  if (serviceId === 'emby') {
     const result = await getEmbyOverview();
     return result.configured && result.connected ? '连接验证成功' : `配置已保存，但 Emby ${result.configured ? '暂不可用' : '尚未配置完整'}`;
   }
-  if (groupId === 'qbittorrent') {
+  if (serviceId === 'qbittorrent') {
     const result = await getQbittorrentSummary();
     return result.configured && result.connected ? '连接验证成功' : `配置已保存，但 qBittorrent ${result.configured ? '暂不可用' : '尚未配置完整'}`;
   }
-  if (groupId === 'torra') {
+  if (serviceId === 'torra') {
     const result = await getTorraSummary();
     return result.configured && result.connected ? '连接验证成功' : `配置已保存，但 Torra ${result.configured ? '暂不可用' : '尚未配置完整'}`;
   }
-  if (groupId === 'symedia') {
+  if (serviceId === 'symedia') {
     const result = await getSymediaSummary();
     return result.configured && result.connected ? '连接验证成功' : `配置已保存，但 Symedia ${result.configured ? '暂不可用' : '尚未配置完整'}`;
   }
-  const integrationId = ({ cloud: 'cloud115', telegram: 'telegram', hdhive: 'hdhive', moviepilot: 'moviepilot' } as const)[groupId as 'cloud' | 'telegram' | 'hdhive' | 'moviepilot'];
+  const integrationId = ({ cloud: 'cloud115', telegram: 'telegram', hdhive: 'hdhive', moviepilot: 'moviepilot' } as const)[serviceId as 'cloud' | 'telegram' | 'hdhive' | 'moviepilot'];
   if (!integrationId) return '';
   const summary = await getIntegrationSummary(true);
   const service = summary.services.find((item) => item.id === integrationId);
@@ -83,6 +152,13 @@ async function verifyRuntimeGroup(groupId: string) {
   if (service.connected === true) return '连接验证成功';
   if (service.connected === false) return `配置已保存，但 ${service.name} 暂不可用`;
   return `配置已保存；主动连接验证当前未开启`;
+}
+
+async function verifyChangedServices(changedKeys: string[]) {
+  const services = servicesForKeys(changedKeys);
+  if (!services.length) return '';
+  const results = await Promise.all(services.map((service) => verifyRuntimeService(service).catch(() => '连接验证未完成')));
+  return results.filter(Boolean).join('；');
 }
 
 export function RuntimeSettingsPanel() {
@@ -116,16 +192,35 @@ export function RuntimeSettingsPanel() {
   useEffect(load, []);
 
   const normalisedQuery = query.trim().toLocaleLowerCase('zh-CN');
-  const visibleGroups = useMemo(() => {
+  // 把后端目录重排为四个常用组 + 唯一高级组；同一字段只出现一次。
+  const displayGroups = useMemo(() => {
     if (!payload) return [];
-    if (!normalisedQuery) return payload.groups;
-    return payload.groups
+    const fieldByKey = new Map(payload.groups.flatMap((group) => group.fields.map((field) => [field.key, field] as const)));
+    const commonKeys = new Set<string>();
+    const groups: RuntimeSettingGroup[] = [];
+    for (const definition of COMMON_GROUPS) {
+      const fields = definition.keys
+        .map((key) => fieldByKey.get(key))
+        .filter((field): field is RuntimeSettingField => Boolean(field));
+      fields.forEach((field) => commonKeys.add(field.key));
+      if (fields.length) groups.push({ id: definition.id, title: definition.title, note: definition.note, fields });
+    }
+    const advancedFields = payload.groups.flatMap((group) => group.fields).filter((field) => !commonKeys.has(field.key));
+    if (advancedFields.length) {
+      groups.push({ id: 'advanced', title: '高级设置', note: '兼容与少用配置，日常无需修改', fields: advancedFields });
+    }
+    return groups;
+  }, [payload]);
+
+  const visibleGroups = useMemo(() => {
+    if (!normalisedQuery) return displayGroups;
+    return displayGroups
       .map((group) => ({
         ...group,
         fields: group.fields.filter((field) => fieldMatches(field, normalisedQuery))
       }))
       .filter((group) => group.fields.length > 0);
-  }, [normalisedQuery, payload]);
+  }, [displayGroups, normalisedQuery]);
 
   const changeValue = (key: string, value: string) => {
     setValues((current) => ({ ...current, [key]: value }));
@@ -204,7 +299,8 @@ export function RuntimeSettingsPanel() {
           setMessages((current) => ({ ...current, [group.id]: `已保存，${restartRequired.length} 项重启后生效` }));
           return;
         }
-        const verification = await verifyRuntimeGroup(group.id).catch(() => '配置已保存，但连接验证未完成');
+        const changedKeys = [...groupKeys].filter((key) => dirty.has(key));
+        const verification = await verifyChangedServices(changedKeys).catch(() => '配置已保存，但连接验证未完成');
         setMessages((current) => ({
           ...current,
           [group.id]: verification ? `已保存并应用 · ${verification}` : '已保存并应用'
@@ -231,7 +327,7 @@ export function RuntimeSettingsPanel() {
     <article className="ops-settings-card ops-settings-card--wide runtime-settings">
       <header className="ops-settings-card__head runtime-settings__head">
         <div><span><Settings2 size={16} /></span><div><small>管理员配置</small><h2>软件连接与功能开关</h2></div></div>
-        <strong>{payload.groups.reduce((count, group) => count + group.fields.length, 0)} 项可编辑</strong>
+        <strong>常用设置</strong>
       </header>
 
       <div className="runtime-settings__toolbar">

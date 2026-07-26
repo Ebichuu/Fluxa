@@ -49,6 +49,77 @@ def _truthy(value):
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+# 订阅模式到 activation provider 的公开映射（与能力接口 manualFollow 保持一致）
+ACTIVATION_PROVIDERS = {
+    "torra": "torra",
+    "moviepilot": "moviepilot",
+    "symedia": "symedia",
+    "resource": "resource_rule",
+    "resource_then_pt": "resource_rule",
+}
+
+
+def build_save_activation(data):
+    """从保存结果的 replaced、subscription_task、queued、pushed、errors 生成五类 activation。
+
+    只返回白名单字段（state/message/provider/queued/reason），
+    不公开内部队列键、URL、原始 ID 或错误堆栈。
+    异步动作只允许返回 saved_and_queued，不得提前写成"已推送 Torra"。
+    """
+    data = data if isinstance(data, dict) else {}
+    task = data.get("subscription_task") if isinstance(data.get("subscription_task"), dict) else {}
+    mode = discover_runtime.normalize_subscription_mode(task.get("mode"))
+    provider = ACTIVATION_PROVIDERS.get(mode, "none")
+    task_label = str(task.get("task_label") or "后台处理")
+    enabled = bool(task.get("enabled"))
+    queued = integer(task.get("queued"))
+    pushed = integer(task.get("pushed")) + integer(task.get("fallback_pushed"))
+    errors = [item for item in (task.get("errors") or []) if str(item or "").strip()]
+    reason = str(task.get("reason") or "")
+    if data.get("replaced"):
+        return {
+            "state": "already_exists",
+            "message": "该追更已存在，未重复创建",
+            "provider": provider if enabled else "none",
+            "queued": False,
+            "reason": "同一媒体和范围已存在",
+        }
+    if errors and not pushed and not queued:
+        # 同步提交明确失败：只给脱敏结论，不透出上游错误细节
+        return {
+            "state": "saved_push_failed",
+            "message": "已保存到 Fluxa，但同步提交失败，请稍后在追更页重试",
+            "provider": provider,
+            "queued": False,
+            "reason": "上游提交返回失败",
+        }
+    if pushed and provider == "torra":
+        # 只有 Torra 明确确认创建时才允许声明已推送
+        return {
+            "state": "saved_and_torra_pushed",
+            "message": "已保存，Torra 已确认创建订阅",
+            "provider": "torra",
+            "queued": False,
+            "reason": "",
+        }
+    if enabled and (queued or task.get("skipped")):
+        # 已成功入队（或同一目标已在队列中），后续结果由后台动作刷新
+        return {
+            "state": "saved_and_queued",
+            "message": f"已保存，已进入后台队列：{task_label}",
+            "provider": provider,
+            "queued": True,
+            "reason": "",
+        }
+    return {
+        "state": "saved_only",
+        "message": "已保存到 Fluxa（仅保存），当前没有可运行的后续能力",
+        "provider": "none",
+        "queued": False,
+        "reason": reason or "后续处理能力未开启",
+    }
+
+
 def _iso_now():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -327,6 +398,7 @@ def register_subscription_compat(app: Flask, environment=None, action_repository
                 "success": True,
                 "item": map_subscription_item(data.get("saved_item")),
                 "message": data.get("message") or "保存订阅成功",
+                "activation": build_save_activation(data),
             })
         except Exception:
             return _error("NASEMBY_SUBSCRIPTION_SAVE_FAILED", "订阅保存失败", 502)

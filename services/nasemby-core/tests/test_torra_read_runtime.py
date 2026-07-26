@@ -137,7 +137,12 @@ class TorraReadRuntimeContractTests(unittest.TestCase):
                     "item_id": "category-tv",
                     "name": "电视剧",
                     "enabled": True,
-                    "values": {"cookie": "must-not-escape", "temp_path": "/private/pending"},
+                    "values": {
+                        "cookie": "must-not-escape",
+                        "temp_path": "/private/pending",
+                        "fallback_upload_after_failures": "3",
+                        "notify_times": 3,
+                    },
                     "updated_at": "2026-07-23T15:00:00",
                 }],
                 "tasks": [{
@@ -186,6 +191,8 @@ class TorraReadRuntimeContractTests(unittest.TestCase):
             "name": "电视剧",
             "enabled": True,
             "updatedAt": "2026-07-23T15:00:00",
+            "fallbackUploadAfterFailures": 3,
+            "notifyAfterFailures": 3,
         }])
         self.assertNotIn("must-not-escape", str(summary))
         self.assertNotIn("/private/pending", str(summary))
@@ -243,6 +250,41 @@ class TorraReadRuntimeContractTests(unittest.TestCase):
         self.assertEqual(summary["latestBatch"]["startedAt"], "2026-07-24T08:00:00")
         self.assertEqual(summary["recentBatches"][1]["counts"], {"success": 3, "failed": 1})
         self.assertEqual(summary["nextRunAt"], "2026-07-24T16:00:00+08:00")
+
+    def test_secupload_retry_run_uses_official_task_route_and_returns_new_run_id(self):
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        session = FakeSession([FakeResponse(payload={
+            "success": True,
+            "data": {"run_id": "run-manual-1"},
+        })])
+        client = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+        )
+
+        result = client.run_secupload_retry("category-tv", previous_run_ids=["run-old"])
+
+        self.assertEqual(result, {"runId": "run-manual-1"})
+        method, path, kwargs = session.requests[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(path, "/api/v1/plugins/secupload_115/tasks/retry_pending/run")
+        self.assertEqual(kwargs["json"]["target_item_id"], "category-tv")
+
+    def test_secupload_retry_run_rejects_missing_or_stale_run_id(self):
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        session = FakeSession([FakeResponse(payload={
+            "success": True,
+            "data": {"run_id": "run-old"},
+        })])
+        client = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+        )
+
+        with self.assertRaises(RuntimeError):
+            client.run_secupload_retry("category-tv", previous_run_ids=["run-old"])
 
     def test_duplicate_matching_prefers_tmdb_type_and_season(self):
         from app.torra_read_runtime import find_subscription

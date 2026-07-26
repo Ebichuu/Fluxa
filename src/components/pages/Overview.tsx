@@ -54,7 +54,7 @@ function emptySummary(): HomeSummaryResponse {
     counts: { ingestedToday: 0, archivedToday: null, completedTargetsToday: 0, downloading: 0, activeDownloadTasks: null, concurrentDownloadGroups: 0, pending: 0, waiting: 0, evidenceInsufficient: 0, identityPending: 0, actionRequired: 0, suspectedBlocked: 0, protected: 0 },
     focusItems: [
       emptyFocusItem('current_downloads', '当前下载', '个', '/tasks?userState=in_progress'),
-      emptyFocusItem('secupload_failures', '秒传失败', '个', '/tasks?advanced=1'),
+      emptyFocusItem('secupload_failures', '秒传失败', '个', '/tasks?systemIssue=secupload_failures'),
       emptyFocusItem('downloaded_not_archived', '下载完成未入库', '个', '/tasks?userState=in_progress'),
       emptyFocusItem('archived_today', '今日入库', '个文件', `/tasks?userState=completed&completedDate=${shanghaiDateKey()}`),
       emptyFocusItem('missing_episodes', '追更缺集', '集', '/following?missingEpisodes=1'),
@@ -166,7 +166,9 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
             <CalendarDays aria-hidden="true" size={16} />今日更新
           </button>
           <button className="home-primary-action" type="button" onClick={() => onNavigate('tasks')}>
-            查看任务中心 <ArrowRight aria-hidden="true" size={16} />
+            <span className="home-primary-action__full">查看任务中心</span>
+            <span className="home-primary-action__short">任务中心</span>
+            <ArrowRight aria-hidden="true" size={16} />
           </button>
         </div>
       </section>

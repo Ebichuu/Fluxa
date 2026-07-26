@@ -224,6 +224,14 @@
   justify-content: flex-end;
 }
 
+.rss-scope-summary {
+  margin: 0;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--rss-line);
+  color: var(--ops-muted);
+  font-size: 11px;
+}
+
 .rss-timeline {
   min-height: 360px;
 }

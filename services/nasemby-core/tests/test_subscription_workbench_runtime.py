@@ -342,13 +342,62 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
             "MCC_SUBSCRIPTION_SCHEDULER_ENABLED": "true",
         })
 
-        response = app.test_client().get("/api/v2/subscriptions/capabilities")
+        with patch.object(discover_runtime, "load_subscription_config", return_value={"mode": "torra"}):
+            response = app.test_client().get("/api/v2/subscriptions/capabilities")
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertTrue(payload["localWrite"]["enabled"])
         self.assertFalse(payload["torraPush"]["enabled"])
         self.assertTrue(payload["scheduler"]["running"])
+
+    def test_capabilities_manual_follow_is_write_disabled_when_write_off(self):
+        app = Flask(__name__)
+        service = SubscriptionWorkbenchService(app, {"NASEMBY_CORE_WRITE_ENABLED": "false"})
+        with patch.object(discover_runtime, "load_subscription_config", return_value={"mode": "torra"}):
+            payload = service.capability_snapshot()
+
+        self.assertEqual(payload["manualFollow"]["state"], "write_disabled")
+        self.assertEqual(payload["manualFollow"]["provider"], "none")
+        self.assertTrue(payload["manualFollow"]["blockers"])
+        self.assertIn("sourceScan", payload)
+
+    def test_capabilities_manual_follow_is_saved_only_when_torra_push_disabled(self):
+        app = Flask(__name__)
+        service = SubscriptionWorkbenchService(app, {
+            "NASEMBY_CORE_WRITE_ENABLED": "true",
+            "TORRA_PUSH_ENABLED": "false",
+        })
+        with patch.object(discover_runtime, "load_subscription_config", return_value={"mode": "torra"}):
+            payload = service.capability_snapshot()
+
+        self.assertEqual(payload["manualFollow"]["state"], "saved_only")
+        self.assertEqual(payload["manualFollow"]["provider"], "none")
+        self.assertEqual(payload["manualFollow"]["blockers"], ["允许向 Torra 创建订阅已关闭"])
+
+    def test_capabilities_manual_follow_queue_ready_even_when_source_scan_stopped(self):
+        app = Flask(__name__)
+        registry = SchedulerStatusRegistry(clock=lambda: "2026-07-22T08:00:00Z")
+        registry.register("subscription-task", enabled=False)
+        app.extensions["mcc_scheduler_status"] = registry
+        service = SubscriptionWorkbenchService(app, {
+            "NASEMBY_CORE_WRITE_ENABLED": "true",
+            "TORRA_PUSH_ENABLED": "true",
+            "MCC_SUBSCRIPTION_SCHEDULER_ENABLED": "false",
+        })
+        config = {"mode": "torra", "douban": {"enabled": True, "task_enabled": True}}
+        with patch.object(discover_runtime, "load_subscription_config", return_value=config):
+            payload = service.capability_snapshot()
+
+        # 后台来源扫描停止不影响手动加入结果判定
+        self.assertEqual(payload["manualFollow"], {
+            "state": "queued_ready",
+            "provider": "torra",
+            "blockers": [],
+        })
+        self.assertTrue(payload["sourceScan"]["configured"])
+        self.assertFalse(payload["sourceScan"]["enabled"])
+        self.assertFalse(payload["sourceScan"]["running"])
 
     def test_scheduler_state_uses_global_runtime_gate_instead_of_source_config(self):
         app = Flask(__name__)

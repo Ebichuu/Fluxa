@@ -45,6 +45,7 @@ from app.integration_runtime import register_integrations
 from app.cloud_acquisition_runtime import register_cloud_acquisition
 from app.calendar_timeline_runtime import register_calendar_timeline
 from app.system_metrics_runtime import register_system_metrics
+from app.secupload_issue_runtime import SecuploadIssueService, register_secupload_issue
 from app.private_rss_api_runtime import register_private_rss
 from app.automation_action_runtime import register_automation_actions
 from app.health_state_runtime import SchedulerStatusRegistry
@@ -1337,6 +1338,7 @@ def create_app(
     torra_quality_client=None,
     subscription_automation_service=None,
     moviepilot_backup_service=None,
+    secupload_issue_service=None,
     admin_store=None,
 ):
     environment = os.environ if access_environment is None else access_environment
@@ -1441,6 +1443,15 @@ def create_app(
         discover_runtime.subscription_database_path()
     )
     application.extensions["mcc_quality_watch_repository"] = quality_repository
+    register_secupload_issue(
+        application,
+        secupload_issue_service or SecuploadIssueService(
+            torra_read_client,
+            quality_repository,
+            environment=environment,
+            clock=torra_clock,
+        ),
+    )
     register_quality_watch(
         application,
         quality_repository,

@@ -240,6 +240,16 @@ Compose 通过 `MCC_DATA_ROOT` 把三个目录映射到同一个 fnOS 根目录�
 
 ## 13. 变更历史
 
+### 2026-07-26 — 系统异常闭环与追更生效契约
+
+**变更内容**：新增 `secupload_issue_runtime.py` 纯函数秒传状态机：状态固定 `normal/recovering/action_required/unknown`，600 秒宽限、86400 秒计划上限，时间统一按带时区绝对时间比较；不再只凭失败数或 `nextRunAt` 非空判定。新增 `/api/v2/system-issues/secupload-failures` 只读摘要及重试预检/确认执行/动作轮询三个接口；手动重试复用 `provider_actions`（目标键 `system:torra:secupload`），幂等重放返回原动作、竞争返回 409、run ID 保存为 `external_job_id` 并经插件 `recent_runs` 复查。分类摘要使用稳定公开 ID，不泄露 Torra 原始分类 ID、插件 key、目录或路径；摘要以可选 `systemIssues` 附加到任务 summary/chains 与首页，recovering 用处理中语义、不进入红色真实异常计数，首页深链改为 `/tasks?systemIssue=secupload_failures`。
+
+追更能力接口拆分 `manualFollow` 与 `sourceScan`，后台来源扫描不再参与手动加入结果判定；保存接口按 replaced、队列、推送与错误生成五类 `activation`（已推送/已入队/仅保存/已存在/推送失败），异步入队只返回 `saved_and_queued`。活动 API 新增 `view=important`：在 limit 前折叠 `request_id=background` 且 success/info/skip 的相同 category/action/status 后台活动，折叠项返回 `repeatCount/firstTime/lastTime`，error 与人工请求永不折叠，raw 默认行为不变。
+
+**变更理由**：实机秒传失败此前只能显示红色计数，无法区分"等待 18:00 自动重试"与"需要人工介入"；手动加入追更的结果由前端用调度器运行状态猜测，出现"仅保存"与"自动获取"互相矛盾的文案；重复后台同步会把更早的人工失败挤出活动窗口。
+
+**影响范围**：Torra 读取层、任务链 v2、首页摘要、订阅工作台/兼容保存、发现后处理活动标记、活动 API、64 条 v2 契约与 453 项回归。全部新字段可选，旧客户端不受影响；自动化测试全部使用假客户端，未触发真实外部写操作。
+
 ### 2026-07-26 — 发布前搜索、状态和公开标识收口
 
 **变更内容**：全局搜索补齐已识别 RSS、按明确身份定位的 Emby-only、TMDB 只读补充和无 TMDB 本地任务；后者返回空 `tmdbId`、公开 `chainId` 与任务深链。任务普通状态固定为四类 `userState`，首页只把仍有效的真实故障列为主问题，历史下载完成记录不再误算为“下载完成未入库”。Torra-only 订阅、观察单元与 RSS 匹配改用可反解的公开哈希 ID；任务 DTO 的 qB/Torra/Symedia/artifact 标识在 HTTP 边界改为不透明引用，qB 动作从实时快照反解；同步冲突预览同时把旧 SQLite 中 `torra:<原始远端 ID>` 投影为公开键。日历搜索使用完整轻量索引，RSS 深链统一身份筛选参数。

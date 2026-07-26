@@ -153,6 +153,93 @@
   font-weight: 500;
 }
 
+.ops-task-snapshot {
+  margin: 0;
+  color: var(--ops-muted);
+  font-size: 12px;
+}
+
+.ops-system-issues {
+  display: grid;
+  gap: 10px;
+}
+
+.ops-system-issue {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--ops-hair);
+  border-left: 3px solid var(--ops-faint);
+  border-radius: 10px;
+  background: var(--ops-paper);
+}
+
+.ops-system-issue--recovering {
+  border-left-color: var(--ops-blue);
+}
+
+.ops-system-issue--action_required {
+  border-left-color: var(--theme-danger);
+}
+
+.ops-system-issue > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ops-system-issue > header strong {
+  font-size: 13px;
+}
+
+.ops-system-issue > header span {
+  color: var(--ops-muted);
+  font-size: 12px;
+}
+
+.ops-system-issue__category {
+  display: grid;
+  gap: 3px;
+  color: var(--ops-muted);
+  font-size: 12px;
+}
+
+.ops-system-issue__category strong {
+  color: var(--ops-ink);
+  font-size: 12.5px;
+}
+
+.ops-system-issue__category small {
+  color: var(--ops-faint);
+  font-size: 11.5px;
+}
+
+.ops-system-issue > small {
+  color: var(--ops-faint);
+  font-size: 11.5px;
+}
+
+.ops-system-issue__action {
+  justify-self: start;
+  padding: 4px 10px;
+  border: 1px solid var(--ops-hair);
+  border-radius: 999px;
+  color: var(--ops-muted);
+  font-size: 12px;
+}
+
+.ops-activity-view-toggle {
+  display: inline-flex;
+  gap: 12px;
+}
+
+.ops-activity-view-toggle .tool-link.is-active {
+  color: var(--ops-ink-strong);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
 .ops-hero--compact {
   min-height: 104px;
   align-items: center;

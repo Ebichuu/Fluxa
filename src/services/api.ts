@@ -34,6 +34,7 @@ import type {
   SubscriptionListResponse,
   SubscriptionPushPreview,
   SubscriptionCapabilitiesResponse,
+  SubscriptionSaveResponse,
   SubscriptionVisualBackfillResponse,
   SubscriptionWorkbenchResponse,
   SubscriptionReconciliationResponse,
@@ -301,9 +302,10 @@ export function getSystemMetrics(options?: RequestOptions): Promise<SystemMetric
   return readJson<SystemMetricsResponse>('/api/v2/system/metrics', options);
 }
 
-export function getActivityLogs(category = '', options?: RequestOptions): Promise<ActivityLogResponse> {
+export function getActivityLogs(category = '', options?: RequestOptions & { view?: 'important' | 'raw' }): Promise<ActivityLogResponse> {
   const query = new URLSearchParams({ limit: '100' });
   if (category) query.set('category', category);
+  if (options?.view === 'important') query.set('view', 'important');
   return readJson<ActivityLogResponse>(`/api/v2/activity/logs?${query.toString()}`, options);
 }
 
@@ -576,7 +578,7 @@ export function saveSubscription(input: {
   originalLanguage?: string;
   genreIds?: number[];
   originCountry?: string[];
-}): Promise<{ success: boolean }> {
+}): Promise<SubscriptionSaveResponse> {
   return postJson('/api/subscriptions/save', input);
 }
 

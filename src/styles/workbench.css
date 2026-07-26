@@ -1857,13 +1857,9 @@
   color: var(--theme-text-strong);
 }
 
-.app-shell:not(.app-shell--hall)[data-theme='light'] :is(.discover-resource-panel, .discover-resource-seasons) {
+.app-shell:not(.app-shell--hall)[data-theme='light'] .discover-resource-panel {
   border-color: var(--theme-border);
   background: rgba(255, 255, 255, 0.58);
-}
-
-.app-shell:not(.app-shell--hall)[data-theme='light'] .discover-resource-seasons > div {
-  background: rgba(255, 255, 255, 0.76);
 }
 
 .app-shell:not(.app-shell--hall)[data-theme='light'] .ops-page--calendar .calendar-grid {

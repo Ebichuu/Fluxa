@@ -50,6 +50,42 @@ export interface TorraSecuploadSummary {
   error?: string;
 }
 
+export type SystemIssueState = 'normal' | 'recovering' | 'action_required' | 'unknown';
+
+export interface SystemIssueCategory {
+  id: string;
+  label: string;
+  latest: { success: number | null; failed: number | null; finishedAt: string };
+  recentFailedCounts: number[];
+  retryPolicyText: string;
+  nextRunAt?: string;
+  fileEvidenceAvailable: boolean;
+}
+
+export interface SystemIssueSummary {
+  id: string;
+  state: SystemIssueState;
+  stateReason: string;
+  failedTotal: number | null;
+  nextRunAt: string;
+  observedAt?: string;
+  scheduleGraceSeconds: number;
+  maxScheduleHorizonSeconds?: number;
+  categories: SystemIssueCategory[];
+  fileEvidenceAvailable: boolean;
+  evidenceLimitText?: string;
+  manualRetry?: {
+    supported: boolean;
+    allowed: boolean;
+    reason: string;
+  };
+  primaryAction?: {
+    kind: 'none' | 'wait_for_retry' | 'retry_failed_queue' | string;
+    label: string;
+    available: boolean;
+  };
+}
+
 export interface TaskChainStep {
   key: 'subscription' | 'download' | 'cloud115' | 'library';
   label: string;
@@ -190,6 +226,7 @@ export interface TaskChainResponse {
     artifacts: number;
     events: number;
     artifactConflicts: number;
+    artifactMigrations?: number;
     observedAt: string;
   };
   counts: {
@@ -212,6 +249,7 @@ export interface TaskChainResponse {
   userCounts?: Record<TaskChainUserState, number>;
   originCounts?: Record<'subscription' | 'download' | 'library', number>;
   stageCounts?: Record<string, Record<string, number>>;
+  systemIssues?: SystemIssueSummary[];
 }
 
 export interface TaskChainDetailResponse extends Omit<TaskChainResponse, 'items' | 'page'> {

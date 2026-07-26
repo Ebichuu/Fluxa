@@ -14,6 +14,7 @@ from app.task_exception_runtime import classify_stage, classify_task
 from app.task_public_runtime import (
     present_migration_preview,
     present_services,
+    present_system_issues,
     present_task_item,
     public_subscription_ref,
 )
@@ -583,6 +584,7 @@ def _version(payload: dict) -> str:
         "originCounts": payload.get("originCounts") or {},
         "stageCounts": payload.get("stageCounts") or {},
         "services": payload.get("services") or {},
+        "systemIssues": payload.get("systemIssues") or [],
         "items": [{
             "chainId": item.get("chainId"),
             "updatedAt": item.get("updatedAt"),
@@ -643,6 +645,13 @@ class TaskChainV2Service:
             if not service:
                 raise RuntimeError("任务链尚未注册")
             payload = adapt_task_chain(service.get_chain(), now=self.clock())
+            issue_service = self.app.extensions.get("mcc_secupload_issue")
+            if issue_service:
+                secupload = (((payload.get("services") or {}).get("torra") or {}).get("secupload115"))
+                try:
+                    payload["systemIssues"] = [issue_service.snapshot(secupload)]
+                except Exception:
+                    payload["systemIssues"] = []
             if self.repository:
                 payload["ledger"] = self.repository.record_snapshot(payload)
             payload["version"] = _version(payload)
@@ -669,11 +678,12 @@ class TaskChainV2Service:
             for key in (
                 "contractVersion", "generatedAt", "version", "counts", "healthCounts",
                 "identityCounts", "executionCounts", "originCounts", "stageCounts",
-                "userCounts", "services", "ledger",
+                "userCounts", "services", "ledger", "systemIssues",
             )
             if key in payload
         }
         result["services"] = present_services(payload.get("services"))
+        result["systemIssues"] = present_system_issues(payload.get("systemIssues"))
         return result
 
     def list_items(

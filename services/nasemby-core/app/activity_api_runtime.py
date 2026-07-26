@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from flask import jsonify, request
 
-from app.activity_log import clear_activities, read_activities, write_activity
+from app.activity_log import clear_activities, read_activities, read_important_activities, write_activity
 from app.http_runtime import current_request_id
 
 
@@ -20,7 +20,14 @@ def register_activity_api(app):
     def activity_logs_v2():
         category = str(request.args.get("category") or "").strip()
         limit = request.args.get("limit", "200")
-        return jsonify({"ok": True, "logs": read_activities(limit=limit, category=category)})
+        view = str(request.args.get("view") or "raw").strip().lower()
+        if view not in {"raw", "important"}:
+            return _error("ACTIVITY_VIEW_INVALID", "活动视图仅支持 raw 或 important", 400)
+        if view == "important":
+            logs = read_important_activities(limit=limit, category=category)
+        else:
+            logs = read_activities(limit=limit, category=category)
+        return jsonify({"ok": True, "view": view, "logs": logs})
 
     @app.delete("/api/v2/activity/logs")
     def activity_logs_clear_v2():

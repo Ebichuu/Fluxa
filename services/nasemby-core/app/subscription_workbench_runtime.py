@@ -39,6 +39,43 @@ def _first_value(row, *keys):
     return None
 
 
+# 订阅模式到 activation provider 的映射；资源类模式统一归为 resource_rule
+MANUAL_FOLLOW_PROVIDERS = {
+    "torra": "torra",
+    "moviepilot": "moviepilot",
+    "symedia": "symedia",
+    "resource": "resource_rule",
+    "resource_then_pt": "resource_rule",
+}
+
+
+def manual_follow_snapshot(environment, config=None):
+    """手动加入追更能力：只描述保存后能否进入后续队列，不参与后台扫描判定。"""
+    write_enabled = _truthy(environment.get("NASEMBY_CORE_WRITE_ENABLED"))
+    if not write_enabled:
+        return {"state": "write_disabled", "provider": "none", "blockers": ["本地订阅写入已关闭"]}
+    if config is None:
+        try:
+            config = discover_runtime.load_subscription_config() or {}
+        except Exception:
+            config = {}
+    mode = discover_runtime.normalize_subscription_mode(
+        config.get("mode") if isinstance(config, dict) else ""
+    )
+    blockers = []
+    if mode == "torra" and not _truthy(environment.get("TORRA_PUSH_ENABLED")):
+        blockers.append("允许向 Torra 创建订阅已关闭")
+    elif mode == "resource":
+        rules = discover_runtime.normalize_resource_rules(
+            config.get("resource_rules") if isinstance(config, dict) else None
+        )
+        if not (rules.get("enabled") and rules.get("auto_transfer")):
+            blockers.append("资源规则未启用")
+    if blockers:
+        return {"state": "saved_only", "provider": "none", "blockers": blockers}
+    return {"state": "queued_ready", "provider": MANUAL_FOLLOW_PROVIDERS.get(mode, "none"), "blockers": []}
+
+
 def _missing_episodes(row):
     value = _first_value(
         row,
@@ -133,6 +170,13 @@ class SubscriptionWorkbenchService:
         scheduler_enabled = _truthy(self.environment.get("MCC_SUBSCRIPTION_SCHEDULER_ENABLED"))
         scheduler_started = bool(scheduler.get("started"))
         scheduler_error = str(scheduler.get("lastError") or "")
+        try:
+            config = discover_runtime.load_subscription_config() or {}
+        except Exception:
+            config = {}
+        douban = config.get("douban") if isinstance(config, dict) else {}
+        douban = douban if isinstance(douban, dict) else {}
+        source_enabled = bool(douban.get("enabled") and douban.get("task_enabled"))
         return {
             "ok": True,
             "checkedAt": checked_at,
@@ -149,6 +193,13 @@ class SubscriptionWorkbenchService:
                 "running": bool(scheduler_enabled and scheduler_started and not scheduler_error),
                 "lastRunAt": str(scheduler.get("lastRunAt") or ""),
                 "lastError": scheduler_error,
+            },
+            # 手动加入结果只看 manualFollow；sourceScan 只描述后台来源扫描
+            "manualFollow": manual_follow_snapshot(self.environment, config),
+            "sourceScan": {
+                "configured": bool(douban),
+                "enabled": source_enabled and (scheduler_enabled if scheduler_configured else True),
+                "running": bool(scheduler_started and not scheduler_error),
             },
         }
 

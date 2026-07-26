@@ -293,6 +293,84 @@ def _present_secupload(value) -> dict:
     return result
 
 
+def _present_issue_category(value) -> dict | None:
+    source = value if isinstance(value, dict) else None
+    if source is None:
+        return None
+    latest = source.get("latest") if isinstance(source.get("latest"), dict) else {}
+    counts = {
+        "success": latest.get("success"),
+        "failed": latest.get("failed"),
+    }
+    recent = [
+        int(item) for item in (source.get("recentFailedCounts") or [])[:3]
+        if isinstance(item, int) and not isinstance(item, bool) and item >= 0
+    ]
+    category_id = str(source.get("id") or "")[:80]
+    if not category_id.startswith("category:"):
+        category_id = ""
+    return {
+        "id": category_id,
+        "label": safe_public_text(source.get("label"), "未命名分类")[:80],
+        "latest": {
+            "success": counts["success"],
+            "failed": counts["failed"],
+            "finishedAt": str(latest.get("finishedAt") or "")[:80],
+        },
+        "recentFailedCounts": recent,
+        "retryPolicyText": safe_public_text(source.get("retryPolicyText"), "重试策略未提供")[:120],
+        "nextRunAt": str(source.get("nextRunAt") or "")[:80],
+        "fileEvidenceAvailable": source.get("fileEvidenceAvailable") is True,
+    }
+
+
+def present_system_issue(value) -> dict:
+    source = value if isinstance(value, dict) else {}
+    state = str(source.get("state") or "unknown")
+    if state not in {"normal", "recovering", "action_required", "unknown"}:
+        state = "unknown"
+    manual = source.get("manualRetry") if isinstance(source.get("manualRetry"), dict) else {}
+    primary = source.get("primaryAction") if isinstance(source.get("primaryAction"), dict) else {}
+    categories = [
+        row for row in (_present_issue_category(item) for item in source.get("categories") or [])
+        if row is not None and row.get("id")
+    ]
+    failed_total = source.get("failedTotal")
+    if not isinstance(failed_total, int) or isinstance(failed_total, bool) or failed_total < 0:
+        failed_total = None
+    return {
+        "id": "secupload_failures",
+        "state": state,
+        "stateReason": str(source.get("stateReason") or "")[:80],
+        "failedTotal": failed_total,
+        "nextRunAt": str(source.get("nextRunAt") or "")[:80],
+        "observedAt": str(source.get("observedAt") or "")[:80],
+        "scheduleGraceSeconds": int(source.get("scheduleGraceSeconds") or 600),
+        "maxScheduleHorizonSeconds": int(source.get("maxScheduleHorizonSeconds") or 86400),
+        "categories": categories,
+        "fileEvidenceAvailable": source.get("fileEvidenceAvailable") is True,
+        "evidenceLimitText": safe_public_text(
+            source.get("evidenceLimitText"),
+            "Torra 当前未返回失败文件名、具体错误和单文件重试次数。",
+        )[:160],
+        "manualRetry": {
+            "supported": manual.get("supported") is True,
+            "allowed": manual.get("allowed") is True,
+            "reason": safe_public_text(manual.get("reason"))[:120],
+        },
+        "primaryAction": {
+            "kind": str(primary.get("kind") or "none")[:40],
+            "label": safe_public_text(primary.get("label"))[:80],
+            "available": primary.get("available") is True,
+        },
+    }
+
+
+def present_system_issues(value) -> list[dict]:
+    rows = value if isinstance(value, list) else []
+    return [present_system_issue(row) for row in rows if isinstance(row, dict)]
+
+
 def present_services(value) -> dict:
     services = value if isinstance(value, dict) else {}
     result = {}

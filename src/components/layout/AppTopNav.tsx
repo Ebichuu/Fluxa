@@ -19,6 +19,7 @@ export interface TaskNavigationTarget {
   completedDate?: string;
   advanced?: boolean;
   identityStates?: Array<'unidentified' | 'linked' | 'conflict'>;
+  systemIssue?: string;
 }
 
 export type AppNavigate = (page: PageId, target?: TaskNavigationTarget) => void;
@@ -48,6 +49,8 @@ interface AppTopNavProps {
 
 export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, showThemeToggle, theme }: AppTopNavProps) {
   const healthState = homeSummary?.healthState ?? 'evidence_insufficient';
+  const actionRequiredCount = homeSummary?.counts.actionRequired ?? 0;
+  const actionRequiredBadge = actionRequiredCount > 99 ? '99+' : String(actionRequiredCount);
   const healthLabel = !homeSummary
     ? '状态读取中'
     : homeSummary.counts.actionRequired > 0
@@ -200,6 +203,7 @@ export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, 
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = activePage === item.id || (item.id === 'subscriptions' && activePage === 'subscription-settings');
+            const showTaskBadge = item.id === 'tasks' && actionRequiredCount > 0;
 
             return (
               <button
@@ -212,10 +216,19 @@ export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, 
                   else itemRefs.current.delete(item.id);
                 }}
                 type="button"
-                onClick={() => onNavigate(item.id)}
+                onClick={() => {
+                  if (showTaskBadge && window.matchMedia('(max-width: 760px)').matches) {
+                    onNavigate('tasks', { userState: 'action_required' });
+                    return;
+                  }
+                  onNavigate(item.id);
+                }}
               >
                 <Icon aria-hidden="true" size={15} strokeWidth={1.8} />
                 <span>{item.label}</span>
+                {showTaskBadge && (
+                  <span aria-label={`${actionRequiredCount} 项需要处理`} className="nav-item__badge">{actionRequiredBadge}</span>
+                )}
               </button>
             );
           })}

@@ -4,7 +4,7 @@
 路由数量：47  
 运行实现：Python / Flask
 
-新增能力使用真正的 URL 版本契约：`docs/contracts/http-api-contract-v2.json`，当前共 60 条。v1 的 47 条冻结路径和历史状态码不变。
+新增能力使用真正的 URL 版本契约：`docs/contracts/http-api-contract-v2.json`，当前共 64 条。v1 的 47 条冻结路径和历史状态码不变。
 
 ## 1. 版本规则
 
@@ -67,15 +67,15 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `GET /api/v2/subscriptions/workbench` | 可选 `limit`（1–100，默认 24）、`offset`（默认 0）、`mediaType`（`movie`/`tv`）和 `query`；返回五项能力状态、全量 `following/completed/actionRequired/inLibrary` 生命周期统计、当前页订阅、`page.nextOffset` 和可选 `posterBackfillIds`，只读访问外部服务；映射完整且读取成功的 Torra-only 条目是正常只读追更，不因缺少本地镜像进入待处理 |
 | `POST /api/v2/subscriptions/visual-backfills` | `ids` 为最多 100 个订阅 ID；只按明确 TMDB 身份补充空缺海报/背景，不按标题猜图；本地写入开启时可补充已有本地记录，关闭时只返回视觉结果；仅 Torra 条目始终不创建本地镜像 |
 | `GET /api/v2/subscriptions/reconciliation` | 无参数；只读对比 Fluxa 与 Torra，独立返回对账、履约、健康状态，不修改或删除任一台账 |
-| `GET /api/v2/tasks/summary` | 返回唯一任务链数量、健康/身份/执行三维状态数量、日常四态 `userCounts`、阶段数量、服务状态和稳定 `version`；支持 ETag 条件读取 |
-| `GET /api/v2/tasks/chains` | 支持 `healthState`、可重复 `identityState`、`executionState`、`userState`、`completedDate`、`chainId`、`targetKey`、`subscriptionId`、`tmdbId`、`title`、`seasonNumber`、`updatedAfter`、`offset`、`limit` 和 `refresh=1`；默认返回 20 条唯一链路摘要和稳定分页字段；摘要可选返回 `userState/resultText/completedAt/primaryAction/embyEvidenceScope` |
+| `GET /api/v2/tasks/summary` | 返回唯一任务链数量、健康/身份/执行三维状态数量、日常四态 `userCounts`、阶段数量、服务状态和稳定 `version`；支持 ETag 条件读取；可选 `systemIssues` 返回系统级问题（如 Torra 秒传）的分类级安全摘要 |
+| `GET /api/v2/tasks/chains` | 支持 `healthState`、可重复 `identityState`、`executionState`、`userState`、`completedDate`、`chainId`、`targetKey`、`subscriptionId`、`tmdbId`、`title`、`seasonNumber`、`updatedAfter`、`offset`、`limit` 和 `refresh=1`；默认返回 20 条唯一链路摘要和稳定分页字段；摘要可选返回 `userState/resultText/completedAt/primaryAction/embyEvidenceScope`；可选 `systemIssues` 同任务 summary |
 | `GET /api/v2/tasks/chains/:chainId` | 可选 `refresh=1`；返回单条任务链的阶段证据、artifact、原因、`userState/resultText/completedAt/primaryAction` 和动作资格；不存在返回 `404 TASK_CHAIN_NOT_FOUND`；Emby 证据范围可选为 `none`、`title` 或 `episode` |
 | `GET /api/v2/tasks/ledger/migrations/preview` | 只读计算旧标题链到标准 TMDB 链的安全迁移计划、拒绝原因和预计别名数量；不写台账，不触发外部服务写操作 |
 | `GET /api/v2/calendar` | 支持 `year/month/type/view`、单日 `date` 和范围 `from/to`；聚合播出日期与任务链获取/入库证据，返回标准 `chainId/targetKey`、播出/获取/入库/正常保护/逾期/未知状态和 `Asia/Shanghai` 时区；月摘要每天保留前三条 `preview`，同时返回覆盖全部条目的轻量 `searchIndex`，搜索不得只查预览；支持 ETag |
 | `GET /api/v2/search` | `q` 最长 200 字符，`limit` 为 1–20；聚合本地追更、已识别 RSS、任务、当月日历和 Emby TMDB 索引，按 `mediaKey` 去重并保留来源深链；本地没有匹配结果时使用现有 TMDB 只读客户端补充，未配置或读取失败降级为空且不写缓存；无 TMDB 本地任务可返回空 `tmdbId`、公开 `chainId` 和任务深链 |
 | `GET /api/v2/media/:mediaKey` | 外部只读返回单作品追更、Torra、下载、115、入库、Emby、日历、唯一主操作和深链；`mediaKey` 为 `movie:tmdbId` 或 `tv:tmdbId`；过期、未验证或 `healthState=protected` 的 blocked 阶段不形成真实异常 |
-| `GET /api/v2/subscriptions/capabilities` | 只读返回本地写入、Torra 推送和调度器真实运行状态，供发现页生成不夸大的追更文案 |
-| `POST /api/subscriptions/save` | 标题、TMDB ID、媒体类型和可选元数据 |
+| `GET /api/v2/subscriptions/capabilities` | 只读返回本地写入、Torra 推送和调度器真实运行状态，供发现页生成不夸大的追更文案；新增可选 `manualFollow`（`state`=`write_disabled`/`saved_only`/`queued_ready`、`provider`、`blockers`）与 `sourceScan`（`configured`/`enabled`/`running`）；`sourceScan` 只描述后台来源扫描，不参与手动加入结果判定 |
+| `POST /api/subscriptions/save` | 标题、TMDB ID、媒体类型和可选元数据；响应可选返回 `activation`（`state`=`saved_and_torra_pushed`/`saved_and_queued`/`saved_only`/`already_exists`/`saved_push_failed`，含用户文案 `message`、`provider`、`queued` 与脱敏 `reason`）；异步入队只返回 `saved_and_queued`，不提前声称已推送 Torra |
 | `PATCH /api/subscriptions/:id/category` | 八分类 key 或 `null` |
 | `GET /api/subscriptions/detail` | 必填 `id`，可选 `season` |
 | `GET /api/subscriptions/calendar` | `year`、`month`、`type` |
@@ -94,7 +94,11 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `GET /api/v2/torra/subscription-sync/preview` | 无参数；只读取 Torra 与本地台账，不调用 Torra 写接口 |
 | `POST /api/v2/torra/subscription-sync/imports` | `confirm=true`、12–128 字符幂等键；导入和幂等结果在同一 SQLite 事务提交 |
 | `POST /api/v2/torra/subscription-sync/runs` | 空对象；只读取 Torra，并更新本地已关联镜像的状态 |
-| `GET /api/v2/activity/logs` | 可选 `category` 和 `limit`，最多返回 1000 条脱敏记录 |
+| `GET /api/v2/activity/logs` | 可选 `category` 和 `limit`，最多返回 1000 条脱敏记录；可选 `view=important` 在应用 `limit` 前折叠 `request_id=background` 且状态为 success/info/skip 的相同 category/action/status 后台活动，折叠项返回 `repeatCount`、`firstTime`、`lastTime`；error 与人工请求永不折叠，默认 raw 行为不变 |
+| `GET /api/v2/system-issues/secupload-failures` | 只读返回 Torra 秒传系统问题：状态机 `normal/recovering/action_required/unknown`（600 秒宽限、86400 秒计划上限）、分类级批次摘要、近三批失败数、重试策略与下次计划；分类使用稳定摘要公开 ID，不泄露 Torra 原始分类 ID、插件 key、目录或文件路径 |
+| `POST /api/v2/system-issues/secupload-failures/retry-previews` | 手动重试预检；重新读取插件状态、分类映射、活动运行与自动计划，自动计划有效或已有活动运行时拒绝 |
+| `POST /api/v2/system-issues/secupload-failures/retries` | `confirm=true`、12–128 字符幂等键；复用 provider_actions 持久化（目标键 `system:torra:secupload`），全局与分类锁竞争返回 `409`，成功调用 Torra 正式任务接口后保存 run ID 返回 `202` |
+| `GET /api/v2/system-issues/secupload-failures/retries/:actionId` | 通过插件 recent_runs 按 run ID 轮询动作状态；终态写回后刷新秒传摘要 |
 | `DELETE /api/v2/activity/logs` | `confirm=true`；清空后写入一条新的清空审计记录 |
 | `GET /api/v2/system/metrics` | 无参数，30 秒服务端缓存 |
 | `GET /api/discover/browse` | 来源、类型、排序、语言、年份、风格、provider 和分页 |
@@ -160,11 +164,12 @@ NasEmby 原静态管理页不注册为第二套生产页面，迁移期静态快
 
 ## 9. HTTP v2 契约
 
-当前 47 条 v1 契约不承担新增语义。60 条 `/api/v2` 接口包括：
+当前 47 条 v1 契约不承担新增语义。64 条 `/api/v2` 接口包括：
 
 - 当前 React 使用：集成脱敏摘要、Torra 单条预览/推送、缓存系统指标、私人 RSS 来源管理、本地种子库和管理员运行时配置。
 - 阶段 6 人工追更洗版：全局设置、单条观察设置、人工 Torra 分析、人工候选下载和 RSS 匹配级分析/确认下载，已接入 React 订阅详情与 RSS 种子库。
 - 作品统一视图：全局本地搜索和单作品生命周期总览，已接入顶部搜索与可分享作品页。
+- 系统问题闭环：Torra 秒传状态机只读摘要、手动重试预检、确认执行与动作轮询；摘要经 `systemIssues` 附加到任务 summary/chains 与首页。
 - 阶段 7 MoviePilot 人工备用：受独立闸门保护的预览和同步确认动作，已接入 React 订阅详情。
 - 第一阶段 Torra 单向镜像与活动闭环：已有订阅预览、幂等导入、状态同步和统一脱敏活动日志，已接入 React 订阅页与任务中心。
 - 延期保留：115 检查、Telegram 登录/频道、HDHive 授权/配置/签到、订阅级网盘开关、候选预览和单条转存。
@@ -220,7 +225,7 @@ v2 新增响应字段允许向后兼容扩展；删除字段、改变类型或�
 
 ## 13. 已实现的私人 PT RSS 种子库接口
 
-以下接口已经进入当前 60 条 v2 机器契约和 React：
+以下接口已经进入当前 64 条 v2 机器契约和 React：
 
 - `GET /api/v2/rss-sources`
 - `POST /api/v2/rss-sources`

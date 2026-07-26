@@ -48,6 +48,7 @@ export function readNavigation(location: Location = window.location): Navigation
   } : ['tasks', 'subscriptions'].includes(page) && (
     query.has('chainId') || query.has('targetKey') || query.has('subscriptionId') || query.has('tmdbId') || query.has('title')
     || query.has('userState') || query.has('completedDate') || query.has('advanced') || query.has('identityState')
+    || query.has('systemIssue')
   ) ? {
     mediaType: query.get('mediaType') === 'movie' ? 'movie' : query.get('mediaType') === 'tv' ? 'tv' : undefined,
     chainId: optionalString(query.get('chainId')),
@@ -63,7 +64,8 @@ export function readNavigation(location: Location = window.location): Navigation
     advanced: query.get('advanced') === '1',
     identityStates: query.getAll('identityState').filter((value): value is 'unidentified' | 'linked' | 'conflict' => (
       ['unidentified', 'linked', 'conflict'].includes(value)
-    ))
+    )),
+    systemIssue: optionalString(query.get('systemIssue'))
   } : null;
 
   return {
@@ -92,6 +94,7 @@ export function pathForNavigation(page: PageId, target?: TaskNavigationTarget | 
     if (target.completedDate) query.set('completedDate', target.completedDate);
     if (target.advanced) query.set('advanced', '1');
     target.identityStates?.forEach((value) => query.append('identityState', value));
+    if (target.systemIssue) query.set('systemIssue', target.systemIssue);
   }
   const search = query.toString();
   return search ? `${route}?${search}` : route;

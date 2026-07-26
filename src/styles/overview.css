@@ -118,6 +118,21 @@
   background: rgba(255, 255, 255, 0.09);
   font-size: 12px;
   font-weight: 650;
+  white-space: nowrap;
+}
+
+.home-primary-action__short {
+  display: none;
+}
+
+@media (max-width: 620px) {
+  .home-primary-action__full {
+    display: none;
+  }
+
+  .home-primary-action__short {
+    display: inline;
+  }
 }
 
 .home-icon-button:hover:not(:disabled),

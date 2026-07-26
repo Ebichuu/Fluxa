@@ -2020,6 +2020,8 @@ def save_subscription_item(payload):
     message = "保存订阅，等待 TMDB 匹配" if metadata_pending else "保存订阅成功"
     data["saved_item"] = item
     data["message"] = message
+    # 暴露真实覆盖事实，供保存接口生成 activation（already_exists 判定）
+    data["replaced"] = bool(replaced)
     write_activity(
         "subscription",
         "save_subscription",
@@ -3355,6 +3357,7 @@ def _subscription_resource_rule_transfer_worker(items, keys, config, trigger):
             skipped=result.get("skipped"),
             errors=len(result.get("errors") or []),
             rule=result.get("rule") or "",
+            request_id="background",
         )
     except Exception as exc:
         write_activity(
@@ -3366,6 +3369,7 @@ def _subscription_resource_rule_transfer_worker(items, keys, config, trigger):
             trigger=trigger,
             mode=subscription_mode_label((config or {}).get("mode") if isinstance(config, dict) else ""),
             error=str(exc),
+            request_id="background",
         )
     finally:
         with SUBSCRIPTION_RESOURCE_TASK_LOCK:

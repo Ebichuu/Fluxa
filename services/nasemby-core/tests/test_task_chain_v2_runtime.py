@@ -650,6 +650,105 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(result["healthState"], "waiting")
         self.assertEqual(result["userState"], "in_progress")
 
+    def test_summary_and_chains_attach_optional_sanitized_system_issues(self):
+        from app.quality_watch_repository import QualityWatchRepository
+        from app.secupload_issue_runtime import SecuploadIssueService
+
+        raw_category = "plugin-private-category"
+        chain = FakeTaskChain().get_chain()
+        chain["services"] = {
+            "torra": {
+                "connected": True,
+                "total": 1,
+                "secupload115": {
+                    "configured": True,
+                    "connected": True,
+                    "readable": True,
+                    "pluginEnabled": True,
+                    "perFileEvidence": False,
+                    "activeRuns": 0,
+                    "configItems": [{
+                        "itemId": raw_category,
+                        "name": "00-日漫",
+                        "enabled": True,
+                        "fallbackUploadAfterFailures": 3,
+                    }],
+                    "tasks": [{
+                        "key": "retry_pending",
+                        "name": "重试临时目录",
+                        "allowSchedule": True,
+                        "allowManualRun": True,
+                    }],
+                    "schedules": [{
+                        "taskKey": "retry_pending",
+                        "targetItemId": raw_category,
+                        "enabled": True,
+                        "nextRunAt": "2026-07-22T18:00:00+08:00",
+                    }],
+                    "recentRuns": [{
+                        "runId": "run-private-1",
+                        "taskKey": "retry_pending",
+                        "targetItemId": raw_category,
+                        "trigger": "schedule",
+                        "status": "success",
+                        "counts": {"success": 0, "failed": 1},
+                        "startedAt": "2026-07-22T12:00:00+08:00",
+                        "finishedAt": "2026-07-22T12:00:03+08:00",
+                    }],
+                    "latestBatch": {
+                        "taskKey": "retry_pending",
+                        "trigger": "schedule",
+                        "status": "failed",
+                        "counts": {"success": 0, "failed": 1},
+                        "startedAt": "2026-07-22T12:00:00+08:00",
+                        "finishedAt": "2026-07-22T12:00:03+08:00",
+                    },
+                    "nextRunAt": "2026-07-22T18:00:00+08:00",
+                    "lastCheckedAt": "2026-07-22T12:00:04+08:00",
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            app = Flask(f"{__name__}-system-issues")
+            fake = FakeTaskChain()
+            fake.get_chain = lambda: chain
+            app.extensions["mcc_task_chain_service"] = fake
+            clock = lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc)
+            repository = QualityWatchRepository(Path(directory) / "media.sqlite3", clock=clock)
+
+            class SummaryOnlyTorra:
+                @staticmethod
+                def get_secupload_summary():
+                    return chain["services"]["torra"]["secupload115"]
+
+            app.extensions["mcc_secupload_issue"] = SecuploadIssueService(
+                SummaryOnlyTorra(), repository, environment={}, clock=clock,
+            )
+            register_task_chain_v2(app, clock=clock)
+            client = app.test_client()
+
+            summary = client.get("/api/v2/tasks/summary")
+            listing = client.get("/api/v2/tasks/chains")
+
+            issue = summary.get_json()["systemIssues"][0]
+            self.assertEqual(issue["id"], "secupload_failures")
+            self.assertEqual(issue["state"], "recovering")
+            self.assertEqual(issue["categories"][0]["recentFailedCounts"], [1])
+            self.assertTrue(issue["categories"][0]["id"].startswith("category:"))
+            self.assertEqual(listing.get_json()["systemIssues"][0]["state"], "recovering")
+            serialized = summary.get_data(as_text=True) + listing.get_data(as_text=True)
+            for private_value in (raw_category, "run-private-1"):
+                self.assertNotIn(private_value, serialized)
+
+    def test_summary_without_issue_service_keeps_optional_system_issues_empty(self):
+        app = Flask(f"{__name__}-no-issue-service")
+        app.extensions["mcc_task_chain_service"] = FakeTaskChain()
+        register_task_chain_v2(app, clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc))
+
+        summary = app.test_client().get("/api/v2/tasks/summary").get_json()
+
+        self.assertEqual(summary.get("systemIssues", []), [])
+
     def test_route_validates_pagination_and_missing_detail(self):
         app = Flask(__name__)
         app.extensions["mcc_task_chain_service"] = FakeTaskChain()

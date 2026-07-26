@@ -1,3 +1,5 @@
+import type { RssResourceScope, RssResourceScopeCounts } from './rssSeedLibrary';
+
 export interface SubscriptionCalendarEntry {
   date: string;
   key?: string;
@@ -216,6 +218,21 @@ export interface SubscriptionVisualBackfillResponse {
   errors: string[];
 }
 
+export type ManualFollowState = 'write_disabled' | 'saved_only' | 'queued_ready';
+export type ManualFollowProvider = 'torra' | 'moviepilot' | 'symedia' | 'resource_rule' | 'none';
+
+export interface ManualFollowCapability {
+  state: ManualFollowState;
+  provider: ManualFollowProvider;
+  blockers: string[];
+}
+
+export interface SourceScanCapability {
+  configured: boolean;
+  enabled: boolean;
+  running: boolean;
+}
+
 export interface SubscriptionCapabilitiesResponse {
   ok: boolean;
   checkedAt: string;
@@ -229,6 +246,28 @@ export interface SubscriptionCapabilitiesResponse {
     lastRunAt: string;
     lastError: string;
   };
+  manualFollow?: ManualFollowCapability;
+  sourceScan?: SourceScanCapability;
+}
+
+export type SubscriptionActivationState =
+  | 'saved_and_torra_pushed'
+  | 'saved_and_queued'
+  | 'saved_only'
+  | 'already_exists'
+  | 'saved_push_failed';
+
+export interface SubscriptionActivation {
+  state: SubscriptionActivationState;
+  message: string;
+  provider?: ManualFollowProvider;
+  queued?: boolean;
+  reason?: string;
+}
+
+export interface SubscriptionSaveResponse {
+  success: boolean;
+  activation?: SubscriptionActivation;
 }
 
 export type SubscriptionReconciliationState = 'linked' | 'only_fluxa' | 'only_torra' | 'conflict' | 'remote_missing';
@@ -438,6 +477,11 @@ export interface DiscoverResourceItem {
   season?: string | number;
   episodes?: number[];
   links?: string[];
+  scope?: RssResourceScope;
+  matchMethod?: string;
+  matchConfidence?: string;
+  identityStatus?: 'identified' | 'conflict' | 'unidentified';
+  torraHandoffReady?: boolean;
 }
 
 export interface DiscoverResourceSource {
@@ -462,6 +506,7 @@ export interface DiscoverResourceResponse {
   items: DiscoverResourceItem[];
   sources: DiscoverResourceSource[];
   seasons: DiscoverResourceSeason[];
+  scopeCounts?: RssResourceScopeCounts;
   errors: string[];
   cache_hits: string[];
   sourceStatuses?: DiscoverSourceStatus[];

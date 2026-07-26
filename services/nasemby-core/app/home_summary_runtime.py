@@ -8,7 +8,9 @@ from flask import Flask, jsonify
 from app.health_state_runtime import evidence
 from app.http_runtime import current_request_id
 from app.resource_identity_runtime import target_key as resource_target_key
+from app.secupload_issue_runtime import build_secupload_issue
 from app.task_chain_v2_runtime import adapt_task_chain
+from app.task_public_runtime import present_system_issue
 
 
 TARGET_SCOPE_PATTERN = re.compile(r":season:(\d+)(?::episode:(\d+))?$")
@@ -247,6 +249,13 @@ class HomeSummaryService:
         if not chain_v2_service and not chain_service:
             raise RuntimeError("任务链尚未注册")
         chain = chain_v2_service.full_snapshot() if chain_v2_service else adapt_task_chain(chain_service.get_chain(), now=now_value)
+        secupload_issue = next((
+            row for row in chain.get("systemIssues") or []
+            if isinstance(row, dict) and row.get("id") == "secupload_failures"
+        ), None)
+        if secupload_issue is None:
+            secupload_source = ((((chain.get("services") or {}).get("torra") or {}).get("secupload115")) or {})
+            secupload_issue = build_secupload_issue(secupload_source, now=now_value)
         unique_items = {}
         for item in chain.get("items") or []:
             if isinstance(item, dict):
@@ -420,6 +429,10 @@ class HomeSummaryService:
             all_evidence.append(identity_evidence)
         if rss_evidence:
             all_evidence.append(rss_evidence)
+        # 秒传状态只通过关注项与 systemIssues 表达：
+        # recovering 使用处理中语义，action_required 只影响秒传关注项本身，
+        # 均不改变基线的红色真实异常计数口径。
+        secupload_state = str(secupload_issue.get("state") or "unknown")
         issues = []
         for target_key, item, result in visible_item_evidence:
             if result["healthState"] == "action_required":
@@ -457,21 +470,27 @@ class HomeSummaryService:
             current_downloads_detail = "qB 当前没有提供可验证的下载任务状态"
         counts["activeDownloadTasks"] = current_downloads_value
 
-        secupload = torra_status.get("secupload115") if isinstance(torra_status.get("secupload115"), dict) else {}
-        latest_upload_batch = secupload.get("latestBatch") if isinstance(secupload.get("latestBatch"), dict) else {}
-        upload_counts = latest_upload_batch.get("counts") if isinstance(latest_upload_batch.get("counts"), dict) else {}
-        secupload_failures = _integer(upload_counts.get("failed"))
-        if secupload.get("readable") is True and secupload_failures is not None and secupload_failures >= 0:
-            secupload_state = "action_required" if secupload_failures > 0 else "normal"
-            secupload_detail = (
-                f"Torra 最近批次明确记录 {secupload_failures} 个秒传失败"
-                if secupload_failures > 0
-                else "Torra 最近批次明确记录 0 个秒传失败"
-            )
-        else:
-            secupload_failures = None
-            secupload_state = "unknown"
-            secupload_detail = "Torra 尚未提供可统计的最近批次失败数；缺少逐文件证据不等于失败"
+        secupload_failures = _integer(secupload_issue.get("failedTotal"))
+        category_labels = "、".join(
+            str(row.get("label") or "") for row in secupload_issue.get("categories") or [] if row.get("label")
+        )
+        focus_secupload_state = {
+            "normal": "normal",
+            "recovering": "processing",
+            "action_required": "action_required",
+            "unknown": "unknown",
+        }.get(secupload_state, "unknown")
+        secupload_detail = {
+            "normal": "Torra 最近批次明确记录 0 个秒传失败",
+            "recovering": f"{category_labels or '秒传失败分类'}正在自动恢复；下次计划已由 Torra 提供",
+            "action_required": f"{category_labels or '秒传失败分类'}没有可用的自动恢复计划",
+            "unknown": "Torra 尚未提供完整的分类批次证据；缺少逐文件证据不等于失败",
+        }.get(secupload_state, "Torra 秒传状态尚不可确认")
+        secupload_label = {
+            "recovering": "秒传待恢复",
+            "action_required": "秒传需要处理",
+            "unknown": "秒传状态",
+        }.get(secupload_state, "秒传失败")
 
         download_done_not_archived = [
             item
@@ -548,8 +567,8 @@ class HomeSummaryService:
                 current_downloads_detail, "/tasks?userState=in_progress",
             ),
             _focus_item(
-                "secupload_failures", "秒传失败", "个", secupload_failures, secupload_state,
-                secupload_detail, "/tasks?advanced=1",
+                "secupload_failures", secupload_label, "个", secupload_failures, focus_secupload_state,
+                secupload_detail, "/tasks?systemIssue=secupload_failures",
             ),
             _focus_item(
                 "downloaded_not_archived", "下载完成未入库", "个", downloaded_not_archived_value,
@@ -599,6 +618,8 @@ class HomeSummaryService:
             str(item.get("userState") or "") == "in_progress"
             for item in unique_items.values()
         )
+        if secupload_state == "recovering":
+            processing_targets += 1
         critical_unknown = any(
             not isinstance(services.get(name), dict)
             or (
@@ -640,6 +661,7 @@ class HomeSummaryService:
             "issues": issues[:8],
             "diagnostics": diagnostics[:12],
             "diagnosticTotal": len(diagnostics),
+            "systemIssues": [present_system_issue(secupload_issue)],
         }
 
 

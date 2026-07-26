@@ -33,6 +33,13 @@ import {
 } from '../../services/api';
 import { writeUrlQuery, type UrlHistoryMode } from '../../app/urlState';
 import type { AutomationAction, RssIdentityStatus, RssLibrarySummary, RssMatch, RssSeedItem, RssSource, RssSourceInput } from '../../types/rssSeedLibrary';
+import {
+  classifyRssResourceScope,
+  countRssResourceScopes,
+  rssMatchMethodLabel,
+  rssResourceScopeLabel,
+  rssResourceScopeSummaryText
+} from '../../types/rssSeedLibrary';
 import { formatTimeAgo } from '../../utils/formatters';
 import { createIdempotencyKey } from '../../utils/idempotency';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
@@ -211,6 +218,21 @@ function matchActionLabel(action: AutomationAction | undefined, matchStatus: Rss
   if (action.type === 'rewash-download') return 'Torra 已接收下载任务，后续进度可在任务中心查看';
   const selectedCount = action.result?.selectedCount ?? 0;
   return selectedCount > 0 ? `检查完成，发现 ${selectedCount} 个更合适的版本` : '检查完成，当前没有更合适的版本';
+}
+
+function seedProcessingStateLabel(match: RssMatch | undefined, action: AutomationAction | undefined) {
+  if (!match) return '未处理';
+  if (action?.type === 'rewash-download' || match.status === 'confirmed') return 'Torra 已接收';
+  if (action && !['succeeded', 'failed', 'cancelled'].includes(action.status)) return 'Torra 分析中';
+  return '已建立匹配';
+}
+
+function seedPriorityReason(item: RssSeedItem, scope: ReturnType<typeof classifyRssResourceScope>) {
+  const identityKnown = item.identityStatus === 'identified';
+  if (identityKnown && scope === 'explicit_episode') return '精确身份优先 · 明确季集优先';
+  if (identityKnown) return '精确身份优先';
+  if (scope === 'explicit_episode') return '明确季集优先';
+  return '暂无优先证据；最终下载推荐只来自 Torra 分析评分';
 }
 
 export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) {
@@ -513,7 +535,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     })
       .then((action) => {
         setMatchActions((current) => ({ ...current, [match.id]: action }));
-        setFeedback({ tone: 'ok', message: '下载确认已收到，Torra 正在接收任务。' });
+        setFeedback({ tone: 'ok', message: '已交给 Torra 处理，Torra 正在接收任务。' });
         void pollMatchAction(match.id, action.id);
       })
       .catch((reason: unknown) => setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : 'RSS 候选下载提交失败' }))
@@ -521,6 +543,17 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   };
 
   const timeline = items;
+  const itemScopeCounts = useMemo(
+    () => countRssResourceScopes(items.map((item) => classifyRssResourceScope(item))),
+    [items]
+  );
+  const matchByItemId = useMemo(() => {
+    const index = new Map<string, RssMatch>();
+    matches.forEach((match) => {
+      if (match.itemId && !index.has(match.itemId)) index.set(match.itemId, match);
+    });
+    return index;
+  }, [matches]);
 
   const searchedSources = useMemo(() => {
     const scoped = sourceId ? sources.filter((source) => source.id === sourceId) : sources;
@@ -683,6 +716,12 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
             </div>
           </div>
 
+          {!loading && !itemsLoading && itemScopeCounts.total > 0 && (
+            <p className="rss-scope-summary" role="status">
+              本页 {rssResourceScopeSummaryText(itemScopeCounts)}
+            </p>
+          )}
+
           <div className="rss-collection-summary" role="status">
             <span className={summary.enabled && summary.errorSources === 0 ? 'rss-source-light' : summary.errorSources ? 'rss-source-light rss-source-light--error' : 'rss-source-light rss-source-light--off'} />
             <div>
@@ -699,7 +738,11 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                 <span>{sources.length ? (sourceSearchSummary || '当前没有可搜索的 RSS 来源。') : '先添加 RSS 来源；开启收集后，新发布内容会保存在这里。'}</span>
               </div>
             )}
-            {timeline.map((item) => (
+            {timeline.map((item) => {
+              const scope = classifyRssResourceScope(item);
+              const itemMatch = matchByItemId.get(item.id);
+              const itemAction = itemMatch ? matchActions[itemMatch.id] : undefined;
+              return (
               <article className="rss-seed-row" key={item.id}>
                 <div className="rss-seed-time"><span /> <RelativeTime value={item.publishedAt || item.lastSeenAt} /></div>
                 <div className="rss-seed-body">
@@ -712,6 +755,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                   <div className="rss-seed-desktop-meta">
                     <div className="rss-seed-meta">
                       <span>{episodeLabel(item)}</span>
+                      <span>{rssResourceScopeLabel(scope)}</span>
                       <span>{sizeLabel(item.sizeBytes)}</span>
                     </div>
                     <div className="rss-version-line">
@@ -723,17 +767,21 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                   <details className="rss-seed-technical">
                     <summary>技术信息</summary>
                     <dl>
-                      <div><dt>类型与范围</dt><dd>{episodeLabel(item)}</dd></div>
+                      <div><dt>类型与范围</dt><dd>{episodeLabel(item)} · {rssResourceScopeLabel(scope)}</dd></div>
                       <div><dt>大小</dt><dd>{sizeLabel(item.sizeBytes)}</dd></div>
                       <div><dt>版本</dt><dd>{item.versionSummary || '等待版本信息'}</dd></div>
                       <div><dt>来源地址</dt><dd>{item.sourceDomain}</dd></div>
-                      <div><dt>后续处理</dt><dd>{item.hasDownload ? '可以继续交给 Torra 判断' : '当前仅有详情信息'}</dd></div>
+                      <div><dt>匹配原因</dt><dd>{rssMatchMethodLabel(item.matchMethod, item.matchConfidence)}</dd></div>
+                      <div><dt>官种</dt><dd>无法判断</dd></div>
+                      <div><dt>下载 / 入库 / 重复</dt><dd>尚未确认</dd></div>
+                      <div><dt>当前处理状态</dt><dd>{seedProcessingStateLabel(itemMatch, itemAction)}</dd></div>
+                      <div><dt>优先检查理由</dt><dd>{seedPriorityReason(item, scope)}</dd></div>
                     </dl>
-                    <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}><PanelRightOpen aria-hidden="true" size={13} />查看完整详情</button>
+                    <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}><PanelRightOpen aria-hidden="true" size={13} />查看识别证据</button>
                   </details>
                 </div>
                 <div className="rss-seed-state">
-                  <span className={item.hasDownload ? 'state-chip state-chip--ok' : 'state-chip'}>{item.hasDownload ? '可交给 Torra' : '仅详情'}</span>
+                  <span className="state-chip">{seedProcessingStateLabel(itemMatch, itemAction)}</span>
                   <span className={`rss-identity-chip rss-identity-chip--${item.identityStatus}`}>{identityLabel(item.identityStatus)}</span>
                   <small>{item.sourceDomain}</small>
                   <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}>
@@ -741,7 +789,8 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                   </button>
                 </div>
               </article>
-            ))}
+              );
+            })}
           </div>
           {total > pageSize && (
             <nav className="rss-pagination" aria-label="种子库分页">
@@ -800,14 +849,14 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                       </button>
                     ) : action && selectedCount > 0 ? (
                       <button className="ops-action-button ops-action-button--primary" disabled={isSubmitting} type="button" onClick={() => setDownloadTarget({ match, analysis: action })}>
-                        <Download size={13} />{isSubmitting ? '正在提交' : '确认下载'}
+                        <Download size={13} />{isSubmitting ? '正在提交' : '交给 Torra 处理'}
                       </button>
                     ) : downloadFailed ? (
                       <button className="ops-action-button ops-action-button--primary" type="button" onClick={() => onNavigate('tasks', { userState: 'action_required' })}>
                         前往任务中心
                       </button>
                     ) : downloadConfirmed ? (
-                      <button className="ops-action-button" disabled type="button">已确认下载</button>
+                      <button className="ops-action-button" disabled type="button">已交给 Torra</button>
                     ) : (
                       <button className={canAnalyze ? 'ops-action-button ops-action-button--primary' : 'ops-action-button'} disabled={!canAnalyze || Boolean(actionRunning) || isSubmitting || action?.status === 'succeeded'} type="button" onClick={() => analyzeMatch(match)}>
                         <Send size={13} />{isSubmitting ? '正在提交' : actionRunning ? '正在检查' : canAnalyze ? '检查可用版本' : '无需处理'}
@@ -951,7 +1000,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       >
         {downloadTarget && (
           <>
-            <span className="ops-confirm-dialog__signal">人工确认下载</span>
+            <span className="ops-confirm-dialog__signal">人工确认交给 Torra</span>
             <h2 id="rss-download-title">把检查出的升级版本交给 Torra？</h2>
             <p id="rss-download-description">Torra 会再次核对当前追更、观察单元和分析结果；原有高质量文件不会在这里被删除。</p>
             <div className="ops-confirm-dialog__meta">
@@ -981,7 +1030,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
             <div className="rss-detail-grid">
               <span>来源</span><strong>{detailItem.sourceName}</strong>
               <span>发布时间</span><strong>{exactTimeLabel(detailItem.publishedAt)}</strong>
-              <span>类型与范围</span><strong>{episodeLabel(detailItem)}</strong>
+              <span>类型与范围</span><strong>{episodeLabel(detailItem)} · {rssResourceScopeLabel(classifyRssResourceScope(detailItem))}</strong>
               <span>大小</span><strong>{sizeLabel(detailItem.sizeBytes)}</strong>
               <span>分类</span><strong>{detailItem.category || '未提供'}</strong>
               <span>版本</span><strong>{detailItem.versionSummary || '未提取'}</strong>
@@ -991,7 +1040,10 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
               <span>身份来源</span><strong>{identitySourceLabel(detailItem.identitySource)}</strong>
               <span>置信度</span><strong>{identityConfidenceLabel(detailItem.identityConfidence)}</strong>
               <span>最近确认</span><strong>{exactTimeLabel(detailItem.identityUpdatedAt)}</strong>
-              <span>可交给 Torra</span><strong>{detailItem.hasDownload ? '是' : '否'}</strong>
+              <span>匹配原因</span><strong>{rssMatchMethodLabel(detailItem.matchMethod, detailItem.matchConfidence)}</strong>
+              <span>官种</span><strong>无法判断</strong>
+              <span>下载 / 入库 / 重复</span><strong>尚未确认</strong>
+              <span>当前处理状态</span><strong>{seedProcessingStateLabel(matchByItemId.get(detailItem.id), matchByItemId.get(detailItem.id) ? matchActions[matchByItemId.get(detailItem.id)!.id] : undefined)}</strong>
             </div>
             <section className="rss-detail-description" aria-labelledby="rss-detail-description-title">
               <h3 id="rss-detail-description-title">RSS 简介</h3>

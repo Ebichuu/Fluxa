@@ -59,6 +59,11 @@ def _integer(value, fallback=0) -> int:
     return int(match.group(0)) if match else fallback
 
 
+def _optional_nonnegative_integer(value):
+    match = re.fullmatch(r"\d+", str(value if value is not None else "").strip())
+    return int(match.group(0)) if match else None
+
+
 def _media_type(value) -> str:
     normalized = str(value if value is not None else "").strip().lower()
     if normalized in {"movie", "电影"}:
@@ -383,12 +388,20 @@ class TorraReadClient:
             for item in data.get("config_items") or []:
                 if not isinstance(item, dict):
                     continue
-                config_items.append({
+                values = item.get("values") if isinstance(item.get("values"), dict) else {}
+                config_item = {
                     "itemId": str(item.get("item_id") or ""),
                     "name": str(item.get("name") or ""),
                     "enabled": item.get("enabled") is not False,
                     "updatedAt": str(item.get("updated_at") or ""),
-                })
+                }
+                fallback_failures = _optional_nonnegative_integer(values.get("fallback_upload_after_failures"))
+                notify_failures = _optional_nonnegative_integer(values.get("notify_times"))
+                if fallback_failures is not None:
+                    config_item["fallbackUploadAfterFailures"] = fallback_failures
+                if notify_failures is not None:
+                    config_item["notifyAfterFailures"] = notify_failures
+                config_items.append(config_item)
 
             tasks = []
             for task in data.get("tasks") or []:
@@ -465,6 +478,46 @@ class TorraReadClient:
             }
         except Exception as exc:
             return {**base, "error": str(exc) or "Torra 秒传插件读取失败"}
+
+    def run_secupload_retry(self, target_item_id: str, previous_run_ids=None) -> dict:
+        """Run the official retry task and return its stable run identifier."""
+        target_item_id = str(target_item_id or "").strip()
+        if not target_item_id or len(target_item_id) > 160:
+            raise RuntimeError("Torra 秒传分类无效")
+        known = {
+            str(value or "").strip()
+            for value in (previous_run_ids or [])
+            if str(value or "").strip()
+        }
+        payload = self._write_json(
+            f"/api/v1/plugins/{SECUPLOAD_PLUGIN_KEY}/tasks/retry_pending/run",
+            {"target_item_id": target_item_id, "payload": {}},
+        )
+        if payload.get("success") is False:
+            raise RuntimeError("Torra 秒传重试未被接受")
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        candidates = []
+        for source in (payload, data, data.get("run") if isinstance(data, dict) else None):
+            if not isinstance(source, dict):
+                continue
+            run_id = str(source.get("run_id") or source.get("runId") or "").strip()
+            if run_id:
+                candidates.append(run_id)
+        if isinstance(data, dict):
+            for run in data.get("recent_runs") or []:
+                if not isinstance(run, dict):
+                    continue
+                if str(run.get("task_key") or "") != "retry_pending":
+                    continue
+                if str(run.get("target_item_id") or "") != target_item_id:
+                    continue
+                run_id = str(run.get("run_id") or "").strip()
+                if run_id and run_id not in known:
+                    candidates.append(run_id)
+        run_id = next((value for value in candidates if value not in known), "")
+        if not run_id:
+            raise RuntimeError("Torra 秒传重试响应缺少 run ID")
+        return {"runId": run_id}
 
     def push_subscription(self, subscription: dict) -> dict:
         if not self.is_configured():

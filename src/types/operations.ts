@@ -16,6 +16,9 @@ export interface ActivityLogItem {
   status: 'start' | 'success' | 'error' | 'skip' | 'info' | string;
   message: string;
   meta?: Record<string, unknown>;
+  repeatCount?: number;
+  firstTime?: string;
+  lastTime?: string;
 }
 
 export interface ActivityLogResponse {

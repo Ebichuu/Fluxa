@@ -1,12 +1,13 @@
 # Fluxa
 
-当前发布版本：`v0.4.3`。
+当前发布版本：`v0.4.4`。
 
 面向 fnOS / NAS 的个人影音中控。生产环境使用一个 Python / Flask / Gunicorn 后端，同时提供 React 页面、Mineradio 影院大厅、订阅中枢和外部服务聚合。
 
 ## 主要功能
 
 - 内容发现、媒体搜索、订阅管理和播出日历。
+- 顶栏"搜索媒体"全局作品搜索：一处查看追更、下载、入库和播放状态，聚合本地追更、任务、日历、已识别 RSS 和 Emby 证据，支持作品名或 `tv:202` 直达；点击结果进入作品总览页（`/media/movie/:tmdbId`、`/media/tv/:tmdbId`），按追更、Torra、下载、115、入库、Emby 六个阶段展示完整生命周期，并提供追更、任务、日历深链。
 - 首页只展示今日是否正常、入库、下载中、待处理和真实异常；缺少证据时不显示绿色正常。
 - 第一阶段追更工作台统一展示本地写入、Torra、镜像同步、RSS 和定时任务状态；Torra 只读订阅可直接进入追更与日历，Fluxa 本地台账仍保持独立边界。
 - Torra 已有订阅支持只读对账、预览、确认导入和状态同步；第一阶段不修改或删除 Torra 订阅，也不自动创建第二套本地真相。
@@ -125,7 +126,7 @@ Vite 会把 `/api` 和 `/mineradio` 代理到 Python。
 ## 本地检查
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前后端 419 项；v2 机器契约 60 条
+python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前后端 453 项；v2 机器契约 64 条
 npm test
 npm run build
 docker compose config --services
@@ -134,6 +135,10 @@ docker compose config --images
 
 自动测试使用临时目录和模拟客户端，不连接真实服务执行写操作，也不会向真实活动日志追加模拟记录。
 正式镜像只通过 GitHub Actions 构建并推送到 GHCR，不在本地手工推送。
+
+## 默认可用的只读功能
+
+以下功能不依赖任何写开关，登录后即可使用：首页结论、发现、追更列表、任务中心、日历、全局作品搜索与作品总览、控制室诊断和活动日志。下方开关只控制写入和外部动作。
 
 ## 默认写保护
 
@@ -184,6 +189,7 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - [部署与回滚](docs/DEPLOYMENT.md)
 - [实现来源](docs/IMPLEMENTATION_SOURCES.md)
 - [管理员认证](docs/AUTHENTICATION.md)
+- [页面地址与可分享参数](docs/URL_STATE.md)
 - [前端 UI 改造实施计划](docs/Fluxa-前端UI改造实施计划.md)
 - [产品设计基线](docs/PRODUCT_DESIGN.md)
 - [未完成能力路线图](docs/ROADMAP.md)

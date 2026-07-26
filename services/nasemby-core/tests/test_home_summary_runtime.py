@@ -78,6 +78,55 @@ def chain_payload(items):
     }
 
 
+def secupload_service_payload(*, failed=1, schedule_enabled=True, next_run_at="2026-07-22T18:00:00+08:00", active=False):
+    return {
+        "configured": True,
+        "connected": True,
+        "readable": True,
+        "pluginEnabled": True,
+        "perFileEvidence": False,
+        "activeRuns": 1 if active else 0,
+        "configItems": [{
+            "itemId": "raw-category-anime",
+            "name": "00-日漫",
+            "enabled": True,
+            "fallbackUploadAfterFailures": 3,
+        }],
+        "tasks": [{
+            "key": "retry_pending",
+            "name": "重试临时目录",
+            "allowSchedule": True,
+            "allowManualRun": True,
+        }],
+        "schedules": [{
+            "taskKey": "retry_pending",
+            "targetItemId": "raw-category-anime",
+            "enabled": schedule_enabled,
+            "nextRunAt": next_run_at,
+        }],
+        "recentRuns": [{
+            "runId": "run-latest",
+            "taskKey": "retry_pending",
+            "targetItemId": "raw-category-anime",
+            "trigger": "schedule",
+            "status": "running" if active else "success",
+            "counts": {"success": 0, "failed": failed},
+            "startedAt": "2026-07-22T12:00:00+08:00",
+            "finishedAt": "2026-07-22T12:00:03+08:00",
+        }],
+        "latestBatch": {
+            "taskKey": "retry_pending",
+            "trigger": "schedule",
+            "status": "running" if active else ("failed" if failed else "success"),
+            "counts": {"success": 0, "failed": failed},
+            "startedAt": "2026-07-22T12:00:00+08:00",
+            "finishedAt": "2026-07-22T12:00:03+08:00",
+        },
+        "nextRunAt": next_run_at,
+        "lastCheckedAt": "2026-07-22T12:00:04+08:00",
+    }
+
+
 class HomeSummaryRuntimeTests(unittest.TestCase):
     def build_app(self, items, *, scheduler_enabled=False, scheduler_started=False):
         app = Flask(__name__)
@@ -421,6 +470,63 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["headline"], "核心服务状态尚待确认")
         self.assertIn("归档文件 未知", result["detail"])
         self.assertIn("qB 下载任务 未知", result["detail"])
+
+    def test_recovering_secupload_uses_processing_semantics_and_system_issue_link(self):
+        app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)
+        services = app.extensions["mcc_task_chain_service"].payload["services"]
+        services["torra"]["secupload115"] = secupload_service_payload(failed=1)
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+        focus = {value["key"]: value for value in result["focusItems"]}
+
+        self.assertEqual(focus["secupload_failures"]["label"], "秒传待恢复")
+        self.assertEqual(focus["secupload_failures"]["value"], 1)
+        self.assertEqual(focus["secupload_failures"]["state"], "processing")
+        self.assertEqual(focus["secupload_failures"]["href"], "/tasks?systemIssue=secupload_failures")
+        self.assertEqual(result["counts"]["actionRequired"], 0)
+        self.assertEqual(focus["action_required"]["value"], 0)
+        self.assertEqual(result["healthState"], "waiting")
+        issue = result["systemIssues"][0]
+        self.assertEqual((issue["id"], issue["state"]), ("secupload_failures", "recovering"))
+        serialized = str(result)
+        self.assertNotIn("raw-category-anime", serialized)
+        self.assertNotIn("run-latest", serialized)
+
+    def test_action_required_secupload_shows_handle_label_without_red_reclassification(self):
+        app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)
+        services = app.extensions["mcc_task_chain_service"].payload["services"]
+        services["torra"]["secupload115"] = secupload_service_payload(
+            failed=1, schedule_enabled=False, next_run_at="",
+        )
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+        focus = {value["key"]: value for value in result["focusItems"]}
+
+        self.assertEqual(focus["secupload_failures"]["label"], "秒传需要处理")
+        self.assertEqual(focus["secupload_failures"]["value"], 1)
+        self.assertEqual(focus["secupload_failures"]["state"], "action_required")
+        self.assertEqual(focus["secupload_failures"]["href"], "/tasks?systemIssue=secupload_failures")
+        self.assertEqual(result["systemIssues"][0]["state"], "action_required")
+        self.assertTrue(result["systemIssues"][0]["manualRetry"]["supported"])
+
+    def test_unreadable_secupload_stays_unknown_without_red_count(self):
+        app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)
+        services = app.extensions["mcc_task_chain_service"].payload["services"]
+        services["torra"]["secupload115"] = {
+            "configured": True,
+            "connected": False,
+            "readable": False,
+            "error": "http://torra.private/api token=must-not-escape",
+        }
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+        focus = {value["key"]: value for value in result["focusItems"]}
+
+        self.assertEqual(focus["secupload_failures"]["state"], "unknown")
+        self.assertIsNone(focus["secupload_failures"]["value"])
+        self.assertEqual(result["counts"]["actionRequired"], 0)
+        self.assertEqual(result["systemIssues"][0]["state"], "unknown")
+        self.assertNotIn("must-not-escape", str(result))
 
     def test_missing_episode_zero_requires_complete_subscription_coverage(self):
         app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)

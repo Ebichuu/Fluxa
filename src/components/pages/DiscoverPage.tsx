@@ -34,11 +34,19 @@ import {
   updateSubscriptionQualityWatch
 } from '../../services/api';
 import type { AutomationAction, RssMatch, RssSeedItem, RssSeedListResponse } from '../../types/rssSeedLibrary';
+import {
+  classifyRssResourceScope,
+  countRssResourceScopes,
+  rssMatchMethodLabel,
+  rssResourceScopeLabel,
+  rssResourceScopeSummaryText
+} from '../../types/rssSeedLibrary';
 import type {
   DiscoverBrowseParams,
   DiscoverResourceItem,
   DiscoverResourceResponse,
   DiscoverSourceStatus,
+  ManualFollowProvider,
   MoviePilotPreview,
   MoviePilotPushResult,
   QualityWatchResponse,
@@ -339,6 +347,25 @@ function resourcePreviewText(item: DiscoverResourceItem) {
   ].filter(Boolean).join('\n');
 }
 
+function resourceEvidenceLines(item: DiscoverResourceItem) {
+  if (!item.rssItemId) return [];
+  const identityKnown = item.identityStatus === 'identified';
+  return [
+    `匹配原因：${rssMatchMethodLabel(item.matchMethod, item.matchConfidence)}`,
+    `资源范围：${item.scope ? rssResourceScopeLabel(item.scope) : '范围待确认'}`,
+    '官种：无法判断',
+    '下载 / 入库 / 重复：尚未确认',
+    '当前处理状态：未处理',
+    `优先检查理由：${identityKnown && item.scope === 'explicit_episode'
+      ? '精确身份优先 · 明确季集优先'
+      : identityKnown
+        ? '精确身份优先'
+        : item.scope === 'explicit_episode'
+          ? '明确季集优先'
+          : '暂无优先证据；最终下载推荐只来自 Torra 分析评分'}`
+  ];
+}
+
 function formatRssSeedSize(sizeBytes: number) {
   if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) return '';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -384,6 +411,7 @@ function mapRssSeedsToResources(
       episodes.forEach((episode) => values.add(episode));
       seasonEpisodes.set(item.seasonNumber, values);
     }
+    const scope = classifyRssResourceScope(item);
     return {
       rssItemId: item.id,
       source: sourceKey,
@@ -392,15 +420,19 @@ function mapRssSeedsToResources(
       title: item.title,
       subtitle: [
         rssEpisodeLabel(item),
-        item.seasonScopeState === 'unknown' ? '季号待确认' : '',
-        item.hasDownload ? '已保留下载信息' : '仅保存种子元数据'
+        rssResourceScopeLabel(scope)
       ].filter(Boolean).join(' · '),
       quality: item.versionSummary,
       size: formatRssSeedSize(item.sizeBytes),
       date: item.publishedAt || item.lastSeenAt,
       full_text: item.description,
       season: item.seasonNumber == null ? undefined : String(item.seasonNumber),
-      episodes
+      episodes,
+      scope,
+      matchMethod: item.matchMethod,
+      matchConfidence: item.matchConfidence,
+      identityStatus: item.identityStatus,
+      torraHandoffReady: item.hasDownload
     } satisfies DiscoverResourceItem;
   });
   const sources = [
@@ -418,6 +450,7 @@ function mapRssSeedsToResources(
     items,
     sources,
     seasons,
+    scopeCounts: countRssResourceScopes(items.map((item) => item.scope ?? 'scope_pending')),
     errors: [],
     cache_hits: [],
     sourceStatuses: [{
@@ -534,6 +567,19 @@ function fulfillmentLabel(item: SubscriptionItem) {
   } as const;
   return item.fulfillmentState ? labels[item.fulfillmentState] : resolvedSubscriptionStatus(item) === 'done' ? '已完成' : '追更中';
 }
+
+function followScopeLabel(item: SubscriptionItem) {
+  if (item.mediaType !== 'tv') return '整部电影';
+  return item.seasonName || (item.seasonNumber != null ? `第 ${item.seasonNumber} 季` : '按剧集持续追更');
+}
+
+const followProviderLabels: Record<ManualFollowProvider, string> = {
+  torra: 'Torra',
+  moviepilot: 'MoviePilot',
+  symedia: 'Symedia',
+  resource_rule: '资源处理规则',
+  none: ''
+};
 
 function subscriptionUserStatus(item: SubscriptionItem) {
   if (item.healthState === 'action_required' || item.fulfillmentState === 'blocked') {
@@ -845,7 +891,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       requestPosterBackfills(payload.posterBackfillIds);
     } catch (reason) {
       if (!controller.signal.aborted) {
-        setSubsError(reason instanceof Error ? reason.message : '订阅工作台当前不可用');
+        setSubsError(reason instanceof Error ? reason.message : '追更工作台当前不可用');
       }
     } finally {
       if (subsRequestRef.current === controller) {
@@ -1114,18 +1160,66 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   const reconciliationSummary = workbench?.reconciliation?.summary;
   const torraPushEnabled = Boolean(subscriptionCapabilities?.torraPush.enabled);
   const schedulerRunning = Boolean(subscriptionCapabilities?.scheduler.running);
-  const followConfirmationText = !subscriptionCapabilities
-    ? '保存追更意图；实际同步状态将在保存后确认。'
-    : !torraPushEnabled
-      ? '保存追更意图，当前不会自动获取；可稍后预览并手动同步到 Torra。'
-      : !schedulerRunning
-        ? '保存追更意图；Torra 推送已开启，但定时任务未运行，需要手动同步。'
-        : '保存后进入自动追更，系统会按 PT 优先策略继续处理。';
-  const followSuccessText = !subscriptionCapabilities || !torraPushEnabled
-    ? '已保存追更意图，当前不会自动获取'
+  const manualFollow = subscriptionCapabilities?.manualFollow;
+  // manualFollow 缺失（后端未就绪）时回退到现有 capabilities 推断，不报错
+  const manualFollowState = manualFollow?.state
+    ?? (!subscriptionCapabilities
+      ? null
+      : !subscriptionCapabilities.localWrite.enabled
+        ? 'write_disabled'
+        : torraPushEnabled
+          ? 'queued_ready'
+          : 'saved_only');
+  const manualFollowProviderLabel = manualFollow && manualFollow.provider !== 'none'
+    ? followProviderLabels[manualFollow.provider]
+    : '';
+  const followButtonLabel = manualFollowState === 'write_disabled'
+    ? '追更写入已关闭'
+    : manualFollowState === 'saved_only'
+      ? '加入追更（仅保存）'
+      : '加入追更';
+  const followWriteDisabled = manualFollowState === 'write_disabled';
+  const followConfirmationText = manualFollow
+    ? manualFollow.state === 'write_disabled'
+      ? `追更写入已关闭，当前无法保存新的追更。${manualFollow.blockers.join('；')}`
+      : manualFollow.state === 'saved_only'
+        ? '只会保存到 Fluxa 追更台账，当前没有可运行的后续获取能力。'
+        : `保存后会立即交给${manualFollowProviderLabel || '后续能力'}继续处理。`
+    : !subscriptionCapabilities
+      ? '保存追更意图；实际生效结果将在保存后确认。'
+      : !torraPushEnabled
+        ? '保存追更意图，当前不会自动获取；可稍后预览并手动同步到 Torra。'
+        : !schedulerRunning
+          ? '保存追更意图；Torra 推送已开启，但定时任务未运行，需要手动同步。'
+          : '保存后进入自动追更，系统会按 PT 优先策略继续处理。';
+  const followFallbackSuccessText = !subscriptionCapabilities || !torraPushEnabled
+    ? '已保存追更，当前不会自动获取'
     : !schedulerRunning
-      ? '已保存追更意图，等待手动同步到 Torra'
-      : '已保存追更意图，已进入自动追更';
+      ? '已保存追更，等待手动同步到 Torra'
+      : '已保存追更，已进入自动追更';
+  const followPolicyHint = !subscriptionCapabilities
+    ? '正在确认追更能力'
+    : manualFollow
+      ? manualFollow.state === 'write_disabled'
+        ? '追更写入已关闭'
+        : manualFollow.state === 'saved_only'
+          ? '加入后仅保存，暂无后续获取能力'
+          : `加入后交给${manualFollowProviderLabel || '后续能力'}处理`
+      : !torraPushEnabled
+        ? '保存意图，暂不自动获取'
+        : !schedulerRunning
+          ? '保存后等待手动同步'
+          : '保存后进入自动追更';
+  const recentFollows = useMemo(() => {
+    if (subscriptionsOnly) return [];
+    const updatedAtMs = (item: SubscriptionItem) => {
+      const parsed = new Date((item.updatedAt || '').replace(' ', 'T')).getTime();
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+    return [...subs]
+      .sort((left, right) => updatedAtMs(right) - updatedAtMs(left))
+      .slice(0, 3);
+  }, [subs, subscriptionsOnly]);
 
   const changeSource = (source: DiscoverSource) => {
     const nextFilters = {
@@ -1188,7 +1282,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
 
   const subscribe = (result: DiscoverResult) => {
     const tmdbId = tmdbIdForResult(result);
-    if (!tmdbId) return;
+    if (!tmdbId || followWriteDisabled) return;
     const payload = {
       title: result.title,
       mediaType: result.mediaType,
@@ -1200,18 +1294,21 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       originCountry: result.originCountry
     };
     setConfirmation({
-      signal: '自动订阅',
-      title: `订阅《${payload.title}》？`,
+      signal: '加入追更',
+      title: `把《${payload.title}》加入追更？`,
       description: followConfirmationText,
-      confirmLabel: '确认订阅',
+      confirmLabel: followButtonLabel,
       onConfirm: () => {
         setSubscriptionAction(`save:${payload.mediaType}:${payload.tmdbId}`);
         saveSubscription(payload)
-          .then(() => {
-            setSweepMessage(`${followSuccessText}：${payload.title}`);
+          .then((saved) => {
+            // activation 缺失（后端未就绪）时回退到现有推断文案
+            setSweepMessage(saved.activation?.message
+              ? `${payload.title}：${saved.activation.message}`
+              : `${followFallbackSuccessText}：${payload.title}`);
             loadSubs();
           })
-          .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '保存订阅失败'))
+          .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '保存追更失败'))
           .finally(() => setSubscriptionAction(''));
       }
     });
@@ -1219,15 +1316,15 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
 
   const runSweep = () => {
     setConfirmation({
-      signal: '自动订阅',
-      title: '更新自动订阅来源？',
-      description: '这会重新读取已启用的榜单来源，并增量合并到本地台账；不会搜索当前剧集，也不会删除手动订阅或 Torra 镜像。',
+      signal: '自动追更',
+      title: '更新自动追更来源？',
+      description: '这会重新读取已启用的榜单来源，并增量合并到本地台账；不会搜索当前剧集，也不会删除手动追更或 Torra 镜像。',
       confirmLabel: '开始更新',
       onConfirm: () => {
         setSubscriptionAction('run');
         runSubscriptionSweep()
           .then(() => {
-            setSweepMessage('自动订阅来源已更新，列表正在重新读取。');
+            setSweepMessage('自动追更来源已更新，列表正在重新读取。');
             loadSubs();
           })
           .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '执行失败'))
@@ -1286,15 +1383,15 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   const removeSubscription = (item: SubscriptionItem) => {
     if (!item.id) return;
     setConfirmation({
-      signal: '订阅管理',
+      signal: '追更管理',
       title: `删除《${item.title}》？`,
       description: '删除后不会加入屏蔽列表；如果之后来源再次命中，仍可能重新出现。',
-      confirmLabel: '删除订阅',
+      confirmLabel: '删除追更',
       destructive: true,
       onConfirm: () => {
         setSubscriptionAction(`delete:${item.id}`);
         deleteSubscription(item.id!)
-          .then(() => { closeDetail(); loadSubs(); setSweepMessage(`已删除订阅：${item.title}`); })
+          .then(() => { closeDetail(); loadSubs(); setSweepMessage(`已删除追更：${item.title}`); })
           .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '删除失败'))
           .finally(() => setSubscriptionAction(''));
       }
@@ -1304,15 +1401,15 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   const blockItem = (item: SubscriptionItem) => {
     if (!item.id) return;
     setConfirmation({
-      signal: '订阅管理',
+      signal: '追更管理',
       title: `删除并屏蔽《${item.title}》？`,
-      description: '自动订阅后续会跳过这个标题，直到你在屏蔽列表中取消屏蔽。',
+      description: '自动追更后续会跳过这个标题，直到你在屏蔽列表中取消屏蔽。',
       confirmLabel: '删除并屏蔽',
       destructive: true,
       onConfirm: () => {
         setSubscriptionAction(`block:${item.id}`);
         blockSubscription({ id: item.id!, title: item.title })
-          .then(() => { closeDetail(); loadSubs(); setSweepMessage(`已屏蔽订阅：${item.title}`); })
+          .then(() => { closeDetail(); loadSubs(); setSweepMessage(`已屏蔽追更：${item.title}`); })
           .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '屏蔽失败'))
           .finally(() => setSubscriptionAction(''));
       }
@@ -1330,15 +1427,15 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   const changeSeason = (item: SubscriptionItem, seasonNumber: number, seasonName?: string) => {
     if (!item.id) return;
     setConfirmation({
-      signal: '订阅管理',
-      title: `改为订阅《${item.title}》第 ${seasonNumber} 季？`,
-      description: '当前订阅季会被替换，下载和入库规则将按新季继续处理。',
-      confirmLabel: '切换订阅季',
+      signal: '追更管理',
+      title: `改为追更《${item.title}》第 ${seasonNumber} 季？`,
+      description: '当前追更季会被替换，下载和入库规则将按新季继续处理。',
+      confirmLabel: '切换追更季',
       onConfirm: () => {
         setSubscriptionAction(`season:${item.id}`);
         setSubscriptionSeason(item.id!, seasonNumber, seasonName)
-          .then(() => { closeDetail(); loadSubs(); setSweepMessage(`已更新订阅季：${item.title} · S${seasonNumber}`); })
-          .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '更新订阅季失败'))
+          .then(() => { closeDetail(); loadSubs(); setSweepMessage(`已更新追更季：${item.title} · S${seasonNumber}`); })
+          .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '更新追更季失败'))
           .finally(() => setSubscriptionAction(''));
       }
     });
@@ -1670,7 +1767,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     const analysis = resourceAutomationAction;
     setConfirmation({
       signal: 'RSS 追更',
-      title: `下载《${resourceTarget?.title || '当前作品'}》的升级版本？`,
+      title: `把《${resourceTarget?.title || '当前作品'}》的升级版本交给 Torra？`,
       description: 'Fluxa 只会把本次 Torra 分析选中的升级版本交给 Torra，原有高质量版本不会被主动清理。',
       confirmLabel: '确认交给 Torra',
       onConfirm: () => {
@@ -1910,7 +2007,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       overview: '',
       rating: 0,
       source: 'subscription',
-      sourceLabel: item.sourceLabel || '我的订阅',
+      sourceLabel: item.sourceLabel || '我的追更',
       sourceId: item.id,
       tmdbId: item.tmdbId,
       seasonNumber: item.seasonNumber
@@ -1994,6 +2091,10 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       ? rows
       : rows.filter((item) => (item.source_key || item.source) === resourceSource);
   }, [resourceData, resourceSource]);
+  const visibleResourceScopeCounts = useMemo(
+    () => countRssResourceScopes(visibleResources.map((item) => item.scope ?? 'scope_pending')),
+    [visibleResources]
+  );
   const resourceSourceStatuses = resourceData?.sourceStatuses ?? [];
 
   const renderResourcePanel = (variant: 'subscription' | 'discover') => {
@@ -2062,21 +2163,16 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                 ))}
               </div>
             )}
-            {resourceData.seasons.length > 0 && (
-              <div className="discover-resource-seasons" aria-label="资源季集状态">
-                {resourceData.seasons.map((season) => (
-                  <div key={season.season}>
-                    <strong>S{String(season.season).padStart(2, '0')}</strong>
-                    <span>{season.resource_episodes?.length ?? season.episodes.length} / {season.episodes.length} 集</span>
-                    {season.notice && <small>{season.notice}</small>}
-                  </div>
-                ))}
-              </div>
+            {visibleResourceScopeCounts.total > 0 && (
+              <p className="discover-resource-scope-summary" role="status">
+                {rssResourceScopeSummaryText(visibleResourceScopeCounts)}
+              </p>
             )}
             {resourceData.errors.length > 0 && <p className="discover-resource-notice">{resourceData.errors[0]}</p>}
             <div className="discover-resource-list">
               {visibleResources.map((item, index) => {
                 const previewText = resourcePreviewText(item);
+                const evidenceLines = resourceEvidenceLines(item);
                 const activePreview = resourcePreview === item;
                 const activeResourceAction = Boolean(
                   item.rssItemId && resourceActionItem?.rssItemId === item.rssItemId
@@ -2096,14 +2192,14 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                       <button
                         aria-expanded={activePreview}
                         className="tool-link"
-                        disabled={!previewText}
+                        disabled={!previewText && evidenceLines.length === 0}
                         type="button"
                         onClick={() => setResourcePreview(activePreview ? null : item)}
                       >
                         <FileSearch aria-hidden="true" size={14} />
-                        预览
+                        查看识别证据
                       </button>
-                      {variant === 'subscription' && item.rssItemId && (
+                      {variant === 'subscription' && item.rssItemId && item.torraHandoffReady && (
                         <button
                           className="ops-action-button ops-action-button--primary"
                           disabled={resourceWorkflowLocked}
@@ -2111,12 +2207,19 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                           onClick={() => void beginResourceAction(item)}
                         >
                           <RefreshCcw aria-hidden="true" size={14} />
-                          {activeResourceAction && resourceWorkflowLocked ? '处理中' : activeResourceAction ? '重新选择' : '用于追更'}
+                          {activeResourceAction && resourceWorkflowLocked ? '处理中' : activeResourceAction ? '重新选择' : '交给 Torra 处理'}
                         </button>
                       )}
                     </div>
-                    {activePreview && previewText && (
-                      <div className="discover-resource-preview"><pre>{previewText}</pre></div>
+                    {activePreview && (
+                      <div className="discover-resource-preview">
+                        {evidenceLines.length > 0 && (
+                          <ul className="discover-resource-evidence" aria-label="识别证据">
+                            {evidenceLines.map((line) => <li key={line}>{line}</li>)}
+                          </ul>
+                        )}
+                        {previewText && <pre>{previewText}</pre>}
+                      </div>
                     )}
                     {activeResourceAction && (
                       <div className="discover-resource-workflow" role="status">
@@ -2174,7 +2277,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                               onClick={confirmResourceDownload}
                             >
                               <Download aria-hidden="true" size={14} />
-                              确认下载
+                              交给 Torra 处理
                             </button>
                           )}
                           {resourceAction?.type === 'rewash-download' && (
@@ -2216,14 +2319,14 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       <section className={subscriptionsOnly ? 'ops-hero ops-hero--discover ops-hero--compact' : 'ops-hero ops-hero--discover'}>
         <div>
           <p className="ops-eyebrow">{subscriptionsOnly ? '自动获取' : '找片'}</p>
-          <h1>{subscriptionsOnly ? '订阅' : '发现'}</h1>
-          <p className={subscriptionsOnly ? 'ops-page-subtitle' : 'ops-discover-subtitle'}>{subscriptionsOnly ? '管理正在追的电影和剧集。' : '找到想看的内容，加入订阅即可。'}</p>
-          <p className="ops-deck">{subscriptionsOnly ? '在这里查看进度、调整季数或重新交给 Torra；后续下载和入库会自动回到任务中心。' : '可以浏览榜单、国内平台和海外流媒体；加入订阅后由 PT 主线继续处理。'}</p>
+          <h1>{subscriptionsOnly ? '追更' : '发现'}</h1>
+          <p className={subscriptionsOnly ? 'ops-page-subtitle' : 'ops-discover-subtitle'}>{subscriptionsOnly ? '管理正在追的电影和剧集。' : '找到想看的内容，加入追更即可。'}</p>
+          <p className="ops-deck">{subscriptionsOnly ? '在这里查看进度、调整季数或重新交给 Torra；后续下载和入库会自动回到任务中心。' : '可以浏览榜单、国内平台和海外流媒体；加入追更后由 PT 主线继续处理。'}</p>
         </div>
         <div className={subscriptionsOnly ? 'ops-discover-policy ops-discover-policy--compact' : 'ops-discover-policy'}>
           <span><Database size={15} />{subscriptionsOnly ? '默认 PT / Torra' : '默认获取方式'}</span>
           {!subscriptionsOnly && <strong>PT / Torra</strong>}
-          <small><Send size={13} />{!subscriptionCapabilities ? '正在确认追更能力' : !torraPushEnabled ? '保存意图，暂不自动获取' : !schedulerRunning ? '保存后等待手动同步' : '保存后进入自动追更'}</small>
+          <small><Send size={13} />{followPolicyHint}</small>
         </div>
       </section>
 
@@ -2382,13 +2485,13 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                       </button>
                       <button
                         className={subscribed ? 'tool-link discover-card__action discover-card__action--done' : 'tool-link discover-card__action'}
-                        disabled={subscribed || !canSubscribe || Boolean(subscriptionAction)}
-                        title={canSubscribe ? '保存到我的订阅' : '未匹配到 TMDB，暂不能订阅'}
+                        disabled={subscribed || !canSubscribe || followWriteDisabled || Boolean(subscriptionAction)}
+                        title={followWriteDisabled ? '追更写入已关闭' : canSubscribe ? '加入追更' : '未匹配到 TMDB，暂不能追更'}
                         type="button"
                         onClick={() => subscribe(result)}
                       >
                         {subscribed ? <Check aria-hidden="true" size={14} /> : <Plus aria-hidden="true" size={14} />}
-                        {subscribed ? '已订阅' : subscriptionAction === `save:${result.mediaType}:${tmdbIdForResult(result)}` ? '保存中' : canSubscribe ? '订阅' : '待匹配'}
+                        {subscribed ? '已追更' : subscriptionAction === `save:${result.mediaType}:${tmdbIdForResult(result)}` ? '保存中' : canSubscribe ? followButtonLabel : '待匹配'}
                       </button>
                     </div>
                   </div>
@@ -2414,36 +2517,90 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
         )}
       </div>}
 
-      <aside className={subscriptionsOnly ? 'ops-inspector ops-subscription-console discover-subs discover-subs--full' : 'ops-inspector ops-subscription-console discover-subs'} aria-label="我的订阅">
+      {!subscriptionsOnly && (
+        <aside className="ops-inspector discover-recent-follows" aria-label="最近追更">
+          <div className="activity-panel__head">
+            <div><small>自动获取</small><h2>最近追更</h2></div>
+          </div>
+          {sweepMessage && <p className="console-panel__hint">{sweepMessage}</p>}
+          {subsLoading && <p className="console-panel__hint">正在读取追更…</p>}
+          {subsError && (
+            <div className="subscription-read-error" role="alert">
+              <span>{subsError}</span>
+              <button className="ops-action-button" disabled={subsLoading} type="button" onClick={loadSubs}>
+                <RefreshCcw aria-hidden="true" size={14} />重试
+              </button>
+            </div>
+          )}
+          {!subsLoading && !subsError && recentFollows.length === 0 && (
+            <p className="console-panel__hint">还没有追更内容；从左侧搜索结果加入追更后会显示在这里。</p>
+          )}
+          {!subsLoading && !subsError && recentFollows.map((item) => (
+            <a
+              className="discover-recent-follow"
+              href={item.id ? `/following?subscriptionId=${encodeURIComponent(item.id)}` : '/following'}
+              key={item.id ?? `${item.mediaType}:${item.tmdbId}:${item.title}`}
+              onClick={(event) => {
+                event.preventDefault();
+                onNavigate('subscriptions', item.id ? { subscriptionId: item.id } : undefined);
+              }}
+            >
+              <PosterImage
+                className="discover-sub__poster"
+                fallbackClassName="discover-sub__poster--fallback"
+                src={item.posterUrl}
+                title={item.title}
+              />
+              <span>
+                <strong>{item.title}</strong>
+                <small>{followScopeLabel(item)} · {fulfillmentLabel(item)}</small>
+                <em>{subscriptionUpdateLabel(item.updatedAt)}</em>
+              </span>
+            </a>
+          ))}
+          <a
+            className="tool-link discover-recent-follows__all"
+            href="/following"
+            onClick={(event) => {
+              event.preventDefault();
+              onNavigate('subscriptions');
+            }}
+          >
+            查看全部追更
+            <ChevronRight aria-hidden="true" size={14} />
+          </a>
+        </aside>
+      )}
+      {subscriptionsOnly && (
+      <aside className="ops-inspector ops-subscription-console discover-subs discover-subs--full" aria-label="我的追更">
         <div className="activity-panel__head">
-          <div><small>自动获取</small><h2>我的订阅</h2></div>
+          <div><small>自动获取</small><h2>我的追更</h2></div>
           <span className="queue-count">
             {subscriptionCountsUnavailable
               ? (subsLoading ? '读取中' : '—')
-              : `${subscriptionsOnly ? (workbench?.page.total ?? workbenchStats.total) : subs.length} 条`}
+              : `${workbench?.page.total ?? workbenchStats.total} 条`}
           </span>
-          <div className="subscription-toolbar" aria-label="订阅操作">
+          <div className="subscription-toolbar" aria-label="追更操作">
             <button
               className="ops-action-button ops-action-button--primary subscription-toolbar__primary"
               disabled={Boolean(subscriptionAction) || !localWriteEnabled}
-              title={localWriteEnabled ? '更新已启用的自动订阅来源' : '本地订阅写入已关闭'}
+              title={localWriteEnabled ? '更新已启用的自动追更来源' : '本地追更写入已关闭'}
               type="button"
               onClick={runSweep}
             >
               <RefreshCcw aria-hidden="true" size={14} />
               {subscriptionAction === 'run' ? '更新中' : '更新来源'}
             </button>
-            <button aria-label="订阅设置" className="ops-icon-button subscription-toolbar__icon" title="订阅设置" type="button" onClick={() => onNavigate('subscription-settings')}>
+            <button aria-label="追更设置" className="ops-icon-button subscription-toolbar__icon" title="追更设置" type="button" onClick={() => onNavigate('subscription-settings')}>
               <SlidersHorizontal aria-hidden="true" size={14} />
             </button>
-            {subscriptionsOnly && <button aria-label="刷新追更状态" className="ops-icon-button subscription-toolbar__icon" disabled={subsLoading} title="重新读取工作台状态和订阅链路" type="button" onClick={loadSubs}>
+            <button aria-label="刷新追更状态" className="ops-icon-button subscription-toolbar__icon" disabled={subsLoading} title="重新读取工作台状态和追更链路" type="button" onClick={loadSubs}>
               <RefreshCcw aria-hidden="true" size={14} />
-            </button>}
+            </button>
           </div>
         </div>
-        {!subscriptionsOnly && <div className="ops-subscription-policy"><strong>PT 优先</strong><span>Torra 推送保持安全开关控制</span></div>}
         {subscriptionsOnly && workbench && (
-          <section className="subscription-workbench-summary" aria-label="订阅统计">
+          <section className="subscription-workbench-summary" aria-label="追更统计">
             <span><b>{workbenchStats.following}</b>追更中</span>
             <span><b>{workbenchStats.completed}</b>已完成</span>
             <span><b>{workbenchStats.actionRequired}</b>需要处理</span>
@@ -2459,7 +2616,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
               <small>连接、对账与 Torra 镜像</small>
             </summary>
             {workbench && (
-              <section className="subscription-capabilities" aria-label="订阅工作台能力状态">
+              <section className="subscription-capabilities" aria-label="追更工作台能力状态">
                 {workbench.capabilities.map((capability) => (
                   <div className={`subscription-capability is-${capability.state}`} key={capability.key} title={capability.detail}>
                     <span aria-hidden="true" />
@@ -2526,10 +2683,10 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             </section>
           </details>
         )}
-        <div className="discover-sub-tabs" role="tablist" aria-label="订阅类型">
+        <div className="discover-sub-tabs" role="tablist" aria-label="追更类型">
           {([
-            ['movie', '电影订阅', subscriptionCountsUnavailable ? '—' : subscriptionsOnly ? workbenchStats.movie : subs.filter((item) => item.mediaType === 'movie').length],
-            ['tv', '电视剧订阅', subscriptionCountsUnavailable ? '—' : subscriptionsOnly ? workbenchStats.tv : subs.filter((item) => item.mediaType === 'tv').length],
+            ['movie', '电影追更', subscriptionCountsUnavailable ? '—' : subscriptionsOnly ? workbenchStats.movie : subs.filter((item) => item.mediaType === 'movie').length],
+            ['tv', '电视剧追更', subscriptionCountsUnavailable ? '—' : subscriptionsOnly ? workbenchStats.tv : subs.filter((item) => item.mediaType === 'tv').length],
             ['blocked', '被屏蔽', subscriptionCountsUnavailable ? '—' : blockedTitles.length]
           ] as const).map(([key, label, count]) => (
             <button
@@ -2555,7 +2712,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             <label className="discover-sub-search">
               <Search aria-hidden="true" size={13} />
               <input
-                aria-label="搜索订阅标题或关键词"
+                aria-label="搜索追更标题或关键词"
                 placeholder="搜索标题、来源或 TMDB ID"
                 type="search"
                 value={subscriptionKeyword}
@@ -2583,7 +2740,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                   onClick={() => setSubscriptionUpdate(value)}
                 >{label}</button>
               ))}
-              <select aria-label="订阅年份" value={subscriptionYear} onChange={(event) => setSubscriptionYear(event.target.value)}>
+              <select aria-label="追更年份" value={subscriptionYear} onChange={(event) => setSubscriptionYear(event.target.value)}>
                 <option value="all">全部年份</option>
                 {subscriptionYears.map((year) => <option key={year} value={year}>{year}</option>)}
               </select>
@@ -2596,7 +2753,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
           </div>
         )}
 
-        {subsLoading && <p className="console-panel__hint">正在读取订阅工作台…</p>}
+        {subsLoading && <p className="console-panel__hint">正在读取追更工作台…</p>}
         {subsError && (
           <div className="subscription-read-error" role="alert">
             <span>{subsError}</span>
@@ -2607,31 +2764,31 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
         )}
 
         {!subsLoading && !subsError && subscriptionTab === 'blocked' && blockedTitles.length === 0 && (
-          <p className="console-panel__hint">暂无被屏蔽订阅。</p>
+          <p className="console-panel__hint">暂无被屏蔽追更。</p>
         )}
         {!subsLoading && !subsError && subscriptionTab === 'blocked' && blockedTitles.map((title) => (
           <div className="discover-sub-blocked" key={title}>
-            <div><Ban aria-hidden="true" size={14} /><span><strong>{title}</strong><small>自动订阅会跳过这个标题</small></span></div>
+            <div><Ban aria-hidden="true" size={14} /><span><strong>{title}</strong><small>自动追更会跳过这个标题</small></span></div>
             <button className="tool-link" disabled={Boolean(subscriptionAction) || !localWriteEnabled} type="button" onClick={() => unblockItem(title)}>取消屏蔽</button>
           </div>
         ))}
 
         {!subsLoading && !subsError && subscriptionsOnly && subscriptionTab !== 'blocked' && subs.length === 0 && (
-          <section className="subscription-empty-guide" aria-label="导入 Torra 订阅引导">
+          <section className="subscription-empty-guide" aria-label="导入 Torra 追更引导">
             <Database aria-hidden="true" size={24} />
             <div>
-              <strong>本地订阅台账为空</strong>
-              <p>先只读预览 Torra 现有订阅，确认数量和冲突后再导入 Fluxa。第一阶段不会修改或删除 Torra 远端订阅。</p>
+              <strong>本地追更台账为空</strong>
+              <p>先只读预览 Torra 现有追更，确认数量和冲突后再导入 Fluxa。第一阶段不会修改或删除 Torra 远端数据。</p>
             </div>
             <ol>
-              <li className={torraSyncPreview ? 'is-complete' : 'is-current'}><b>1</b><span>预览 Torra 订阅</span></li>
+              <li className={torraSyncPreview ? 'is-complete' : 'is-current'}><b>1</b><span>预览 Torra 追更</span></li>
               <li className={torraSyncPreview ? 'is-current' : undefined}><b>2</b><span>检查新增、重复和冲突</span></li>
               <li><b>3</b><span>明确确认后导入本地台账</span></li>
             </ol>
             <footer>
               <button className="ops-action-button" disabled={Boolean(torraSyncBusy)} type="button" onClick={previewTorraMirror}>
                 <Database aria-hidden="true" size={14} />
-                {torraSyncBusy === 'preview' ? '读取中' : '预览 Torra 订阅'}
+                {torraSyncBusy === 'preview' ? '读取中' : '预览 Torra 追更'}
               </button>
               {torraSyncPreview && torraSyncPreview.summary.importable > 0 && (
                 <button className="ops-action-button ops-action-button--primary" disabled={Boolean(torraSyncBusy) || !torraSyncStatus?.enabled || torraSyncPreview.summary.conflicts > 0} type="button" onClick={importTorraMirror}>
@@ -2644,7 +2801,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
           </section>
         )}
         {!subsLoading && !subsError && subscriptionTab !== 'blocked' && subs.length > 0 && visibleSubscriptions.length === 0 && (
-          <p className="console-panel__hint">当前筛选下没有订阅内容。</p>
+          <p className="console-panel__hint">当前筛选下没有追更内容。</p>
         )}
         {subscriptionTab !== 'blocked' && visibleSubscriptions.map((item) => {
           const seasons = detailId === item.id ? detail?.seasons ?? [] : [];
@@ -2662,7 +2819,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             ? item.seasonName || (item.seasonNumber != null ? `第 ${item.seasonNumber} 季` : '按剧集持续追更')
             : '整部电影';
           const torraRoute = item.readOnly
-            ? item.torraSyncState === 'remote_missing' ? 'Torra 远端已缺失' : 'Torra 已有订阅，只读同步'
+            ? item.torraSyncState === 'remote_missing' ? 'Torra 远端已缺失' : 'Torra 已有追更，只读同步'
             : '由 Fluxa 管理，可检查后推送';
           const userStatus = subscriptionUserStatus(item);
           return (
@@ -2719,16 +2876,16 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                   <Send aria-hidden="true" size={14} />
                 </button>}
                 {!item.readOnly && <button
-                  aria-label={`屏蔽订阅 ${item.title}`}
+                  aria-label={`屏蔽追更 ${item.title}`}
                   className="tool-link"
                   disabled={Boolean(subscriptionAction) || !localWriteEnabled}
-                  title="删除并屏蔽：自动订阅不再加回"
+                  title="删除并屏蔽：自动追更不再加回"
                   type="button"
                   onClick={() => blockItem(item)}
                 >
                   <Ban aria-hidden="true" size={14} />
                 </button>}
-                {!item.readOnly && <button aria-label={`删除订阅 ${item.title}`} className="tool-link" disabled={Boolean(subscriptionAction) || !localWriteEnabled} title={localWriteEnabled ? '只删除，不加入屏蔽列表' : '本地订阅写入已关闭'} type="button" onClick={() => removeSubscription(item)}>
+                {!item.readOnly && <button aria-label={`删除追更 ${item.title}`} className="tool-link" disabled={Boolean(subscriptionAction) || !localWriteEnabled} title={localWriteEnabled ? '只删除，不加入屏蔽列表' : '本地追更写入已关闭'} type="button" onClick={() => removeSubscription(item)}>
                   <Trash2 aria-hidden="true" size={14} />
                 </button>}
               </div>
@@ -2803,14 +2960,14 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                         <span><b>国家 / 语言</b>{[detailInfo?.country, detailInfo?.language].filter(Boolean).join(' / ') || '-'}</span>
                         <span><b>日期</b>{detailInfo?.date || detailInfo?.release_date || detailInfo?.first_air_date || '-'}</span>
                       </div>
-                      <section className="sub-detail__route" aria-label="订阅处理轨道">
+                      <section className="sub-detail__route" aria-label="追更处理轨道">
                         <header>
-                          <div><strong>订阅处理轨道</strong><small>从订阅到入库的当前状态</small></div>
+                          <div><strong>追更处理轨道</strong><small>从追更到入库的当前状态</small></div>
                           <span>{subscriptionUpdateLabel(item.updatedAt)}</span>
                         </header>
                         <div className="sub-detail__route-grid">
-                          <span><b>01</b><strong>订阅来源</strong><small>{item.readOnly ? 'Torra 镜像' : item.sourceLabel || 'Fluxa'}</small></span>
-                          <span><b>02</b><strong>订阅范围</strong><small>{subscriptionScope}</small></span>
+                          <span><b>01</b><strong>追更来源</strong><small>{item.readOnly ? 'Torra 镜像' : item.sourceLabel || 'Fluxa'}</small></span>
+                          <span><b>02</b><strong>追更范围</strong><small>{subscriptionScope}</small></span>
                           <span><b>03</b><strong>PT / Torra</strong><small>{torraRoute}</small></span>
                           <span className={detailInfo?.inLibrary || item.inLibrary ? 'is-complete' : undefined}><b>04</b><strong>整理入库</strong><small>{libraryProgress}</small></span>
                         </div>
@@ -2910,12 +3067,12 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                           <button
                             className="tool-link"
                             disabled={Boolean(subscriptionAction) || !localWriteEnabled}
-                            title="通过 NasEmby 原保存接口更新订阅季"
+                            title="通过 NasEmby 原保存接口更新追更季"
                             type="button"
                             onClick={() => changeSeason(item, activeSeasonNumber, activeSeason.name)}
                           >
                             <Check aria-hidden="true" size={14} />
-                            改为订阅第 {activeSeasonNumber} 季
+                            改为追更第 {activeSeasonNumber} 季
                           </button>
                       )}
                     </>
@@ -3010,7 +3167,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                         </button>
                       )}
                     </div>
-                    {moviePilotPreview && <small className="sub-detail__hint">{moviePilotPreview.ready ? `模式：${moviePilotPreview.mode === 'search-existing' ? '已有订阅触发搜索' : '创建订阅并触发搜索'}` : moviePilotPreview.blockers.join('；')}</small>}
+                    {moviePilotPreview && <small className="sub-detail__hint">{moviePilotPreview.ready ? `模式：${moviePilotPreview.mode === 'search-existing' ? '已有追更触发搜索' : '创建追更并触发搜索'}` : moviePilotPreview.blockers.join('；')}</small>}
                     {moviePilotMessage && <p className="quality-watch-panel__status" role="status">{moviePilotMessage}</p>}
                   </section>}
                   {torraPushBusy === `preview:${item.id}` && (
@@ -3026,7 +3183,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                         <div><dt>媒体身份</dt><dd>{item.mediaType === 'tv' ? `剧集${item.seasonNumber ? ` · S${String(item.seasonNumber).padStart(2, '0')}` : ''}` : '电影'} · TMDB {item.tmdbId || '-'}</dd></div>
                         <div><dt>统一分类</dt><dd>{torraPushPreview.preview.category?.label || '待人工分类'}</dd></div>
                         <div><dt>保存路径</dt><dd><code>{torraPushPreview.preview.savePath || '尚未生成'}</code></dd></div>
-                        <div><dt>在线查重</dt><dd>{torraPushPreview.preview.duplicate?.found ? `已存在：${torraPushPreview.preview.duplicate.name || torraPushPreview.preview.duplicate.subscriptionId}` : torraPushPreview.preview.duplicate?.checked ? '未发现重复订阅' : '尚未完成'}</dd></div>
+                        <div><dt>在线查重</dt><dd>{torraPushPreview.preview.duplicate?.found ? `已存在：${torraPushPreview.preview.duplicate.name || torraPushPreview.preview.duplicate.subscriptionId}` : torraPushPreview.preview.duplicate?.checked ? '未发现重复追更' : '尚未完成'}</dd></div>
                       </dl>
                       {torraPushPreview.preview.blockers.length > 0 && (
                         <ul>{torraPushPreview.preview.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>
@@ -3060,6 +3217,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
           </div>
         )}
       </aside>
+      )}
       </div>
       <ConfirmDialog
         open={Boolean(confirmation)}
