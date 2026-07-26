@@ -2543,3 +2543,36 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ── 追更状态标签 ─────────────────────────────── */
+.discover-sub__status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+
+.discover-sub__status-badge--ok {
+  background: rgba(122, 215, 194, 0.12);
+  color: rgba(122, 215, 194, 0.96);
+}
+
+.discover-sub__status-badge--muted {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.48);
+}
+
+.discover-sub__status-badge--warn {
+  background: rgba(248, 113, 113, 0.12);
+  color: rgba(248, 113, 113, 0.96);
+}
+
+/* 高级诊断 is-muted 样式 */
+.discover-sub__advanced span.is-muted {
+  opacity: 0.6;
+}

@@ -549,12 +549,25 @@ function subscriptionReadAtLabel(value: string) {
 function reconciliationLabel(item: SubscriptionItem) {
   const labels = {
     linked: '已关联',
-    only_fluxa: '仅 Fluxa',
+    only_fluxa: '仅 Fluxa（Torra 未设置）',
     only_torra: '仅 Torra',
     conflict: '存在冲突',
-    remote_missing: '远端已消失'
+    remote_missing: 'Torra 远端失联'
   } as const;
   return item.reconciliationState ? labels[item.reconciliationState] : item.torra?.status === 'linked' ? '已关联' : '尚未对账';
+}
+
+function reconciliationBadge(item: SubscriptionItem) {
+  if (!item.reconciliationState) return null;
+  const badges = {
+    linked: { label: 'Torra 运行中', tone: 'ok', title: '此追更在 Fluxa 和 Torra 双端运行' },
+    only_fluxa: { label: '仅本地', tone: 'muted', title: '此追更仅在 Fluxa 记录,Torra 中未设置' },
+    only_torra: { label: '仅 Torra', tone: 'muted', title: '此追更仅在 Torra,本地未导入' },
+    conflict: { label: '冲突', tone: 'warn', title: '本地与 Torra 记录不一致' },
+    remote_missing: { label: 'Torra 已失联', tone: 'warn', title: '本地记录的 Torra ID 已失效' }
+  } as const;
+  const badge = badges[item.reconciliationState];
+  return <span className={`discover-sub__status-badge discover-sub__status-badge--${badge.tone}`} title={badge.title}>{badge.label}</span>;
 }
 
 function fulfillmentLabel(item: SubscriptionItem) {
@@ -2856,7 +2869,10 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                   type="button"
                   onClick={() => openDetail(item)}
                 >
-                  <strong>{item.title}</strong>
+                  <strong>
+                    {item.title}
+                    {reconciliationBadge(item)}
+                  </strong>
                   <small>
                     {item.mediaType === 'tv' ? '剧集' : '电影'}
                     {' · PT'}
@@ -2926,7 +2942,12 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                   <details className="discover-sub__advanced">
                     <summary>高级诊断</summary>
                     <div>
-                      <span className={item.reconciliationState === 'linked' ? 'is-ok' : ['conflict', 'remote_missing'].includes(item.reconciliationState ?? '') ? 'is-warn' : undefined} title={item.reasonText || item.torra?.detail}>
+                      <span className={
+                        item.reconciliationState === 'linked' ? 'is-ok'
+                        : item.reconciliationState === 'only_fluxa' ? 'is-muted'
+                        : ['conflict', 'remote_missing'].includes(item.reconciliationState ?? '') ? 'is-warn'
+                        : undefined
+                      } title={item.reasonText || item.torra?.detail}>
                         <b>Fluxa / Torra</b><small>{reconciliationLabel(item)}</small>
                       </span>
                       <span><b>范围</b><small>{item.scope || subscriptionScope}</small></span>
