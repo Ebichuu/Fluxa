@@ -9,6 +9,12 @@ from datetime import datetime, timedelta, timezone
 from flask import Flask, Response, jsonify, request
 
 from app.http_runtime import current_request_id
+from app.pipeline_fact_runtime import (
+    merge_pipeline_facts,
+    normalize_pipeline_fact,
+    target_scope_for_item,
+)
+from app.pipeline_outcome_runtime import derive_outcome_counts, derive_pipeline_outcome
 from app.resource_identity_runtime import artifact_key, chain_id, media_key, target_key
 from app.task_exception_runtime import classify_stage, classify_task
 from app.task_public_runtime import (
@@ -146,6 +152,10 @@ def _adapt_item(item: dict, observed_at: str, fresh_until: str, now_value: datet
     artifact_keys.extend(artifact_key(remote_file_id=value) for value in source_ids.get("symediaIds") or [])
     artifact_keys = sorted(set(artifact_keys))
     stages = [_stage(step, observed_at, fresh_until, now_value) for step in item.get("steps") or item.get("stages") or []]
+    pipeline_facts = [
+        normalize_pipeline_fact(fact)
+        for fact in item.get("pipelineFacts") or []
+    ]
     confidence = str(item.get("confidence") or ("strong" if item.get("tmdbId") else "unlinked"))
     normalized = {**item, "confidence": confidence, "stages": stages}
     item_health = _health(normalized, observed_at, fresh_until, now_value)
@@ -158,6 +168,7 @@ def _adapt_item(item: dict, observed_at: str, fresh_until: str, now_value: datet
         "subscriptionId": str(source_ids.get("subscriptionId") or ""),
         **item_health,
         "stages": stages,
+        "pipelineFacts": pipeline_facts,
     }
 
 
@@ -452,6 +463,18 @@ def _merge_group(items: list[dict], observed_at: str, fresh_until: str, now_valu
     ])
     artifacts = _dedupe(value for item in items for value in item.get("artifactKeys") or [])
     episode_evidence = _episode_evidence(items)
+    pipeline_facts = merge_pipeline_facts(
+        [fact for item in items for fact in item.get("pipelineFacts") or []],
+        target_scope=target_scope_for_item(primary),
+        observed_at=observed_at,
+        now=now_value,
+    )
+    pipeline_outcome = derive_pipeline_outcome(
+        pipeline_facts,
+        target_scope=target_scope_for_item(primary),
+        target_unit_key=str(primary.get("targetUnitKey") or ""),
+        now=now_value,
+    )
     state = _merged_state(stages)
     confidence = min(
         (str(item.get("confidence") or "unlinked") for item in items),
@@ -474,6 +497,8 @@ def _merge_group(items: list[dict], observed_at: str, fresh_until: str, now_valu
         "artifactKeys": artifacts,
         "evidenceOwnership": _evidence_ownership(items),
         "episodeEvidence": episode_evidence,
+        "pipelineFacts": pipeline_facts,
+        "pipelineOutcome": pipeline_outcome,
         "origins": _dedupe(item.get("origin") for item in items),
         "relatedRecords": len(items),
         "updatedAt": max((str(item.get("updatedAt") or "") for item in items), default=""),
@@ -561,6 +586,7 @@ def adapt_task_chain(chain: dict, *, now: datetime | None = None, health_filter:
         state: sum(item.get("executionState") == state for item in all_items)
         for state in EXECUTION_STATES
     }
+    outcome_counts = derive_outcome_counts(all_items)
     items = [
         item for item in all_items
         if not health_filter or item.get("healthState") == health_filter
@@ -578,6 +604,7 @@ def adapt_task_chain(chain: dict, *, now: datetime | None = None, health_filter:
         "identityCounts": identity_counts,
         "executionCounts": execution_counts,
         "userCounts": user_counts,
+        "outcomeCounts": outcome_counts,
         "generatedAt": str(chain.get("generatedAt") or observed_at),
         "contractVersion": 2,
     }
@@ -592,6 +619,7 @@ def _summary_item(item: dict) -> dict:
         "targetKey", "subscriptionId", "healthState", "observedAt", "freshUntil", "source",
         "reasonCode", "reasonText", "userReasonText", "recommendedAction", "retryEligible", "plannedRetryAt",
         "identityState", "executionState", "userState", "resultText", "completedAt", "primaryAction",
+        "pipelineOutcome",
         "relatedRecords", "activeDownloadTasks", "completedDownloadTasks", "concurrentDownloadCount",
     )
     result = {field: item.get(field) for field in fields if field in item}
@@ -605,12 +633,41 @@ def _summary_item(item: dict) -> dict:
 
 
 def _version(payload: dict) -> str:
+    def fact_version(fact):
+        return {
+            "stage": fact.get("stage"),
+            "state": fact.get("state"),
+            "scope": fact.get("scope"),
+            "evidence": fact.get("evidence"),
+            "reasonCode": fact.get("reasonCode"),
+            "plannedRetryAt": fact.get("plannedRetryAt"),
+            "retryEligible": bool(fact.get("retryEligible")),
+            "isStale": bool(fact.get("isStale")),
+            "units": [{
+                "state": unit.get("state"),
+                "scope": unit.get("scope"),
+                "evidence": unit.get("evidence"),
+                "reasonCode": unit.get("reasonCode"),
+                "plannedRetryAt": unit.get("plannedRetryAt"),
+                "retryEligible": bool(unit.get("retryEligible")),
+            } for unit in fact.get("units") or []],
+        }
+
+    def outcome_version(outcome):
+        return {
+            "state": outcome.get("state"),
+            "stage": outcome.get("stage"),
+            "reasonCode": outcome.get("reasonCode"),
+            "playableAt": outcome.get("playableAt"),
+        }
+
     stable = {
         "counts": payload.get("counts") or {},
         "healthCounts": payload.get("healthCounts") or {},
         "identityCounts": payload.get("identityCounts") or {},
         "executionCounts": payload.get("executionCounts") or {},
         "userCounts": payload.get("userCounts") or {},
+        "outcomeCounts": payload.get("outcomeCounts") or {},
         "originCounts": payload.get("originCounts") or {},
         "stageCounts": payload.get("stageCounts") or {},
         "services": payload.get("services") or {},
@@ -623,6 +680,8 @@ def _version(payload: dict) -> str:
             "identityState": item.get("identityState"),
             "executionState": item.get("executionState"),
             "userState": item.get("userState"),
+            "pipelineOutcome": outcome_version(item.get("pipelineOutcome") or {}),
+            "pipelineFacts": [fact_version(fact) for fact in item.get("pipelineFacts") or []],
             "resultText": item.get("resultText"),
             "completedAt": item.get("completedAt"),
             "primaryAction": item.get("primaryAction") or {},
@@ -708,7 +767,7 @@ class TaskChainV2Service:
             for key in (
                 "contractVersion", "generatedAt", "version", "counts", "healthCounts",
                 "identityCounts", "executionCounts", "originCounts", "stageCounts",
-                "userCounts", "services", "ledger", "systemIssues",
+                "userCounts", "outcomeCounts", "services", "ledger", "systemIssues",
             )
             if key in payload
         }

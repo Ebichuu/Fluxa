@@ -12,6 +12,29 @@ from app.resource_task_repository import ResourceIdentityConflict, ResourceTaskR
 NOW = datetime(2026, 7, 22, 6, 0, tzinfo=timezone.utc)
 
 
+def qb_pipeline_facts(hashes, reason_text="下载完成"):
+    hashes = list(hashes)
+    if not hashes:
+        return []
+    return [{
+        "stage": "qb", "state": "succeeded", "scope": "file", "evidence": "verified",
+        "observedAt": "2026-07-22T05:59:00Z", "freshUntil": "2026-07-22T06:05:00Z",
+        "source": "qBittorrent", "sourceRef": hashes[0] if len(hashes) == 1 else "",
+        "reasonCode": "DOWNLOAD_DONE", "reasonText": reason_text,
+        "units": [{
+            "unitKey": value,
+            "state": "succeeded",
+            "scope": "file",
+            "evidence": "verified",
+            "observedAt": "2026-07-22T05:59:00Z",
+            "freshUntil": "2026-07-22T06:05:00Z",
+            "sourceRef": value,
+            "reasonCode": "DOWNLOAD_DONE",
+            "reasonText": reason_text,
+        } for value in hashes] if len(hashes) > 1 else [],
+    }]
+
+
 def snapshot(reason_text="下载完成"):
     return {
         "items": [{
@@ -31,6 +54,7 @@ def snapshot(reason_text="下载完成"):
             "reasonCode": "TASK_IN_PROGRESS",
             "reasonText": "正在处理",
             "sourceIds": {"qbHashes": ["hash-1"], "symediaIds": []},
+            "pipelineFacts": qb_pipeline_facts(["hash-1"], reason_text),
             "stages": [{
                 "stage": "download",
                 "status": "done",
@@ -67,6 +91,7 @@ def legacy_snapshot(*hashes, chain_id="chain:legacy"):
             "reasonCode": "TASK_IDENTITY_UNLINKED",
             "reasonText": "下载证据尚未关联到媒体目标",
             "sourceIds": {"qbHashes": list(hashes), "symediaIds": []},
+            "pipelineFacts": qb_pipeline_facts(hashes),
             "evidenceOwnership": [],
             "stages": [{
                 "stage": "download",
@@ -126,6 +151,7 @@ def canonical_snapshot(*hashes, include_anchor=True, season=1, method="symedia_t
             "reasonCode": "TASK_COMPLETED",
             "reasonText": "处理完成",
             "sourceIds": {"qbHashes": list(hashes), "symediaIds": []},
+            "pipelineFacts": qb_pipeline_facts(hashes),
             "evidenceOwnership": records,
             "stages": [{
                 "stage": "download",
@@ -299,9 +325,13 @@ class ResourceTaskRepositoryTests(unittest.TestCase):
             self.assertEqual(second["events"], 0)
             self.assertEqual(repository.get_chain("chain:test")["target_key"], "tv:tmdb:100:season:2")
             self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["stage"], "qb")
+            self.assertEqual(events[0]["status"], "succeeded")
             self.assertNotIn("secret", events[0]["reason_text"])
             self.assertNotIn("plain", events[0]["reason_text"])
             self.assertIn("passkey=***", events[0]["reason_text"])
+            self.assertNotIn("hash-1", events[0]["payload_json"])
+            self.assertIn('"kind":"pipeline_fact"', events[0]["payload_json"])
 
     def test_identity_upgrade_keeps_one_chain_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:

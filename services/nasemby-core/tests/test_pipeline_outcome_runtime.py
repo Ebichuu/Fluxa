@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+import unittest
+from datetime import datetime, timezone
+
+from app.pipeline_outcome_runtime import derive_outcome_counts, derive_pipeline_outcome
+
+
+NOW = datetime(2026, 7, 27, 4, 0, tzinfo=timezone.utc)
+
+
+def fact(stage, state, *, scope="episode", evidence="verified", **updates):
+    value = {
+        "stage": stage,
+        "state": state,
+        "scope": scope,
+        "evidence": evidence,
+        "observedAt": "2026-07-27T03:59:00Z",
+        "freshUntil": "2026-07-27T04:05:00Z",
+        "source": stage,
+        "sourceRef": f"{stage}-private-ref",
+        "reasonCode": f"{stage.upper()}_{state.upper()}",
+        "reasonText": state,
+    }
+    value.update(updates)
+    return value
+
+
+class PipelineOutcomeRuntimeTests(unittest.TestCase):
+    def test_torra_symedia_and_strm_success_never_mean_playable(self):
+        for stage in ("torra", "symedia", "strm"):
+            with self.subTest(stage=stage):
+                outcome = derive_pipeline_outcome(
+                    [fact(stage, "succeeded", scope="season")],
+                    target_scope="season",
+                    now=NOW,
+                )
+                self.assertEqual(outcome["state"], "evidence_insufficient")
+
+    def test_only_verified_emby_movie_or_target_episode_is_playable(self):
+        inferred = derive_pipeline_outcome(
+            [fact("emby", "succeeded", evidence="inferred")],
+            target_scope="episode",
+            now=NOW,
+        )
+        season = derive_pipeline_outcome(
+            [fact("emby", "succeeded", scope="season")],
+            target_scope="season",
+            now=NOW,
+        )
+        episode = derive_pipeline_outcome(
+            [fact("emby", "succeeded")],
+            target_scope="episode",
+            now=NOW,
+        )
+        movie = derive_pipeline_outcome(
+            [fact("emby", "succeeded", scope="movie")],
+            target_scope="movie",
+            now=NOW,
+        )
+
+        self.assertEqual(inferred["state"], "evidence_insufficient")
+        self.assertEqual(season["state"], "evidence_insufficient")
+        self.assertEqual(episode["state"], "playable")
+        self.assertEqual(movie["state"], "playable")
+        self.assertEqual(episode["playableAt"], "2026-07-27T03:59:00Z")
+
+    def test_outcome_priority_distinguishes_recovery_failure_and_protection(self):
+        recovering = derive_pipeline_outcome([
+            fact(
+                "cloud115",
+                "failed",
+                scope="system-category",
+                plannedRetryAt="2026-07-27T05:00:00Z",
+            )
+        ], target_scope="season", now=NOW)
+        failed = derive_pipeline_outcome(
+            [fact("qb", "failed", scope="file")],
+            target_scope="season",
+            now=NOW,
+        )
+        protected = derive_pipeline_outcome(
+            [fact("symedia", "protected", scope="file")],
+            target_scope="season",
+            now=NOW,
+        )
+        waiting = derive_pipeline_outcome(
+            [fact("torra", "waiting", scope="season")],
+            target_scope="season",
+            now=NOW,
+        )
+
+        self.assertEqual(recovering["state"], "in_progress")
+        self.assertEqual(failed["state"], "action_required")
+        self.assertEqual(protected["state"], "protected")
+        self.assertEqual(waiting["state"], "waiting")
+
+        inferred_failure = derive_pipeline_outcome(
+            [fact("qb", "failed", scope="file", evidence="inferred")],
+            target_scope="season",
+            now=NOW,
+        )
+        self.assertEqual(inferred_failure["state"], "evidence_insufficient")
+
+    def test_outcome_counts_use_only_derived_states(self):
+        counts = derive_outcome_counts([
+            {"pipelineOutcome": {"state": "playable"}},
+            {"pipelineOutcome": {"state": "in_progress"}},
+            {"pipelineOutcome": {"state": "evidence_insufficient"}},
+        ])
+
+        self.assertEqual(counts["playable"], 1)
+        self.assertEqual(counts["in_progress"], 1)
+        self.assertEqual(counts["evidence_insufficient"], 1)
+        self.assertEqual(sum(counts.values()), 3)
+
+    def test_expired_verified_fact_is_preserved_but_not_treated_as_current(self):
+        outcome = derive_pipeline_outcome([
+            fact(
+                "emby",
+                "succeeded",
+                observedAt="2026-07-26T03:59:00Z",
+                freshUntil="2026-07-26T04:05:00Z",
+            )
+        ], target_scope="episode", now=NOW)
+
+        self.assertEqual(outcome["state"], "evidence_insufficient")
+
+
+if __name__ == "__main__":
+    unittest.main()

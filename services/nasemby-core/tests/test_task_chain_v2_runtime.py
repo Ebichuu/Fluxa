@@ -38,6 +38,49 @@ class FakeTaskChain:
 
 
 class TaskChainV2RuntimeTests(unittest.TestCase):
+    def test_new_pipeline_contract_is_optional_shadow_data_and_keeps_legacy_projection(self):
+        payload = adapt_task_chain(
+            FakeTaskChain().get_chain(),
+            now=datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+        )
+        item = payload["items"][0]
+
+        self.assertEqual(
+            [fact["stage"] for fact in item["pipelineFacts"]],
+            ["torra", "qb", "cloud115", "symedia", "strm", "emby"],
+        )
+        self.assertTrue(all(
+            (fact["state"], fact["evidence"]) == ("unknown", "missing")
+            for fact in item["pipelineFacts"]
+        ))
+        self.assertEqual(item["pipelineOutcome"]["state"], "evidence_insufficient")
+        self.assertEqual(payload["outcomeCounts"]["evidence_insufficient"], 1)
+        self.assertEqual(item["userState"], "action_required")
+
+    def test_verified_emby_episode_changes_only_new_outcome_in_p0_1(self):
+        chain = FakeTaskChain().get_chain()
+        chain["items"][0]["episodeNumber"] = 3
+        chain["items"][0]["pipelineFacts"] = [{
+            "stage": "emby",
+            "state": "succeeded",
+            "scope": "episode",
+            "evidence": "verified",
+            "observedAt": "2026-07-22T03:00:00Z",
+            "freshUntil": "2026-07-22T03:05:00Z",
+            "source": "Emby",
+            "sourceRef": "emby-private-episode-3",
+            "reasonCode": "EMBY_EPISODE_INDEXED",
+            "reasonText": "Emby 已收录目标集",
+        }]
+
+        item = adapt_task_chain(
+            chain,
+            now=datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+        )["items"][0]
+
+        self.assertEqual(item["pipelineOutcome"]["state"], "playable")
+        self.assertEqual(item["userState"], "action_required")
+
     def test_migration_preview_route_is_read_only(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = ResourceTaskRepository(
@@ -204,11 +247,18 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
             )
 
             payload = service.snapshot(health_filter="normal")
+            service.snapshot(health_filter="normal")
             expected_chain_id = chain_id("tv:tmdb:101", "tv:tmdb:101:season:2")
 
             self.assertEqual(payload["items"], [])
             self.assertEqual(payload["ledger"]["chains"], 1)
             self.assertEqual(repository.get_chain(expected_chain_id)["health_state"], "action_required")
+            events = repository.list_events(expected_chain_id)
+            self.assertEqual(len(events), 6)
+            self.assertEqual(
+                {event["stage"] for event in events},
+                {"torra", "qb", "cloud115", "symedia", "strm", "emby"},
+            )
 
     def test_duplicate_target_records_are_merged_into_one_chain(self):
         chain = FakeTaskChain().get_chain()
@@ -295,12 +345,15 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         chain_id_value = listing["items"][0]["chainId"]
         self.assertEqual(listing["page"], {"total": 1, "offset": 0, "limit": 1, "nextOffset": None, "hasMore": False})
         self.assertNotIn("stages", listing["items"][0])
+        self.assertNotIn("pipelineFacts", listing["items"][0])
+        self.assertIn("pipelineOutcome", listing["items"][0])
         self.assertNotIn("episodeEvidence", listing["items"][0])
         self.assertIn("stageSummary", listing["items"][0])
 
         detail = client.get(f"/api/v2/tasks/chains/{chain_id_value}").get_json()
         self.assertEqual(detail["item"]["chainId"], chain_id_value)
         self.assertTrue(detail["item"]["stages"])
+        self.assertEqual(len(detail["item"]["pipelineFacts"]), 6)
         self.assertTrue(detail["item"]["artifactKeys"])
         self.assertEqual(detail["item"]["episodeEvidence"][0]["episodeStart"], 3)
         self.assertEqual(fake.calls, 1)

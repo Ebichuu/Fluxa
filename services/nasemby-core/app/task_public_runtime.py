@@ -70,6 +70,17 @@ def public_subscription_ref(value) -> str:
     return torra_public_storage_key(value) if value.startswith("torra:") else value
 
 
+def public_pipeline_ref(stage, value) -> str:
+    stage = str(stage or "fact").strip().lower()
+    value = str(value or "").strip()
+    return f"fact:{stage}:{_digest(f'pipeline:{stage}', value)}" if value else ""
+
+
+def public_pipeline_unit_ref(value) -> str:
+    value = str(value or "").strip()
+    return f"unit:{_digest('pipeline-unit', value)}" if value else ""
+
+
 def safe_public_text(value, fallback="") -> str:
     text = str(value or "").strip()
     if not text:
@@ -201,6 +212,57 @@ def _present_episode(value) -> dict:
     } | {"artifactKey": public_artifact_ref(row.get("artifactKey"))}
 
 
+def _present_pipeline_unit(value, stage: str) -> dict:
+    unit = value if isinstance(value, dict) else {}
+    return {
+        "unitKey": public_pipeline_unit_ref(unit.get("unitKey")),
+        "state": str(unit.get("state") or "unknown"),
+        "scope": str(unit.get("scope") or "system-category"),
+        "evidence": str(unit.get("evidence") or "missing"),
+        "observedAt": str(unit.get("observedAt") or ""),
+        "freshUntil": str(unit.get("freshUntil") or ""),
+        "sourceRef": public_pipeline_ref(stage, unit.get("sourceRef")),
+        "reasonCode": str(unit.get("reasonCode") or ""),
+        "reasonText": safe_public_text(unit.get("reasonText")),
+        "plannedRetryAt": str(unit.get("plannedRetryAt") or ""),
+        "retryEligible": bool(unit.get("retryEligible")),
+    }
+
+
+def present_pipeline_fact(value) -> dict:
+    fact = value if isinstance(value, dict) else {}
+    stage = str(fact.get("stage") or "unknown")
+    return {
+        "stage": stage,
+        "state": str(fact.get("state") or "unknown"),
+        "scope": str(fact.get("scope") or "system-category"),
+        "evidence": str(fact.get("evidence") or "missing"),
+        "observedAt": str(fact.get("observedAt") or ""),
+        "freshUntil": str(fact.get("freshUntil") or ""),
+        "source": safe_public_text(fact.get("source")),
+        "sourceRef": public_pipeline_ref(stage, fact.get("sourceRef")),
+        "unitKey": public_pipeline_unit_ref(fact.get("unitKey")),
+        "reasonCode": str(fact.get("reasonCode") or ""),
+        "reasonText": safe_public_text(fact.get("reasonText")),
+        "plannedRetryAt": str(fact.get("plannedRetryAt") or ""),
+        "retryEligible": bool(fact.get("retryEligible")),
+        "isStale": bool(fact.get("isStale")),
+        "units": [_present_pipeline_unit(unit, stage) for unit in fact.get("units") or []],
+    }
+
+
+def present_pipeline_outcome(value) -> dict:
+    outcome = value if isinstance(value, dict) else {}
+    return {
+        "state": str(outcome.get("state") or "evidence_insufficient"),
+        "stage": str(outcome.get("stage") or ""),
+        "reasonCode": str(outcome.get("reasonCode") or ""),
+        "reasonText": safe_public_text(outcome.get("reasonText")),
+        "observedAt": str(outcome.get("observedAt") or ""),
+        "playableAt": str(outcome.get("playableAt") or ""),
+    }
+
+
 ITEM_FIELDS = (
     "title", "mediaType", "tmdbId", "seasonNumber", "episodeNumber", "origin", "origins",
     "channel", "state", "confidence", "progress", "currentStep", "embyIndexed",
@@ -245,6 +307,8 @@ def present_task_item(value) -> dict:
         "stages": [_present_stage(stage) for stage in item.get("stages") or []],
         "episodeEvidence": [_present_episode(row) for row in item.get("episodeEvidence") or []],
         "evidenceOwnership": [_present_ownership(row) for row in item.get("evidenceOwnership") or []],
+        "pipelineFacts": [present_pipeline_fact(fact) for fact in item.get("pipelineFacts") or []],
+        "pipelineOutcome": present_pipeline_outcome(item.get("pipelineOutcome")),
         "primaryAction": _present_primary_action(item.get("primaryAction")),
     })
     if isinstance(item.get("acquisition"), dict):

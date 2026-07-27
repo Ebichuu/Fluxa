@@ -188,6 +188,7 @@ qB 暂停/恢复与 Emby 刷新是已经存在的人工可回滚动作，分别�
 - 静态资源使用安全路径拼接；`api/auth/mineradio` 前缀不进入 SPA 回退。
 - API 异常返回固定错误与请求 ID，不返回堆栈、内部 URL 或异常正文。
 - 统一动作 API 不返回请求 payload、Token、候选下载信息或原始 external job ID；job ID 只提供稳定 SHA-256 摘要用于审计关联。
+- 六阶段任务事实在写入前再次校验枚举、时间、scope 和证据一致性；浏览器只接收 presenter 白名单字段，`sourceRef/unitKey` 使用稳定 SHA-256 不透明引用，路径、URL、凭据和原始外部 ID 不进入公开响应。
 - 阶段 6 动作请求不接受浏览器提供的 Torra subscription ID、analysis ID 或候选映射；跨 RSS 匹配复用幂等键返回 409，不回放其他匹配的动作。
 - 保留核心接口在统一入口默认返回 503；Flask 原 `/static/*` 注册关闭，原 NasEmby 静态页面脚本不对外提供，迁移期静态快照不再保存在公开仓库。
 
@@ -221,8 +222,8 @@ Compose 通过 `MCC_DATA_ROOT` 把三个目录映射到同一个 fnOS 根目录�
 
 自动验证包含：
 
-- 47 条冻结 v1 路由和 60 条 v2 路由均在 Python 中存在。
-- 当前后端回归基线为 419 项。
+- 47 条冻结 v1 路由和 64 条 v2 路由均在 Python 中存在。
+- 当前后端回归基线为 468 项。
 - 42 条受保护路由逐条返回 401。
 - 所有受保护写接口逐条验证管理员会话与具体写入闸门。
 - React API 引用全部属于 client 契约。
@@ -239,6 +240,16 @@ Compose 通过 `MCC_DATA_ROOT` 把三个目录映射到同一个 fnOS 根目录�
 代码优先回滚到上一个已验证镜像或归档标签；订阅数据不随代码回滚。恢复旧双服务归档时必须确保新容器已停止，不能同时启动两套后端或调度器。
 
 ## 13. 变更历史
+
+### 2026-07-27 — 可信任务事实契约 P0.1
+
+**变更内容**：新增 `pipeline_fact_runtime.py` 与 `pipeline_outcome_runtime.py`，固定 `torra/qb/cloud115/symedia/strm/emby` 六类事实、五类 scope、三档证据和六类用户结果。任务详情可选返回六阶段 `pipelineFacts`，列表返回轻量 `pipelineOutcome`，摘要返回 `outcomeCounts`；原 `userState/resultText/completedAt` 继续由唯一 legacy projector 生成，本阶段不切换前端筛选或页面结论。没有显式来源适配器事实时，六阶段统一返回 `unknown + missing` 和 `evidence_insufficient`，不从旧 `download/library` 状态反推新事实。
+
+资源快照改为把当前六阶段事实幂等写入既有 `resource_events`，payload 只保存 scope、重试元数据和不透明 `sourceRef/unitKey`；既有 identity、迁移和历史阶段事件保持不可变。公开 presenter 使用字段白名单并再次隐藏路径、URL、凭据和原始外部引用。事实缺少观测时间/有效期、枚举非法、包含未知字段或同阶段当前证据冲突时明确拒绝或返回 `EVIDENCE_CONFLICT`。
+
+**变更理由**：旧任务链把 Torra 获取、下载、115、Symedia 整理、STRM 和 Emby 收录混入少量综合阶段，导致下游记录可以提前生成“完成”。先增加独立事实与纯函数派生层，可以在不改变旧页面的前提下为 P0.2 来源接入和 P0.3 消费者切换建立可验证契约。
+
+**影响范围**：任务聚合、任务公开 presenter、资源事件台账、HTTP v2 可选响应字段、TypeScript 可选类型、API 文档和定向测试。没有新增路由、必填请求字段、外部写动作或数据库表；`contractVersion=2`、旧查询和旧字段类型保持兼容。
 
 ### 2026-07-26 — 系统异常闭环与追更生效契约
 

@@ -7,6 +7,51 @@ export type TaskChainIdentityState = 'unidentified' | 'linked' | 'conflict';
 export type TaskChainExecutionState = 'normal' | 'waiting' | 'protected' | 'suspected_blocked' | 'action_required' | 'confirmed_failed';
 export type TaskChainUserState = 'action_required' | 'in_progress' | 'completed' | 'no_action';
 export type TaskChainPrimaryActionKind = 'none' | 'reidentify' | 'resume_download' | 'pause_download' | 'retry_stage' | 'refresh_source' | 'open_qb' | 'open_torra' | 'view_subscription' | 'view_details';
+export type PipelineStage = 'torra' | 'qb' | 'cloud115' | 'symedia' | 'strm' | 'emby';
+export type PipelineFactState = 'unknown' | 'waiting' | 'active' | 'succeeded' | 'failed' | 'protected' | 'not_applicable';
+export type PipelineScope = 'movie' | 'season' | 'episode' | 'file' | 'system-category';
+export type PipelineOutcomeState = 'waiting' | 'in_progress' | 'protected' | 'action_required' | 'playable' | 'evidence_insufficient';
+
+export interface PipelineFactUnit {
+  unitKey: string;
+  state: PipelineFactState;
+  scope: PipelineScope;
+  evidence: TaskChainEvidence;
+  observedAt: string;
+  freshUntil: string;
+  sourceRef: string;
+  reasonCode: string;
+  reasonText: string;
+  plannedRetryAt: string;
+  retryEligible: boolean;
+}
+
+export interface PipelineFact {
+  stage: PipelineStage;
+  state: PipelineFactState;
+  scope: PipelineScope;
+  evidence: TaskChainEvidence;
+  observedAt: string;
+  freshUntil: string;
+  source: string;
+  sourceRef: string;
+  unitKey: string;
+  reasonCode: string;
+  reasonText: string;
+  plannedRetryAt: string;
+  retryEligible: boolean;
+  isStale: boolean;
+  units: PipelineFactUnit[];
+}
+
+export interface PipelineOutcome {
+  state: PipelineOutcomeState;
+  stage: PipelineStage | '';
+  reasonCode: string;
+  reasonText: string;
+  observedAt: string;
+  playableAt: string;
+}
 
 export interface TorraSecuploadRun {
   runId: string;
@@ -197,6 +242,8 @@ export interface TaskChainItem {
   stageSummary?: TaskChainStageSummary[];
   origins?: string[];
   relatedRecords?: number;
+  pipelineFacts?: PipelineFact[];
+  pipelineOutcome?: PipelineOutcome;
 }
 
 export type TaskChainListItem = Omit<TaskChainItem, 'steps' | 'sourceIds' | 'suggestion' | 'artifactKeys' | 'stages'> & {
@@ -247,6 +294,7 @@ export interface TaskChainResponse {
   identityCounts?: Record<TaskChainIdentityState, number>;
   executionCounts?: Record<TaskChainExecutionState, number>;
   userCounts?: Record<TaskChainUserState, number>;
+  outcomeCounts?: Record<PipelineOutcomeState, number>;
   originCounts?: Record<'subscription' | 'download' | 'library', number>;
   stageCounts?: Record<string, Record<string, number>>;
   systemIssues?: SystemIssueSummary[];

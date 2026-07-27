@@ -8,6 +8,7 @@ import uuid
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 
+from app.pipeline_fact_runtime import PIPELINE_STAGES, normalize_pipeline_fact
 from app.resource_identity_runtime import artifact_key
 from app.sqlite_runtime import SQLiteRuntime
 
@@ -49,6 +50,56 @@ def _json(value) -> str:
 
 def _row(row):
     return dict(row) if row else None
+
+
+def _opaque_ref(namespace, value) -> str:
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    digest = hashlib.sha256(f"{namespace}\0{value}".encode("utf-8")).hexdigest()[:24]
+    return f"{namespace}:{digest}"
+
+
+def _pipeline_fact_health(fact) -> str:
+    state = str(fact.get("state") or "unknown")
+    if str(fact.get("evidence") or "missing") != "verified":
+        return "evidence_insufficient"
+    if state == "failed":
+        return "waiting" if fact.get("plannedRetryAt") else "action_required"
+    return {
+        "unknown": "evidence_insufficient",
+        "waiting": "waiting",
+        "active": "waiting",
+        "succeeded": "normal",
+        "protected": "protected",
+        "not_applicable": "normal",
+    }.get(state, "evidence_insufficient")
+
+
+def _pipeline_fact_payload(fact) -> dict:
+    stage = str(fact.get("stage") or "")
+
+    def unit_payload(unit):
+        return {
+            "unitKey": _opaque_ref("unit", unit.get("unitKey")),
+            "state": str(unit.get("state") or "unknown"),
+            "scope": str(unit.get("scope") or "system-category"),
+            "evidence": str(unit.get("evidence") or "missing"),
+            "sourceRef": _opaque_ref(f"fact-{stage}", unit.get("sourceRef")),
+            "reasonCode": _safe_code(unit.get("reasonCode"), ""),
+            "plannedRetryAt": _text(unit.get("plannedRetryAt"), 80),
+            "retryEligible": bool(unit.get("retryEligible")),
+        }
+
+    return {
+        "kind": "pipeline_fact",
+        "scope": str(fact.get("scope") or "system-category"),
+        "unitKey": _opaque_ref("unit", fact.get("unitKey")),
+        "sourceRef": _opaque_ref(f"fact-{stage}", fact.get("sourceRef")),
+        "plannedRetryAt": _text(fact.get("plannedRetryAt"), 80),
+        "retryEligible": bool(fact.get("retryEligible")),
+        "units": [unit_payload(unit) for unit in fact.get("units") or [] if isinstance(unit, dict)],
+    }
 
 
 class ResourceIdentityConflict(RuntimeError):
@@ -138,12 +189,13 @@ class ResourceTaskRepository:
                 "chainId": chain_id,
                 "artifactKey": artifact_key_value,
                 "stage": stage.get("stage"),
-                "status": stage.get("status"),
+                "status": stage.get("status") or stage.get("state"),
                 "healthState": stage.get("healthState"),
                 "evidence": stage.get("evidence"),
                 "source": _text(stage.get("source"), 160),
                 "reasonCode": _safe_code(stage.get("reasonCode"), ""),
                 "reasonText": _text(stage.get("reasonText")),
+                "payload": stage.get("_eventPayload") or {},
             }).encode("utf-8")
         ).hexdigest()
 
@@ -227,7 +279,7 @@ class ResourceTaskRepository:
             chain_id,
             artifact_key_value,
             stage_name,
-            _safe_code(stage.get("status"), "unknown"),
+            _safe_code(stage.get("status") or stage.get("state"), "unknown"),
             _safe_code(stage.get("healthState"), "evidence_insufficient"),
             _safe_code(stage.get("evidence"), "missing"),
             observed_at,
@@ -236,7 +288,7 @@ class ResourceTaskRepository:
             _safe_code(stage.get("reasonCode"), ""),
             _text(stage.get("reasonText")),
             event_key,
-            _json({"evidence": _safe_code(stage.get("evidence"), "missing")}),
+            _json(stage.get("_eventPayload") or {"evidence": _safe_code(stage.get("evidence"), "missing")}),
             now_text,
         )
         cursor = connection.execute(
@@ -286,13 +338,47 @@ class ResourceTaskRepository:
                 event_count += self._record_artifact_conflict(connection, chain_id, now_text)
         return artifact_count, event_count, conflict_count, artifact_keys
 
-    def _record_stages(self, connection, chain_id, stages, artifact_keys, now_text):
-        artifact_key_value = artifact_keys[0] if len(artifact_keys) == 1 else ""
-        return sum(
-            self._append_event(connection, chain_id, artifact_key_value, stage, now_text)
-            for stage in stages
-            if isinstance(stage, dict)
-        )
+    @staticmethod
+    def _pipeline_fact_artifact_key(item, fact):
+        source_ref = str(fact.get("sourceRef") or "").strip()
+        source_ids = item.get("sourceIds") or {}
+        if fact.get("stage") == "qb" and source_ref in (source_ids.get("qbHashes") or []):
+            return artifact_key(qb_hash=source_ref)
+        if fact.get("stage") == "symedia" and source_ref in (source_ids.get("symediaIds") or []):
+            return artifact_key(remote_file_id=source_ref)
+        return ""
+
+    def _record_pipeline_facts(self, connection, chain_id, item, now_text):
+        event_count = 0
+        for fact in item.get("pipelineFacts") or []:
+            if not isinstance(fact, dict):
+                continue
+            candidate = dict(fact)
+            candidate.pop("isStale", None)
+            fact = normalize_pipeline_fact(candidate)
+            stage = fact["stage"]
+            if stage not in PIPELINE_STAGES:
+                raise ValueError(f"pipeline fact stage 值无效: {stage}")
+            artifact_key_value = self._pipeline_fact_artifact_key(item, fact)
+            event_count += self._append_event(
+                connection,
+                chain_id,
+                artifact_key_value,
+                {
+                    "stage": stage,
+                    "status": str(fact.get("state") or "unknown"),
+                    "healthState": _pipeline_fact_health(fact),
+                    "evidence": str(fact.get("evidence") or "missing"),
+                    "observedAt": fact.get("observedAt"),
+                    "freshUntil": fact.get("freshUntil"),
+                    "source": fact.get("source"),
+                    "reasonCode": fact.get("reasonCode"),
+                    "reasonText": fact.get("reasonText"),
+                    "_eventPayload": _pipeline_fact_payload(fact),
+                },
+                now_text,
+            )
+        return event_count
 
     @staticmethod
     def _migration_result(**updates):
@@ -576,6 +662,10 @@ class ResourceTaskRepository:
                 (old_chain_id, artifact_key_value),
             ).fetchall()
         for event in events:
+            try:
+                event_payload = json.loads(event["payload_json"] or "{}")
+            except (TypeError, ValueError):
+                event_payload = {}
             stage = {
                 "stage": event["stage"],
                 "status": event["status"],
@@ -584,6 +674,7 @@ class ResourceTaskRepository:
                 "source": event["source"],
                 "reasonCode": event["reason_code"],
                 "reasonText": event["reason_text"],
+                "_eventPayload": event_payload if isinstance(event_payload, dict) else {},
             }
             canonical_key = self._event_key(new_chain_id, event["artifact_key"], stage)
             duplicate = connection.execute(
@@ -710,15 +801,15 @@ class ResourceTaskRepository:
                 event_count += migration_result.pop("migrationEvents")
                 for item in items:
                     chain_id_value = _text(item.get("chainId"), 120)
-                    artifacts, conflicts_events, conflicts, artifact_keys = self._record_artifacts(
+                    artifacts, conflicts_events, conflicts, _artifact_keys = self._record_artifacts(
                         connection, chain_id_value, item, now_text
                     )
                     chain_count += 1
                     artifact_count += artifacts
                     conflict_count += conflicts
                     event_count += conflicts_events
-                    event_count += self._record_stages(
-                        connection, chain_id_value, item.get("stages") or [], artifact_keys, now_text
+                    event_count += self._record_pipeline_facts(
+                        connection, chain_id_value, item, now_text
                     )
         except ResourceMigrationConflict as exc:
             return {
