@@ -7,7 +7,9 @@ import {
   browseDiscover,
   createRssMatch,
   deleteSubscription,
+  followDiscoverCandidate,
   getAutomationAction,
+  getDiscoverCandidates,
   getMoviePilotPreview,
   getRssSeedItems,
   getSubscriptionQualityWatch,
@@ -19,6 +21,7 @@ import {
   getTorraPushPreview,
   importTorraSubscriptions,
   previewTorraSubscriptionSync,
+  previewDiscoverCandidateFollow,
   pushSubscriptionToTorra,
   pushToMoviePilot,
   runSubscriptionSweep,
@@ -43,8 +46,10 @@ import {
 } from '../../types/rssSeedLibrary';
 import type {
   DiscoverBrowseParams,
+  DiscoverCandidateListResponse,
   DiscoverResourceItem,
   DiscoverResourceResponse,
+  DiscoverResponse,
   DiscoverSourceStatus,
   ManualFollowProvider,
   MoviePilotPreview,
@@ -90,7 +95,7 @@ interface FilterGroup {
 const currentYear = new Date().getFullYear();
 
 const defaultFilters: DiscoverBrowseParams = {
-  source: 'daily',
+  source: 'candidates',
   type: 'tv',
   trend: 'all',
   sort: 'popularity_desc',
@@ -103,6 +108,7 @@ const defaultFilters: DiscoverBrowseParams = {
 };
 
 const sources = [
+  { id: 'candidates', label: '候选池' },
   { id: 'daily', label: '全球日播' },
   { id: 'tmdb', label: 'TMDB' },
   { id: 'streaming', label: '海外流媒体' },
@@ -237,6 +243,7 @@ function activeFilterCount(filters: DiscoverBrowseParams) {
 
 // 每个来源实际支持的筛选维度：日播/平台热更是固定剧集榜，不显示无效筛选
 const sourceFilterKeys: Record<DiscoverSource, FilterKey[]> = {
+  candidates: ['type'],
   tmdb: ['type', 'trend', 'sort', 'language', 'year', 'genre'],
   streaming: ['type', 'sort', 'language', 'year', 'genre'],
   douban: [],
@@ -465,6 +472,33 @@ function mapRssSeedsToResources(
 
 function discoverSourceLabel(source: DiscoverSource) {
   return sources.find((item) => item.id === source)?.label ?? source;
+}
+
+function mapCandidateDiscoverResponse(payload: DiscoverCandidateListResponse, page: number): DiscoverResponse {
+  const totalPages = Math.max(1, Math.ceil(payload.page.total / payload.page.limit));
+  return {
+    configured: true,
+    results: payload.items.map((candidate) => ({
+      id: Number.parseInt(candidate.tmdbId, 10) || 0,
+      candidateId: candidate.id,
+      mediaType: candidate.mediaType,
+      title: candidate.title,
+      year: candidate.year,
+      posterUrl: candidate.posterUrl,
+      overview: candidate.overview,
+      rating: candidate.rating,
+      source: 'candidates',
+      sourceLabel: candidate.sourceLabel,
+      tmdbId: candidate.tmdbId,
+      seasonNumber: candidate.seasonNumber
+    })),
+    page,
+    totalPages,
+    totalResults: payload.page.total,
+    hasNext: payload.page.hasMore,
+    hasPrev: page > 1,
+    sourceLabel: '候选池'
+  };
 }
 
 function unavailableSourceStatus(key: string, label: string, message: string): DiscoverSourceStatus {
@@ -753,11 +787,12 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   const [discoverError, setDiscoverError] = useState('');
   const [discoverSourceStatuses, setDiscoverSourceStatuses] = useState<DiscoverSourceStatus[]>([]);
   const [loading, setLoading] = useState(true);
+  const [discoverRefreshKey, setDiscoverRefreshKey] = useState(0);
   const [pageInfo, setPageInfo] = useState({
     page: 1,
     totalPages: 1,
     totalResults: 0,
-    sourceLabel: '全球日播'
+    sourceLabel: '候选池'
   });
   const [subs, setSubs] = useState<SubscriptionItem[]>([]);
   const [blockedTitles, setBlockedTitles] = useState<string[]>([]);
@@ -1064,7 +1099,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     subsRequestRef.current?.abort();
   }, []);
 
-  const applyPayload = useCallback((payload: Awaited<ReturnType<typeof browseDiscover>>) => {
+  const applyPayload = useCallback((payload: DiscoverResponse) => {
     setConfigured(payload.configured);
     setResults(payload.results);
     setDiscoverSourceStatuses(payload.sourceStatuses ?? []);
@@ -1081,13 +1116,29 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       setLoading(false);
       return;
     }
-    if (activeSearch) return;
+    if (activeSearch && filters.source !== 'candidates') return;
     let cancelled = false;
     setLoading(true);
     setDiscoverError('');
     setDiscoverSourceStatuses([]);
 
-    browseDiscover(filters)
+    const candidatePage = activeSearch ? searchPage : filters.page;
+    setPageInfo({
+      page: candidatePage,
+      totalPages: 1,
+      totalResults: 0,
+      sourceLabel: discoverSourceLabel(filters.source)
+    });
+    const request = filters.source === 'candidates'
+      ? getDiscoverCandidates({
+          mediaType: filters.type,
+          query: activeSearch,
+          limit: filters.limit ?? 16,
+          offset: (candidatePage - 1) * (filters.limit ?? 16)
+        }).then((payload) => mapCandidateDiscoverResponse(payload, candidatePage))
+      : browseDiscover(filters);
+
+    request
       .then((payload) => {
         if (!cancelled) applyPayload(payload);
       })
@@ -1109,11 +1160,12 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     return () => {
       cancelled = true;
     };
-  }, [activeSearch, applyPayload, filters, subscriptionsOnly]);
+  }, [activeSearch, applyPayload, discoverRefreshKey, filters, searchPage, subscriptionsOnly]);
 
   useEffect(() => {
     if (subscriptionsOnly) return;
     if (!activeSearch) return;
+    if (filters.source === 'candidates') return;
     let cancelled = false;
     setLoading(true);
     setDiscoverError('');
@@ -1139,9 +1191,14 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     return () => {
       cancelled = true;
     };
-  }, [activeSearch, applyPayload, searchPage, subscriptionsOnly]);
+  }, [activeSearch, applyPayload, filters.source, searchPage, subscriptionsOnly]);
 
   const subscribedKeys = useMemo(() => new Set(subs.map((item) => `${item.mediaType}:${item.tmdbId}`)), [subs]);
+  const subscribedScopeKeys = useMemo(() => new Set(subs.map((item) => (
+    item.mediaType === 'tv' && item.seasonNumber
+      ? `${item.mediaType}:${item.tmdbId}:season:${item.seasonNumber}`
+      : `${item.mediaType}:${item.tmdbId}`
+  ))), [subs]);
   const subscriptionYears = useMemo(() => {
     const latestYear = new Date().getFullYear() + 1;
     const years = new Set(
@@ -1328,6 +1385,44 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   const subscribe = (result: DiscoverResult) => {
     const tmdbId = tmdbIdForResult(result);
     if (!tmdbId || followWriteDisabled) return;
+    if (result.candidateId) {
+      const actionKey = `candidate:${result.candidateId}`;
+      setSubscriptionAction(actionKey);
+      setSweepMessage('');
+      previewDiscoverCandidateFollow(result.candidateId)
+        .then((preview) => {
+          if (!preview.ready) {
+            setSweepMessage(`${result.title}：${preview.blockers.join('；') || '当前不能加入追更'}`);
+            return;
+          }
+          const scope = result.mediaType === 'tv'
+            ? `电视剧 · 第 ${preview.candidate.seasonNumber} 季`
+            : '电影';
+          const nextStep = preview.manualFollow.state === 'saved_only'
+            ? '确认后只保存到 Fluxa，当前不会自动获取。'
+            : `确认后保存追更，并交给${followProviderLabels[preview.manualFollow.provider] || '后续能力'}继续处理。`;
+          setConfirmation({
+            signal: '候选转追更',
+            title: `把《${result.title}》加入追更？`,
+            description: `${scope} · TMDB ${preview.candidate.tmdbId}。${nextStep}`,
+            confirmLabel: preview.manualFollow.state === 'saved_only' ? '加入追更（仅保存）' : '加入追更',
+            onConfirm: () => {
+              setSubscriptionAction(actionKey);
+              followDiscoverCandidate(result.candidateId!, createIdempotencyKey())
+                .then((saved) => {
+                  setSweepMessage(`${result.title}：${saved.activation.message}`);
+                  setDiscoverRefreshKey((value) => value + 1);
+                  void loadSubs();
+                })
+                .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '候选加入追更失败'))
+                .finally(() => setSubscriptionAction(''));
+            }
+          });
+        })
+        .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '候选预览失败'))
+        .finally(() => setSubscriptionAction(''));
+      return;
+    }
     const payload = {
       title: result.title,
       mediaType: result.mediaType,
@@ -2499,9 +2594,17 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
           {results.map((result) => {
             const tmdbId = tmdbIdForResult(result);
             const canSubscribe = Boolean(tmdbId);
-            const subscribed = canSubscribe && subscribedKeys.has(`${result.mediaType}:${tmdbId}`);
+            const subscriptionScopeKey = result.candidateId && result.mediaType === 'tv' && result.seasonNumber
+              ? `${result.mediaType}:${tmdbId}:season:${result.seasonNumber}`
+              : `${result.mediaType}:${tmdbId}`;
+            const subscribed = canSubscribe && (result.candidateId
+              ? subscribedScopeKeys.has(subscriptionScopeKey)
+              : subscribedKeys.has(subscriptionScopeKey));
             const resourceActive = resourceTarget === result;
-            const cardKey = `${result.mediaType}-${result.source || 'tmdb'}-${result.sourceId || result.id}`;
+            const cardKey = `${result.mediaType}-${result.source || 'tmdb'}-${result.candidateId || result.sourceId || result.id}`;
+            const followActionKey = result.candidateId
+              ? `candidate:${result.candidateId}`
+              : `save:${result.mediaType}:${tmdbIdForResult(result)}`;
             return (
               <Fragment key={cardKey}>
                 <article className="ops-panel discover-card">
@@ -2536,7 +2639,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                         onClick={() => subscribe(result)}
                       >
                         {subscribed ? <Check aria-hidden="true" size={14} /> : <Plus aria-hidden="true" size={14} />}
-                        {subscribed ? '已追更' : subscriptionAction === `save:${result.mediaType}:${tmdbIdForResult(result)}` ? '保存中' : canSubscribe ? followButtonLabel : '待匹配'}
+                        {subscribed ? '已追更' : subscriptionAction === followActionKey ? '处理中' : canSubscribe ? followButtonLabel : '待匹配'}
                       </button>
                     </div>
                   </div>

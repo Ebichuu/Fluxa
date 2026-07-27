@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from app.subscription_repository import SubscriptionRepository
@@ -12,6 +14,41 @@ def item_key(item):
 
 
 class SubscriptionRepositoryTests(unittest.TestCase):
+    def test_existing_v5_candidate_table_adds_follow_columns_without_data_loss(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "media_control_center.sqlite3"
+            with closing(sqlite3.connect(database_path)) as connection:
+                connection.execute(
+                    "CREATE TABLE discover_candidates ("
+                    "candidate_id TEXT PRIMARY KEY, media_type TEXT NOT NULL, tmdb_id TEXT NOT NULL, "
+                    "season_number INTEGER NOT NULL DEFAULT 0, title TEXT NOT NULL DEFAULT '', "
+                    "year TEXT NOT NULL DEFAULT '', source_key TEXT NOT NULL DEFAULT '', "
+                    "state TEXT NOT NULL DEFAULT 'active', payload_json TEXT NOT NULL, "
+                    "first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, expires_at TEXT NOT NULL, "
+                    "version INTEGER NOT NULL DEFAULT 1, UNIQUE(media_type, tmdb_id, season_number))"
+                )
+                connection.execute(
+                    "INSERT INTO discover_candidates ("
+                    "candidate_id, media_type, tmdb_id, season_number, title, source_key, payload_json, "
+                    "first_seen_at, last_seen_at, expires_at"
+                    ") VALUES (?, 'tv', '200', 1, '原有候选', 'daily', '{}', ?, ?, ?)",
+                    (
+                        "candidate:existing",
+                        "2026-07-28T00:00:00Z",
+                        "2026-07-28T00:00:00Z",
+                        "2026-08-28T00:00:00Z",
+                    ),
+                )
+                connection.commit()
+
+            repository = SubscriptionRepository(database_path)
+            row = repository.get_discover_candidate("candidate:existing")
+
+            self.assertEqual(row["title"], "原有候选")
+            self.assertEqual(row["followed_at"], "")
+            self.assertEqual(row["follow_idempotency_key"], "")
+            self.assertEqual(row["follow_response_json"], "{}")
+
     def test_config_and_payload_round_trip_preserve_unknown_fields(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = SubscriptionRepository(Path(directory) / "media_control_center.sqlite3")

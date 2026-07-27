@@ -22,6 +22,7 @@ from app.mineradio_runtime import register_mineradio
 from app.discover_compat_runtime import register_discover_compat
 from app.subscription_compat_runtime import register_subscription_compat
 from app.subscription_workbench_runtime import register_subscription_workbench
+from app.discover_candidate_runtime import register_discover_candidates
 from app.media_search_runtime import register_media_search
 from app.media_read_runtime import register_emby_reads
 from app.emby_refresh_runtime import register_emby_refresh
@@ -1474,6 +1475,7 @@ def create_app(
         config_loader=discover_runtime.load_subscription_config,
     )
     register_subscription_workbench(application, environment)
+    register_discover_candidates(application, environment)
     register_media_search(application)
     automation_service = subscription_automation_service or SubscriptionAutomationService(
         SubscriptionAutomationDependencies(

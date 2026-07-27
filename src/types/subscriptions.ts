@@ -436,6 +436,7 @@ export interface TorraPushResult {
 
 export interface DiscoverResult {
   id: number;
+  candidateId?: string;
   mediaType: 'movie' | 'tv';
   title: string;
   year: string;
@@ -453,7 +454,7 @@ export interface DiscoverResult {
 }
 
 export interface DiscoverBrowseParams {
-  source: 'tmdb' | 'daily' | 'douban' | 'tencent' | 'youku' | 'iqiyi' | 'mango' | 'streaming';
+  source: 'candidates' | 'tmdb' | 'daily' | 'douban' | 'tencent' | 'youku' | 'iqiyi' | 'mango' | 'streaming';
   type: 'movie' | 'tv';
   trend: 'all' | 'day' | 'week';
   sort: string;
@@ -475,6 +476,52 @@ export interface DiscoverResponse {
   hasPrev?: boolean;
   sourceLabel?: string;
   sourceStatuses?: DiscoverSourceStatus[];
+}
+
+export interface DiscoverCandidate {
+  id: string;
+  title: string;
+  mediaType: 'movie' | 'tv';
+  tmdbId: string;
+  seasonNumber: number;
+  year: string;
+  posterUrl: string;
+  overview: string;
+  rating: number;
+  sourceLabel: string;
+  state: 'active' | 'followed' | 'expired';
+  lastSeenAt: string;
+  expiresAt: string;
+  version: number;
+}
+
+export interface DiscoverCandidateListResponse {
+  ok: boolean;
+  items: DiscoverCandidate[];
+  page: {
+    total: number;
+    limit: number;
+    offset: number;
+    nextOffset: number | null;
+    hasMore: boolean;
+  };
+}
+
+export interface DiscoverCandidateFollowPreview {
+  ok: boolean;
+  candidate: DiscoverCandidate;
+  ready: boolean;
+  duplicate: { found: boolean };
+  manualFollow: ManualFollowCapability;
+  blockers: string[];
+}
+
+export interface DiscoverCandidateFollowResponse {
+  ok: boolean;
+  candidate: DiscoverCandidate;
+  item: SubscriptionItem;
+  activation: SubscriptionActivation;
+  replayed: boolean;
 }
 
 export type DiscoverSourceAvailability = 'available' | 'unavailable' | 'disabled' | 'not_configured';

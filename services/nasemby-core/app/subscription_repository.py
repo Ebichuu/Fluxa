@@ -102,12 +102,36 @@ class SubscriptionRepository:
                 "year TEXT NOT NULL DEFAULT '', source_key TEXT NOT NULL DEFAULT '', "
                 "state TEXT NOT NULL DEFAULT 'active', payload_json TEXT NOT NULL, "
                 "first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, expires_at TEXT NOT NULL, "
+                "followed_at TEXT NOT NULL DEFAULT '', follow_idempotency_key TEXT NOT NULL DEFAULT '', "
+                "follow_response_json TEXT NOT NULL DEFAULT '{}', "
                 "version INTEGER NOT NULL DEFAULT 1, "
                 "UNIQUE(media_type, tmdb_id, season_number))"
             )
+            candidate_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(discover_candidates)").fetchall()
+            }
+            if "followed_at" not in candidate_columns:
+                connection.execute(
+                    "ALTER TABLE discover_candidates ADD COLUMN followed_at TEXT NOT NULL DEFAULT ''"
+                )
+            if "follow_idempotency_key" not in candidate_columns:
+                connection.execute(
+                    "ALTER TABLE discover_candidates "
+                    "ADD COLUMN follow_idempotency_key TEXT NOT NULL DEFAULT ''"
+                )
+            if "follow_response_json" not in candidate_columns:
+                connection.execute(
+                    "ALTER TABLE discover_candidates "
+                    "ADD COLUMN follow_response_json TEXT NOT NULL DEFAULT '{}'"
+                )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_discover_candidates_state "
                 "ON discover_candidates(state, last_seen_at DESC)"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_discover_candidates_follow_idempotency "
+                "ON discover_candidates(follow_idempotency_key) WHERE follow_idempotency_key<>''"
             )
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS candidate_migration_runs ("
@@ -424,10 +448,34 @@ class SubscriptionRepository:
             )
         return int(cursor.rowcount or 0)
 
-    def list_discover_candidates(self, *, state="active", limit=100, offset=0):
+    def list_discover_candidates(
+        self,
+        *,
+        state="active",
+        media_type="",
+        query="",
+        expires_after="",
+        limit=100,
+        offset=0,
+    ):
         normalized_state = str(state or "").strip()
-        where = "WHERE state=?" if normalized_state else ""
-        params = [normalized_state] if normalized_state else []
+        normalized_media_type = str(media_type or "").strip().lower()
+        normalized_query = str(query or "").strip().casefold()
+        clauses = []
+        params = []
+        if normalized_state:
+            clauses.append("state=?")
+            params.append(normalized_state)
+        if normalized_media_type in {"movie", "tv"}:
+            clauses.append("media_type=?")
+            params.append(normalized_media_type)
+        if normalized_query:
+            clauses.append("(LOWER(title) LIKE ? OR tmdb_id=?)")
+            params.extend((f"%{normalized_query}%", normalized_query))
+        if expires_after:
+            clauses.append("expires_at>?")
+            params.append(str(expires_after))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with closing(self.runtime.connect()) as connection:
             total = int(connection.execute(
                 f"SELECT COUNT(*) AS count FROM discover_candidates {where}", params
@@ -454,6 +502,49 @@ class SubscriptionRepository:
                 "SELECT * FROM discover_candidates WHERE candidate_id=?", (key,)
             ).fetchone()
         return {**dict(row), "payload": _json_load(row["payload_json"], {})} if row else None
+
+    def get_candidate_follow_response(self, idempotency_key):
+        key = str(idempotency_key or "").strip()
+        if not key:
+            return None
+        with closing(self.runtime.connect()) as connection:
+            row = connection.execute(
+                "SELECT candidate_id, follow_response_json FROM discover_candidates "
+                "WHERE follow_idempotency_key=?",
+                (key,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "candidateId": row["candidate_id"],
+            "response": _json_load(row["follow_response_json"], {}),
+        }
+
+    def record_candidate_follow(self, candidate_id, idempotency_key, response):
+        candidate_key = str(candidate_id or "").strip()
+        action_key = str(idempotency_key or "").strip()
+        if not candidate_key or not action_key:
+            raise ValueError("候选确认缺少目标或幂等键")
+        now = _now_text()
+        with self.runtime.transaction(immediate=True) as connection:
+            replay = connection.execute(
+                "SELECT candidate_id, follow_response_json FROM discover_candidates "
+                "WHERE follow_idempotency_key=?",
+                (action_key,),
+            ).fetchone()
+            if replay:
+                if replay["candidate_id"] != candidate_key:
+                    raise ValueError("幂等键已用于其他候选")
+                return _json_load(replay["follow_response_json"], {}), True
+            cursor = connection.execute(
+                "UPDATE discover_candidates SET state='followed', followed_at=?, "
+                "follow_idempotency_key=?, follow_response_json=?, version=version+1 "
+                "WHERE candidate_id=? AND state='active'",
+                (now, action_key, _json_dump(dict(response or {})), candidate_key),
+            )
+            if not cursor.rowcount:
+                raise ValueError("候选状态已变化，请重新读取")
+        return deepcopy(dict(response or {})), False
 
     def list_torra_links(self):
         with closing(self.runtime.connect()) as connection:

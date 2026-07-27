@@ -23,6 +23,9 @@ import type {
 } from '../types/rssSeedLibrary';
 import type {
   DiscoverBrowseParams,
+  DiscoverCandidateFollowPreview,
+  DiscoverCandidateFollowResponse,
+  DiscoverCandidateListResponse,
   DiscoverResourceResponse,
   DiscoverResult,
   DiscoverResponse,
@@ -445,6 +448,43 @@ export function browseDiscover(params: DiscoverBrowseParams): Promise<DiscoverRe
     query.set('provider', params.provider);
   }
   return readJson<DiscoverResponse>(`/api/discover/browse?${query.toString()}`);
+}
+
+export function getDiscoverCandidates(input: {
+  mediaType?: 'movie' | 'tv';
+  query?: string;
+  limit?: number;
+  offset?: number;
+} = {}, options?: RequestOptions): Promise<DiscoverCandidateListResponse> {
+  const query = new URLSearchParams();
+  if (input.mediaType) query.set('mediaType', input.mediaType);
+  if (input.query) query.set('query', input.query);
+  query.set('limit', String(input.limit ?? 24));
+  query.set('offset', String(input.offset ?? 0));
+  return readJson<DiscoverCandidateListResponse>(`/api/v2/discover/candidates?${query.toString()}`, options);
+}
+
+export function previewDiscoverCandidateFollow(
+  candidateId: string,
+  options?: RequestOptions
+): Promise<DiscoverCandidateFollowPreview> {
+  return postJson<DiscoverCandidateFollowPreview>(
+    `/api/v2/discover/candidates/${encodeURIComponent(candidateId)}/follow-previews`,
+    {},
+    options
+  );
+}
+
+export function followDiscoverCandidate(
+  candidateId: string,
+  idempotencyKey: string,
+  options?: RequestOptions
+): Promise<DiscoverCandidateFollowResponse> {
+  return postJson<DiscoverCandidateFollowResponse>(
+    `/api/v2/discover/candidates/${encodeURIComponent(candidateId)}/follows`,
+    { confirm: true, idempotencyKey },
+    options
+  );
 }
 
 export function searchDiscover(query: string, page = 1): Promise<DiscoverResponse> {
