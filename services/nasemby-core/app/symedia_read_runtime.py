@@ -8,13 +8,30 @@ from urllib.parse import urlencode
 import requests
 from flask import Flask, jsonify
 
-from app.task_exception_runtime import protection_rule
+from app.symedia_evidence_runtime import (
+    is_cancelled_override,
+    is_low_score_protection,
+    is_successful_replacement,
+    normalize_symedia_status,
+    symedia_outcome,
+    symedia_protection_rule,
+)
+from app.task_public_runtime import safe_public_text
 
 
 REQUEST_TIMEOUT_SECONDS = 15
 RECENT_PAGE_SIZE = 50
 MAX_TODAY_PAGES = 20
 BEIJING_TZ = timezone(timedelta(hours=8))
+SYMEDIA_CAPABILITY_NAMES = (
+    "transferHistory",
+    "archiveMonitor",
+    "cloudDriveListener",
+    "webhook",
+    "strmGenerator",
+    "archiveScheduler",
+    "fileObserver",
+)
 
 
 @dataclass(frozen=True)
@@ -154,12 +171,41 @@ class SymediaReadClient:
             total = 0
         return {"rows": rows, "total": total}
 
-    def _empty_summary(self, error=None):
+    def _capabilities(self, transfer_state, transfer_reason, observed_at=""):
+        capabilities = {
+            name: {
+                "state": "unknown",
+                "reasonCode": "NOT_INTEGRATED",
+                "observedAt": "",
+            }
+            for name in SYMEDIA_CAPABILITY_NAMES
+        }
+        capabilities["transferHistory"] = {
+            "state": transfer_state,
+            "reasonCode": transfer_reason,
+            "observedAt": observed_at,
+        }
+        return capabilities
+
+    @staticmethod
+    def _empty_wash_summary():
+        return {
+            "scope": "today",
+            "evidenceState": "insufficient",
+            "successfulReplacements": None,
+            "lowScoreProtected": None,
+            "cancelledOverrides": None,
+            "realFailures": None,
+            "latestTarget": None,
+        }
+
+    def _empty_summary(self, error=None, transfer_reason="SYMEDIA_NOT_CONFIGURED"):
+        checked_at = _iso_timestamp(self.clock())
         return {
             "configured": self.is_configured(),
             "connected": False,
             "webUrl": self.base_url,
-            "lastCheckedAt": _iso_timestamp(self.clock()),
+            "lastCheckedAt": checked_at,
             "totals": {
                 "records": 0,
                 "today": 0,
@@ -167,12 +213,102 @@ class SymediaReadClient:
                 "archivedToday": 0,
                 "protectedToday": 0,
                 "failedToday": 0,
+                "unknownToday": 0,
                 "failedRecent": 0,
                 "protectedRecent": 0,
             },
+            "capabilities": self._capabilities(
+                "unknown" if transfer_reason == "SYMEDIA_NOT_CONFIGURED" else "unavailable",
+                transfer_reason,
+                "" if transfer_reason == "SYMEDIA_NOT_CONFIGURED" else checked_at,
+            ),
+            "washSummary": self._empty_wash_summary(),
             "latest": [],
             **({"error": error} if error else {}),
         }
+
+    def _history_window(self):
+        today = self.clock().strftime("%Y-%m-%d")
+        first_page = self.list_transfer_history(RECENT_PAGE_SIZE, 1)
+        recent_rows = first_page["rows"]
+        today_rows = [row for row in recent_rows if str(row.get("date") or "").startswith(today)]
+        current_rows = recent_rows
+        page = 2
+        while (
+            page <= MAX_TODAY_PAGES
+            and len(current_rows) == RECENT_PAGE_SIZE
+            and str(current_rows[-1].get("date") or "").startswith(today)
+        ):
+            current_rows = self.list_transfer_history(RECENT_PAGE_SIZE, page)["rows"]
+            today_rows.extend(
+                row for row in current_rows
+                if str(row.get("date") or "").startswith(today)
+            )
+            page += 1
+        truncated = (
+            page > MAX_TODAY_PAGES
+            and len(current_rows) == RECENT_PAGE_SIZE
+            and bool(current_rows)
+            and str(current_rows[-1].get("date") or "").startswith(today)
+        )
+        return first_page["total"], recent_rows, today_rows, truncated
+
+    @staticmethod
+    def _result_counts(rows):
+        counts = {"archived": 0, "protected": 0, "failed": 0, "unknown": 0}
+        for row in rows:
+            status = normalize_symedia_status(row.get("status"))
+            if status is True:
+                counts["archived"] += 1
+            elif status is False and symedia_protection_rule(row):
+                counts["protected"] += 1
+            elif status is False:
+                counts["failed"] += 1
+            else:
+                counts["unknown"] += 1
+        return counts
+
+    @staticmethod
+    def _latest_target(rows):
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            "title": str(row.get("title") or "未识别条目"),
+            "seasonEpisode": str(row.get("season_episode") or ""),
+            "mediaType": str(row.get("type") or ""),
+            "date": str(row.get("date") or ""),
+            "outcome": symedia_outcome(row),
+        }
+
+    @classmethod
+    def _wash_summary(cls, today_rows, recent_rows, truncated, real_failures):
+        statuses = [normalize_symedia_status(row.get("status")) for row in today_rows]
+        evidence_state = "partial" if truncated or any(status is None for status in statuses) else "verified"
+        failed_rows = [row for row, status in zip(today_rows, statuses) if status is False]
+        return {
+            "scope": "today",
+            "evidenceState": evidence_state,
+            "successfulReplacements": sum(is_successful_replacement(row) for row in today_rows),
+            "lowScoreProtected": sum(is_low_score_protection(row) for row in failed_rows),
+            "cancelledOverrides": sum(is_cancelled_override(row) for row in failed_rows),
+            "realFailures": real_failures,
+            "latestTarget": cls._latest_target(recent_rows),
+        }
+
+    @staticmethod
+    def _latest_items(rows):
+        return [{
+            "title": str(row.get("title") or "未识别条目"),
+            "year": str(row.get("year") or ""),
+            "mediaType": str(row.get("type") or ""),
+            "seasonEpisode": str(row.get("season_episode") or ""),
+            "mode": str(row.get("mode") or ""),
+            "status": normalize_symedia_status(row.get("status")),
+            "outcome": symedia_outcome(row),
+            "errmsg": safe_public_text(row.get("errmsg")),
+            "date": str(row.get("date") or ""),
+        } for row in rows[:5]]
 
     def get_summary(self) -> dict:
         if not self.base_url:
@@ -182,74 +318,39 @@ class SymediaReadClient:
                 "未配置 SYMEDIA_TOKEN 或 SYMEDIA_USERNAME/SYMEDIA_PASSWORD"
             )
         try:
-            today = self.clock().strftime("%Y-%m-%d")
-            first_page = self.list_transfer_history(RECENT_PAGE_SIZE, 1)
-            recent_rows = first_page["rows"]
-            today_rows = [row for row in recent_rows if str(row.get("date") or "").startswith(today)]
-            current_rows = recent_rows
-            page = 2
-            while (
-                page <= MAX_TODAY_PAGES
-                and len(current_rows) == RECENT_PAGE_SIZE
-                and str(current_rows[-1].get("date") or "").startswith(today)
-            ):
-                current_rows = self.list_transfer_history(RECENT_PAGE_SIZE, page)["rows"]
-                today_rows.extend(
-                    row for row in current_rows
-                    if str(row.get("date") or "").startswith(today)
-                )
-                page += 1
-            protected_today = sum(
-                row.get("status") is False
-                and bool(protection_rule(row.get("reasonCode"), row.get("errmsg")))
-                for row in today_rows
-            )
-            failed_today = sum(
-                row.get("status") is False
-                and not protection_rule(row.get("reasonCode"), row.get("errmsg"))
-                for row in today_rows
-            )
-            protected_recent = sum(
-                row.get("status") is False
-                and bool(protection_rule(row.get("reasonCode"), row.get("errmsg")))
-                for row in recent_rows
-            )
-            failed_recent = sum(
-                row.get("status") is False
-                and not protection_rule(row.get("reasonCode"), row.get("errmsg"))
-                for row in recent_rows
-            )
+            total, recent_rows, today_rows, truncated = self._history_window()
+            checked_at = _iso_timestamp(self.clock())
+            today_counts = self._result_counts(today_rows)
+            recent_counts = self._result_counts(recent_rows)
             return {
                 "configured": True,
                 "connected": True,
                 "webUrl": self.base_url,
-                "lastCheckedAt": _iso_timestamp(self.clock()),
+                "lastCheckedAt": checked_at,
                 "totals": {
-                    "records": first_page["total"],
+                    "records": total,
                     "today": len(today_rows),
                     "processedToday": len(today_rows),
-                    "archivedToday": sum(row.get("status") is not False for row in today_rows),
-                    "protectedToday": protected_today,
-                    "failedToday": failed_today,
-                    "failedRecent": failed_recent,
-                    "protectedRecent": protected_recent,
+                    "archivedToday": today_counts["archived"],
+                    "protectedToday": today_counts["protected"],
+                    "failedToday": today_counts["failed"],
+                    "unknownToday": today_counts["unknown"],
+                    "failedRecent": recent_counts["failed"],
+                    "protectedRecent": recent_counts["protected"],
                 },
-                "latest": [
-                    {
-                        "title": str(row.get("title") or "未识别条目"),
-                        "year": str(row.get("year") or ""),
-                        "mediaType": str(row.get("type") or ""),
-                        "seasonEpisode": str(row.get("season_episode") or ""),
-                        "mode": str(row.get("mode") or ""),
-                        "status": row.get("status") is not False,
-                        "errmsg": str(row.get("errmsg") or ""),
-                        "date": str(row.get("date") or ""),
-                    }
-                    for row in recent_rows[:5]
-                ],
+                "capabilities": self._capabilities(
+                    "available", "TRANSFER_HISTORY_READABLE", checked_at,
+                ),
+                "washSummary": self._wash_summary(
+                    today_rows, recent_rows, truncated, today_counts["failed"],
+                ),
+                "latest": self._latest_items(recent_rows),
             }
         except Exception as exc:
-            return self._empty_summary(str(exc) or "Symedia 读取失败")
+            return self._empty_summary(
+                str(exc) or "Symedia 读取失败",
+                "TRANSFER_HISTORY_UNAVAILABLE",
+            )
 
 
 def register_symedia_read(app: Flask, environment=None, client_factory=None, clock=None):

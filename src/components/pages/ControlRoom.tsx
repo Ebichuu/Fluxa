@@ -3,7 +3,7 @@ import { Clapperboard, Download, ExternalLink, HeartPulse, RefreshCcw, Rss, Shie
 import { getEmbyOverview, getEmbyRefreshStatus, getIntegrationSummary, getQbittorrentSummary, getSubscriptionCapabilities, getSymediaSummary, getTorraSummary, triggerEmbyRefresh } from '../../services/api';
 import type { EmbyOverview, EmbyRefreshStatus } from '../../types/emby';
 import type { QbittorrentSummary } from '../../types/qbittorrent';
-import type { SymediaSummary } from '../../types/symedia';
+import type { SymediaCapabilities, SymediaCapabilityState, SymediaSummary } from '../../types/symedia';
 import type { TorraSummary } from '../../types/torra';
 import type { IntegrationSummary } from '../../types/integrations';
 import type { SubscriptionCapabilitiesResponse } from '../../types/subscriptions';
@@ -32,6 +32,28 @@ interface ServiceModel {
   icon: ReactNode;
   toolUrl: string;
   spark?: boolean;
+}
+
+const SYMEDIA_CAPABILITY_LABELS: Array<[keyof SymediaCapabilities, string]> = [
+  ['transferHistory', '转移历史'],
+  ['archiveMonitor', '归档监控'],
+  ['cloudDriveListener', '云盘消息监听'],
+  ['webhook', 'Webhook'],
+  ['strmGenerator', 'STRM 生成'],
+  ['archiveScheduler', '归档调度'],
+  ['fileObserver', '文件观察']
+];
+
+function capabilityStateLabel(state: SymediaCapabilityState, reasonCode = '') {
+  if (state === 'available') return '证据可用';
+  if (state === 'unavailable') return '本次不可用';
+  if (reasonCode === 'SYMEDIA_NOT_CONFIGURED') return '未配置';
+  return '尚未接入';
+}
+
+function washCount(value: number | null | undefined, evidenceState?: string) {
+  if (value == null || evidenceState === 'insufficient') return '证据不足';
+  return evidenceState === 'partial' ? `${value}（部分证据）` : String(value);
 }
 
 function sparkPoints(values: number[]) {
@@ -140,6 +162,8 @@ export function ControlRoom() {
       : symedia.configured ? 'down' : 'idle';
     const embyState: ServiceState = !emby ? servicesLoaded ? 'down' : 'loading' : emby.connected ? 'ok' : emby.configured ? 'down' : 'idle';
     const latestTransfer = symedia?.latest?.[0];
+    const washSummary = symedia?.washSummary;
+    const availableCapabilities = SYMEDIA_CAPABILITY_LABELS.filter(([key]) => symedia?.capabilities?.[key].state === 'available').length;
     const recentEntry = emby?.recent?.[0];
 
     return [
@@ -167,15 +191,14 @@ export function ControlRoom() {
       },
       {
         id: 'symedia', order: '03', name: 'Symedia', role: '识别、整理、STRM 与归档', state: symediaState,
-        stateLabel: !symedia ? servicesLoaded ? '读取失败' : '正在读取' : symedia.connected ? (symedia.totals.failedRecent > 0 ? '近期有失败' : '在线') : symedia.configured ? '连接失败' : '未配置',
-        metric: symedia?.connected ? String(symedia.totals.processedToday ?? symedia.totals.today) : servicesLoaded ? '—' : '…', metricLabel: `今日处理 / 累计 ${new Intl.NumberFormat('zh-CN').format(symedia?.totals.records ?? 0)}`,
+        stateLabel: !symedia ? servicesLoaded ? '读取失败' : '正在读取' : symedia.connected ? (symedia.totals.failedRecent > 0 ? '历史可读 · 近期有失败' : '历史接口可读') : symedia.configured ? '历史读取失败' : '未配置',
+        metric: symedia?.connected ? String(symedia.totals.processedToday ?? symedia.totals.today) : servicesLoaded ? '—' : '…', metricLabel: `今日记录 / 累计 ${new Intl.NumberFormat('zh-CN').format(symedia?.totals.records ?? 0)}`,
         checked: symedia ? formatTimeAgo(symedia.lastCheckedAt) : servicesLoaded ? '本次检查未返回' : '等待首次检查',
         facts: symedia?.connected ? [
-          { label: '今日结果', value: `成功归档 ${symedia.totals.archivedToday ?? 0} · 正常保护 ${symedia.totals.protectedToday ?? 0}` },
-          symedia.totals.failedRecent > 0
-            ? { label: '异常证据', value: `真实失败 ${symedia.totals.failedRecent}` }
-            : { label: '最近记录', value: latestTransfer ? `${latestTransfer.title}${latestTransfer.seasonEpisode ? ` · ${latestTransfer.seasonEpisode}` : ''}` : '近期没有真实归档故障' }
-        ] : [{ label: '连接说明', value: symedia?.error || (servicesLoaded ? '服务状态接口暂不可用' : '正在读取 Symedia 状态') }],
+          { label: '能力证据', value: symedia.capabilities ? `${availableCapabilities} / 7 项已验证` : '能力明细尚未返回' },
+          { label: '今日洗版', value: `替换 ${washCount(washSummary?.successfulReplacements, washSummary?.evidenceState)} · 低分保护 ${washCount(washSummary?.lowScoreProtected, washSummary?.evidenceState)} · 取消覆盖 ${washCount(washSummary?.cancelledOverrides, washSummary?.evidenceState)} · 真实失败 ${washCount(washSummary?.realFailures, washSummary?.evidenceState)}` },
+          { label: '最近对象', value: latestTransfer ? `${latestTransfer.title}${latestTransfer.seasonEpisode ? ` · ${latestTransfer.seasonEpisode}` : ''}` : '证据不足' }
+        ] : [{ label: '连接说明', value: symedia?.error || (servicesLoaded ? '历史接口暂不可用' : '正在读取 Symedia 历史') }],
         icon: <Wrench aria-hidden="true" size={20} />, toolUrl: symedia?.webUrl || ''
       },
       {
@@ -193,7 +216,7 @@ export function ControlRoom() {
   }, [qb, emby, servicesLoaded, torra, symedia]);
 
   const selected = services.find((service) => service.id === focusedService) ?? services[0];
-  const onlineCount = services.filter((service) => service.state === 'ok' || service.state === 'warn').length;
+  const readableCount = services.filter((service) => service.state === 'ok' || service.state === 'warn').length;
   const warningCount = services.filter((service) => service.state === 'warn' || service.state === 'down').length;
   const configuredCount = services.filter((service) => service.state !== 'idle' && service.state !== 'loading').length;
   const unconfiguredCount = services.length - configuredCount;
@@ -229,7 +252,7 @@ export function ControlRoom() {
         </div>
         <div className="ops-hero-actions">
           <div className={!servicesLoading && (warningCount || unconfiguredCount) ? 'ops-system-score ops-system-score--warn' : 'ops-system-score'}>
-            <small>核心服务</small><strong>{servicesLoading ? '正在读取' : `${onlineCount} / 4 在线`}</strong><span>{servicesLoading ? '正在汇总服务证据' : warningCount ? `${warningCount} 项需检查` : unconfiguredCount ? `${unconfiguredCount} 项未配置` : '全部服务证据可用'}</span>
+            <small>核心接口</small><strong>{servicesLoading ? '正在读取' : `${readableCount} / 4 可读`}</strong><span>{servicesLoading ? '正在汇总服务证据' : warningCount ? `${warningCount} 项需检查` : unconfiguredCount ? `${unconfiguredCount} 项未配置` : '核心接口均可读，子能力按证据显示'}</span>
           </div>
           <button aria-label="刷新全部服务" aria-busy={servicesRefreshBusy} className="ops-icon-button" disabled={servicesRefreshBusy} title="刷新全部服务" type="button" onClick={() => void refreshServices()}><RefreshCcw aria-hidden="true" size={18} /></button>
           {servicesRefreshFeedback && <small aria-live="polite">{servicesRefreshFeedback}</small>}
@@ -272,6 +295,18 @@ export function ControlRoom() {
             <div><dt>最近检查</dt><dd>{selected.checked}</dd></div>
             {selected.facts.map((item) => <div key={`${selected.id}-${item.label}`}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}
           </dl>
+          {selected.id === 'symedia' && symedia?.capabilities && (
+            <section className="ops-symedia-capabilities" aria-label="Symedia 服务能力证据">
+              <header><span>服务能力证据</span><strong>{SYMEDIA_CAPABILITY_LABELS.filter(([key]) => symedia.capabilities?.[key].state === 'available').length} / 7 已验证</strong></header>
+              <dl>
+                {SYMEDIA_CAPABILITY_LABELS.map(([key, label]) => {
+                  const capability = symedia.capabilities?.[key];
+                  const state = capability?.state ?? 'unknown';
+                  return <div key={key}><dt>{label}</dt><dd className={`ops-symedia-capabilities__state ops-symedia-capabilities__state--${state}`}>{capabilityStateLabel(state, capability?.reasonCode)}</dd></div>;
+                })}
+              </dl>
+            </section>
+          )}
           {selected.id === 'emby' && (
             <div className={`ops-emby-refresh-evidence ops-emby-refresh-evidence--${embyRefresh?.state || 'loading'}`}>
               <header><span>整理 → 媒体库</span><strong>{embyRefresh?.reason || '正在读取索引记录'}</strong></header>

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from app.pipeline_fact_runtime import PIPELINE_STAGES, target_scope_for_item
-from app.task_exception_runtime import protection_rule
+from app.symedia_evidence_runtime import normalize_symedia_status, symedia_protection_rule
 
 
 def _utc(value: datetime) -> datetime:
@@ -181,10 +181,11 @@ def _symedia_unit(row, index, window):
     date = _text(row.get("date"))
     source_path = _text(row.get("src"))
     reference = _text(row.get("id")) or (f"{date}:{source_path}" if date or source_path else f"row-{index}")
-    if row.get("status") is True:
+    status = normalize_symedia_status(row.get("status"))
+    if status is True:
         state, evidence, code, text = "succeeded", "verified", "SYMEDIA_ORGANIZED", "Symedia 整理入库完成"
-    elif row.get("status") is False:
-        rule = protection_rule(row.get("reasonCode"), row.get("errmsg"))
+    elif status is False:
+        rule = symedia_protection_rule(row)
         state = "protected" if rule else "failed"
         evidence = "verified"
         code = rule or _text(row.get("reasonCode")) or "SYMEDIA_LIBRARY_FAILED"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -8,6 +9,7 @@ from unittest.mock import Mock
 
 
 MODULE_ROOT = Path(__file__).resolve().parents[1]
+FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
 if str(MODULE_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE_ROOT))
 
@@ -60,6 +62,21 @@ class SymediaReadRuntimeContractTests(unittest.TestCase):
         self.assertFalse(payload["configured"])
         self.assertFalse(payload["connected"])
         self.assertEqual(payload["error"], "未配置 SYMEDIA_BASE_URL")
+        self.assertEqual(
+            payload["capabilities"]["transferHistory"],
+            {
+                "state": "unknown",
+                "reasonCode": "SYMEDIA_NOT_CONFIGURED",
+                "observedAt": "",
+            },
+        )
+        self.assertEqual(
+            payload["capabilities"]["strmGenerator"]["reasonCode"],
+            "NOT_INTEGRATED",
+        )
+        self.assertEqual(payload["washSummary"]["evidenceState"], "insufficient")
+        self.assertIsNone(payload["washSummary"]["successfulReplacements"])
+        self.assertIsNone(payload["washSummary"]["latestTarget"])
         self.assertIn(("/api/symedia/summary", "GET"), routes)
 
     def test_token_summary_paginates_today_and_maps_latest(self):
@@ -103,6 +120,20 @@ class SymediaReadRuntimeContractTests(unittest.TestCase):
         summary = client.get_summary()
 
         self.assertTrue(summary["connected"])
+        self.assertEqual(
+            summary["capabilities"]["transferHistory"],
+            {
+                "state": "available",
+                "reasonCode": "TRANSFER_HISTORY_READABLE",
+                "observedAt": "2026-07-16T04:00:00.000Z",
+            },
+        )
+        self.assertTrue(all(
+            capability["state"] == "unknown"
+            and capability["reasonCode"] == "NOT_INTEGRATED"
+            for name, capability in summary["capabilities"].items()
+            if name != "transferHistory"
+        ))
         self.assertEqual(summary["totals"], {
             "records": 53374,
             "today": 51,
@@ -110,6 +141,7 @@ class SymediaReadRuntimeContractTests(unittest.TestCase):
             "archivedToday": 50,
             "protectedToday": 0,
             "failedToday": 1,
+            "unknownToday": 0,
             "failedRecent": 1,
             "protectedRecent": 0,
         })
@@ -119,6 +151,44 @@ class SymediaReadRuntimeContractTests(unittest.TestCase):
         self.assertEqual(summary["latest"][0]["mediaType"], "movie")
         self.assertEqual(len(session.requests), 2)
         self.assertTrue(all(item[2]["headers"]["Authorization"] == "Bearer fixed-token" for item in session.requests))
+
+    def test_numeric_status_and_wash_evidence_are_classified_without_exposing_paths(self):
+        from app.symedia_read_runtime import SymediaReadClient, SymediaReadConfig
+
+        payload = json.loads(
+            (FIXTURE_ROOT / "symedia_transfer_history_sanitized.json").read_text(encoding="utf-8")
+        )
+        session = FakeSession([FakeResponse(payload=payload)])
+        client = SymediaReadClient(
+            SymediaReadConfig(base_url="http://symedia.example.test", token="fixed-token"),
+            session=session,
+            clock=lambda: datetime(2026, 7, 16, 12, 0, tzinfo=timezone(timedelta(hours=8))),
+        )
+
+        summary = client.get_summary()
+
+        self.assertEqual(summary["totals"]["archivedToday"], 1)
+        self.assertEqual(summary["totals"]["protectedToday"], 1)
+        self.assertEqual(summary["totals"]["failedToday"], 1)
+        self.assertEqual(summary["totals"]["unknownToday"], 1)
+        self.assertEqual(summary["washSummary"], {
+            "scope": "today",
+            "evidenceState": "partial",
+            "successfulReplacements": 1,
+            "lowScoreProtected": 1,
+            "cancelledOverrides": 1,
+            "realFailures": 1,
+            "latestTarget": {
+                "title": "替换成功",
+                "seasonEpisode": "",
+                "mediaType": "",
+                "date": "2026-07-16 11:50:00",
+                "outcome": "replaced",
+            },
+        })
+        self.assertIsNone(summary["latest"][3]["status"])
+        self.assertNotIn("/media-test/", str(summary))
+        self.assertEqual(summary["latest"][2]["errmsg"], "未查询到媒体信息 [已隐藏]")
 
     def test_low_score_rejection_is_normal_protection_not_recent_failure(self):
         from app.symedia_read_runtime import SymediaReadClient, SymediaReadConfig
@@ -179,6 +249,10 @@ class SymediaReadRuntimeContractTests(unittest.TestCase):
         ).get_summary()
         self.assertEqual(failed["error"], "Symedia 请求失败")
         self.assertNotIn("must-not-escape", str(failed))
+        self.assertEqual(
+            failed["capabilities"]["transferHistory"]["reasonCode"],
+            "TRANSFER_HISTORY_UNAVAILABLE",
+        )
 
         response = main.create_app(
             access_environment={},

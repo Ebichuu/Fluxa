@@ -380,6 +380,60 @@
   border-color: rgba(255, 83, 103, 0.16);
 }
 
+.ops-symedia-capabilities {
+  display: grid;
+  gap: 9px;
+  padding: 2px 0 11px;
+  border-bottom: 1px solid rgba(157, 184, 207, 0.1);
+}
+
+.ops-symedia-capabilities header,
+.ops-symedia-capabilities dl > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.ops-symedia-capabilities header span,
+.ops-symedia-capabilities header strong,
+.ops-symedia-capabilities dt,
+.ops-symedia-capabilities dd {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.ops-symedia-capabilities header span {
+  color: var(--ops-steel);
+  font-family: var(--font-ui);
+}
+
+.ops-symedia-capabilities header strong,
+.ops-symedia-capabilities dt {
+  color: var(--ops-muted);
+}
+
+.ops-symedia-capabilities dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 18px;
+  margin: 0;
+}
+
+.ops-symedia-capabilities__state {
+  color: var(--ops-faint);
+  text-align: right;
+}
+
+.ops-symedia-capabilities__state--available {
+  color: var(--cyan);
+}
+
+.ops-symedia-capabilities__state--unavailable {
+  color: var(--ops-rose);
+}
+
 .ops-control-foot {
   display: grid;
   grid-template-columns: auto minmax(180px, auto) auto auto minmax(220px, 1fr);
@@ -635,5 +689,9 @@
   .ops-inspector__facts > div {
     grid-template-columns: 78px minmax(0, 1fr);
     gap: 10px;
+  }
+
+  .ops-symedia-capabilities dl {
+    grid-template-columns: 1fr;
   }
 }

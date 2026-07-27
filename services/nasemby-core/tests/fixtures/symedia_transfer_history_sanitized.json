@@ -1,0 +1,37 @@
+{
+  "data": {
+    "total": 4,
+    "list": [
+      {
+        "title": "替换成功",
+        "status": 1,
+        "date": "2026-07-16 11:50:00",
+        "src": "/media-test/incoming/replacement.mkv",
+        "dest": "/media-test/library/replacement.mkv",
+        "src_detail": { "totalScore": 180.0 },
+        "dst_detail": { "totalScore": 150.0 }
+      },
+      {
+        "title": "低分保护",
+        "season_episode": "S01E03",
+        "status": 0,
+        "date": "2026-07-16 11:40:00",
+        "errmsg": "源文件权重分 120 小于等于目标文件权重分 160，取消覆盖",
+        "src": "/media-test/incoming/protected.mkv",
+        "dest": "/media-test/library/protected.mkv"
+      },
+      {
+        "title": "真实失败",
+        "status": 0,
+        "date": "2026-07-16 11:30:00",
+        "errmsg": "未查询到媒体信息 /media-test/incoming/failed.mkv",
+        "src": "/media-test/incoming/failed.mkv"
+      },
+      {
+        "title": "状态缺失",
+        "date": "2026-07-16 11:20:00",
+        "src": "/media-test/incoming/unknown.mkv"
+      }
+    ]
+  }
+}

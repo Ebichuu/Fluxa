@@ -12,7 +12,7 @@
 - Torra 固定目标推送，以及追更洗版分析、候选下载、job 状态解析、按集 Emby 基准、SQLite 幂等/租约和脱敏审计。
 - 30 秒缓存的 NAS 系统指标，以及统一脱敏、可筛选的 v2 活动日志。
 - 115、Telegram、HDHive / pansou 和 MoviePilot 的 v2 细分接口继续保留；MoviePilot 阶段 7 已增加默认关闭的人工备用预览/推送，其他能力延期。
-- Emby、qBittorrent、Torra、Symedia 的服务端适配和凭据隔离。
+- Emby、qBittorrent、Torra、Symedia 的服务端适配和凭据隔离；Symedia 摘要把 transfer history 与归档监控、云盘监听、Webhook、STRM、归档调度和文件观察分别建模，未验证接口保持 `unknown + NOT_INTEGRATED`。
 - 统一任务链、qB 暂停/恢复和证据驱动的 Emby 刷新。
 - 六阶段独立事实契约与统一结果派生：`torra/qb/cloud115/symedia/strm/emby` 分别保存；P0.2 已接入 Torra、qB、Symedia 与 Emby 明确证据，115 分类摘要不能绑定媒体时及 STRM 独立来源未接入时保持 `unknown + missing`。任务、首页、作品、追更和日历已消费新结果，旧状态只由六阶段事实作兼容投影。
 - 全局作品搜索与单作品生命周期聚合：合并本地追更、已识别 RSS、任务、日历和 Emby，并在本地无结果时使用 TMDB 只读补充。
@@ -85,7 +85,7 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/discover/*`：发现、趋势、搜索和资源搜索。
 - `/api/subscriptions/*`：唯一台账、配置、详情、日历和受保护动作。
 - `/api/media/*`：影院大厅与 Emby。
-- `/api/qbittorrent/*`、`/api/torra/summary`、`/api/symedia/summary`。
+- `/api/qbittorrent/*`、`/api/torra/summary`、`/api/symedia/summary`；后者兼容保留原统计并新增七项能力证据和脱敏洗版摘要，只有可证明的成功评分替换进入替换计数，缺失状态返回证据不足。
 - `/api/tasks/chain`：订阅到入库的统一证据链。
 - `/api/v2/tasks/summary`：返回唯一任务链、健康/身份/执行三维状态、兼容 `userCounts`、新 `outcomeCounts`、阶段和服务轻量摘要，支持 ETag 条件读取。
 - `/api/v2/tasks/chains`：按 `chainId/targetKey` 合并重复来源，默认分页返回 20 条摘要；支持可重复 `outcomeState`、兼容 `userState`、可播放日期、健康状态、身份和增量时间筛选，顶层返回 `outcomeState/playableAt`；任务中心按“需要处理 / 处理中 / 已可播放 / 无需处理”消费新结果。
@@ -137,7 +137,7 @@ python -m unittest discover -s tests -t . -v
 
 测试使用临时台账、隔离的临时活动日志和模拟客户端，不连接真实服务执行写操作。保留接口只在模拟测试中显式开启；Mineradio 注入片段继续使用冻结的 SHA-256 快照保护视觉桥接基线。
 
-当前共 501 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘、日历时间线、全局作品搜索和系统指标测试全部使用临时台账、临时活动日志与模拟函数，不连接真实外部服务；覆盖默认闸门、脱敏、原子迁移、候选刷新与追更隔离、候选只读预览与幂等确认加入、历史污染四类预览、备份失败与并发变化回滚、Torra 镜像幂等与公开哈希 ID、旧 Torra 冲突键公开投影、六阶段任务事实、六来源适配、单向兼容投影、Emby 集级分页索引与结果派生、任务公开引用与 qB 动作反解、任务用户状态、无 TMDB 任务深链、首页关注项、北京时间自然日、日历完整索引、RSS 单条安全匹配与匹配级下载确认、追更海报补齐、qB 安全动作、自动化窗口、租约回收终态和完整幂等请求绑定。
+当前共 503 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘、日历时间线、全局作品搜索和系统指标测试全部使用临时台账、临时活动日志与模拟函数，不连接真实外部服务；覆盖默认闸门、脱敏、原子迁移、候选刷新与追更隔离、候选只读预览与幂等确认加入、历史污染四类预览、备份失败与并发变化回滚、Torra 镜像幂等与公开哈希 ID、旧 Torra 冲突键公开投影、六阶段任务事实、六来源适配、单向兼容投影、Symedia `0/1` 状态归一化、能力证据和洗版摘要、Emby 集级分页索引与结果派生、任务公开引用与 qB 动作反解、任务用户状态、无 TMDB 任务深链、首页关注项、北京时间自然日、日历完整索引、RSS 单条安全匹配与匹配级下载确认、追更海报补齐、qB 安全动作、自动化窗口、租约回收终态和完整幂等请求绑定。
 
 RSS 身份端到端验收使用临时 SQLite 覆盖结构化 TMDB、简介 IMDb 链接、唯一追更匹配和多候选冲突四类固定样本，不写入正式 RSS 台账。
 

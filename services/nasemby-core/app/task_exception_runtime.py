@@ -18,6 +18,10 @@ TECHNICAL_REASON_PATTERN = re.compile(
     r"(?:[a-zA-Z]:[\\/]|\\\\[^\\\s]+\\|/(?:[^/\s]+/)+|https?://|\b[a-f0-9]{32,}\b)",
     re.IGNORECASE,
 )
+WEIGHT_NOT_HIGHER_PATTERN = re.compile(
+    r"权重分?.{0,48}(?:低于|小于(?:或)?等于|不高于)",
+    re.IGNORECASE,
+)
 
 
 def _text(value) -> str:
@@ -53,6 +57,8 @@ def protection_rule(*values) -> str:
     ), "")
     if reason_code:
         return reason_code
+    if WEIGHT_NOT_HIGHER_PATTERN.search(text):
+        return "QUALITY_WEIGHT_NOT_HIGHER"
     english_rules = {
         "QUALITY_SCORE_LOWER": ("low score",),
         "QUALITY_HIGHER_VERSION_EXISTS": ("higher quality",),

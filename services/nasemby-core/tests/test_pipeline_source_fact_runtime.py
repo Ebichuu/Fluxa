@@ -91,6 +91,21 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
         self.assertEqual(by_stage(protected, "symedia")["state"], "protected")
         self.assertEqual(by_stage(failed, "symedia")["state"], "failed")
 
+    def test_symedia_numeric_status_is_normalized_and_missing_status_stays_unknown(self):
+        facts = build_pipeline_source_facts(context(symediaRows=[
+            {"id": "success", "status": 1},
+            {"id": "protected", "status": 0, "errmsg": "源文件评分低于目标文件，取消覆盖"},
+            {"id": "unknown"},
+        ]), observed_at=OBSERVED_AT)
+
+        symedia = by_stage(facts, "symedia")
+
+        self.assertEqual(
+            [unit["state"] for unit in symedia["units"]],
+            ["succeeded", "protected", "unknown"],
+        )
+        self.assertEqual(symedia["state"], "succeeded")
+
     def test_emby_requires_movie_or_exact_episode_evidence(self):
         movie = build_pipeline_source_facts(context(
             mediaType="movie",
