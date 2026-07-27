@@ -34,6 +34,24 @@ function optionalString(value: string | null) {
   return normalized ? normalized : undefined;
 }
 
+type NavigationOutcomeState = NonNullable<TaskNavigationTarget['outcomeState']>;
+
+const validOutcomeStates: NavigationOutcomeState[] = [
+  'waiting', 'in_progress', 'protected', 'action_required', 'playable', 'evidence_insufficient'
+];
+
+function isOutcomeState(value: string): value is NavigationOutcomeState {
+  return validOutcomeStates.includes(value as NavigationOutcomeState);
+}
+
+function legacyOutcomes(value: string | undefined): NavigationOutcomeState[] {
+  if (value === 'action_required') return ['action_required'];
+  if (value === 'in_progress') return ['in_progress'];
+  if (value === 'completed') return ['playable'];
+  if (value === 'no_action') return ['waiting', 'protected', 'evidence_insufficient'];
+  return [];
+}
+
 export function readNavigation(location: Location = window.location): NavigationState {
   const pathname = location.pathname.replace(/\/+$/, '') || '/';
   const mediaRoute = pathname.match(/^\/media\/(movie|tv)\/(\d+)$/);
@@ -42,12 +60,18 @@ export function readNavigation(location: Location = window.location): Navigation
     ?? 'overview';
   const query = new URLSearchParams(location.search);
   const season = Number(query.get('seasonNumber'));
+  const explicitOutcomeStates = query.getAll('outcomeState').filter(isOutcomeState);
+  const outcomeStates = [...new Set(
+    explicitOutcomeStates.length
+      ? explicitOutcomeStates
+      : legacyOutcomes(optionalString(query.get('userState')))
+  )];
   const target: TaskNavigationTarget | null = page === 'media' && mediaRoute ? {
     mediaType: mediaRoute[1] as 'movie' | 'tv',
     tmdbId: mediaRoute[2]
   } : ['tasks', 'subscriptions'].includes(page) && (
     query.has('chainId') || query.has('targetKey') || query.has('subscriptionId') || query.has('tmdbId') || query.has('title')
-    || query.has('userState') || query.has('completedDate') || query.has('advanced') || query.has('identityState')
+    || query.has('outcomeState') || query.has('userState') || query.has('completedDate') || query.has('advanced') || query.has('identityState')
     || query.has('systemIssue')
   ) ? {
     mediaType: query.get('mediaType') === 'movie' ? 'movie' : query.get('mediaType') === 'tv' ? 'tv' : undefined,
@@ -57,6 +81,8 @@ export function readNavigation(location: Location = window.location): Navigation
     tmdbId: optionalString(query.get('tmdbId')),
     title: optionalString(query.get('title')),
     seasonNumber: Number.isFinite(season) && season > 0 ? season : undefined,
+    outcomeState: outcomeStates[0],
+    outcomeStates,
     userState: ['action_required', 'in_progress', 'completed', 'no_action'].includes(query.get('userState') || '')
       ? query.get('userState') as TaskNavigationTarget['userState']
       : undefined,
@@ -90,7 +116,13 @@ export function pathForNavigation(page: PageId, target?: TaskNavigationTarget | 
     if (target.tmdbId) query.set('tmdbId', target.tmdbId);
     if (target.title) query.set('title', target.title);
     if (target.seasonNumber != null) query.set('seasonNumber', String(target.seasonNumber));
-    if (target.userState) query.set('userState', target.userState);
+    const requestedOutcomeStates = target.outcomeStates?.length
+      ? target.outcomeStates
+      : target.outcomeState
+        ? [target.outcomeState]
+        : legacyOutcomes(target.userState);
+    const outcomeStates = [...new Set(requestedOutcomeStates)];
+    outcomeStates.forEach((value) => query.append('outcomeState', value));
     if (target.completedDate) query.set('completedDate', target.completedDate);
     if (target.advanced) query.set('advanced', '1');
     target.identityStates?.forEach((value) => query.append('identityState', value));

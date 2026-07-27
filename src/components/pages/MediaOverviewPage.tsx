@@ -76,7 +76,7 @@ export function MediaOverviewPage({ target, onNavigate, onNavigatePath }: MediaO
     mediaType: data.media.mediaType,
     tmdbId: data.media.tmdbId,
     title: data.media.title,
-    userState: data.userState
+    outcomeState: data.outcomeState
   };
   const lifecycle = [
     { key: 'subscription', label: '追更', icon: Bookmark, status: data.subscription.status, detail: data.subscription.seasonNumbers.length ? `第 ${data.subscription.seasonNumbers.join('、')} 季` : statusLabel(data.subscription.status), observedAt: data.subscription.lastCheckedAt },
@@ -127,7 +127,7 @@ export function MediaOverviewPage({ target, onNavigate, onNavigatePath }: MediaO
       <section className="media-overview-next">
         <div>
           <p className="ops-eyebrow">下一步</p>
-          <h2>{data.userState === 'action_required' ? '这部作品需要处理' : data.userState === 'in_progress' ? '系统正在继续处理' : '当前无需人工介入'}</h2>
+          <h2>{data.outcomeState === 'action_required' ? '这部作品需要处理' : data.outcomeState === 'in_progress' ? '系统正在继续处理' : data.outcomeState === 'playable' ? '这部作品已可播放' : '当前无需人工介入'}</h2>
           <p>{data.primaryAction.reason}</p>
         </div>
         <div className="media-overview-next__links">

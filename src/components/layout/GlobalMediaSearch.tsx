@@ -101,7 +101,7 @@ export function GlobalMediaSearch({ open, onClose, onNavigate }: GlobalMediaSear
   const openMedia = (item: MediaSearchItem) => {
     onClose();
     if (!item.tmdbId && item.chainId) {
-      onNavigate('tasks', { chainId: item.chainId, title: item.title, userState: item.userState });
+      onNavigate('tasks', { chainId: item.chainId, title: item.title, outcomeState: item.outcomeState });
       return;
     }
     onNavigate('media', { mediaType: item.mediaType, tmdbId: item.tmdbId, title: item.title });

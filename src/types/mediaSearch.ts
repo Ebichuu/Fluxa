@@ -1,6 +1,6 @@
-import type { TaskChainPrimaryActionKind, TaskChainUserState } from './taskChain';
+import type { PipelineOutcomeState, TaskChainPrimaryActionKind, TaskChainUserState } from './taskChain';
 
-export type MediaLifecycleStatus = 'following' | 'not_following' | 'linked' | 'not_linked' | 'in_progress' | 'completed' | 'action_required' | 'available' | 'scheduled' | 'unknown';
+export type MediaLifecycleStatus = 'following' | 'not_following' | 'linked' | 'not_linked' | 'in_progress' | 'completed' | 'protected' | 'action_required' | 'available' | 'scheduled' | 'unknown';
 
 export interface MediaPrimaryAction {
   kind: TaskChainPrimaryActionKind;
@@ -26,6 +26,7 @@ export interface MediaSearchItem {
   year?: string;
   posterUrl?: string;
   sources: string[];
+  outcomeState: PipelineOutcomeState;
   userState: TaskChainUserState;
   resultText: string;
   subscriptionStatus: 'following' | 'not_following' | 'unknown';
@@ -52,6 +53,7 @@ export interface MediaStageProjection {
 export interface MediaOverviewResponse {
   ok: boolean;
   media: Pick<MediaSearchItem, 'mediaKey' | 'title' | 'mediaType' | 'tmdbId' | 'year' | 'posterUrl' | 'sources'>;
+  outcomeState: PipelineOutcomeState;
   userState: TaskChainUserState;
   resultText: string;
   subscription: {

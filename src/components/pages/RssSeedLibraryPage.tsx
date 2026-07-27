@@ -852,7 +852,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                         <Download size={13} />{isSubmitting ? '正在提交' : '交给 Torra 处理'}
                       </button>
                     ) : downloadFailed ? (
-                      <button className="ops-action-button ops-action-button--primary" type="button" onClick={() => onNavigate('tasks', { userState: 'action_required' })}>
+                      <button className="ops-action-button ops-action-button--primary" type="button" onClick={() => onNavigate('tasks', { outcomeState: 'action_required' })}>
                         前往任务中心
                       </button>
                     ) : downloadConfirmed ? (

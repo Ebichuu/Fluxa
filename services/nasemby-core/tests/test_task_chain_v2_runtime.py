@@ -12,6 +12,21 @@ from app.resource_task_repository import ResourceTaskRepository
 from app.task_chain_v2_runtime import TaskChainV2Service, adapt_task_chain, register_task_chain_v2
 
 
+def pipeline_fact(stage, state, *, reason_code, reason_text, scope="file"):
+    return {
+        "stage": stage,
+        "state": state,
+        "scope": scope,
+        "evidence": "missing" if state == "unknown" else "verified",
+        "observedAt": "2026-07-22T03:00:00Z",
+        "freshUntil": "2026-07-22T03:05:00Z",
+        "source": {"qb": "qBittorrent", "symedia": "Symedia"}.get(stage, stage),
+        "sourceRef": f"{stage}-private-ref",
+        "reasonCode": reason_code,
+        "reasonText": reason_text,
+    }
+
+
 class FakeTaskChain:
     def __init__(self):
         self.calls = 0
@@ -38,7 +53,7 @@ class FakeTaskChain:
 
 
 class TaskChainV2RuntimeTests(unittest.TestCase):
-    def test_new_pipeline_contract_is_optional_shadow_data_and_keeps_legacy_projection(self):
+    def test_missing_pipeline_evidence_projects_to_no_action(self):
         payload = adapt_task_chain(
             FakeTaskChain().get_chain(),
             now=datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
@@ -55,9 +70,11 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         ))
         self.assertEqual(item["pipelineOutcome"]["state"], "evidence_insufficient")
         self.assertEqual(payload["outcomeCounts"]["evidence_insufficient"], 1)
-        self.assertEqual(item["userState"], "action_required")
+        self.assertEqual(item["outcomeState"], "evidence_insufficient")
+        self.assertEqual(item["userState"], "no_action")
+        self.assertEqual(item["completedAt"], "")
 
-    def test_verified_emby_episode_changes_only_new_outcome_in_p0_1(self):
+    def test_verified_emby_episode_projects_playable_to_legacy_completed(self):
         chain = FakeTaskChain().get_chain()
         chain["items"][0]["episodeNumber"] = 3
         chain["items"][0]["pipelineFacts"] = [{
@@ -79,7 +96,11 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         )["items"][0]
 
         self.assertEqual(item["pipelineOutcome"]["state"], "playable")
-        self.assertEqual(item["userState"], "action_required")
+        self.assertEqual(item["outcomeState"], "playable")
+        self.assertEqual(item["userState"], "completed")
+        self.assertEqual(item["resultText"], "已可播放")
+        self.assertEqual(item["playableAt"], "2026-07-22T03:00:00Z")
+        self.assertEqual(item["completedAt"], item["playableAt"])
 
     def test_migration_preview_route_is_read_only(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -171,7 +192,11 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(detail["item"]["chainId"], expected)
 
     def test_identity_keys_are_stable_and_health_is_independent(self):
-        item = adapt_task_chain(FakeTaskChain().get_chain(), now=datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc))["items"][0]
+        chain = FakeTaskChain().get_chain()
+        chain["items"][0]["pipelineFacts"] = [pipeline_fact(
+            "qb", "failed", reason_code="QB_DOWNLOAD_FAILED", reason_text="qB 下载任务未正常继续",
+        )]
+        item = adapt_task_chain(chain, now=datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc))["items"][0]
         self.assertEqual(item["mediaKey"], "tv:tmdb:101")
         self.assertEqual(item["targetKey"], "tv:tmdb:101:season:2")
         self.assertEqual(item["artifactKeys"], ["artifact:hash-1"])
@@ -517,7 +542,21 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
 
     def test_user_state_result_and_completed_date_are_filterable(self):
         chain = FakeTaskChain().get_chain()
-        chain["items"][0].update({"state": "completed", "confidence": "strong"})
+        chain["items"][0].update({
+            "state": "completed", "confidence": "strong", "episodeNumber": 3,
+            "pipelineFacts": [{
+                "stage": "emby",
+                "state": "succeeded",
+                "scope": "episode",
+                "evidence": "verified",
+                "observedAt": "2026-07-22T02:00:00Z",
+                "freshUntil": "2026-07-22T03:05:00Z",
+                "source": "Emby",
+                "sourceRef": "emby-private-episode-3",
+                "reasonCode": "EMBY_EPISODE_INDEXED",
+                "reasonText": "Emby 已收录目标集",
+            }],
+        })
         chain["items"][0]["steps"] = [
             {
                 "key": "download", "label": "qB 下载", "status": "done", "evidence": "verified",
@@ -539,10 +578,20 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
 
         summary = client.get("/api/v2/tasks/summary").get_json()
         self.assertEqual(summary["userCounts"]["completed"], 1)
+        self.assertEqual(summary["outcomeCounts"]["playable"], 1)
+        outcome_listing = client.get(
+            "/api/v2/tasks/chains?outcomeState=playable&outcomeState=protected"
+        ).get_json()
+        self.assertEqual(outcome_listing["page"]["total"], 1)
         listing = client.get("/api/v2/tasks/chains?userState=completed&completedDate=2026-07-22").get_json()
         self.assertEqual(listing["page"]["total"], 1)
-        self.assertEqual(listing["items"][0]["resultText"], "已下载 13 个 · 已入库 · Emby 已识别")
+        self.assertEqual(listing["items"][0]["outcomeState"], "playable")
+        self.assertEqual(listing["items"][0]["resultText"], "已可播放")
+        self.assertEqual(listing["items"][0]["playableAt"], "2026-07-22T02:00:00Z")
         self.assertEqual(listing["items"][0]["completedAt"], "2026-07-22T02:00:00Z")
+        invalid_outcome = client.get("/api/v2/tasks/chains?outcomeState=completed")
+        self.assertEqual(invalid_outcome.status_code, 400)
+        self.assertEqual(invalid_outcome.get_json()["code"], "TASK_OUTCOME_FILTER_INVALID")
         invalid_date = client.get("/api/v2/tasks/chains?completedDate=2026-99-99")
         self.assertEqual(invalid_date.status_code, 400)
         self.assertEqual(invalid_date.get_json()["code"], "TASK_COMPLETED_DATE_INVALID")
@@ -627,6 +676,10 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
                 "reasonCode": "SYMEDIA_LIBRARY_FAILED", "timestamp": "2026-07-22T01:10:00Z",
             },
         ]
+        chain["items"][0]["pipelineFacts"] = [pipeline_fact(
+            "symedia", "failed", reason_code="SYMEDIA_LIBRARY_FAILED",
+            reason_text="Symedia 未查询到对应媒体信息",
+        )]
 
         item = adapt_task_chain(
             chain,
@@ -715,6 +768,13 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
                 "detail": "download stalled",
             },
         ]
+        chain["items"][0]["pipelineFacts"] = [
+            pipeline_fact(
+                "symedia", "protected", reason_code="QUALITY_HIGHER_VERSION_EXISTS",
+                reason_text="higher quality version exists",
+            ),
+            pipeline_fact("qb", "failed", reason_code="QB_DOWNLOAD_FAILED", reason_text="download stalled"),
+        ]
 
         result = adapt_task_chain(
             chain,
@@ -765,6 +825,9 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         chain["items"][0]["steps"] = [
             {"key": "download", "status": "active", "evidence": "verified", "source": "qBittorrent"},
         ]
+        chain["items"][0]["pipelineFacts"] = [pipeline_fact(
+            "qb", "active", reason_code="QB_DOWNLOAD_ACTIVE", reason_text="qB 正在下载或排队",
+        )]
 
         result = adapt_task_chain(
             chain,

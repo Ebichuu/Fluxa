@@ -278,6 +278,7 @@ export function getTaskChainV2(query: TaskChainQuery | TaskChainHealthState = {}
   if (input.identityState) params.set('identityState', input.identityState);
   input.identityStates?.forEach((value) => params.append('identityState', value));
   if (input.executionState) params.set('executionState', input.executionState);
+  input.outcomeStates?.forEach((value) => params.append('outcomeState', value));
   if (input.userState) params.set('userState', input.userState);
   if (input.completedDate) params.set('completedDate', input.completedDate);
   if (input.chainId) params.set('chainId', input.chainId);

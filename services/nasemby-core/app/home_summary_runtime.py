@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 
 from flask import Flask, jsonify
 
@@ -45,26 +46,45 @@ def _latest_item(current: dict | None, candidate: dict) -> dict:
     return candidate if candidate_updated >= current_updated else current
 
 
-def _step(item: dict, key: str) -> dict:
-    for collection in (item.get("stages") or [], item.get("steps") or []):
-        match = next((
-            step
-            for step in collection
-            if isinstance(step, dict) and str(step.get("stage") or step.get("key") or "") == key
-        ), None)
-        if match is not None:
-            return match
-    return {}
+def _fact(item: dict, stage: str) -> dict:
+    return next((
+        fact
+        for fact in item.get("pipelineFacts") or []
+        if isinstance(fact, dict) and str(fact.get("stage") or "") == stage
+    ), {})
+
+
+def _current_verified_fact(item: dict, stage: str, *states: str) -> dict:
+    fact = _fact(item, stage)
+    if (
+        not fact
+        or fact.get("isStale") is True
+        or fact.get("evidence") != "verified"
+        or (states and fact.get("state") not in states)
+    ):
+        return {}
+    return fact
 
 
 def _item_evidence(item: dict, now: str) -> dict:
+    outcome = item.get("pipelineOutcome") or {}
+    outcome_state = str(outcome.get("state") or "evidence_insufficient")
+    outcome_fact = _fact(item, str(outcome.get("stage") or ""))
+    health_state = {
+        "playable": "normal",
+        "action_required": "action_required",
+        "in_progress": "waiting",
+        "waiting": "waiting",
+        "protected": "protected",
+        "evidence_insufficient": "evidence_insufficient",
+    }.get(outcome_state, "evidence_insufficient")
     result = evidence(
-        state=str(item.get("healthState") or "evidence_insufficient"),
-        source=str(item.get("source") or "task-chain"),
-        reason_code=str(item.get("reasonCode") or ""),
-        reason_text=str(item.get("reasonText") or ""),
-        observed_at=str(item.get("observedAt") or now),
-        fresh_until=str(item.get("freshUntil") or ""),
+        state=health_state,
+        source=str(outcome_fact.get("source") or outcome.get("stage") or "task-chain"),
+        reason_code=str(outcome.get("reasonCode") or ""),
+        reason_text=str(outcome.get("reasonText") or ""),
+        observed_at=str(outcome.get("observedAt") or item.get("observedAt") or now),
+        fresh_until=str(outcome_fact.get("freshUntil") or item.get("freshUntil") or ""),
     )
     result.update({
         "identityState": str(item.get("identityState") or "unidentified"),
@@ -83,17 +103,14 @@ def _identity_only_issue(result: dict) -> bool:
             "TASK_IDENTITY_UNLINKED",
             "TASK_IDENTITY_CONFLICT",
             "TASK_SUSPECTED_BLOCKED",
+            "EVIDENCE_INSUFFICIENT",
         }
     )
 
 
-def _problem_stage(item: dict) -> dict:
-    stages = [row for row in item.get("stages") or [] if isinstance(row, dict)]
-    return next((
-        row
-        for row in stages
-        if row.get("healthState") == "action_required"
-    ), next((row for row in stages if row.get("healthState") == "evidence_insufficient"), {}))
+def _problem_fact(item: dict) -> dict:
+    outcome = item.get("pipelineOutcome") or {}
+    return _fact(item, str(outcome.get("stage") or ""))
 
 
 def _integer(value):
@@ -104,12 +121,7 @@ def _integer(value):
 
 
 def _active_download_count(item: dict) -> int:
-    stage = _step(item, "download")
-    if (
-        stage.get("status") != "active"
-        or stage.get("healthState") != "waiting"
-        or stage.get("evidence") not in {"verified", "inferred"}
-    ):
+    if not _current_verified_fact(item, "qb", "active"):
         return 0
     return max(0, _integer(
         item.get("activeDownloadTasks") or (item.get("qbControl") or {}).get("active") or 0
@@ -196,7 +208,7 @@ def _secondary_issue_reason(result: dict) -> str:
 
 def _safe_issue_copy(item: dict, result: dict) -> dict:
     title = str(item.get("title") or "未命名媒体").strip()
-    stage = _problem_stage(item)
+    stage = _problem_fact(item)
     season, episode, episode_end = _issue_scope(item, stage)
     episode_label = _episode_label(season, episode, episode_end)
     source = str(stage.get("source") or result.get("source") or "").strip()
@@ -222,14 +234,14 @@ def _safe_issue_copy(item: dict, result: dict) -> dict:
         return {**base, "headline": f"{label}证据存在冲突", "reasonText": "同一条处理证据对应多个媒体候选，当前没有自动绑定"}
     if result.get("executionState") == "suspected_blocked" or result_reason_code == "TASK_SUSPECTED_BLOCKED":
         return {**base, "headline": f"{label}疑似阻塞", "reasonText": "已有处理阶段长时间没有形成后续证据"}
-    if source.casefold() == "symedia" or "SYMEDIA" in reason_code or stage.get("stage") == "library":
+    if source.casefold() == "symedia" or "SYMEDIA" in reason_code or stage.get("stage") == "symedia":
         if any(marker in raw_reason for marker in ("未找到", "未查询到", "识别", "TMDB", "媒体信息")):
             return {**base, "headline": f"{label}识别失败", "reasonText": "Symedia 未查询到对应媒体信息"}
         if result.get("healthState") == "action_required":
             return {**base, "headline": f"{label}入库失败", "reasonText": "Symedia 未完成媒体入库"}
     if result_reason_code == "TASK_IDENTITY_UNLINKED":
         return {**base, "headline": f"{label}尚未识别", "reasonText": "暂时无法确认这条记录对应的媒体作品"}
-    if source == "qBittorrent" or "DOWNLOAD" in reason_code:
+    if source == "qBittorrent" or "DOWNLOAD" in reason_code or stage.get("stage") == "qb":
         return {**base, "headline": f"{label}下载需要检查", "reasonText": "qB 下载任务没有正常继续"}
     if source == "Torra":
         return {**base, "headline": f"{label}获取需要检查", "reasonText": "Torra 未能确认资源处理状态"}
@@ -248,7 +260,11 @@ class HomeSummaryService:
         chain_service = self.app.extensions.get("mcc_task_chain_service")
         if not chain_v2_service and not chain_service:
             raise RuntimeError("任务链尚未注册")
-        chain = chain_v2_service.full_snapshot() if chain_v2_service else adapt_task_chain(chain_service.get_chain(), now=now_value)
+        chain = (
+            chain_v2_service.full_snapshot()
+            if chain_v2_service
+            else adapt_task_chain(chain_service.get_chain(), now=now_value)
+        )
         secupload_issue = next((
             row for row in chain.get("systemIssues") or []
             if isinstance(row, dict) and row.get("id") == "secupload_failures"
@@ -274,12 +290,13 @@ class HomeSummaryService:
             fresh_until=_fresh_until(now_value),
         ) if identity_only else None
         today_key = _today_key(now_value)
-        completed_targets_today = sum(
-            _step(item, "library").get("status") == "done"
-            and _today_key(
-                _step(item, "library").get("timestamp")
-                or _step(item, "library").get("observedAt")
-            ) == today_key
+        ingested_today = sum(
+            _today_key(_current_verified_fact(item, "symedia", "succeeded").get("observedAt")) == today_key
+            for item in unique_items.values()
+        )
+        playable_today = sum(
+            str((item.get("pipelineOutcome") or {}).get("state") or "") == "playable"
+            and _today_key((item.get("pipelineOutcome") or {}).get("playableAt")) == today_key
             for item in unique_items.values()
         )
         symedia_totals = (((chain.get("services") or {}).get("symedia") or {}).get("totals") or {})
@@ -287,27 +304,40 @@ class HomeSummaryService:
         if archived_today is not None and archived_today < 0:
             archived_today = None
         counts = {
-            "ingestedToday": completed_targets_today,
+            "ingestedToday": ingested_today,
             "archivedToday": archived_today,
-            "completedTargetsToday": completed_targets_today,
+            "completedTargetsToday": playable_today,
+            "playableToday": playable_today,
             "downloading": sum(
                 _active_download_count(item) > 0
                 for item in unique_items.values()
             ),
             "activeDownloadTasks": sum(_active_download_count(item) for item in unique_items.values()),
             "concurrentDownloadGroups": sum(_active_download_count(item) > 1 for item in unique_items.values()),
-            "pending": sum(result["healthState"] == "waiting" for _, _, result in visible_item_evidence),
-            "waiting": sum(result["healthState"] == "waiting" for _, _, result in visible_item_evidence),
+            "pending": sum(
+                str((item.get("pipelineOutcome") or {}).get("state") or "") == "waiting"
+                for _, item, _ in visible_item_evidence
+            ),
+            "waiting": sum(
+                str((item.get("pipelineOutcome") or {}).get("state") or "") == "waiting"
+                for _, item, _ in visible_item_evidence
+            ),
             "evidenceInsufficient": (
                 sum(result["healthState"] == "evidence_insufficient" for _, _, result in visible_item_evidence)
                 + (1 if identity_evidence else 0)
             ),
             "identityPending": len(identity_only),
             "actionRequired": 0,
+            "mediaActionRequired": 0,
+            "auxiliaryAlerts": 0,
+            "inProgress": 0,
             "suspectedBlocked": sum(
                 result.get("executionState") == "suspected_blocked" for _, _, result in visible_item_evidence
             ),
-            "protected": sum(result["healthState"] == "protected" for _, _, result in item_evidence),
+            "protected": sum(
+                str((item.get("pipelineOutcome") or {}).get("state") or "") == "protected"
+                for _, item, _ in item_evidence
+            ),
         }
 
         scheduler_registry = self.app.extensions.get("mcc_scheduler_status")
@@ -428,28 +458,59 @@ class HomeSummaryService:
         # recovering 使用处理中语义，action_required 只影响秒传关注项本身，
         # 均不改变基线的红色真实异常计数口径。
         secupload_state = str(secupload_issue.get("state") or "unknown")
-        issues = []
+        media_issues = []
         for target_key, item, result in visible_item_evidence:
             if result["healthState"] == "action_required":
                 issue_copy = _safe_issue_copy(item, result)
-                issues.append({
+                issue_href = "/tasks?" + urlencode({
+                    "outcomeState": "action_required",
+                    "chainId": str(item.get("chainId") or ""),
+                })
+                media_issues.append({
                     **result,
                     **issue_copy,
+                    "issueKind": "media",
                     "targetKey": target_key,
                     "chainId": str(item.get("chainId") or item.get("id") or ""),
                     "title": str(item.get("title") or "未命名媒体"),
+                    "href": issue_href,
                 })
+        auxiliary_issues = []
         for result in [scheduler_evidence, *service_evidence, *([rss_evidence] if rss_evidence else [])]:
             if result["healthState"] == "action_required":
-                issues.append({**result, "targetKey": "", "chainId": "", "title": result["source"]})
+                source = str(result.get("source") or "")
+                auxiliary_issues.append({
+                    **result,
+                    "issueKind": "auxiliary",
+                    "targetKey": "",
+                    "chainId": "",
+                    "title": source,
+                    "href": "/rss-library" if source == "private-rss" else "/control",
+                })
+        if secupload_state == "action_required":
+            auxiliary_issues.append({
+                **evidence(
+                    state="action_required",
+                    source="torra-secupload",
+                    reason_code="SECUPLOAD_RETRY_REQUIRED",
+                    reason_text=str(secupload_issue.get("stateReason") or "秒传失败需要人工处理"),
+                    observed_at=str(secupload_issue.get("observedAt") or now),
+                    fresh_until=_fresh_until(now_value),
+                ),
+                "issueKind": "auxiliary",
+                "targetKey": "",
+                "chainId": "",
+                "title": "Torra 秒传",
+                "href": "/tasks?systemIssue=secupload_failures",
+            })
+        issues = [*media_issues, *auxiliary_issues]
 
-        # 口径统一：actionRequired 计数（首页指标与移动端角标共用，深链 /tasks?userState=action_required）
+        # 口径统一：actionRequired 计数（首页指标与移动端角标共用，深链 outcomeState=action_required）
         # 只统计任务中心该筛选实际会列出的任务链；RSS 来源失败、调度与服务异常
         # 保留在 issues 列表（各自有独立深链），不再计入该计数。
-        counts["actionRequired"] = sum(
-            str(item.get("userState") or "") == "action_required"
-            for _, item, _ in visible_item_evidence
-        )
+        counts["mediaActionRequired"] = len(media_issues)
+        counts["actionRequired"] = counts["mediaActionRequired"]
+        counts["auxiliaryAlerts"] = len(auxiliary_issues)
 
         services = chain.get("services") or {}
         qb_status = services.get("qb") if isinstance(services.get("qb"), dict) else {}
@@ -491,30 +552,35 @@ class HomeSummaryService:
             "unknown": "秒传状态",
         }.get(secupload_state, "秒传失败")
 
-        download_done_not_archived = [
+        downloaded_candidates = [
             item
             for item in unique_items.values()
-            if _step(item, "download").get("status") == "done"
-            and _step(item, "download").get("evidence") == "verified"
-            and _step(item, "download").get("healthState") == "normal"
-            and _step(item, "library").get("status") != "done"
-            and _step(item, "library").get("healthState") != "protected"
-            and item.get("healthState") != "protected"
-            and item.get("userState") in {"in_progress", "action_required"}
+            if _current_verified_fact(item, "qb", "succeeded")
         ]
+        download_done_not_archived = [
+            item for item in downloaded_candidates
+            if _current_verified_fact(item, "symedia", "waiting", "active", "failed")
+        ]
+        downloaded_archive_unknown = any(
+            not _current_verified_fact(item, "symedia", "waiting", "active", "succeeded", "failed", "protected")
+            for item in downloaded_candidates
+        )
         if qb_status.get("connected") is True and symedia_status.get("connected") is True:
-            downloaded_not_archived_value = len(download_done_not_archived)
+            downloaded_not_archived_value = None if downloaded_archive_unknown else len(download_done_not_archived)
             has_blocked_archive = any(
-                _step(item, "library").get("healthState") == "action_required"
+                bool(_current_verified_fact(item, "symedia", "failed"))
                 for item in download_done_not_archived
             )
             downloaded_not_archived_state = (
-                "action_required" if has_blocked_archive
+                "unknown" if downloaded_not_archived_value is None
+                else "action_required" if has_blocked_archive
                 else "processing" if downloaded_not_archived_value > 0
                 else "normal"
             )
             downloaded_not_archived_detail = (
-                f"{downloaded_not_archived_value} 个任务已有下载完成证据，但入库尚未完成"
+                "部分下载完成任务缺少当前 Symedia 证据，暂时无法确认入库结果"
+                if downloaded_not_archived_value is None
+                else f"{downloaded_not_archived_value} 个任务已有下载完成证据，但入库尚未完成"
                 if downloaded_not_archived_value > 0
                 else "已核对下载与入库证据，没有下载完成后仍未入库的任务"
             )
@@ -563,7 +629,7 @@ class HomeSummaryService:
         focus_items = [
             _focus_item(
                 "current_downloads", "当前下载", "个", current_downloads_value, current_downloads_state,
-                current_downloads_detail, "/tasks?userState=in_progress",
+                current_downloads_detail, "/tasks?outcomeState=in_progress",
             ),
             _focus_item(
                 "secupload_failures", secupload_label, "个", secupload_failures, focus_secupload_state,
@@ -571,11 +637,11 @@ class HomeSummaryService:
             ),
             _focus_item(
                 "downloaded_not_archived", "下载完成未入库", "个", downloaded_not_archived_value,
-                downloaded_not_archived_state, downloaded_not_archived_detail, "/tasks?userState=in_progress",
+                downloaded_not_archived_state, downloaded_not_archived_detail, "/tasks?outcomeState=in_progress",
             ),
             _focus_item(
                 "archived_today", "今日入库", "个文件", archived_today_value, archived_today_state,
-                archived_today_detail, f"/tasks?userState=completed&completedDate={today_key}",
+                archived_today_detail, f"/tasks?outcomeState=playable&completedDate={today_key}",
             ),
             _focus_item(
                 "missing_episodes", "追更缺集", "集", missing_episodes_value, missing_episodes_state,
@@ -585,7 +651,7 @@ class HomeSummaryService:
                 "action_required", "真实异常", "项", counts["actionRequired"],
                 "action_required" if counts["actionRequired"] > 0 else "normal",
                 f"当前有 {counts['actionRequired']} 项具备明确失败或阻塞证据",
-                "/tasks?userState=action_required",
+                "/tasks?outcomeState=action_required",
             ),
         ]
         diagnostics = []
@@ -613,12 +679,16 @@ class HomeSummaryService:
                 "source": result.get("source") or "",
             })
 
-        processing_targets = sum(
-            str(item.get("userState") or "") == "in_progress"
+        media_in_progress = sum(
+            str((item.get("pipelineOutcome") or {}).get("state") or "") == "in_progress"
             for item in unique_items.values()
         )
-        if secupload_state == "recovering":
-            processing_targets += 1
+        recovering_secupload = (
+            max(0, secupload_failures or 0)
+            if secupload_state == "recovering" and secupload_failures is not None
+            else 0
+        )
+        counts["inProgress"] = media_in_progress + recovering_secupload
         critical_unknown = any(
             not isinstance(services.get(name), dict)
             or (
@@ -627,13 +697,15 @@ class HomeSummaryService:
             )
             for name in ("qb", "symedia", "torra", "emby")
         )
-        if issues:
+        if counts["mediaActionRequired"] > 0:
             health_state = "action_required"
-            # headline 跟随首页 issues 列表（含 RSS/服务/调度深链项），可以多于任务中心计数
-            headline = f"有 {len(issues)} 项需要处理"
-        elif processing_targets > 0 or (counts["activeDownloadTasks"] or 0) > 0:
+            headline = f"有 {counts['mediaActionRequired']} 项媒体任务需要处理"
+        elif counts["auxiliaryAlerts"] > 0:
+            health_state = "action_required"
+            headline = f"有 {counts['auxiliaryAlerts']} 项辅助能力提醒"
+        elif counts["inProgress"] > 0:
             health_state = "waiting"
-            headline = f"有 {max(processing_targets, counts['activeDownloadTasks'] or 0)} 个任务正在处理"
+            headline = f"有 {counts['inProgress']} 项任务正在处理"
         elif critical_unknown:
             health_state = "evidence_insufficient"
             headline = "核心服务状态尚待确认"
@@ -646,8 +718,9 @@ class HomeSummaryService:
         archived_today_text = counts["archivedToday"] if counts["archivedToday"] is not None else "未知"
         active_downloads_text = counts["activeDownloadTasks"] if counts["activeDownloadTasks"] is not None else "未知"
         detail = (
-            f"归档文件 {archived_today_text} · 完成作品/季 {counts['completedTargetsToday']} · "
-            f"qB 下载任务 {active_downloads_text} · 需要处理 {counts['actionRequired']}"
+            f"归档文件 {archived_today_text} · 已可播放 {counts['playableToday']} · "
+            f"qB 下载任务 {active_downloads_text} · 媒体需要处理 {counts['mediaActionRequired']} · "
+            f"辅助提醒 {counts['auxiliaryAlerts']}"
         )
         return {
             "ok": True,

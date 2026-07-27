@@ -268,7 +268,7 @@ ITEM_FIELDS = (
     "channel", "state", "confidence", "progress", "currentStep", "embyIndexed",
     "embyEvidenceScope", "updatedAt", "chainId", "mediaKey", "targetKey", "healthState",
     "observedAt", "freshUntil", "source", "reasonCode", "identityState", "executionState",
-    "userState", "completedAt", "relatedRecords", "activeDownloadTasks",
+    "outcomeState", "playableAt", "userState", "completedAt", "relatedRecords", "activeDownloadTasks",
     "completedDownloadTasks", "concurrentDownloadCount", "retryEligible", "plannedRetryAt",
 )
 

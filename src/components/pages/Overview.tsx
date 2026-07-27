@@ -26,10 +26,10 @@ interface OverviewProps {
 }
 
 const metricDefinitions = [
-  { key: 'archivedToday', label: '归档文件', unit: '个文件', icon: Library, target: 'completed' },
-  { key: 'completedTargetsToday', label: '完成作品/季', unit: '个', icon: ShieldCheck, target: 'completed' },
+  { key: 'archivedToday', label: '归档文件', unit: '个文件', icon: Library, target: null },
+  { key: 'playableToday', label: '已可播放', unit: '个', icon: ShieldCheck, target: 'playable' },
   { key: 'activeDownloadTasks', label: 'qB 下载任务', unit: '个', icon: Download, target: 'in_progress' },
-  { key: 'actionRequired', label: '需要处理', unit: '项', icon: TriangleAlert, target: 'action_required' }
+  { key: 'mediaActionRequired', label: '媒体需处理', unit: '项', icon: TriangleAlert, target: 'action_required' }
 ] as const;
 
 function shanghaiDateKey(value = new Date()) {
@@ -51,14 +51,14 @@ function emptySummary(): HomeSummaryResponse {
     healthState: 'evidence_insufficient',
     headline: '正在读取影音中心状态',
     detail: '正在汇总下载、入库和调度证据',
-    counts: { ingestedToday: 0, archivedToday: null, completedTargetsToday: 0, downloading: 0, activeDownloadTasks: null, concurrentDownloadGroups: 0, pending: 0, waiting: 0, evidenceInsufficient: 0, identityPending: 0, actionRequired: 0, suspectedBlocked: 0, protected: 0 },
+    counts: { ingestedToday: 0, archivedToday: null, completedTargetsToday: 0, playableToday: 0, downloading: 0, activeDownloadTasks: null, concurrentDownloadGroups: 0, pending: 0, waiting: 0, evidenceInsufficient: 0, identityPending: 0, actionRequired: 0, mediaActionRequired: 0, auxiliaryAlerts: 0, inProgress: 0, suspectedBlocked: 0, protected: 0 },
     focusItems: [
-      emptyFocusItem('current_downloads', '当前下载', '个', '/tasks?userState=in_progress'),
+      emptyFocusItem('current_downloads', '当前下载', '个', '/tasks?outcomeState=in_progress'),
       emptyFocusItem('secupload_failures', '秒传失败', '个', '/tasks?systemIssue=secupload_failures'),
-      emptyFocusItem('downloaded_not_archived', '下载完成未入库', '个', '/tasks?userState=in_progress'),
-      emptyFocusItem('archived_today', '今日入库', '个文件', `/tasks?userState=completed&completedDate=${shanghaiDateKey()}`),
+      emptyFocusItem('downloaded_not_archived', '下载完成未入库', '个', '/tasks?outcomeState=in_progress'),
+      emptyFocusItem('archived_today', '今日入库', '个文件', `/tasks?outcomeState=playable&completedDate=${shanghaiDateKey()}`),
       emptyFocusItem('missing_episodes', '追更缺集', '集', '/following?missingEpisodes=1'),
-      emptyFocusItem('action_required', '真实异常', '项', '/tasks?userState=action_required')
+      emptyFocusItem('action_required', '真实异常', '项', '/tasks?outcomeState=action_required')
     ],
     issueTotal: 0,
     issues: [],
@@ -101,11 +101,11 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
   const StatusIcon = status === 'normal' ? CheckCircle2 : status === 'action_required' ? TriangleAlert : Clock3;
 
   const openMetric = (target: typeof metricDefinitions[number]['target']) => {
-    if (target === 'completed') {
-      onNavigate('tasks', { userState: 'completed', completedDate: shanghaiDateKey() });
+    if (target === 'playable') {
+      onNavigate('tasks', { outcomeState: 'playable', completedDate: shanghaiDateKey() });
       return;
     }
-    onNavigate('tasks', { userState: target });
+    onNavigate('tasks', target ? { outcomeState: target } : undefined);
   };
 
   const openSource = (source?: string) => {
@@ -117,6 +117,10 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
   };
 
   const openIssue = (issue: HomeSummaryResponse['issues'][number]) => {
+    if (issue.href) {
+      onNavigatePath(issue.href);
+      return;
+    }
     if (!issue.chainId && !issue.targetKey) {
       openSource(issue.source);
       return;
@@ -124,7 +128,8 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
     onNavigate('tasks', {
       chainId: issue.chainId || undefined,
       targetKey: issue.targetKey || undefined,
-      title: issue.title
+      title: issue.title,
+      outcomeState: 'action_required'
     });
   };
 

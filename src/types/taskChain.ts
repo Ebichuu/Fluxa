@@ -226,6 +226,8 @@ export interface TaskChainItem {
   technicalReasonText?: string;
   identityState?: TaskChainIdentityState;
   executionState?: TaskChainExecutionState;
+  outcomeState?: PipelineOutcomeState;
+  playableAt?: string;
   userState?: TaskChainUserState;
   resultText?: string;
   completedAt?: string;
@@ -311,6 +313,7 @@ export interface TaskChainQuery {
   identityState?: TaskChainIdentityState;
   identityStates?: TaskChainIdentityState[];
   executionState?: TaskChainExecutionState;
+  outcomeStates?: PipelineOutcomeState[];
   userState?: TaskChainUserState;
   completedDate?: string;
   chainId?: string;

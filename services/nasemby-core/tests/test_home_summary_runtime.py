@@ -45,19 +45,52 @@ class FakeSubscriptionWorkbench:
         return {"ok": True, "items": self.items, "errors": self.errors}
 
 
+def pipeline_fact(stage, state, *, observed_at="2026-07-22T01:00:00Z", scope="episode", reason_code="", reason_text=""):
+    return {
+        "stage": stage,
+        "state": state,
+        "scope": scope,
+        "evidence": "missing" if state == "unknown" else "verified",
+        "observedAt": observed_at,
+        "freshUntil": "2026-07-23T00:00:00Z",
+        "source": {"qb": "qBittorrent", "symedia": "Symedia", "emby": "Emby"}.get(stage, stage),
+        "sourceRef": f"{stage}-public-test-ref",
+        "reasonCode": reason_code or f"{stage.upper()}_{state.upper()}",
+        "reasonText": reason_text or f"{stage} {state}",
+    }
+
+
 def item(*, item_id="chain-1", updated_at="2026-07-22T01:00:00Z", library_status="done", library_time="2026-07-22T01:00:00Z"):
+    symedia_state = {"done": "succeeded", "blocked": "failed", "waiting": "waiting"}.get(library_status, "unknown")
+    facts = [
+        pipeline_fact("qb", "succeeded", observed_at=updated_at, reason_code="QB_DOWNLOAD_SUCCEEDED"),
+        pipeline_fact(
+            "symedia",
+            symedia_state,
+            observed_at=library_time,
+            reason_code="SYMEDIA_LIBRARY_FAILED" if symedia_state == "failed" else "SYMEDIA_LIBRARY_SUCCEEDED",
+            reason_text="Symedia 未查询到对应媒体信息" if symedia_state == "failed" else "Symedia 已完成整理入库",
+        ),
+    ]
+    if library_status == "done":
+        facts.append(pipeline_fact(
+            "emby", "succeeded", observed_at=library_time,
+            reason_code="EMBY_EPISODE_INDEXED", reason_text="Emby 已收录目标集",
+        ))
     return {
         "id": item_id,
         "title": "测试剧",
         "mediaType": "tv",
         "tmdbId": "123",
         "seasonNumber": 1,
+        "episodeNumber": 1,
         "state": "completed" if library_status == "done" else "waiting",
         "updatedAt": updated_at,
         "steps": [
             {"key": "download", "status": "done", "evidence": "verified"},
             {"key": "library", "status": library_status, "evidence": "verified", "timestamp": library_time},
         ],
+        "pipelineFacts": facts,
     }
 
 
@@ -68,6 +101,13 @@ def protected_item():
         "detail": "现有版本评分更高，跳过归档",
         "source": "Symedia",
     })
+    value["pipelineFacts"] = [
+        pipeline_fact("qb", "succeeded", reason_code="QB_DOWNLOAD_SUCCEEDED"),
+        pipeline_fact(
+            "symedia", "protected", reason_code="QUALITY_HIGHER_VERSION_EXISTS",
+            reason_text="现有版本评分更高，跳过归档",
+        ),
+    ]
     return value
 
 
@@ -169,7 +209,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["counts"]["ingestedToday"], 2)
         self.assertEqual(result["counts"]["completedTargetsToday"], 2)
         archived_focus = next(value for value in result["focusItems"] if value["key"] == "archived_today")
-        self.assertEqual(archived_focus["href"], "/tasks?userState=completed&completedDate=2026-07-22")
+        self.assertEqual(archived_focus["href"], "/tasks?outcomeState=playable&completedDate=2026-07-22")
 
     def test_today_archive_uses_symedia_success_count_without_changing_legacy_target_count(self):
         app = self.build_app([item()])
@@ -185,7 +225,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["counts"]["archivedToday"], 24)
         self.assertEqual(result["counts"]["completedTargetsToday"], 1)
         self.assertEqual(result["counts"]["ingestedToday"], 1)
-        self.assertIn("归档文件 24 · 完成作品/季 1", result["detail"])
+        self.assertIn("归档文件 24 · 已可播放 1", result["detail"])
 
     def test_enabled_scheduler_without_runtime_is_neutral_diagnostic(self):
         app = self.build_app([item()], scheduler_enabled=True)
@@ -212,6 +252,9 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(payload["healthState"], "action_required")
         # 服务异常保留在 issues（有自己的处理入口），不计入任务中心口径的角标计数
         self.assertEqual(payload["counts"]["actionRequired"], 0)
+        self.assertEqual(payload["counts"]["mediaActionRequired"], 0)
+        self.assertEqual(payload["counts"]["auxiliaryAlerts"], 1)
+        self.assertEqual(payload["headline"], "有 1 项辅助能力提醒")
         self.assertTrue(any(issue["source"] == "symedia" for issue in payload["issues"]))
 
     def test_action_required_count_matches_task_center_and_keeps_rss_issue_deep_link(self):
@@ -231,8 +274,10 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         focus = {value["key"]: value for value in result["focusItems"]}
 
         self.assertEqual(result["counts"]["actionRequired"], 1)
+        self.assertEqual(result["counts"]["mediaActionRequired"], 1)
+        self.assertEqual(result["counts"]["auxiliaryAlerts"], 1)
         self.assertEqual(focus["action_required"]["value"], 1)
-        self.assertEqual(focus["action_required"]["href"], "/tasks?userState=action_required")
+        self.assertEqual(focus["action_required"]["href"], "/tasks?outcomeState=action_required")
         rss_issue = next(value for value in result["issues"] if value["source"] == "private-rss")
         self.assertEqual(rss_issue["reasonCode"], "RSS_COLLECTION_FAILED")
         # issues 列表允许多于计数（RSS 项走自己的种子库入口）
@@ -273,7 +318,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
 
         issue = next(value for value in result["issues"] if value["title"] == "测试剧")
-        self.assertEqual(issue["targetKey"], "tv:tmdb:123:season:1")
+        self.assertEqual(issue["targetKey"], "tv:tmdb:123:season:1:episode:1")
         self.assertTrue(issue["chainId"].startswith("chain:"))
         self.assertEqual(result["counts"]["waiting"], 0)
         self.assertEqual(result["counts"]["evidenceInsufficient"], 0)
@@ -289,7 +334,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         })
         app = self.build_app([blocked], scheduler_enabled=False)
 
-        issue = next(value for value in HomeSummaryService(app, clock=lambda: NOW).snapshot()["issues"] if value["source"] == "task-chain")
+        issue = next(value for value in HomeSummaryService(app, clock=lambda: NOW).snapshot()["issues"] if value["source"] == "Symedia")
 
         self.assertEqual(issue["headline"], "《测试剧》S01E05识别失败")
         self.assertEqual(issue["displayTitle"], "测试剧 S01E05")
@@ -322,7 +367,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         issue = next(
             value
             for value in HomeSummaryService(app, clock=lambda: NOW).snapshot()["issues"]
-            if value["source"] == "task-chain"
+            if value["source"] == "Symedia"
         )
 
         self.assertEqual(issue["displayTitle"], "测试剧 S01E05")
@@ -334,6 +379,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
     def test_home_collapses_unlinked_inferred_records_into_one_identity_notice(self):
         blocked = item(library_status="blocked")
         blocked.update({"state": "blocked", "tmdbId": "", "confidence": "unlinked"})
+        blocked["pipelineFacts"] = []
         blocked["steps"][-1].update({
             "evidence": "inferred",
             "detail": "下载完成 501 小时后仍没有 Symedia 记录",
@@ -358,6 +404,9 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         value = item()
         value["state"] = "active"
         value["steps"][0]["status"] = "active"
+        value["pipelineFacts"] = [pipeline_fact(
+            "qb", "active", reason_code="QB_DOWNLOAD_ACTIVE", reason_text="qB 正在下载或排队",
+        )]
         value["qbControl"] = {"total": 3, "active": 3, "completed": 0, "paused": 0}
         app = self.build_app([value], scheduler_enabled=False)
 
@@ -365,8 +414,9 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result["counts"]["activeDownloadTasks"], 3)
         self.assertEqual(result["counts"]["concurrentDownloadGroups"], 1)
+        self.assertEqual(result["counts"]["inProgress"], 1)
         self.assertEqual(result["healthState"], "waiting")
-        self.assertEqual(result["headline"], "有 3 个任务正在处理")
+        self.assertEqual(result["headline"], "有 1 项任务正在处理")
         self.assertIn("qB 下载任务 3", result["detail"])
 
     def test_focus_items_report_verified_zero_and_precise_hrefs(self):
@@ -398,10 +448,10 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         ):
             self.assertEqual(focus[key]["value"], 0)
             self.assertEqual(focus[key]["state"], "normal")
-        self.assertEqual(focus["current_downloads"]["href"], "/tasks?userState=in_progress")
-        self.assertEqual(focus["archived_today"]["href"], "/tasks?userState=completed&completedDate=2026-07-22")
+        self.assertEqual(focus["current_downloads"]["href"], "/tasks?outcomeState=in_progress")
+        self.assertEqual(focus["archived_today"]["href"], "/tasks?outcomeState=playable&completedDate=2026-07-22")
         self.assertEqual(focus["missing_episodes"]["href"], "/following?missingEpisodes=1")
-        self.assertEqual(focus["action_required"]["href"], "/tasks?userState=action_required")
+        self.assertEqual(focus["action_required"]["href"], "/tasks?outcomeState=action_required")
 
     def test_focus_items_only_raise_failures_from_explicit_evidence(self):
         pending_archive = item(library_status="blocked")
@@ -436,6 +486,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
     def test_focus_items_ignore_expired_download_completion(self):
         expired = item(library_status="waiting")
         expired["steps"][0]["freshUntil"] = "2026-07-22T01:00:00Z"
+        expired["pipelineFacts"][0]["freshUntil"] = "2026-07-22T01:00:00Z"
         app = self.build_app([expired], scheduler_enabled=True, scheduler_started=True)
 
         focus = {
@@ -453,6 +504,10 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
             "status": "active",
             "freshUntil": "2026-07-22T01:00:00Z",
         })
+        expired["pipelineFacts"] = [{
+            **pipeline_fact("qb", "active", reason_code="QB_DOWNLOAD_ACTIVE"),
+            "freshUntil": "2026-07-22T01:00:00Z",
+        }]
         app = self.build_app([expired], scheduler_enabled=True, scheduler_started=True)
 
         result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
@@ -467,6 +522,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
     def test_focus_items_ignore_unidentified_historical_download(self):
         historical = item(library_status="waiting")
         historical.update({"tmdbId": "", "confidence": "unlinked"})
+        historical["pipelineFacts"] = []
         app = self.build_app([historical], scheduler_enabled=True, scheduler_started=True)
 
         focus = {
@@ -504,16 +560,17 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
     def test_recovering_secupload_uses_processing_semantics_and_system_issue_link(self):
         app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)
         services = app.extensions["mcc_task_chain_service"].payload["services"]
-        services["torra"]["secupload115"] = secupload_service_payload(failed=1)
+        services["torra"]["secupload115"] = secupload_service_payload(failed=3)
 
         result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
         focus = {value["key"]: value for value in result["focusItems"]}
 
         self.assertEqual(focus["secupload_failures"]["label"], "秒传待恢复")
-        self.assertEqual(focus["secupload_failures"]["value"], 1)
+        self.assertEqual(focus["secupload_failures"]["value"], 3)
         self.assertEqual(focus["secupload_failures"]["state"], "processing")
         self.assertEqual(focus["secupload_failures"]["href"], "/tasks?systemIssue=secupload_failures")
         self.assertEqual(result["counts"]["actionRequired"], 0)
+        self.assertEqual(result["counts"]["inProgress"], 3)
         self.assertEqual(focus["action_required"]["value"], 0)
         self.assertEqual(result["healthState"], "waiting")
         issue = result["systemIssues"][0]

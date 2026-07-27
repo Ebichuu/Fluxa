@@ -88,13 +88,13 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/qbittorrent/*`、`/api/torra/summary`、`/api/symedia/summary`。
 - `/api/tasks/chain`：订阅到入库的统一证据链。
 - `/api/v2/tasks/summary`：返回唯一任务链、健康/身份/执行三维状态、兼容 `userCounts`、新 `outcomeCounts`、阶段和服务轻量摘要，支持 ETag 条件读取。
-- `/api/v2/tasks/chains`：按 `chainId/targetKey` 合并重复来源，默认分页返回 20 条摘要；支持“需要处理 / 处理中 / 已完成 / 无需处理”四类兼容 `userState`、完成日期、健康状态、身份和增量时间筛选，并可选返回只读 `pipelineOutcome`。
+- `/api/v2/tasks/chains`：按 `chainId/targetKey` 合并重复来源，默认分页返回 20 条摘要；支持可重复 `outcomeState`、兼容 `userState`、可播放日期、健康状态、身份和增量时间筛选，顶层返回 `outcomeState/playableAt`；任务中心按“需要处理 / 处理中 / 已可播放 / 无需处理”消费新结果。
 - `/api/v2/tasks/chains/:chainId`：按需返回单链阶段证据、artifact、原因、动作资格及可选 `pipelineFacts/pipelineOutcome`；完整聚合快照幂等写入本地资源事件账本，但不执行外部动作。
 - `/api/v2/calendar`：只读聚合追更播出日期与任务链的获取、入库证据，使用 `Asia/Shanghai` 并支持 ETag；月摘要与完整轻量搜索索引共用 300 秒完整快照，日期详情按需读取。
 - `/api/v2/subscriptions/capabilities`：返回本地写入、Torra 推送和调度器真实运行状态，发现页据此显示追更确认文案。
 - `/api/qbittorrent/actions/:action/preview`：只读返回暂停/恢复动作资格、实际影响对象、跳过数量、禁止原因、确认要求、幂等键和冷却时间；浏览器提交任务 DTO 中的 40 位不透明引用，服务端从当前 qB 快照解析真实 hash，不调用 qB 写接口。
 - `/api/qbittorrent/actions/:action`：执行前复查任务状态并校验可选预览幂等键，状态变化时拒绝旧确认；旧客户端真实 hash 输入继续兼容，但执行结果、错误和活动记录只返回脱敏公开引用。
-- `/api/v2/home/summary`：基于任务链和调度器心跳生成首页今日结论；身份、RSS 和调度维护信息进入中性诊断，关键服务不可验证时不返回绿色正常，无法核实的归档与下载统计返回 `null` 而不是伪造 `0`。
+- `/api/v2/home/summary`：基于 `pipelineOutcome` 和调度器心跳生成首页今日结论；媒体异常、辅助能力提醒、处理中与当日可播放分别统计，自动恢复中的明确秒传失败计入处理中；关键服务不可验证时不返回绿色正常，无法核实的归档与下载统计返回 `null` 而不是伪造 `0`。
 - `/api/v2/subscriptions/reconciliation`：只读对比 Fluxa 与 Torra，按对账、履约、健康三个维度返回差异，不写入或删除任一台账。
 - `/api/v2/subscriptions/workbench`：分页返回追更工作台、五项能力状态、对账摘要和可选海报补齐目标。
 - `/api/v2/subscriptions/visual-backfills`：最多处理 100 个订阅 ID，只按明确 TMDB 身份补充空缺海报/背景；本地写入关闭时只返回视觉结果，开启时才补充已有本地记录；不创建仅 Torra 镜像。

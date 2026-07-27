@@ -15,11 +15,13 @@ SENSITIVE_TEXT_PATTERN = re.compile(
     r"(?:token|api[_-]?key|cookie|passkey|authorization|signature|secret|password)",
     re.IGNORECASE,
 )
-USER_STATE_PRIORITY = {
+OUTCOME_PRIORITY = {
     "action_required": 0,
     "in_progress": 1,
-    "completed": 2,
-    "no_action": 3,
+    "waiting": 2,
+    "protected": 3,
+    "playable": 4,
+    "evidence_insufficient": 5,
 }
 ACTION_LABELS = {
     "reidentify": "重新识别",
@@ -158,156 +160,65 @@ def _as_utc(value):
     return parsed.astimezone(timezone.utc)
 
 
-def _evidence_is_current(item: dict, current: datetime) -> bool:
-    deadline = _as_utc(item.get("freshUntil"))
-    return not deadline or deadline > current.astimezone(timezone.utc)
-
-
-def _task_evidence_is_current(task: dict, current: datetime) -> bool:
-    return _evidence_is_current(task, current)
-
-
-def _stage_name(stage: dict) -> str:
-    return _text(stage.get("stage") or stage.get("key")).lower()
-
-
-def _trusted_stage(stage: dict, *, current: datetime | None = None, verified_only=False) -> bool:
-    if current is not None and not _evidence_is_current(stage, current):
-        return False
-    status = _text(stage.get("status")).lower()
-    health = _text(stage.get("healthState")).lower()
-    expected_health = {
-        "done": "normal",
-        "active": "waiting",
-        "waiting": "waiting",
-        "blocked": "action_required",
-    }.get(status)
-    if not expected_health or health != expected_health:
-        return False
-    evidence = _text(stage.get("evidence")).lower()
-    if status == "blocked":
-        return evidence == "verified"
-    return evidence == "verified" if verified_only else evidence in {"verified", "inferred"}
-
-
-def _all_stages(tasks: list[dict], names: set[str]) -> list[dict]:
-    return [
-        stage
-        for task in tasks
-        for stage in (task.get("stages") or [])
-        if isinstance(stage, dict) and _stage_name(stage) in names
-    ]
-
-
-def _episode_candidate(row: dict, stages: set[str]) -> tuple[int, int] | None:
-    stage = _text(row.get("stage")).lower()
-    source = _text(row.get("source")).lower()
-    if stage not in stages or _text(row.get("status")).lower() != "done":
-        return None
-    if not _text(row.get("observedAt")):
-        return None
-    if stage == "download" and source != "qbittorrent":
-        return None
-    if stage in {"library", "symedia", "strm"} and source not in {"symedia", "strm"}:
-        return None
-    season = _integer(row.get("seasonNumber"), -1)
-    episode = _integer(row.get("episodeEnd") or row.get("episodeStart"), -1)
-    return (season, episode) if season >= 0 and episode >= 0 else None
-
-
-def _episode_marker(tasks: list[dict], stages: set[str], current: datetime) -> dict | None:
-    candidates = [
-        candidate
-        for task in tasks
-        if any(
-            _stage_name(stage) in stages
-            and _text(stage.get("status")).lower() == "done"
-            and _trusted_stage(stage, current=current)
-            for stage in (task.get("stages") or [])
-            if isinstance(stage, dict)
-        )
-        for row in (task.get("episodeEvidence") or [])
-        if isinstance(row, dict)
-        if (candidate := _episode_candidate(row, stages))
-    ]
-    if not candidates:
-        return None
-    season, episode = max(candidates)
-    return {
-        "seasonNumber": season,
-        "episodeNumber": episode,
-        "label": f"S{season:02d}E{episode:02d}",
-    }
-
-
-def _stage_projection_status(
-    stages: list[dict],
-    current: datetime,
-    *,
-    verified_only=False,
-    include_waiting=False,
-) -> str:
-    trusted = [
-        stage for stage in stages
-        if _trusted_stage(stage, current=current, verified_only=verified_only)
-    ]
-    statuses = {_text(stage.get("status")).lower() for stage in trusted}
-    if "blocked" in statuses:
-        return "action_required"
-    if "active" in statuses:
-        return "in_progress"
-    if "done" in statuses:
-        return "completed"
-    return "in_progress" if include_waiting and "waiting" in statuses else "unknown"
-
-
-def _stage_observed_at(stages: list[dict], current: datetime, *, verified_only=False) -> str:
-    return _latest(
-        stage.get("observedAt")
-        for stage in stages
-        if _trusted_stage(stage, current=current, verified_only=verified_only)
+def _fact_is_current(fact: dict, current: datetime) -> bool:
+    deadline = _as_utc(fact.get("freshUntil"))
+    return (
+        fact.get("isStale") is not True
+        and fact.get("evidence") == "verified"
+        and deadline is not None
+        and deadline >= current.astimezone(timezone.utc)
     )
 
 
-def _effective_task_user_state(task: dict, current: datetime) -> str:
-    state = _text(task.get("userState")) or "no_action"
-    if not _task_evidence_is_current(task, current):
-        return "no_action"
-    if state != "action_required":
-        return state
-    if _text(task.get("healthState")).lower() == "protected" or _text(
-        task.get("executionState")
-    ).lower() == "protected":
-        return "no_action"
-    blocked = [
-        stage for stage in (task.get("stages") or [])
-        if isinstance(stage, dict) and _text(stage.get("status")).lower() == "blocked"
+def _pipeline_facts(tasks: list[dict], stage: str, current: datetime) -> list[dict]:
+    return [
+        fact
+        for task in tasks
+        for fact in task.get("pipelineFacts") or []
+        if isinstance(fact, dict)
+        and fact.get("stage") == stage
+        and _fact_is_current(fact, current)
     ]
-    if blocked and not any(
-        _trusted_stage(stage, current=current, verified_only=True)
-        for stage in blocked
-    ):
-        return "no_action"
-    return state
 
 
-def _safe_primary_action(tasks: list[dict], has_subscription: bool, current: datetime) -> dict:
+def _task_has_fact(task: dict, stage: str, state: str, current: datetime) -> bool:
+    return any(
+        isinstance(fact, dict)
+        and fact.get("stage") == stage
+        and fact.get("state") == state
+        and _fact_is_current(fact, current)
+        for fact in task.get("pipelineFacts") or []
+    )
+
+
+def _task_outcome_state(task: dict) -> str:
+    state = _text((task.get("pipelineOutcome") or {}).get("state"))
+    return state if state in OUTCOME_PRIORITY else "evidence_insufficient"
+
+
+def _outcome_state(tasks: list[dict]) -> str:
+    states = {_task_outcome_state(task) for task in tasks}
+    return min(states, key=lambda state: OUTCOME_PRIORITY[state]) if states else "evidence_insufficient"
+
+
+def _legacy_user_state(outcome_state: str) -> str:
+    return {
+        "action_required": "action_required",
+        "in_progress": "in_progress",
+        "playable": "completed",
+    }.get(outcome_state, "no_action")
+
+
+def _safe_primary_action(tasks: list[dict], has_subscription: bool) -> dict:
     ordered = sorted(
         tasks,
         key=lambda item: (
-            USER_STATE_PRIORITY.get(_effective_task_user_state(item, current), 9),
+            OUTCOME_PRIORITY.get(_task_outcome_state(item), 9),
             _text(item.get("updatedAt")),
         ),
     )
     for task in ordered:
-        if _text(task.get("healthState")).lower() == "protected" or _text(
-            task.get("executionState")
-        ).lower() == "protected":
-            continue
-        if (
-            _text(task.get("userState")) == "action_required"
-            and _effective_task_user_state(task, current) != "action_required"
-        ):
+        if _task_outcome_state(task) not in {"action_required", "in_progress"}:
             continue
         action = task.get("primaryAction") or {}
         kind = _text(action.get("kind")).lower()
@@ -373,61 +284,79 @@ def _subscription_projection(record: dict, readable: bool) -> dict:
     }
 
 
+def _fact_projection_status(facts: list[dict]) -> str:
+    states = {fact.get("state") for fact in facts}
+    if "failed" in states:
+        return "action_required"
+    if states & {"active", "waiting"}:
+        return "in_progress"
+    if "succeeded" in states:
+        return "completed"
+    if "protected" in states:
+        return "protected"
+    return "unknown"
+
+
+def _episode_marker(tasks: list[dict], stage: str, current: datetime) -> dict | None:
+    candidates = []
+    for task in tasks:
+        if not any(
+            isinstance(fact, dict)
+            and fact.get("stage") == stage
+            and fact.get("state") == "succeeded"
+            and _fact_is_current(fact, current)
+            for fact in task.get("pipelineFacts") or []
+        ):
+            continue
+        season = _integer(task.get("seasonNumber"), -1)
+        episode = _integer(task.get("episodeNumber"), -1)
+        if season >= 0 and episode >= 0:
+            candidates.append((season, episode))
+    if not candidates:
+        return None
+    season, episode = max(candidates)
+    return {"seasonNumber": season, "episodeNumber": episode, "label": f"S{season:02d}E{episode:02d}"}
+
+
 def _download_projection(tasks: list[dict], current: datetime) -> dict:
-    stages = _all_stages(tasks, {"download"})
-    current_tasks = [
-        item for item in tasks
-        if any(
-            _stage_name(stage) == "download" and _trusted_stage(stage, current=current)
-            for stage in item.get("stages") or []
-            if isinstance(stage, dict)
-        )
-    ]
-    completed = sum(max(0, _integer(item.get("completedDownloadTasks"))) for item in current_tasks)
-    active = sum(max(0, _integer(item.get("activeDownloadTasks"))) for item in current_tasks)
-    trusted_status = _stage_projection_status(stages, current)
-    if trusted_status == "action_required":
-        status = "action_required"
-    elif active or trusted_status == "in_progress":
-        status = "in_progress"
-    elif completed or trusted_status == "completed":
-        status = "completed"
-    else:
-        status = "unknown"
+    facts = _pipeline_facts(tasks, "qb", current)
+    active = sum(
+        max(0, _integer(task.get("activeDownloadTasks")))
+        for task in tasks
+        if _task_has_fact(task, "qb", "active", current)
+    )
+    completed = sum(
+        max(0, _integer(task.get("completedDownloadTasks")))
+        for task in tasks
+        if _task_has_fact(task, "qb", "succeeded", current)
+    )
     result = {
-        "status": status,
+        "status": _fact_projection_status(facts),
         "activeTasks": active,
         "completedTasks": completed,
-        "observedAt": _stage_observed_at(stages, current),
+        "observedAt": _latest(fact.get("observedAt") for fact in facts),
     }
-    marker = _episode_marker(tasks, {"download"}, current)
+    marker = _episode_marker(tasks, "qb", current)
     if marker:
         result["latestEpisode"] = marker
     return result
 
 
 def _cloud115_projection(tasks: list[dict], current: datetime) -> dict:
-    stages = _all_stages(tasks, {"cloud115"})
+    facts = _pipeline_facts(tasks, "cloud115", current)
     return {
-        "status": _stage_projection_status(stages, current, verified_only=True),
-        "observedAt": _stage_observed_at(stages, current, verified_only=True),
+        "status": _fact_projection_status(facts),
+        "observedAt": _latest(fact.get("observedAt") for fact in facts),
     }
 
 
-def _library_projection(tasks: list[dict], calendar_entries: list[dict], current: datetime) -> dict:
-    names = {"library", "symedia", "strm"}
-    stages = _all_stages(tasks, names)
-    status = _stage_projection_status(stages, current, include_waiting=True)
-    if any(bool(entry.get("inLibrary") or entry.get("libraryAt")) for entry in calendar_entries):
-        status = "completed"
+def _library_projection(tasks: list[dict], current: datetime) -> dict:
+    facts = _pipeline_facts(tasks, "symedia", current)
     result = {
-        "status": status,
-        "observedAt": _latest([
-            _stage_observed_at(stages, current),
-            *(entry.get("libraryAt") for entry in calendar_entries if entry.get("inLibrary") or entry.get("libraryAt")),
-        ]),
+        "status": _fact_projection_status(facts),
+        "observedAt": _latest(fact.get("observedAt") for fact in facts),
     }
-    marker = _episode_marker(tasks, names, current)
+    marker = _episode_marker(tasks, "symedia", current)
     if marker:
         result["latestEpisode"] = marker
     return result
@@ -479,19 +408,19 @@ def _links(record: dict) -> dict:
         else query
     )
     tasks_url = f"/tasks?{urlencode(task_query)}"
+    rss_query = urlencode([
+        ("q", record["title"]),
+        ("identityStatus", "identified"),
+        ("window", "all"),
+    ])
     return {
         "overview": f"/media/{record['mediaType']}/{record['tmdbId']}" if record["tmdbId"] else tasks_url,
         "tasks": tasks_url,
         "calendar": f"/calendar?{urlencode([('type', record['mediaType']), ('q', record['title'])])}",
         "subscription": f"/following?{urlencode(query)}",
-        "rss": f"/rss-library?{urlencode([('q', record['title']), ('identityStatus', 'identified'), ('window', 'all')])}",
+        "rss": f"/rss-library?{rss_query}",
         "api": f"/api/v2/media/{quote(record['mediaKey'], safe=':')}" if record["tmdbId"] else "",
     }
-
-
-def _user_state(tasks: list[dict], current: datetime) -> str:
-    states = {_effective_task_user_state(item, current) for item in tasks}
-    return min(states, key=lambda state: USER_STATE_PRIORITY.get(state, 9)) if states else "no_action"
 
 
 def _emby_identities(index: dict) -> dict[str, set[str]]:
@@ -501,8 +430,8 @@ def _emby_identities(index: dict) -> dict[str, set[str]]:
     }
 
 
-def _result_text(lifecycle: dict, tasks: list[dict], current: datetime) -> str:
-    if _user_state(tasks, current) == "action_required":
+def _result_text(lifecycle: dict) -> str:
+    if lifecycle["outcomeState"] == "action_required":
         return "当前作品有任务需要处理"
     parts = []
     if lifecycle["subscription"]["status"] == "following":
@@ -519,8 +448,8 @@ def _result_text(lifecycle: dict, tasks: list[dict], current: datetime) -> str:
         parts.append("已进入 115")
     if lifecycle["library"]["status"] == "completed":
         parts.append("已入库")
-    if lifecycle["emby"]["status"] == "available":
-        parts.append("Emby 可看")
+    if lifecycle["outcomeState"] == "playable":
+        parts.append("Emby 已可播放")
     return " · ".join(parts) if parts else "暂未形成可验证的处理证据"
 
 
@@ -763,21 +692,24 @@ class MediaSearchService:
 
     def _project(self, record: dict, readable: dict) -> dict:
         current = self.clock()
-        current_tasks = [
-            item for item in record["tasks"]
-            if _task_evidence_is_current(item, current)
-        ]
+        current_tasks = list(record["tasks"])
         subscription = _subscription_projection(record, readable["subscription"])
         download = _download_projection(current_tasks, current)
         cloud115 = _cloud115_projection(current_tasks, current)
-        library = _library_projection(current_tasks, record["calendar"], current)
-        task_emby = any(item.get("embyIndexed") is True for item in current_tasks)
-        episode_evidence = any(
-            _text(item.get("embyEvidenceScope")) == "episode"
-            for item in current_tasks
+        library = _library_projection(current_tasks, current)
+        outcome_state = _outcome_state(current_tasks)
+        if not current_tasks and record["mediaType"] == "movie" and record["embyAvailable"]:
+            outcome_state = "playable"
+        playable_task = next((
+            item for item in current_tasks
+            if _task_outcome_state(item) == "playable"
+        ), None)
+        emby_available = outcome_state == "playable"
+        scope = (
+            "episode"
+            if playable_task and playable_task.get("mediaType") == "tv"
+            else "title"
         )
-        scope = "episode" if episode_evidence else "title"
-        emby_available = task_emby or record["embyAvailable"]
         emby = {
             "status": "available" if emby_available else "unknown",
             "evidenceScope": scope if emby_available else "none",
@@ -798,7 +730,8 @@ class MediaSearchService:
                 "posterUrl": record["posterUrl"],
                 "sources": sorted(record["sources"]),
             },
-            "userState": _user_state(current_tasks, current),
+            "outcomeState": outcome_state,
+            "userState": _legacy_user_state(outcome_state),
             "subscription": subscription,
             "download": download,
             "cloud115": cloud115,
@@ -809,14 +742,13 @@ class MediaSearchService:
             "primaryAction": _safe_primary_action(
                 current_tasks,
                 bool(record["subscriptions"]),
-                current,
             ),
         }
         if record.get("chainId"):
             result["media"]["chainId"] = record["chainId"]
         if record["year"]:
             result["media"]["year"] = record["year"]
-        result["resultText"] = _result_text(result, current_tasks, current)
+        result["resultText"] = _result_text(result)
         result["links"] = _links({**record, "title": result["media"]["title"]})
         return result
 
@@ -887,6 +819,7 @@ class MediaSearchService:
             detail = self._project(record, readable)
             items.append({
                 **detail["media"],
+                "outcomeState": detail["outcomeState"],
                 "userState": detail["userState"],
                 "resultText": detail["resultText"],
                 "subscriptionStatus": detail["subscription"]["status"],

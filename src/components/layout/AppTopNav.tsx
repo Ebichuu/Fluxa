@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Activity, Bookmark, CalendarDays, Compass, Film, Home, ListChecks, Moon, Search, Settings, Sun } from 'lucide-react';
 import type { HomeSummaryResponse } from '../../types/homeSummary';
+import type { PipelineOutcomeState } from '../../types/taskChain';
 import { healthStatusLabel } from '../status/HealthBadge';
 import { GlobalMediaSearch } from './GlobalMediaSearch';
 
@@ -15,6 +16,8 @@ export interface TaskNavigationTarget {
   tmdbId?: string;
   title?: string;
   seasonNumber?: number | null;
+  outcomeState?: PipelineOutcomeState;
+  outcomeStates?: PipelineOutcomeState[];
   userState?: 'action_required' | 'in_progress' | 'completed' | 'no_action';
   completedDate?: string;
   advanced?: boolean;
@@ -49,14 +52,16 @@ interface AppTopNavProps {
 
 export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, showThemeToggle, theme }: AppTopNavProps) {
   const healthState = homeSummary?.healthState ?? 'evidence_insufficient';
-  const actionRequiredCount = homeSummary?.counts.actionRequired ?? 0;
+  const actionRequiredCount = homeSummary?.counts.mediaActionRequired ?? 0;
   const actionRequiredBadge = actionRequiredCount > 99 ? '99+' : String(actionRequiredCount);
   const healthLabel = !homeSummary
     ? '状态读取中'
-    : homeSummary.counts.actionRequired > 0
-      ? `${homeSummary.counts.actionRequired} 项需要处理`
-      : healthState === 'waiting'
+    : actionRequiredCount > 0
+      ? `${actionRequiredCount} 项需要处理`
+      : homeSummary.counts.inProgress > 0
         ? '任务处理中'
+        : homeSummary.counts.auxiliaryAlerts > 0
+          ? `${homeSummary.counts.auxiliaryAlerts} 项辅助提醒`
         : healthState === 'normal'
           ? '运行正常'
           : healthStatusLabel(healthState);
@@ -218,7 +223,7 @@ export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, 
                 type="button"
                 onClick={() => {
                   if (showTaskBadge && window.matchMedia('(max-width: 760px)').matches) {
-                    onNavigate('tasks', { userState: 'action_required' });
+                    onNavigate('tasks', { outcomeState: 'action_required' });
                     return;
                   }
                   onNavigate(item.id);
@@ -256,12 +261,12 @@ export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, 
           <span>搜索媒体</span>
         </button>
         <button
-          aria-label={`${healthLabel}，打开控制室`}
+          aria-label={`${healthLabel}，${actionRequiredCount > 0 ? '打开任务中心' : '打开控制室'}`}
           className={activePage === 'control' ? 'nav-pill nav-pill--health nav-pill--active' : 'nav-pill nav-pill--health'}
           data-health={healthState}
-          title={`${healthLabel}，打开控制室`}
+          title={`${healthLabel}，${actionRequiredCount > 0 ? '打开任务中心' : '打开控制室'}`}
           type="button"
-          onClick={() => onNavigate('control')}
+          onClick={() => onNavigate(actionRequiredCount > 0 ? 'tasks' : 'control', actionRequiredCount > 0 ? { outcomeState: 'action_required' } : undefined)}
         >
           <Activity aria-hidden="true" size={15} strokeWidth={1.8} />
           <span>

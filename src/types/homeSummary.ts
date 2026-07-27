@@ -4,6 +4,7 @@ export interface HomeSummaryCounts {
   ingestedToday: number;
   archivedToday: number | null;
   completedTargetsToday: number;
+  playableToday: number;
   downloading: number;
   activeDownloadTasks: number | null;
   concurrentDownloadGroups: number;
@@ -12,6 +13,9 @@ export interface HomeSummaryCounts {
   evidenceInsufficient: number;
   identityPending: number;
   actionRequired: number;
+  mediaActionRequired: number;
+  auxiliaryAlerts: number;
+  inProgress: number;
   suspectedBlocked: number;
   protected: number;
 }
@@ -28,6 +32,8 @@ export interface HomeSummaryIssue {
   targetKey: string;
   chainId: string;
   title: string;
+  issueKind?: 'media' | 'auxiliary';
+  href?: string;
   seasonNumber?: number;
   episodeNumber?: number;
   secondaryReasonText?: string;

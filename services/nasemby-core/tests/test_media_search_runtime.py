@@ -12,6 +12,21 @@ from app.task_chain_runtime import _orphan_qb_item
 from app.task_chain_v2_runtime import adapt_task_chain
 
 
+def pipeline_fact(stage, state, *, observed_at="2026-07-25T01:40:00Z", fresh_until="2026-07-26T00:00:00Z"):
+    return {
+        "stage": stage,
+        "state": state,
+        "scope": "episode",
+        "evidence": "missing" if state == "unknown" else "verified",
+        "observedAt": observed_at,
+        "freshUntil": fresh_until,
+        "source": {"qb": "qBittorrent", "symedia": "Symedia", "emby": "Emby"}.get(stage, stage),
+        "sourceRef": f"{stage}-test-ref",
+        "reasonCode": f"{stage.upper()}_{state.upper()}",
+        "reasonText": f"{stage} {state}",
+    }
+
+
 class FakeWorkbench:
     def snapshot(self, *, limit=None, offset=0, media_type="", query=""):
         items = [{
@@ -46,7 +61,20 @@ class FakeTasks:
             "title": "雀骨",
             "mediaType": "tv",
             "tmdbId": "202",
+            "seasonNumber": 1,
+            "episodeNumber": 13,
             "posterUrl": "https://image.tmdb.org/t/p/w342/task.jpg",
+            "pipelineFacts": [
+                pipeline_fact("qb", "succeeded", observed_at="2026-07-25T01:20:00Z"),
+                pipeline_fact("cloud115", "succeeded", observed_at="2026-07-25T01:30:00Z"),
+                pipeline_fact("symedia", "succeeded", observed_at="2026-07-25T01:40:00Z"),
+                pipeline_fact("emby", "succeeded", observed_at="2026-07-25T01:50:00Z"),
+            ],
+            "pipelineOutcome": {
+                "state": "playable", "stage": "emby", "reasonCode": "EMBY_EPISODE_INDEXED",
+                "reasonText": "Emby 已收录目标集", "observedAt": "2026-07-25T01:50:00Z",
+                "playableAt": "2026-07-25T01:50:00Z",
+            },
             "userState": "completed",
             "primaryAction": {
                 "kind": "none",
@@ -234,6 +262,7 @@ class MediaSearchRuntimeTests(unittest.TestCase):
         self.assertEqual(item["sources"], ["calendar", "emby", "subscription", "task"])
         self.assertEqual(item["subscriptionStatus"], "following")
         self.assertEqual(item["embyStatus"], "available")
+        self.assertEqual(item["outcomeState"], "playable")
 
         by_key = self.client.get("/api/v2/search?q=tv:202").get_json()
         self.assertEqual(by_key["items"][0]["mediaKey"], "tv:202")
@@ -271,9 +300,10 @@ class MediaSearchRuntimeTests(unittest.TestCase):
         self.assertEqual(payload["library"]["latestEpisode"]["label"], "S01E13")
         self.assertEqual(payload["emby"], {"status": "available", "evidenceScope": "episode"})
         self.assertEqual(payload["playback"], {"status": "available", "directLinkAvailable": False})
+        self.assertEqual(payload["outcomeState"], "playable")
         self.assertEqual(
             payload["resultText"],
-            "追更中 · Torra 已同步 · 已下载 13 个 · 已进入 115 · 已入库 · Emby 可看",
+            "追更中 · Torra 已同步 · 已下载 13 个 · 已进入 115 · 已入库 · Emby 已可播放",
         )
         self.assertEqual(payload["primaryAction"]["kind"], "view_subscription")
         self.assertIn("tmdbId=202", payload["links"]["tasks"])
@@ -297,7 +327,8 @@ class MediaSearchRuntimeTests(unittest.TestCase):
         self.assertEqual(len(emby_only.get_json()["items"]), 1)
         self.assertEqual(emby_only.get_json()["items"][0]["mediaKey"], "tv:999")
         self.assertEqual(emby_only.get_json()["items"][0]["sources"], ["emby"])
-        self.assertEqual(emby_only.get_json()["items"][0]["embyStatus"], "available")
+        self.assertEqual(emby_only.get_json()["items"][0]["embyStatus"], "unknown")
+        self.assertEqual(emby_only.get_json()["items"][0]["outcomeState"], "evidence_insufficient")
 
     def test_identified_rss_items_form_one_locatable_result_per_media_key(self):
         rss = FakeRss([
@@ -381,6 +412,11 @@ class MediaSearchRuntimeTests(unittest.TestCase):
                 "title": "BLEACH Sennen Kessen-hen Kashin-tan",
                 "mediaType": "tv",
                 "tmdbId": "",
+                "pipelineOutcome": {
+                    "state": "action_required", "stage": "symedia", "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+                    "reasonText": "Symedia 整理失败", "observedAt": "2026-07-25T01:00:00Z", "playableAt": "",
+                },
+                "pipelineFacts": [pipeline_fact("symedia", "failed")],
                 "userState": "action_required",
                 "healthState": "action_required",
                 "executionState": "confirmed_failed",
@@ -452,6 +488,15 @@ class MediaSearchRuntimeTests(unittest.TestCase):
                 "mediaType": "tv",
                 "tmdbId": "202",
                 "userState": "no_action",
+                "pipelineOutcome": {
+                    "state": "evidence_insufficient", "stage": "", "reasonCode": "EVIDENCE_INSUFFICIENT",
+                    "reasonText": "证据不足", "observedAt": "", "playableAt": "",
+                },
+                "pipelineFacts": [{
+                    **pipeline_fact("qb", "active"),
+                    "freshUntil": "2026-07-24T00:00:00Z",
+                    "isStale": True,
+                }],
                 "healthState": "evidence_insufficient",
                 "freshUntil": "2026-07-26T00:00:00Z",
                 "activeDownloadTasks": 2,
@@ -515,6 +560,11 @@ class MediaSearchRuntimeTests(unittest.TestCase):
         payload = FakeTasks().full_snapshot()
         protected = dict(payload["items"][0])
         protected.update({
+            "pipelineOutcome": {
+                "state": "protected", "stage": "symedia", "reasonCode": "QUALITY_HIGHER_VERSION_EXISTS",
+                "reasonText": "保留高质量版本", "observedAt": "2026-07-25T01:00:00Z", "playableAt": "",
+            },
+            "pipelineFacts": [pipeline_fact("symedia", "protected")],
             "userState": "action_required",
             "healthState": "action_required",
             "executionState": "action_required",
@@ -569,6 +619,11 @@ class MediaSearchRuntimeTests(unittest.TestCase):
         payload = FakeTasks().full_snapshot()
         blocked = dict(payload["items"][0])
         blocked.update({
+            "pipelineOutcome": {
+                "state": "action_required", "stage": "qb", "reasonCode": "QB_DOWNLOAD_FAILED",
+                "reasonText": "下载失败", "observedAt": "2026-07-25T01:00:00Z", "playableAt": "",
+            },
+            "pipelineFacts": [pipeline_fact("qb", "failed")],
             "userState": "action_required",
             "healthState": "action_required",
             "executionState": "confirmed_failed",
@@ -602,6 +657,15 @@ class MediaSearchRuntimeTests(unittest.TestCase):
         payload = FakeTasks().full_snapshot()
         expired = dict(payload["items"][0])
         expired.update({
+            "pipelineOutcome": {
+                "state": "evidence_insufficient", "stage": "", "reasonCode": "EVIDENCE_INSUFFICIENT",
+                "reasonText": "证据不足", "observedAt": "", "playableAt": "",
+            },
+            "pipelineFacts": [{
+                **fact,
+                "freshUntil": "2026-07-24T00:00:00Z",
+                "isStale": True,
+            } for fact in expired["pipelineFacts"]],
             "userState": "no_action",
             "activeDownloadTasks": 2,
             "completedDownloadTasks": 13,

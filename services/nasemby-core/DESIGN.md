@@ -68,7 +68,7 @@ TMDB 发现、全球日播和海外流媒体同时支持 v3 API Key 与 v4 Beare
 
 ### 作品聚合与 Torra 公开标识
 
-`media_search_runtime.py` 只读合并本地追更、已识别 RSS、任务、当前完整月历缓存和 Emby TMDB 索引，并按标准 `mediaKey` 去重。本地没有候选时才调用既有 TMDB 只读客户端，失败降级为空且不写发现缓存。没有 TMDB 的本地任务使用独立目录键参与搜索，对外保留空 `tmdbId`、公开 `chainId` 和任务深链，不能进入只接受 `movie:tmdbId / tv:tmdbId` 的作品详情接口。生命周期投影只采纳仍有效且状态、健康、证据相互一致的阶段，过期、推断阻塞和正常保护不能生成可执行异常。
+`media_search_runtime.py` 只读合并本地追更、已识别 RSS、任务、当前完整月历缓存和 Emby TMDB 索引，并按标准 `mediaKey` 去重。本地没有候选时才调用既有 TMDB 只读客户端，失败降级为空且不写发现缓存。没有 TMDB 的本地任务使用独立目录键参与搜索，对外保留空 `tmdbId`、公开 `chainId` 和任务深链，不能进入只接受 `movie:tmdbId / tv:tmdbId` 的作品详情接口。用户结果只聚合 `pipelineOutcome`，下载、115、整理和 Emby 生命周期只采纳当前 verified 的独立事实；日历兼容字段不反推任务结果，电视剧作品级 Emby 索引不生成可播放。
 
 Torra-only 条目不得把远端主键当作浏览器 ID。`subscription_reconciliation_runtime.py` 使用远端 ID 的 SHA-256 前 10 位生成 `torra:<摘要>`，质量观察、人工动作和 RSS 匹配收到公开订阅/观察单元 ID 后，从当前 Torra 只读列表解析唯一内部条目。无匹配返回不存在，摘要碰撞返回冲突；公开 DTO、动作摘要和日志始终保留公开键，不返回原始远端 ID。该解析不创建本地镜像，也不改变 Torra。
 
@@ -240,6 +240,14 @@ Compose 通过 `MCC_DATA_ROOT` 把三个目录映射到同一个 fnOS 根目录�
 代码优先回滚到上一个已验证镜像或归档标签；订阅数据不随代码回滚。恢复旧双服务归档时必须确保新容器已停止，不能同时启动两套后端或调度器。
 
 ## 13. 变更历史
+
+### 2026-07-28 — 任务中心、首页与统一结果统计 P0.3
+
+**变更内容**：任务列表新增可重复 `outcomeState` 查询和顶层 `outcomeState/playableAt`，兼容 `completed/completedAt` 只由 `playable/playableAt` 单向投影。任务中心、首页、顶部导航、全局搜索和作品总览切换到 `pipelineOutcome` 与六阶段事实；任务中心四组改为“需要处理 / 处理中 / 已可播放 / 无需处理”，无 URL 筛选时先读 summary 决定首次列表查询。首页拆分 `mediaActionRequired/auxiliaryAlerts/inProgress/playableToday`，自动恢复中的秒传按明确失败数量计入处理中，媒体异常和辅助提醒使用各自深链。
+
+**变更理由**：旧页面仍把 Torra/Symedia 完成解释为最终完成，并把 RSS、服务异常和媒体任务共用一个红色数字；任务中心默认进入空的处理中页，计划重试又显示为 0 个处理中。首批核心消费者必须共享同一个派生结果和统计口径，才能让顶部入口、首页数字、列表筛选与作品搜索互相一致。
+
+**影响范围**：任务 v2 只读查询与兼容投影、首页摘要、全局作品搜索、React 任务中心/首页/顶部导航/作品总览、TypeScript 类型、v2 机器契约和回归测试。没有新增数据库结构或外部写动作；旧 `userState` 查询仍可读，新页面只写 `outcomeState`。
 
 ### 2026-07-28 — 六来源事实适配与单向兼容投影 P0.2
 
