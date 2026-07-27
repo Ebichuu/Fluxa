@@ -1,8 +1,20 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Database, Save, ShieldCheck, SlidersHorizontal } from 'lucide-react';
-import { getSubscriptionAutomationSettings, updateSubscriptionAutomationSettings } from '../../services/api';
-import type { SubscriptionAutomationSettings } from '../../types/subscriptions';
+import { ArrowLeft, Database, RefreshCcw, Save, ShieldCheck, SlidersHorizontal } from 'lucide-react';
+import {
+  executeCandidateMigration,
+  getSubscriptionAutomationSettings,
+  previewCandidateMigration,
+  updateSubscriptionAutomationSettings
+} from '../../services/api';
+import type {
+  CandidateMigrationCategory,
+  CandidateMigrationPreview,
+  CandidateMigrationResult,
+  SubscriptionAutomationSettings
+} from '../../types/subscriptions';
+import { createIdempotencyKey } from '../../utils/idempotency';
 import type { PageId } from '../layout/AppTopNav';
+import { ConfirmDialog } from '../layout/ConfirmDialog';
 import { SubscriptionHubSettings } from './SettingsPage';
 
 interface SubscriptionSettingsPageProps {
@@ -118,6 +130,177 @@ function QualityWatchSettings() {
   );
 }
 
+const migrationCategoryLabels: Record<CandidateMigrationCategory, string> = {
+  manual: '人工追更',
+  'downstream-owned': '已有下游',
+  'candidate-eligible': '可迁候选',
+  'migration-review': '待人工复核'
+};
+
+function CandidateMigrationSettings() {
+  const [preview, setPreview] = useState<CandidateMigrationPreview | null>(null);
+  const [result, setResult] = useState<CandidateMigrationResult | null>(null);
+  const [message, setMessage] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [executing, setExecuting] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmPhrase, setConfirmPhrase] = useState('');
+
+  const loadPreview = () => {
+    setLoading(true);
+    setMessage('');
+    previewCandidateMigration()
+      .then((payload) => {
+        setPreview(payload);
+        setResult(null);
+      })
+      .catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : '历史追更预览失败'))
+      .finally(() => setLoading(false));
+  };
+
+  const loadMore = () => {
+    if (!preview?.page.hasMore || preview.page.nextOffset == null) return;
+    setLoadingMore(true);
+    setMessage('');
+    previewCandidateMigration({ limit: preview.page.limit, offset: preview.page.nextOffset })
+      .then((payload) => {
+        if (payload.previewFingerprint !== preview.previewFingerprint) {
+          setPreview(payload);
+          setMessage('追更台账已变化，已重新读取最新预览。');
+          return;
+        }
+        const items = new Map(preview.items.map((item) => [item.id, item]));
+        payload.items.forEach((item) => items.set(item.id, item));
+        setPreview({ ...payload, items: Array.from(items.values()) });
+      })
+      .catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : '更多分类记录读取失败'))
+      .finally(() => setLoadingMore(false));
+  };
+
+  const openConfirmation = () => {
+    if (!preview?.canExecute || preview.counts['candidate-eligible'] < 1) return;
+    setConfirmPhrase('');
+    setConfirmOpen(true);
+  };
+
+  const execute = () => {
+    if (!preview || confirmPhrase !== '迁移候选追更') return;
+    setExecuting(true);
+    setMessage('');
+    executeCandidateMigration({
+      confirm: true,
+      idempotencyKey: createIdempotencyKey(),
+      previewFingerprint: preview.previewFingerprint
+    })
+      .then((payload) => {
+        setResult(payload);
+        setConfirmOpen(false);
+        setMessage(`已迁入候选池 ${payload.migratedCount} 条，保留 ${payload.preservedCount} 条。`);
+        void previewCandidateMigration()
+          .then(setPreview)
+          .catch(() => setMessage(`已迁入候选池 ${payload.migratedCount} 条；请重新预览当前台账。`));
+      })
+      .catch((reason: unknown) => {
+        setConfirmOpen(false);
+        setMessage(reason instanceof Error ? reason.message : '历史追更迁移失败');
+      })
+      .finally(() => setExecuting(false));
+  };
+
+  return (
+    <section className="ops-settings-card ops-settings-card--wide sub-config candidate-migration">
+      <header className="ops-settings-card__head">
+        <div><span><Database size={16} /></span><div><small>P0.5 · 台账整理</small><h2>历史追更分类</h2></div></div>
+        <strong>{preview ? `${preview.total} 条已分类` : '尚未预览'}</strong>
+      </header>
+
+      {!preview && !loading && (
+        <div className="candidate-migration__empty">
+          <span>先读取当前追更证据，再决定是否迁移自动来源记录。</span>
+        </div>
+      )}
+
+      {preview && (
+        <>
+          <div className="candidate-migration__summary" aria-label="历史追更分类统计">
+            {(Object.keys(migrationCategoryLabels) as CandidateMigrationCategory[]).map((category) => (
+              <div key={category}>
+                <strong>{preview.counts[category]}</strong>
+                <span>{migrationCategoryLabels[category]}</span>
+              </div>
+            ))}
+          </div>
+          <div className="candidate-migration__groups">
+            {(Object.keys(migrationCategoryLabels) as CandidateMigrationCategory[]).map((category) => {
+              const items = preview.items.filter((item) => item.category === category);
+              return (
+                <details key={category} open={category === 'candidate-eligible' && items.length > 0}>
+                  <summary><span>{migrationCategoryLabels[category]}</span><strong>{items.length}</strong></summary>
+                  {items.length > 0 ? (
+                    <ul>
+                      {items.map((item) => (
+                        <li key={item.id}>
+                          <div><strong>{item.title || '未命名作品'}</strong><small>{item.mediaType === 'tv' ? `电视剧 · 第 ${item.seasonNumber || '?'} 季` : item.mediaType === 'movie' ? '电影' : '类型未确认'}{item.tmdbId ? ` · TMDB ${item.tmdbId}` : ''}</small></div>
+                          <span>{item.reasonText}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : <p>当前没有此类记录。</p>}
+                </details>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      <div className="sub-config__foot">
+        <button className="tool-link" disabled={loading || executing} type="button" onClick={loadPreview}>
+          <RefreshCcw aria-hidden="true" size={14} />
+          {loading ? '读取中…' : preview ? '重新预览' : '预览现有追更'}
+        </button>
+        {preview?.page.hasMore && (
+          <button className="tool-link" disabled={loadingMore || loading || executing} type="button" onClick={loadMore}>
+            {loadingMore ? '读取中…' : `加载更多（${preview.items.length}/${preview.page.total}）`}
+          </button>
+        )}
+        {preview && preview.counts['candidate-eligible'] > 0 && (
+          <button className="ops-action-button ops-action-button--primary" disabled={!preview.canExecute || loading || executing} type="button" onClick={openConfirmation}>
+            迁入候选池 {preview.counts['candidate-eligible']} 条
+          </button>
+        )}
+        {message && <small role="status">{message}</small>}
+        {result && <small>备份：{result.backupId}</small>}
+      </div>
+
+      <ConfirmDialog
+        busy={executing}
+        labelledBy="candidate-migration-title"
+        describedBy="candidate-migration-description"
+        open={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+      >
+        <span className="ops-confirm-dialog__signal ops-confirm-dialog__signal--danger">台账迁移</span>
+        <h2 id="candidate-migration-title">迁移自动来源追更？</h2>
+        <p id="candidate-migration-description">将 {preview?.counts['candidate-eligible'] ?? 0} 条自动来源记录移入候选池。人工追更、已有下游证据和待复核记录会保留；执行前创建 SQLite 备份。</p>
+        <label className="ops-confirm-dialog__input">
+          输入“迁移候选追更”
+          <input
+            autoComplete="off"
+            data-dialog-initial-focus
+            value={confirmPhrase}
+            onChange={(event) => setConfirmPhrase(event.target.value)}
+          />
+        </label>
+        <div className="ops-confirm-dialog__actions">
+          <button className="ops-action-button" disabled={executing} type="button" onClick={() => setConfirmOpen(false)}>取消</button>
+          <button className="ops-action-button ops-action-button--danger" disabled={executing || confirmPhrase !== '迁移候选追更'} type="button" onClick={execute}>{executing ? '迁移中…' : '确认迁移'}</button>
+        </div>
+      </ConfirmDialog>
+    </section>
+  );
+}
+
 export function SubscriptionSettingsPage({ onNavigate }: SubscriptionSettingsPageProps) {
   const [modeLabel, setModeLabel] = useState('读取中');
 
@@ -143,6 +326,7 @@ export function SubscriptionSettingsPage({ onNavigate }: SubscriptionSettingsPag
 
       <section className="ops-settings-grid ops-settings-grid--subscription">
         <SubscriptionHubSettings onModeChange={setModeLabel} />
+        <CandidateMigrationSettings />
         <QualityWatchSettings />
       </section>
     </main>

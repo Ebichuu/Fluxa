@@ -23,6 +23,8 @@ import type {
 } from '../types/rssSeedLibrary';
 import type {
   DiscoverBrowseParams,
+  CandidateMigrationPreview,
+  CandidateMigrationResult,
   DiscoverCandidateFollowPreview,
   DiscoverCandidateFollowResponse,
   DiscoverCandidateListResponse,
@@ -483,6 +485,37 @@ export function followDiscoverCandidate(
   return postJson<DiscoverCandidateFollowResponse>(
     `/api/v2/discover/candidates/${encodeURIComponent(candidateId)}/follows`,
     { confirm: true, idempotencyKey },
+    options
+  );
+}
+
+export function previewCandidateMigration(
+  input: { limit?: number; offset?: number } = {},
+  options?: RequestOptions
+): Promise<CandidateMigrationPreview> {
+  const query = new URLSearchParams({
+    limit: String(input.limit ?? 100),
+    offset: String(input.offset ?? 0)
+  });
+  return readJson<CandidateMigrationPreview>(
+    `/api/v2/subscriptions/candidate-migrations/preview?${query.toString()}`,
+    options
+  );
+}
+
+export function executeCandidateMigration(
+  input: { confirm: true; idempotencyKey: string; previewFingerprint: string },
+  options?: RequestOptions
+): Promise<CandidateMigrationResult> {
+  return postJson<CandidateMigrationResult>('/api/v2/subscriptions/candidate-migrations', input, options);
+}
+
+export function getCandidateMigrationRun(
+  runId: string,
+  options?: RequestOptions
+): Promise<CandidateMigrationResult> {
+  return readJson<CandidateMigrationResult>(
+    `/api/v2/subscriptions/candidate-migrations/${encodeURIComponent(runId)}`,
     options
   );
 }

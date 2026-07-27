@@ -524,6 +524,57 @@ export interface DiscoverCandidateFollowResponse {
   replayed: boolean;
 }
 
+export type CandidateMigrationCategory =
+  | 'manual'
+  | 'downstream-owned'
+  | 'candidate-eligible'
+  | 'migration-review';
+
+export interface CandidateMigrationPreviewItem {
+  id: string;
+  title: string;
+  mediaType: 'movie' | 'tv' | 'unknown';
+  tmdbId: string;
+  seasonNumber: number;
+  sourceLabel: string;
+  category: CandidateMigrationCategory;
+  reasonCode: string;
+  reasonText: string;
+  version: number;
+}
+
+export interface CandidateMigrationPreview {
+  ok: boolean;
+  previewFingerprint: string;
+  generatedAt: string;
+  total: number;
+  counts: Record<CandidateMigrationCategory, number>;
+  canExecute: boolean;
+  requiresConfirmation: true;
+  items: CandidateMigrationPreviewItem[];
+  page: {
+    total: number;
+    limit: number;
+    offset: number;
+    nextOffset: number | null;
+    hasMore: boolean;
+  };
+}
+
+export interface CandidateMigrationResult {
+  ok: boolean;
+  runId: string;
+  status: 'succeeded';
+  previewFingerprint: string;
+  backupId: string;
+  migratedCount: number;
+  preservedCount: number;
+  reviewCount: number;
+  counts: Record<CandidateMigrationCategory, number>;
+  completedAt: string;
+  replayed: boolean;
+}
+
 export type DiscoverSourceAvailability = 'available' | 'unavailable' | 'disabled' | 'not_configured';
 
 export interface DiscoverSourceStatus {
