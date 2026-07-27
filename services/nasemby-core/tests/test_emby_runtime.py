@@ -282,6 +282,10 @@ class EmbyRuntimeContractTests(IsolatedActivityLogMixin, unittest.TestCase):
             FakeResponse(payload={"Items": [
                 {"Id": "movie-1", "Type": "Movie", "ProviderIds": {"Tmdb": "100"}, "Path": "/movies/a.mkv"},
                 {"Id": "series-1", "Type": "Series", "ProviderIds": {"tmdb": "200"}, "Path": "/series/a"},
+                {
+                    "Id": "episode-1", "Type": "Episode", "SeriesId": "series-1",
+                    "ParentIndexNumber": 1, "IndexNumber": 3, "Path": "/series/a/S01E03.mkv",
+                },
                 {"Id": "missing", "Type": "Movie", "ProviderIds": {"Tmdb": "300"}},
             ]}),
         ])
@@ -302,11 +306,60 @@ class EmbyRuntimeContractTests(IsolatedActivityLogMixin, unittest.TestCase):
         self.assertEqual(items[0]["rating"], "8.3")
         self.assertEqual(counts, {"movies": 4, "series": 3, "episodes": 20})
         self.assertEqual(recent[0]["seriesName"], "测试剧集")
-        self.assertEqual(index, {"movies": {"100"}, "series": {"200"}})
+        self.assertEqual(index, {
+            "movies": {"100"},
+            "series": {"200"},
+            "episodes": {("200", 1, 3)},
+        })
         self.assertEqual(len(session.requests), 5)
         for _method, url, _kwargs in session.requests:
             self.assertIn("api_key=api-key", url)
             self.assertNotIn("api-key", str(_kwargs))
+
+    def test_tmdb_library_index_paginates_and_links_episode_to_series_across_pages(self):
+        from urllib.parse import parse_qs, urlsplit
+
+        from app.emby_runtime import EmbyClient, EmbyConfig
+
+        session = FakeSession([
+            FakeResponse(payload={
+                "TotalRecordCount": 3,
+                "Items": [
+                    {
+                        "Id": "series-1", "Type": "Series", "ProviderIds": {"Tmdb": "200"},
+                        "Path": "/series/a",
+                    },
+                    {
+                        "Id": "movie-1", "Type": "Movie", "ProviderIds": {"Tmdb": "100"},
+                        "Path": "/movies/a.mkv",
+                    },
+                ],
+            }),
+            FakeResponse(payload={
+                "TotalRecordCount": 3,
+                "Items": [{
+                    "Id": "episode-1", "Type": "Episode", "SeriesId": "series-1",
+                    "ParentIndexNumber": 2, "IndexNumber": 8, "Path": "/series/a/S02E08.mkv",
+                }],
+            }),
+        ])
+        client = EmbyClient(EmbyConfig(
+            base_url="http://emby.example.test",
+            api_key="api-key",
+            user_id="user-id",
+        ), session=session)
+
+        with patch("app.emby_runtime.LIBRARY_INDEX_PAGE_SIZE", 2):
+            index = client.get_tmdb_library_index()
+
+        self.assertEqual(index["movies"], {"100"})
+        self.assertEqual(index["series"], {"200"})
+        self.assertEqual(index["episodes"], {("200", 2, 8)})
+        start_indexes = [
+            parse_qs(urlsplit(url).query)["StartIndex"][0]
+            for _method, url, _kwargs in session.requests
+        ]
+        self.assertEqual(start_indexes, ["0", "2"])
 
     def test_library_refresh_posts_once_and_clears_lookup_cache(self):
         from urllib.parse import parse_qs, urlsplit

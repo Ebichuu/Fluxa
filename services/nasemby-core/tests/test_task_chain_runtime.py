@@ -4,6 +4,7 @@ import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 
 MODULE_ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +56,60 @@ def qb_task(**overrides):
 
 
 class TaskChainRuntimeContractTests(unittest.TestCase):
+    def test_legacy_state_is_projected_from_pipeline_facts_only(self):
+        from app.pipeline_source_fact_runtime import build_pipeline_source_facts
+        from app.task_chain_runtime import _orphan_qb_item, build_task_chain
+
+        now = datetime(2026, 7, 27, 4, 0, tzinfo=timezone.utc)
+        unknown_facts = build_pipeline_source_facts({
+            "mediaType": "tv",
+            "tmdbId": "808",
+            "seasonNumber": 1,
+            "episodeNumber": 1,
+            "torra": None,
+            "qbTasks": [],
+            "cloud115": {},
+            "symediaRows": [],
+            "embyIndex": None,
+        }, observed_at="2026-07-27T04:00:00Z")
+        input_data = {
+            "subscriptions": [],
+            "torraRows": [],
+            "qb": qb_summary([]),
+            "symediaRows": [{
+                "id": "symedia-source-success",
+                "title": "单向投影测试",
+                "type": "tv",
+                "tmdbid": "808",
+                "season": 1,
+                "episode": 1,
+                "src": "/115/Test.Show.S01E01.mkv",
+                "dest": "/media/Test.Show.S01E01.mkv",
+                "status": True,
+                "date": "2026-07-27 03:50:00",
+            }],
+            "symediaTotal": 1,
+            "embyIndex": None,
+            "urls": {"qb": "", "torra": "", "symedia": "", "emby": ""},
+            "now": now,
+        }
+
+        with patch("app.task_chain_runtime.build_pipeline_source_facts", return_value=unknown_facts):
+            item = build_task_chain(input_data)["items"][0]
+            orphan = _orphan_qb_item(
+                qb_task(status="downloading", state="downloading", progress=0.5),
+                {"confidence": "unlinked"},
+                input_data["urls"],
+                now=now,
+            )
+
+        self.assertTrue(all(fact["state"] == "unknown" for fact in item["pipelineFacts"]))
+        self.assertEqual(item["state"], "waiting")
+        self.assertEqual(next(step for step in item["steps"] if step["key"] == "cloud115")["status"], "waiting")
+        self.assertEqual(next(step for step in item["steps"] if step["key"] == "library")["status"], "waiting")
+        self.assertEqual(orphan["activeDownloadTasks"], 0)
+        self.assertEqual(orphan["state"], "waiting")
+
     def test_symedia_identity_merges_qb_and_library_without_subscription(self):
         from app.task_chain_runtime import build_task_chain
         from app.task_chain_v2_runtime import adapt_task_chain
@@ -106,6 +161,15 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
         self.assertEqual(adapted["items"][0]["targetKey"], "tv:tmdb:808:season:1")
         self.assertEqual(adapted["items"][0]["identityState"], "linked")
         self.assertEqual(adapted["items"][0]["embyEvidenceScope"], "title")
+        self.assertEqual(adapted["items"][0]["pipelineOutcome"]["state"], "evidence_insufficient")
+        self.assertEqual(
+            next(fact for fact in adapted["items"][0]["pipelineFacts"] if fact["stage"] == "symedia")["state"],
+            "succeeded",
+        )
+        self.assertEqual(
+            next(fact for fact in adapted["items"][0]["pipelineFacts"] if fact["stage"] == "strm")["state"],
+            "unknown",
+        )
 
         input_data["embyIndex"] = {"movies": set(), "series": set()}
         without_emby = adapt_task_chain(
@@ -179,6 +243,45 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
             [(row["seasonNumber"], row["episodeStart"], row["stage"]) for row in item["episodeEvidence"]],
             [(1, 1, "download"), (1, 1, "download"), (1, 1, "library")],
         )
+
+    def test_exact_emby_episode_is_the_only_tv_playable_fact(self):
+        from app.task_chain_runtime import build_task_chain
+        from app.task_chain_v2_runtime import adapt_task_chain
+
+        result = build_task_chain({
+            "subscriptions": [],
+            "torraRows": [],
+            "qb": qb_summary([]),
+            "symediaRows": [{
+                "id": "symedia-episode",
+                "title": "集级测试",
+                "type": "tv",
+                "tmdbid": "321",
+                "season": 1,
+                "episode": 3,
+                "src": "/115/Test.Show.S01E03.mkv",
+                "dest": "/media/Test.Show.S01E03.mkv",
+                "status": True,
+                "date": "2026-07-27 03:50:00",
+            }],
+            "symediaTotal": 1,
+            "embyIndex": {
+                "movies": set(),
+                "series": {"321"},
+                "episodes": {("321", 1, 3)},
+            },
+            "urls": {"qb": "", "torra": "", "symedia": "http://symedia", "emby": "http://emby"},
+            "now": datetime(2026, 7, 27, 4, 0, tzinfo=timezone.utc),
+        })
+
+        item = adapt_task_chain(
+            result,
+            now=datetime(2026, 7, 27, 4, 1, tzinfo=timezone.utc),
+        )["items"][0]
+
+        self.assertEqual(item["episodeNumber"], 3)
+        self.assertEqual(item["pipelineOutcome"]["state"], "playable")
+        self.assertEqual(item["pipelineOutcome"]["stage"], "emby")
 
     def test_completed_download_without_file_level_upload_evidence_stays_unknown(self):
         from app.task_chain_runtime import build_task_chain

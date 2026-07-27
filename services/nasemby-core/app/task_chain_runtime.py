@@ -12,7 +12,7 @@ from flask import Flask, jsonify
 from app import discover_runtime
 from app.evidence_ownership_runtime import adjudicate_task_evidence, compare_legacy_ownership
 from app.episode_evidence_runtime import build_episode_evidence
-from app.task_exception_runtime import protection_rule
+from app.pipeline_source_fact_runtime import build_pipeline_source_facts
 from app.task_public_runtime import present_task_chain
 
 
@@ -63,27 +63,6 @@ def _torra_media_type(row: dict) -> str:
     return "unknown"
 
 
-def _torra_files(row: dict | None) -> list[str]:
-    if not row:
-        return []
-    return [
-        *_flatten_strings(row.get("downloaded_file_names")),
-        *_flatten_strings(row.get("downloaded_episode_files")),
-        *_flatten_strings(row.get("library_file_names")),
-        *_flatten_strings(row.get("library_episode_files")),
-    ]
-
-
-def _torra_has_download_evidence(row: dict | None) -> bool:
-    return bool(
-        row
-        and (
-            _torra_files(row)
-            or _flatten_strings(row.get("downloaded_episode_numbers"))
-        )
-    )
-
-
 def _symedia_season(row: dict) -> int:
     if _number(row.get("season")):
         return int(_number(row.get("season")))
@@ -98,6 +77,26 @@ def _iso_datetime(value: datetime) -> str:
         "+00:00",
         "Z",
     )
+
+
+def _pipeline_source_facts(
+    item: dict,
+    sources: dict,
+    *,
+    now: datetime | None = None,
+) -> list[dict]:
+    observed_at = _iso_datetime(now or datetime.now(timezone.utc))
+    return build_pipeline_source_facts({
+        "mediaType": item.get("mediaType"),
+        "tmdbId": item.get("tmdbId"),
+        "seasonNumber": item.get("seasonNumber"),
+        "episodeNumber": item.get("episodeNumber"),
+        "torra": sources.get("torra"),
+        "qbTasks": sources.get("qbTasks") or [],
+        "cloud115": sources.get("cloud115") or {},
+        "symediaRows": sources.get("symediaRows") or [],
+        "embyIndex": sources.get("embyIndex"),
+    }, observed_at=observed_at)
 
 
 def _iso_from_seconds(value) -> str:
@@ -121,30 +120,44 @@ def _qb_control(tasks: list[dict]) -> dict:
     }
 
 
-def _qb_active_count(tasks: list[dict]) -> int:
-    return sum(task.get("status") in {"downloading", "queued"} for task in tasks)
+def _pipeline_fact(facts: list[dict], stage: str) -> dict:
+    return next((fact for fact in facts if fact.get("stage") == stage), {})
 
 
-def _qb_completed_count(tasks: list[dict]) -> int:
-    return sum(task.get("status") == "completed" for task in tasks)
+def _qb_fact_state_count(facts: list[dict], state: str) -> int:
+    return sum(
+        unit.get("state") == state
+        for unit in _pipeline_fact(facts, "qb").get("units") or []
+        if isinstance(unit, dict)
+    )
 
 
-def _download_step(tasks: list[dict], torra: dict | None) -> dict:
-    stalled = next((task for task in tasks if task.get("status") == "stalled"), None)
-    if stalled:
-        missing_files = "missing" in _string(stalled.get("state")).lower()
-        return {
-            "key": "download",
-            "label": "获取 / 下载",
-            "status": "blocked",
-            "evidence": "verified",
-            "detail": "qB 文件缺失，任务无法继续" if missing_files else f"qB 卡住在 {round(_number(stalled.get('progress')) * 100)}%",
-            "timestamp": _iso_from_seconds(stalled.get("addedOn")),
-            "source": "qBittorrent",
-            "reasonCode": "QB_MISSING_FILES" if missing_files else "QB_DOWNLOAD_STALLED",
-            "technicalReasonText": _string(stalled.get("stateLabel")) or _string(stalled.get("state")),
-        }
-    if tasks and all(task.get("status") == "completed" for task in tasks):
+def _legacy_qb_failure_step(fact: dict, tasks: list[dict]) -> dict:
+    units = [unit for unit in fact.get("units") or [] if isinstance(unit, dict)]
+    failed = next((unit for unit in units if unit.get("state") == "failed"), fact)
+    missing_files = failed.get("reasonCode") == "QB_MISSING_FILES"
+    stalled = next((task for task in tasks if task.get("status") == "stalled"), {})
+    return {
+        "key": "download",
+        "label": "获取 / 下载",
+        "status": "blocked",
+        "evidence": "verified",
+        "detail": (
+            "qB 文件缺失，任务无法继续"
+            if missing_files
+            else f"qB 卡住在 {round(_number(stalled.get('progress')) * 100)}%"
+        ),
+        "timestamp": _iso_from_seconds(stalled.get("addedOn")),
+        "source": "qBittorrent",
+        "reasonCode": "QB_MISSING_FILES" if missing_files else "QB_DOWNLOAD_STALLED",
+        "technicalReasonText": _string(stalled.get("stateLabel")) or _string(stalled.get("state")),
+    }
+
+
+def _legacy_qb_download_step(fact: dict, tasks: list[dict]):
+    if fact.get("state") == "failed":
+        return _legacy_qb_failure_step(fact, tasks)
+    if fact.get("state") == "succeeded":
         return {
             "key": "download",
             "label": "获取 / 下载",
@@ -154,7 +167,7 @@ def _download_step(tasks: list[dict], torra: dict | None) -> dict:
             "timestamp": _newest(_iso_from_seconds(task.get("completionOn")) for task in tasks),
             "source": "qBittorrent",
         }
-    if any(task.get("status") in {"downloading", "queued"} for task in tasks):
+    if fact.get("state") == "active":
         progress = round(sum(_number(task.get("progress")) for task in tasks) / len(tasks) * 100)
         return {
             "key": "download",
@@ -165,7 +178,7 @@ def _download_step(tasks: list[dict], torra: dict | None) -> dict:
             "timestamp": _newest(_iso_from_seconds(task.get("addedOn")) for task in tasks),
             "source": "qBittorrent",
         }
-    if tasks:
+    if fact.get("state") == "waiting":
         return {
             "key": "download",
             "label": "获取 / 下载",
@@ -175,20 +188,31 @@ def _download_step(tasks: list[dict], torra: dict | None) -> dict:
             "timestamp": _newest(_iso_from_seconds(task.get("addedOn")) for task in tasks),
             "source": "qBittorrent",
         }
-    if _torra_has_download_evidence(torra):
+    return None
+
+
+def _legacy_torra_download_step(torra: dict) -> dict:
+    if torra.get("state") == "succeeded":
         return {
             "key": "download", "label": "获取 / 下载", "status": "done",
-            "evidence": "verified", "detail": "Torra 保留有下载记录", "timestamp": "", "source": "Torra",
+            "evidence": "verified", "detail": "Torra 获取目标已满足",
+            "timestamp": torra.get("observedAt") or "", "source": "Torra",
         }
-    if torra:
+    if torra.get("state") in {"active", "waiting", "not_applicable"}:
         return {
             "key": "download", "label": "获取 / 下载", "status": "waiting",
-            "evidence": "verified", "detail": "Torra 订阅存在，尚无下载记录", "timestamp": "", "source": "Torra",
+            "evidence": "verified", "detail": torra.get("reasonText") or "Torra 订阅存在，尚无下载记录",
+            "timestamp": torra.get("observedAt") or "", "source": "Torra",
         }
     return {
         "key": "download", "label": "获取 / 下载", "status": "unknown",
         "evidence": "missing", "detail": "未关联 Torra 或 qB 任务", "timestamp": "", "source": "",
     }
+
+
+def _legacy_download_step(facts: list[dict], tasks: list[dict]) -> dict:
+    qb_step = _legacy_qb_download_step(_pipeline_fact(facts, "qb"), tasks)
+    return qb_step or _legacy_torra_download_step(_pipeline_fact(facts, "torra"))
 
 
 def _parse_timestamp(value: str):
@@ -199,12 +223,32 @@ def _parse_timestamp(value: str):
         return None
 
 
-def _cloud_step(download: dict, symedia_rows: list[dict], upload_summary: dict | None = None) -> dict:
-    if symedia_rows:
+def _legacy_cloud_step(
+    download: dict,
+    facts: list[dict],
+    symedia_rows: list[dict],
+    upload_summary: dict | None = None,
+) -> dict:
+    cloud = _pipeline_fact(facts, "cloud115")
+    symedia = _pipeline_fact(facts, "symedia")
+    if symedia.get("state") != "unknown":
         return {
-            "key": "cloud115", "label": "进入 115", "status": "done", "evidence": "verified",
+            "key": "cloud115", "label": "进入 115", "status": "done", "evidence": "inferred",
             "detail": f"Symedia 已收到 {len(symedia_rows)} 条源文件记录；具体上传方式未确认",
             "timestamp": _newest(row.get("date") for row in symedia_rows), "source": "Symedia",
+        }
+    if cloud.get("state") == "succeeded":
+        return {
+            "key": "cloud115", "label": "进入 115", "status": "done", "evidence": "verified",
+            "detail": cloud.get("reasonText") or "115 文件处理完成",
+            "timestamp": cloud.get("observedAt") or "", "source": cloud.get("source") or "Torra secupload_115",
+        }
+    if cloud.get("state") == "failed":
+        return {
+            "key": "cloud115", "label": "进入 115", "status": "blocked", "evidence": "verified",
+            "detail": cloud.get("reasonText") or "115 文件处理失败",
+            "timestamp": cloud.get("observedAt") or "", "source": cloud.get("source") or "Torra secupload_115",
+            "reasonCode": cloud.get("reasonCode") or "CLOUD115_FAILED",
         }
     if download["status"] == "done":
         plugin_readable = bool((upload_summary or {}).get("readable"))
@@ -225,36 +269,35 @@ def _cloud_step(download: dict, symedia_rows: list[dict], upload_summary: dict |
     }
 
 
-def _library_step(rows: list[dict], emby_indexed: bool) -> dict:
-    if not rows:
+def _legacy_library_failure_step(symedia, units, success, timestamp) -> dict:
+    failed = [unit for unit in units if unit.get("state") in {"failed", "protected"}]
+    selected = next((unit for unit in failed if unit.get("state") == symedia.get("state")), symedia)
+    protected = symedia.get("state") == "protected"
+    reason = _string(selected.get("reasonText")) or "Symedia 返回失败"
+    reason_code = _string(selected.get("reasonCode")) or (
+        "SYMEDIA_PROTECTED" if protected else "SYMEDIA_LIBRARY_FAILED"
+    )
+    return {
+        "key": "library", "label": "入库", "status": "blocked", "evidence": "verified",
+        "detail": f"{success} 成功 / {len(failed)} 失败 · {reason}",
+        "timestamp": timestamp, "source": "Symedia", "reasonCode": reason_code,
+        "matchedProtectionRule": reason_code if protected else "",
+        "protectionRules": [reason_code] if protected else [],
+    }
+
+
+def _legacy_library_step(facts: list[dict], emby_indexed: bool, rows: list[dict]) -> dict:
+    symedia = _pipeline_fact(facts, "symedia")
+    units = [unit for unit in symedia.get("units") or [] if isinstance(unit, dict)]
+    if symedia.get("state") == "unknown":
         return {
             "key": "library", "label": "入库", "status": "waiting", "evidence": "missing",
             "detail": "尚无 Symedia 入库记录", "timestamp": "", "source": "",
         }
-    failed = [row for row in rows if row.get("status") is False]
-    success = len(rows) - len(failed)
+    success = sum(unit.get("state") == "succeeded" for unit in units)
     timestamp = _newest(row.get("date") for row in rows)
-    if failed:
-        classified = [
-            (row, protection_rule(row.get("reasonCode"), row.get("errmsg")))
-            for row in failed
-        ]
-        real_failures = [row for row, rule in classified if not rule]
-        protected_rules = sorted({rule for _, rule in classified if rule})
-        selected = real_failures[0] if real_failures else failed[0]
-        reason = _string(selected.get("errmsg")) or "Symedia 返回失败"
-        reason_code = (
-            _string(selected.get("reasonCode")) or "SYMEDIA_LIBRARY_FAILED"
-            if real_failures
-            else protected_rules[0]
-        )
-        return {
-            "key": "library", "label": "入库", "status": "blocked", "evidence": "verified",
-            "detail": f"{success} 成功 / {len(failed)} 失败 · {reason}",
-            "timestamp": timestamp, "source": "Symedia", "reasonCode": reason_code,
-            "matchedProtectionRule": protected_rules[0] if protected_rules and not real_failures else "",
-            "protectionRules": protected_rules if not real_failures else [],
-        }
+    if symedia.get("state") in {"failed", "protected"}:
+        return _legacy_library_failure_step(symedia, units, success, timestamp)
     detail = f"{success} 条 Symedia 成功 · Emby {'已收录该作品' if emby_indexed else '尚未确认'}"
     return {
         "key": "library", "label": "入库", "status": "done", "evidence": "verified",
@@ -263,7 +306,7 @@ def _library_step(rows: list[dict], emby_indexed: bool) -> dict:
     }
 
 
-def _item_state(steps: list[dict]) -> str:
+def _legacy_item_state(steps: list[dict]) -> str:
     if any(step["status"] == "blocked" for step in steps):
         return "blocked"
     if steps[-1]["status"] == "done":
@@ -300,20 +343,20 @@ def _suggestion(steps: list[dict], urls: dict):
     return {"label": "打开 Symedia", "url": urls["symedia"]}
 
 
-def _emby_has(index, media_type: str, tmdb_id: str) -> bool:
-    if not index or not tmdb_id:
-        return False
-    return tmdb_id in index["movies" if media_type == "movie" else "series"]
+def _legacy_emby_projection(facts: list[dict]) -> tuple[bool, str]:
+    emby = _pipeline_fact(facts, "emby")
+    reason_code = _string(emby.get("reasonCode"))
+    if reason_code == "EMBY_EPISODE_INDEXED":
+        return True, "episode"
+    if reason_code in {"EMBY_MOVIE_INDEXED", "EMBY_EPISODE_EVIDENCE_MISSING"}:
+        return True, "title"
+    return False, "none"
 
 
-def _acquisition_state(subscription, torra, qb_tasks, symedia_rows, indexed, policy, now):
+def _legacy_cloud_policy_state(subscription, policy, now):
     enabled = bool(policy.get("enabled"))
     subscription_enabled = bool(subscription.get("allowCloudFallback"))
-    if indexed or symedia_rows:
-        state, detail = "completed", "已经进入入库链路"
-    elif torra or qb_tasks:
-        state, detail = "blocked_by_pt", "PT 主链已有证据，不启动网盘"
-    elif not enabled:
+    if not enabled:
         state, detail = "disabled", "全局网盘通道关闭"
     elif not subscription_enabled:
         state, detail = "subscription_disabled", "当前订阅未允许网盘兜底"
@@ -328,6 +371,26 @@ def _acquisition_state(subscription, torra, qb_tasks, symedia_rows, indexed, pol
             state, detail = "cloud_allowed", "PT 等待达到阈值，允许进入网盘候选"
         else:
             state, detail = "pt_waiting", f"继续等待 PT，阈值 {wait_minutes} 分钟"
+    return state, detail
+
+
+def _legacy_acquisition_state(subscription, facts, policy, now):
+    enabled = bool(policy.get("enabled"))
+    subscription_enabled = bool(subscription.get("allowCloudFallback"))
+    downstream_known = any((
+        _pipeline_fact(facts, "emby").get("state") == "succeeded",
+        _pipeline_fact(facts, "symedia").get("state") != "unknown",
+    ))
+    pt_known = any(
+        _pipeline_fact(facts, stage).get("state") != "unknown"
+        for stage in ("torra", "qb")
+    )
+    if downstream_known:
+        state, detail = "completed", "已经进入入库链路"
+    elif pt_known:
+        state, detail = "blocked_by_pt", "PT 主链已有证据，不启动网盘"
+    else:
+        state, detail = _legacy_cloud_policy_state(subscription, policy, now)
     return {
         "primary": "pt",
         "cloudState": state,
@@ -360,10 +423,21 @@ def _build_subscription_item(
         "timestamp": subscription["createdAt"],
         "source": f"{subscription_source} + Torra" if torra else subscription_source,
     }
-    download = _download_step(matched_qb, torra)
-    cloud = _cloud_step(download, matched_symedia, upload_summary)
-    indexed = _emby_has(emby_index, subscription["mediaType"], subscription["tmdbId"])
-    library = _library_step(matched_symedia, indexed)
+    pipeline_facts = _pipeline_source_facts(
+        subscription,
+        {
+            "torra": torra,
+            "qbTasks": matched_qb,
+            "cloud115": upload_summary,
+            "symediaRows": matched_symedia,
+            "embyIndex": emby_index,
+        },
+        now=now,
+    )
+    indexed, emby_evidence_scope = _legacy_emby_projection(pipeline_facts)
+    download = _legacy_download_step(pipeline_facts, matched_qb)
+    cloud = _legacy_cloud_step(download, pipeline_facts, matched_symedia, upload_summary)
+    library = _legacy_library_step(pipeline_facts, indexed, matched_symedia)
     steps = [subscription_step, download, cloud, library]
     record_confidences = {str(record.get("confidence") or "") for record in ownership_records}
     confidence = (
@@ -382,17 +456,17 @@ def _build_subscription_item(
         "posterUrl": subscription["posterUrl"],
         "origin": "subscription",
         "channel": "PT",
-        "state": _item_state(steps),
+        "state": _legacy_item_state(steps),
         "confidence": confidence,
         "progress": _task_progress(matched_qb, download, library),
         "currentStep": _current_step(steps),
         "steps": steps,
         "embyIndexed": indexed,
-        "embyEvidenceScope": "title" if indexed else "none",
+        "embyEvidenceScope": emby_evidence_scope,
         "suggestion": _suggestion(steps, urls),
         "qbControl": _qb_control(matched_qb),
-        "activeDownloadTasks": _qb_active_count(matched_qb),
-        "completedDownloadTasks": _qb_completed_count(matched_qb),
+        "activeDownloadTasks": _qb_fact_state_count(pipeline_facts, "active"),
+        "completedDownloadTasks": _qb_fact_state_count(pipeline_facts, "succeeded"),
         "sourceIds": {
             "subscriptionId": subscription["id"],
             "torraId": _string((torra or {}).get("id")),
@@ -402,15 +476,13 @@ def _build_subscription_item(
         "evidenceOwnership": ownership_records,
         "episodeEvidence": episode_evidence,
         "updatedAt": _newest([subscription["updatedAt"], *(step["timestamp"] for step in steps)]),
-        "acquisition": _acquisition_state(
+        "acquisition": _legacy_acquisition_state(
             subscription,
-            torra,
-            matched_qb,
-            matched_symedia,
-            indexed,
+            pipeline_facts,
             cloud_policy,
             now,
         ),
+        "pipelineFacts": pipeline_facts,
     }
     return item, matched_qb, matched_symedia
 
@@ -418,10 +490,12 @@ def _build_subscription_item(
 def _build_evidence_target_item(
     target,
     bucket,
-    emby_index,
-    urls,
-    upload_summary,
+    runtime,
 ):
+    emby_index = runtime.get("embyIndex")
+    urls = runtime["urls"]
+    upload_summary = runtime.get("uploadSummary") or {}
+    now = runtime["now"]
     torra_candidates = sorted(
         bucket["torra"],
         key=lambda value: (
@@ -437,6 +511,30 @@ def _build_evidence_target_item(
         qb_pairs=bucket["qb"],
         symedia_pairs=bucket["symedia"],
     )
+    episode_number = (
+        episode_evidence[0]["episodeStart"]
+        if len(episode_evidence) == 1
+        and episode_evidence[0]["episodeStart"] == episode_evidence[0]["episodeEnd"]
+        else None
+    )
+    target_item = {
+        "mediaType": target["mediaType"],
+        "tmdbId": target["tmdbId"],
+        "seasonNumber": target["seasonNumber"],
+        "episodeNumber": episode_number,
+    }
+    pipeline_facts = _pipeline_source_facts(
+        target_item,
+        {
+            "torra": torra,
+            "qbTasks": matched_qb,
+            "cloud115": upload_summary,
+            "symediaRows": matched_symedia,
+            "embyIndex": emby_index,
+        },
+        now=now,
+    )
+    indexed, emby_evidence_scope = _legacy_emby_projection(pipeline_facts)
     source_detail = (
         "未发现 Fluxa 本地追更；当前按 Torra、qB 与 Symedia 媒体证据跟踪"
         if torra
@@ -451,18 +549,11 @@ def _build_evidence_target_item(
         "timestamp": _string(target.get("observedAt")),
         "source": "Fluxa 证据关联",
     }
-    download = _download_step(matched_qb, torra)
-    cloud = _cloud_step(download, matched_symedia, upload_summary)
-    indexed = _emby_has(emby_index, target["mediaType"], target["tmdbId"])
-    library = _library_step(matched_symedia, indexed)
+    download = _legacy_download_step(pipeline_facts, matched_qb)
+    cloud = _legacy_cloud_step(download, pipeline_facts, matched_symedia, upload_summary)
+    library = _legacy_library_step(pipeline_facts, indexed, matched_symedia)
     steps = [source_step, download, cloud, library]
-    episode_number = (
-        episode_evidence[0]["episodeStart"]
-        if len(episode_evidence) == 1
-        and episode_evidence[0]["episodeStart"] == episode_evidence[0]["episodeEnd"]
-        else None
-    )
-    return {
+    item = {
         "id": f"evidence:{target['targetKey']}",
         "title": target["title"],
         "mediaType": target["mediaType"],
@@ -472,17 +563,17 @@ def _build_evidence_target_item(
         "posterUrl": "",
         "origin": "download" if matched_qb else "library",
         "channel": "PT",
-        "state": _item_state(steps),
+        "state": _legacy_item_state(steps),
         "confidence": "strong",
         "progress": _task_progress(matched_qb, download, library),
         "currentStep": _current_step(steps),
         "steps": steps,
         "embyIndexed": indexed,
-        "embyEvidenceScope": "title" if indexed else "none",
+        "embyEvidenceScope": emby_evidence_scope,
         "suggestion": _suggestion(steps, urls),
         "qbControl": _qb_control(matched_qb),
-        "activeDownloadTasks": _qb_active_count(matched_qb),
-        "completedDownloadTasks": _qb_completed_count(matched_qb),
+        "activeDownloadTasks": _qb_fact_state_count(pipeline_facts, "active"),
+        "completedDownloadTasks": _qb_fact_state_count(pipeline_facts, "succeeded"),
         "sourceIds": {
             "subscriptionId": "",
             "torraId": _string((torra or {}).get("id")),
@@ -498,58 +589,83 @@ def _build_evidence_target_item(
             target.get("observedAt"),
             *(step["timestamp"] for step in steps),
         ]),
+        "pipelineFacts": pipeline_facts,
     }
+    return item
 
 
-def _orphan_qb_item(task: dict, ownership: dict, urls: dict, upload_summary: dict | None = None) -> dict:
+def _orphan_qb_item(
+    task: dict,
+    ownership: dict,
+    urls: dict,
+    upload_summary: dict | None = None,
+    now: datetime | None = None,
+) -> dict:
     subscription = {
         "key": "subscription", "label": "订阅", "status": "unknown", "evidence": "missing",
         "detail": "未关联订阅中枢", "timestamp": "", "source": "",
     }
-    download = _download_step([task], None)
-    cloud = _cloud_step(download, [], upload_summary)
-    library = _library_step([], False)
-    steps = [subscription, download, cloud, library]
     episode_evidence = build_episode_evidence(qb_pairs=[(task, ownership)])
     episode_number = (
         episode_evidence[0]["episodeStart"]
         if len(episode_evidence) == 1 and episode_evidence[0]["episodeStart"] == episode_evidence[0]["episodeEnd"]
         else None
     )
-    return {
+    target_item = {
+        "mediaType": "unknown",
+        "tmdbId": "",
+        "seasonNumber": _season_from_text(_string(task.get("name"))),
+        "episodeNumber": episode_number,
+    }
+    pipeline_facts = _pipeline_source_facts(
+        target_item,
+        {
+            "qbTasks": [task],
+            "cloud115": upload_summary,
+            "embyIndex": None,
+        },
+        now=now,
+    )
+    download = _legacy_download_step(pipeline_facts, [task])
+    cloud = _legacy_cloud_step(download, pipeline_facts, [], upload_summary)
+    library = _legacy_library_step(pipeline_facts, False, [])
+    steps = [subscription, download, cloud, library]
+    item = {
         "id": f"qb:{_string(task.get('hash'))}", "title": _string(task.get("name")),
         "mediaType": "unknown", "tmdbId": "", "seasonNumber": _season_from_text(_string(task.get("name"))),
         "episodeNumber": episode_number,
-        "posterUrl": "", "origin": "download", "channel": "PT", "state": _item_state(steps),
+        "posterUrl": "", "origin": "download", "channel": "PT", "state": _legacy_item_state(steps),
         "confidence": ownership.get("confidence") or "unlinked", "progress": round(_number(task.get("progress")) * 100),
         "currentStep": _current_step(steps), "steps": steps, "embyIndexed": False, "embyEvidenceScope": "none",
         "suggestion": _suggestion(steps, urls), "qbControl": _qb_control([task]),
-        "activeDownloadTasks": _qb_active_count([task]),
-        "completedDownloadTasks": _qb_completed_count([task]),
+        "activeDownloadTasks": _qb_fact_state_count(pipeline_facts, "active"),
+        "completedDownloadTasks": _qb_fact_state_count(pipeline_facts, "succeeded"),
         "sourceIds": {"subscriptionId": "", "torraId": "", "qbHashes": [_string(task.get("hash"))], "symediaIds": []},
         "evidenceOwnership": [ownership],
         "episodeEvidence": episode_evidence,
-        "reasonCode": "EVIDENCE_OWNER_CONFLICT" if ownership.get("confidence") == "conflict" else "TASK_IDENTITY_UNLINKED",
+        "reasonCode": (
+            "EVIDENCE_OWNER_CONFLICT"
+            if ownership.get("confidence") == "conflict"
+            else "TASK_IDENTITY_UNLINKED"
+        ),
         "reasonText": "下载证据存在多个媒体候选，暂未绑定" if ownership.get("confidence") == "conflict" else "下载证据尚未关联到媒体目标",
         "updatedAt": _newest([_iso_from_seconds(task.get("completionOn")), _iso_from_seconds(task.get("addedOn"))]),
+        "pipelineFacts": pipeline_facts,
     }
+    return item
 
 
-def _orphan_symedia_item(row: dict, ownership: dict, urls: dict) -> dict:
+def _orphan_symedia_item(
+    row: dict,
+    ownership: dict,
+    urls: dict,
+    emby_index=None,
+    now: datetime | None = None,
+) -> dict:
     subscription = {
         "key": "subscription", "label": "订阅", "status": "unknown", "evidence": "missing",
         "detail": "未关联订阅中枢", "timestamp": "", "source": "",
     }
-    download = {
-        "key": "download", "label": "获取 / 下载", "status": "unknown", "evidence": "missing",
-        "detail": "没有上游下载关联", "timestamp": "", "source": "",
-    }
-    cloud = {
-        "key": "cloud115", "label": "进入 115", "status": "done", "evidence": "verified",
-        "detail": "Symedia 已收到源文件", "timestamp": _string(row.get("date")), "source": "Symedia",
-    }
-    library = _library_step([row], False)
-    steps = [subscription, download, cloud, library]
     row_id = _string(row.get("id") or f"{row.get('date')}:{row.get('src')}")
     media_type = _string(row.get("type"))
     episode_evidence = build_episode_evidence(symedia_pairs=[(row, ownership)])
@@ -558,46 +674,86 @@ def _orphan_symedia_item(row: dict, ownership: dict, urls: dict) -> dict:
         if len(episode_evidence) == 1 and episode_evidence[0]["episodeStart"] == episode_evidence[0]["episodeEnd"]
         else None
     )
-    return {
+    target_item = {
+        "mediaType": media_type if media_type in {"movie", "tv"} else "unknown",
+        "tmdbId": _string(row.get("tmdbid")),
+        "seasonNumber": _symedia_season(row),
+        "episodeNumber": episode_number,
+    }
+    pipeline_facts = _pipeline_source_facts(
+        target_item,
+        {"symediaRows": [row], "embyIndex": emby_index},
+        now=now,
+    )
+    indexed, emby_evidence_scope = _legacy_emby_projection(pipeline_facts)
+    download = _legacy_download_step(pipeline_facts, [])
+    download["detail"] = "没有上游下载关联"
+    cloud = _legacy_cloud_step(download, pipeline_facts, [row])
+    library = _legacy_library_step(pipeline_facts, indexed, [row])
+    steps = [subscription, download, cloud, library]
+    item = {
         "id": f"symedia:{row_id}",
         "title": _string(row.get("title")) or os.path.basename(_string(row.get("src"))) or "未识别入库记录",
         "mediaType": media_type if media_type in {"movie", "tv"} else "unknown",
         "tmdbId": _string(row.get("tmdbid")), "seasonNumber": _symedia_season(row),
         "episodeNumber": episode_number,
-        "posterUrl": "", "origin": "library", "channel": "PT", "state": _item_state(steps),
+        "posterUrl": "", "origin": "library", "channel": "PT", "state": _legacy_item_state(steps),
         "confidence": ownership.get("confidence") or "unlinked", "progress": 100 if library["status"] == "done" else 0,
-        "currentStep": _current_step(steps), "steps": steps, "embyIndexed": False, "embyEvidenceScope": "none",
+        "currentStep": _current_step(steps), "steps": steps,
+        "embyIndexed": indexed, "embyEvidenceScope": emby_evidence_scope,
         "suggestion": _suggestion(steps, urls), "qbControl": _qb_control([]),
         "sourceIds": {"subscriptionId": "", "torraId": "", "qbHashes": [], "symediaIds": [row_id]},
         "evidenceOwnership": [ownership],
         "episodeEvidence": episode_evidence,
-        "reasonCode": "EVIDENCE_OWNER_CONFLICT" if ownership.get("confidence") == "conflict" else "TASK_IDENTITY_UNLINKED",
+        "reasonCode": (
+            "EVIDENCE_OWNER_CONFLICT"
+            if ownership.get("confidence") == "conflict"
+            else "TASK_IDENTITY_UNLINKED"
+        ),
         "reasonText": "入库证据存在多个媒体候选，暂未绑定" if ownership.get("confidence") == "conflict" else "入库证据尚未关联到媒体目标",
         "updatedAt": _string(row.get("date")),
+        "pipelineFacts": pipeline_facts,
     }
+    return item
 
 
-def _orphan_torra_item(row: dict, ownership: dict, urls: dict, upload_summary: dict | None = None) -> dict:
-    has_download = _torra_has_download_evidence(row)
+def _orphan_torra_item(
+    row: dict,
+    ownership: dict,
+    urls: dict,
+    upload_summary: dict | None = None,
+    runtime: dict | None = None,
+) -> dict:
+    runtime = runtime or {}
+    now = runtime.get("now")
+    emby_index = runtime.get("embyIndex")
     subscription = {
         "key": "subscription", "label": "订阅", "status": "done", "evidence": "verified",
         "detail": "Torra 订阅存在，但尚未关联 Fluxa 目标", "timestamp": "", "source": "Torra",
     }
-    download = {
-        "key": "download", "label": "获取 / 下载", "status": "done" if has_download else "waiting",
-        "evidence": "verified", "detail": "Torra 保留有下载记录" if has_download else "Torra 尚无下载记录",
-        "timestamp": "", "source": "Torra",
-    }
-    cloud = _cloud_step(download, [], upload_summary)
-    library = _library_step([], False)
-    steps = [subscription, download, cloud, library]
     episode_evidence = build_episode_evidence(torra_pairs=[(row, ownership)])
     episode_number = (
         episode_evidence[0]["episodeStart"]
         if len(episode_evidence) == 1 and episode_evidence[0]["episodeStart"] == episode_evidence[0]["episodeEnd"]
         else None
     )
-    return {
+    target_item = {
+        "mediaType": _torra_media_type(row),
+        "tmdbId": _string(row.get("tmdb_id")),
+        "seasonNumber": int(_number(row.get("season_number"))),
+        "episodeNumber": episode_number,
+    }
+    pipeline_facts = _pipeline_source_facts(
+        target_item,
+        {"torra": row, "cloud115": upload_summary, "embyIndex": emby_index},
+        now=now,
+    )
+    indexed, emby_evidence_scope = _legacy_emby_projection(pipeline_facts)
+    download = _legacy_download_step(pipeline_facts, [])
+    cloud = _legacy_cloud_step(download, pipeline_facts, [], upload_summary)
+    library = _legacy_library_step(pipeline_facts, indexed, [])
+    steps = [subscription, download, cloud, library]
+    item = {
         "id": f"torra:{_string(row.get('id')) or ownership.get('artifactKey')}",
         "title": _string(row.get("name") or row.get("keyword")) or "未识别 Torra 订阅",
         "mediaType": _torra_media_type(row),
@@ -607,13 +763,13 @@ def _orphan_torra_item(row: dict, ownership: dict, urls: dict, upload_summary: d
         "posterUrl": "",
         "origin": "subscription",
         "channel": "PT",
-        "state": _item_state(steps),
+        "state": _legacy_item_state(steps),
         "confidence": ownership.get("confidence") or "unlinked",
         "progress": 0,
         "currentStep": _current_step(steps),
         "steps": steps,
-        "embyIndexed": False,
-        "embyEvidenceScope": "none",
+        "embyIndexed": indexed,
+        "embyEvidenceScope": emby_evidence_scope,
         "suggestion": _suggestion(steps, urls),
         "qbControl": _qb_control([]),
         "sourceIds": {
@@ -624,10 +780,16 @@ def _orphan_torra_item(row: dict, ownership: dict, urls: dict, upload_summary: d
         },
         "evidenceOwnership": [ownership],
         "episodeEvidence": episode_evidence,
-        "reasonCode": "EVIDENCE_OWNER_CONFLICT" if ownership.get("confidence") == "conflict" else "TASK_IDENTITY_UNLINKED",
+        "reasonCode": (
+            "EVIDENCE_OWNER_CONFLICT"
+            if ownership.get("confidence") == "conflict"
+            else "TASK_IDENTITY_UNLINKED"
+        ),
         "reasonText": "Torra 证据存在多个媒体候选，暂未绑定" if ownership.get("confidence") == "conflict" else "Torra 证据尚未关联到媒体目标",
         "updatedAt": _string(row.get("updated_at") or row.get("created_at")),
+        "pipelineFacts": pipeline_facts,
     }
+    return item
 
 
 def build_task_chain(input_data: dict) -> dict:
@@ -688,20 +850,35 @@ def build_task_chain(input_data: dict) -> dict:
         derived_items.append(_build_evidence_target_item(
             target,
             bucket,
-            input_data.get("embyIndex"),
-            input_data["urls"],
-            input_data.get("torraUpload") or {},
+            {
+                "embyIndex": input_data.get("embyIndex"),
+                "urls": input_data["urls"],
+                "uploadSummary": input_data.get("torraUpload") or {},
+                "now": now,
+            },
         ))
     orphan_qb = [
-        _orphan_qb_item(row, record, input_data["urls"], input_data.get("torraUpload") or {})
+        _orphan_qb_item(
+            row,
+            record,
+            input_data["urls"],
+            input_data.get("torraUpload") or {},
+            now,
+        )
         for row, record in ownership["unowned"]["qb"]
     ]
     orphan_symedia = [
-        _orphan_symedia_item(row, record, input_data["urls"])
+        _orphan_symedia_item(row, record, input_data["urls"], input_data.get("embyIndex"), now)
         for row, record in ownership["unowned"]["symedia"]
     ][:50]
     orphan_torra = [
-        _orphan_torra_item(row, record, input_data["urls"], input_data.get("torraUpload") or {})
+        _orphan_torra_item(
+            row,
+            record,
+            input_data["urls"],
+            input_data.get("torraUpload") or {},
+            {"now": now, "embyIndex": input_data.get("embyIndex")},
+        )
         for row, record in ownership["unowned"]["torra"]
     ][:50]
     items = [*subscription_items, *derived_items, *orphan_qb, *orphan_symedia, *orphan_torra]

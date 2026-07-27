@@ -139,9 +139,12 @@ git diff --check
 
 目标：把当前可验证来源转换成六类事实；没有明确来源的阶段保持未知。
 
+实施状态：已完成（2026-07-28）。
+
 ### 5.1 涉及文件
 
 - `services/nasemby-core/app/pipeline_fact_runtime.py`
+- `services/nasemby-core/app/pipeline_source_fact_runtime.py`
 - `services/nasemby-core/app/task_chain_runtime.py`
 - `services/nasemby-core/app/task_chain_v2_runtime.py`
 - `services/nasemby-core/app/episode_evidence_runtime.py`
@@ -152,6 +155,7 @@ git diff --check
 - `services/nasemby-core/app/symedia_read_runtime.py`
 - `services/nasemby-core/app/emby_runtime.py`
 - `services/nasemby-core/tests/test_task_chain_runtime.py`
+- `services/nasemby-core/tests/test_pipeline_source_fact_runtime.py`
 - `services/nasemby-core/tests/test_task_chain_v2_runtime.py`
 - `services/nasemby-core/tests/test_episode_evidence_runtime.py`
 - `services/nasemby-core/tests/test_torra_read_runtime.py`

@@ -68,7 +68,7 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `POST /api/v2/subscriptions/visual-backfills` | `ids` 为最多 100 个订阅 ID；只按明确 TMDB 身份补充空缺海报/背景，不按标题猜图；本地写入开启时可补充已有本地记录，关闭时只返回视觉结果；仅 Torra 条目始终不创建本地镜像 |
 | `GET /api/v2/subscriptions/reconciliation` | 无参数；只读对比 Fluxa 与 Torra，独立返回对账、履约、健康状态，不修改或删除任一台账 |
 | `GET /api/v2/tasks/summary` | 返回唯一任务链数量、健康/身份/执行三维状态数量、兼容四态 `userCounts`、新派生六态 `outcomeCounts`、阶段数量、服务状态和稳定 `version`；支持 ETag 条件读取；可选 `systemIssues` 返回系统级问题（如 Torra 秒传）的分类级安全摘要 |
-| `GET /api/v2/tasks/chains` | 支持 `healthState`、可重复 `identityState`、`executionState`、`userState`、`completedDate`、`chainId`、`targetKey`、`subscriptionId`、`tmdbId`、`title`、`seasonNumber`、`updatedAfter`、`offset`、`limit` 和 `refresh=1`；默认返回 20 条唯一链路摘要和稳定分页字段；摘要可选返回兼容 `userState/resultText/completedAt/primaryAction/embyEvidenceScope` 以及只读 `pipelineOutcome`；P0.1 不按新结果筛选，也不改变旧字段行为；可选 `systemIssues` 同任务 summary |
+| `GET /api/v2/tasks/chains` | 支持 `healthState`、可重复 `identityState`、`executionState`、`userState`、`completedDate`、`chainId`、`targetKey`、`subscriptionId`、`tmdbId`、`title`、`seasonNumber`、`updatedAfter`、`offset`、`limit` 和 `refresh=1`；默认返回 20 条唯一链路摘要和稳定分页字段；摘要可选返回兼容 `userState/resultText/completedAt/primaryAction/embyEvidenceScope` 以及只读 `pipelineOutcome`；P0.2 仍不按新结果筛选，旧状态改为从六阶段事实兼容投影；可选 `systemIssues` 同任务 summary |
 | `GET /api/v2/tasks/chains/:chainId` | 可选 `refresh=1`；返回单条任务链的阶段证据、artifact、原因、兼容 `userState/resultText/completedAt/primaryAction`、只读 `pipelineFacts/pipelineOutcome` 和动作资格；不存在返回 `404 TASK_CHAIN_NOT_FOUND`；事实阶段固定为 `torra/qb/cloud115/symedia/strm/emby`，缺证据返回 `unknown + missing`，公开 `sourceRef/unitKey` 为不透明引用 |
 | `GET /api/v2/tasks/ledger/migrations/preview` | 只读计算旧标题链到标准 TMDB 链的安全迁移计划、拒绝原因和预计别名数量；不写台账，不触发外部服务写操作 |
 | `GET /api/v2/calendar` | 支持 `year/month/type/view`、单日 `date` 和范围 `from/to`；聚合播出日期与任务链获取/入库证据，返回标准 `chainId/targetKey`、播出/获取/入库/正常保护/逾期/未知状态和 `Asia/Shanghai` 时区；月摘要每天保留前三条 `preview`，同时返回覆盖全部条目的轻量 `searchIndex`，搜索不得只查预览；支持 ETag |
@@ -113,9 +113,9 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 
 新事实契约固定为 `torra/qb/cloud115/symedia/strm/emby` 六个独立阶段，状态固定为 `unknown/waiting/active/succeeded/failed/protected/not_applicable`。`missing` 证据必须且只能搭配 `unknown`；过期事实保留并标记 `isStale`，但不进入当前结果。多个同阶段当前事实冲突时返回 `unknown + missing + EVIDENCE_CONFLICT`，不得选择一个伪造赢家。公开 `sourceRef/unitKey` 均为稳定不透明引用。
 
-新 `pipelineOutcome` 固定为 `waiting/in_progress/protected/action_required/playable/evidence_insufficient`，只有当前 `verified` 事实参与派生。Torra `succeeded` 只表示获取目标满足，Symedia `succeeded` 只表示整理完成，STRM `succeeded` 只表示播放入口生成；只有当前目标的 Emby movie 证据或明确 episode 证据可以生成 `playable`。P0.1 尚未接入六类来源适配器，因此没有显式新事实的历史任务统一返回 `evidence_insufficient`，不从旧字段反推。
+新 `pipelineOutcome` 固定为 `waiting/in_progress/protected/action_required/playable/evidence_insufficient`，只有当前 `verified` 事实参与派生。Torra `succeeded` 只表示获取目标满足，Symedia `succeeded` 只表示整理完成，STRM `succeeded` 只表示播放入口生成；只有当前目标的 Emby movie 证据或明确 episode 证据可以生成 `playable`。P0.2 已接入 Torra、qB、Symedia 和 Emby 明确证据；Torra 秒传摘要没有当前媒体文件级绑定时只返回 `system-category + unknown`，STRM 没有独立来源时返回 `unknown + missing`。Emby 作品级 Series 命中只作诊断，不能替代集级证据；索引必须完整分页后才能给出未收录结论。任何阶段都不得从旧字段反推。
 
-兼容用户状态固定为 `action_required`、`in_progress`、`completed`、`no_action`，分别对应“需要处理、处理中、已完成、无需处理”。P0.1 期间 `userState/resultText/completedAt` 继续由唯一 legacy projector 生成，以保持旧页面行为；明确且仍有效的旧执行故障进入 `action_required`，有活动下载或活动阶段进入 `in_progress`，已有旧入库完成证据进入 `completed`。P0.3 切换消费者后，旧字段只能由新事实单向投影。每条任务同时返回一句话 `resultText` 和最多一个 `primaryAction`，正常保护不得抢占异常主操作。
+兼容用户状态固定为 `action_required`、`in_progress`、`completed`、`no_action`，分别对应“需要处理、处理中、已完成、无需处理”。P0.2 期间 `steps/state/acquisition/embyIndexed` 先由 `pipelineFacts` 单向投影，再由唯一 legacy projector 生成 `userState/resultText/completedAt`，以保持旧页面形状；业务来源不得同时写入新旧状态。P0.3 切换任务中心与首页后，新页面只读取 `pipelineOutcome` 和新统计。每条任务同时返回一句话 `resultText` 和最多一个 `primaryAction`，正常保护不得抢占异常主操作。
 
 全局搜索结果的 `sources` 只使用 `subscription / rss / task / calendar / emby / tmdb` 白名单；RSS 仅聚合 `identityStatus=identified` 的条目。标准结果使用 `movie:tmdbId` 或 `tv:tmdbId`，可以进入 `/api/v2/media/:mediaKey`；无 TMDB 的本地任务返回 `tmdbId=""`、公开 `chainId`，`links.overview` 与 `links.tasks` 都指向携带该 `chainId` 的任务中心，`links.api` 为空。此类结果不伪造 TMDB 身份，也不能调用作品详情接口。Emby 只有 TMDB 索引而没有安全标题时，只有按媒体键或 TMDB 身份定位才可形成候选；标题补充继续来自只读 TMDB 查询。
 

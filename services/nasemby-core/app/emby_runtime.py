@@ -16,6 +16,7 @@ from app.config import read_config
 
 REQUEST_TIMEOUT_SECONDS = 12
 LIBRARY_CACHE_TTL_SECONDS = 10 * 60
+LIBRARY_INDEX_PAGE_SIZE = 10000
 AUTHORIZATION_HEADER = (
     'MediaBrowser Client="MediaControlCenter", Device="mcc-server", '
     'DeviceId="mcc-server", Version="0.1"'
@@ -193,6 +194,39 @@ def _tmdb_id(item: dict) -> str:
     if not isinstance(provider_ids, dict):
         return ""
     return str(provider_ids.get("Tmdb") or provider_ids.get("tmdb") or "").strip()
+
+
+def _nonnegative_integer(value):
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result >= 0 else None
+
+
+def _tmdb_library_index(rows) -> dict[str, set]:
+    movies: set[str] = set()
+    series: set[str] = set()
+    series_by_id: dict[str, str] = {}
+    episodes: set[tuple[str, int, int]] = set()
+    for item in rows:
+        if not isinstance(item, dict) or not item.get("Path"):
+            continue
+        tmdb_id = _tmdb_id(item)
+        if tmdb_id and item.get("Type") == "Movie":
+            movies.add(tmdb_id)
+        if tmdb_id and item.get("Type") == "Series":
+            series.add(tmdb_id)
+            series_by_id[str(item.get("Id") or "")] = tmdb_id
+    for item in rows:
+        if not isinstance(item, dict) or item.get("Type") != "Episode" or not item.get("Path"):
+            continue
+        tmdb_id = series_by_id.get(str(item.get("SeriesId") or ""))
+        season = _nonnegative_integer(item.get("ParentIndexNumber"))
+        episode = _nonnegative_integer(item.get("IndexNumber"))
+        if tmdb_id and season is not None and episode is not None:
+            episodes.add((tmdb_id, season, episode))
+    return {"movies": movies, "series": series, "episodes": episodes}
 
 
 class EmbyClient:
@@ -403,28 +437,33 @@ class EmbyClient:
             })
         return result
 
-    def get_tmdb_library_index(self) -> dict[str, set[str]]:
+    def get_tmdb_library_index(self) -> dict[str, set]:
         return self._cached("tmdb-library-index", lambda: self._load_tmdb_library_index())
 
-    def _load_tmdb_library_index(self) -> dict[str, set[str]]:
-        payload = self._request("Users/{userId}/Items", {
-            "Recursive": "true",
-            "IncludeItemTypes": "Movie,Series",
-            "Fields": "ProviderIds,Path",
-            "Limit": "10000",
-        })
-        movies: set[str] = set()
-        series: set[str] = set()
-        rows = payload.get("Items") if isinstance(payload, dict) else []
-        for item in rows if isinstance(rows, list) else []:
-            if not isinstance(item, dict) or not item.get("Path"):
-                continue
-            tmdb_id = _tmdb_id(item)
-            if tmdb_id and item.get("Type") == "Movie":
-                movies.add(tmdb_id)
-            if tmdb_id and item.get("Type") == "Series":
-                series.add(tmdb_id)
-        return {"movies": movies, "series": series}
+    def _load_tmdb_library_index(self) -> dict[str, set]:
+        return _tmdb_library_index(self._load_tmdb_library_rows())
+
+    def _load_tmdb_library_rows(self) -> list[dict]:
+        rows = []
+        start_index = 0
+        while True:
+            payload = self._request("Users/{userId}/Items", {
+                "Recursive": "true",
+                "IncludeItemTypes": "Movie,Series,Episode",
+                "Fields": "ProviderIds,Path,SeriesId,ParentIndexNumber,IndexNumber",
+                "StartIndex": str(start_index),
+                "Limit": str(LIBRARY_INDEX_PAGE_SIZE),
+            })
+            page_rows = payload.get("Items") if isinstance(payload, dict) else []
+            page_rows = page_rows if isinstance(page_rows, list) else []
+            rows.extend(page_rows)
+            start_index += len(page_rows)
+            total = _nonnegative_integer(payload.get("TotalRecordCount")) if isinstance(payload, dict) else None
+            if not page_rows or (total is not None and start_index >= total):
+                break
+            if total is None and len(page_rows) < LIBRARY_INDEX_PAGE_SIZE:
+                break
+        return rows
 
     def _cached(self, key: str, loader):
         now = datetime.now().timestamp()
