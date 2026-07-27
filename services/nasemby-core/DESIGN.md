@@ -223,7 +223,7 @@ Compose 通过 `MCC_DATA_ROOT` 把三个目录映射到同一个 fnOS 根目录�
 自动验证包含：
 
 - 47 条冻结 v1 路由和 64 条 v2 路由均在 Python 中存在。
-- 当前后端回归基线为 476 项。
+- 当前后端回归基线为 483 项。
 - 42 条受保护路由逐条返回 401。
 - 所有受保护写接口逐条验证管理员会话与具体写入闸门。
 - React API 引用全部属于 client 契约。
@@ -240,6 +240,16 @@ Compose 通过 `MCC_DATA_ROOT` 把三个目录映射到同一个 fnOS 根目录�
 代码优先回滚到上一个已验证镜像或归档标签；订阅数据不随代码回滚。恢复旧双服务归档时必须确保新容器已停止，不能同时启动两套后端或调度器。
 
 ## 13. 变更历史
+
+### 2026-07-28 — 追更、对账与日历可信语义 P0.4
+
+**变更内容**：对账响应增加公开脱敏的 `torraFact/pipelineOutcome`，兼容 `fulfillmentState` 只由 Torra 新事实投影；追更工作台改读任务 v2 的独立事实和统一结果，新增结构化确认进度及 `playable` 统计，兼容 `completed/chainState` 只由新结果投影。Torra completed 只展示“获取目标已满足”，只有 `is_running=true` 显示获取中；没有正数集级媒体库证据时返回 `progress.state=unconfirmed`，不再从 TMDB 总集数生成 `0/N`。
+
+日历只把精确电影或季集目标的当前 `pipelineFacts/pipelineOutcome` 投影到播出条目；Symedia 成功形成整理入库时间，Emby 电影或精确集级成功才形成 `playable`。默认月/周视图只包含人工追更、Torra 已关联记录和明确范围，自动来源、迁移复核及范围不明记录计入 `unlinked`，仅在 `includeUnlinked=1` 时返回。
+
+**变更理由**：Torra 获取目标、Symedia 整理和 Emby 可播放原先被追更卡片与日历共用的 `completed/inLibrary/0/N` 混为最终完成，导致已获取但不可播放、作品级 Emby 命中批量覆盖单集以及大量未关联记录进入默认日历。
+
+**影响范围**：Fluxa/Torra 只读对账、追更工作台、订阅兼容映射、日历时间线与 URL、React 追更/日历、TypeScript 类型、v2 契约和模拟测试。没有新增数据库表、候选池或外部写动作；P0.5 才停止自动来源写追更并提供历史污染迁移。
 
 ### 2026-07-28 — 任务中心、首页与统一结果统计 P0.3
 

@@ -81,21 +81,32 @@ def season_number(row):
 
 
 def _progress(row, kind, in_library):
-    supplied = first_text(row, "progress_text")
-    if supplied:
-        return supplied
     if kind == "movie":
-        return "1/1" if in_library else "0/1"
+        return {
+            "state": "confirmed" if in_library else "unconfirmed",
+            "confirmed": 1 if in_library else None,
+            "total": 1,
+            "text": "1/1" if in_library else "进度未确认",
+        }
     total = next((number(row.get(key)) for key in (
         "episode_total", "total_episodes", "episodes_total", "episode_count"
     ) if number(row.get(key))), 0)
-    current = next((number(row.get(key)) for key in (
-        "current_episode_count", "aired_episode_count", "latest_episode",
-        "progress_episode_count", "library_episode_count"
-    ) if number(row.get(key))), 0)
-    if total:
-        return f"{int(current)}/{int(total)}"
-    return str(int(current)) if current else "0/?"
+    confirmed = number(row.get("library_episode_count"))
+    if confirmed:
+        confirmed_value = int(confirmed)
+        total_value = int(total) if total else None
+        return {
+            "state": "confirmed",
+            "confirmed": confirmed_value,
+            "total": total_value,
+            "text": f"{confirmed_value}/{total_value}" if total_value else f"已确认 {confirmed_value} 集",
+        }
+    return {
+        "state": "unconfirmed",
+        "confirmed": None,
+        "total": int(total) if total else None,
+        "text": "集数进度未确认",
+    }
 
 
 def map_subscription_item(value):
@@ -106,7 +117,7 @@ def map_subscription_item(value):
     library_count = number(row.get("library_episode_count"))
     in_library = source_boolean(row.get("in_library")) or library_count > 0
     progress = _progress(row, kind, in_library)
-    match = re.match(r"^(\d+)/(\d+)$", progress)
+    match = re.match(r"^(\d+)/(\d+)$", progress["text"])
     done = bool(match and int(match.group(2)) > 0 and int(match.group(1)) >= int(match.group(2)))
     if kind == "movie" and in_library:
         done = True
@@ -128,7 +139,8 @@ def map_subscription_item(value):
         "allowCloudFallback": source_boolean(row.get("allow_cloud_fallback")),
         "posterUrl": first_text(row, "poster_url", "poster"),
         "backdropUrl": first_text(row, "backdrop_url"),
-        "progressText": progress,
+        "progress": progress,
+        "progressText": progress["text"],
         "inLibrary": in_library,
         "updatedAt": first_text(row, "updated_at"),
         "createdAt": first_text(row, "created_at"),
@@ -290,6 +302,9 @@ def map_calendar_payload(payload):
             "followScopeExplicit": source_boolean(entry.get("follow_scope_explicit")),
             "includePastEpisodes": source_boolean(entry.get("include_past_episodes")),
             "allowedDelayHours": integer(entry.get("allowed_delay_hours"), 24),
+            "subscriptionOrigin": first_text(entry, "subscription_origin", "origin"),
+            "torraLinked": source_boolean(entry.get("torra_linked")),
+            "migrationReview": source_boolean(entry.get("migration_review")),
         })
     stats = record(root.get("stats"))
     error_count = len(root.get("errors") or []) if isinstance(root.get("errors"), list) else 0

@@ -21,6 +21,24 @@ class FakeTaskService:
                 "title": "测试电影",
                 "state": "blocked",
                 "progress": 42,
+                "pipelineFacts": [
+                    {
+                        "stage": "torra", "state": "waiting", "scope": "movie", "evidence": "verified",
+                        "observedAt": "2026-07-21T08:00:00Z", "freshUntil": "2026-07-21T08:10:00Z",
+                        "source": "Torra", "sourceRef": "torra-1", "reasonCode": "TORRA_TARGET_WAITING",
+                        "reasonText": "Torra 已接收目标，等待获取", "retryEligible": False,
+                    },
+                    {
+                        "stage": "qb", "state": "failed", "scope": "file", "evidence": "verified",
+                        "observedAt": "2026-07-21T08:00:00Z", "freshUntil": "2026-07-21T08:10:00Z",
+                        "source": "qBittorrent", "sourceRef": "hash-1", "reasonCode": "QB_DOWNLOAD_FAILED",
+                        "reasonText": "qB 下载卡住", "retryEligible": False,
+                    },
+                ],
+                "pipelineOutcome": {
+                    "state": "action_required", "stage": "qb", "reasonCode": "QB_DOWNLOAD_FAILED",
+                    "reasonText": "qB 下载卡住", "observedAt": "2026-07-21T08:00:00Z", "playableAt": "",
+                },
                 "sourceIds": {
                     "subscriptionId": "movie:manual",
                     "torraId": "torra-1",
@@ -287,6 +305,61 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         self.assertEqual(snapshot["items"][0]["reconciliationState"], "linked")
         self.assertNotIn(remote_id, str(snapshot))
 
+    def test_task_chain_torra_fact_wins_over_reconciliation_projection(self):
+        class FullSnapshotTaskService:
+            def full_snapshot(self):
+                return FakeTaskService().get_chain()
+
+        app = Flask(f"{__name__}-task-fact-priority")
+        app.extensions.update({
+            "mcc_task_chain_v2_service": FullSnapshotTaskService(),
+            "mcc_subscription_reconciliation": type("Reconciliation", (), {
+                "snapshot": lambda _self: {
+                    "items": [{
+                        "localId": "movie:manual",
+                        "reconciliationState": "linked",
+                        "fulfillmentState": "completed",
+                        "torraFact": {
+                            "stage": "torra",
+                            "state": "succeeded",
+                            "scope": "movie",
+                            "evidence": "verified",
+                            "observedAt": "2026-07-21T07:00:00Z",
+                            "freshUntil": "2026-07-21T07:10:00Z",
+                            "source": "Torra",
+                            "sourceRef": "torra:older",
+                            "reasonCode": "TORRA_TARGET_SATISFIED",
+                            "reasonText": "旧对账事实",
+                        },
+                        "pipelineOutcome": {
+                            "state": "evidence_insufficient",
+                            "stage": "",
+                            "reasonCode": "EVIDENCE_INSUFFICIENT",
+                            "reasonText": "旧对账结果",
+                            "observedAt": "",
+                            "playableAt": "",
+                        },
+                    }],
+                },
+            })(),
+        })
+        service = SubscriptionWorkbenchService(app, {})
+        row = {
+            "subscription_key": "movie:manual",
+            "title": "测试电影",
+            "media_type": "movie",
+            "tmdb_id": "1",
+            "origin": "manual",
+        }
+        with patch.object(discover_runtime, "load_subscription_items", return_value={"items": [row]}), patch.object(
+            discover_runtime, "load_subscription_config", return_value={}
+        ), patch.object(discover_runtime, "subscription_blocked_titles", return_value=[]):
+            item = service.snapshot()["items"][0]
+
+        self.assertEqual(item["torraFact"]["state"], "waiting")
+        self.assertEqual(item["torraFact"]["reasonText"], "Torra 已接收目标，等待获取")
+        self.assertEqual(item["pipelineOutcome"]["state"], "action_required")
+
     def test_visual_backfill_resolves_public_hash_to_legacy_torra_storage_key(self):
         remote_id = "legacy-visual-private"
         internal_key = f"torra:{remote_id}"
@@ -476,6 +549,12 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
                     "tmdbId": "202",
                     "seasonNumber": 1,
                     "reconciliationState": "only_torra",
+                    "torraFact": {
+                        "stage": "torra", "state": "waiting", "scope": "season", "evidence": "verified",
+                        "observedAt": "2026-07-21T08:00:00Z", "freshUntil": "2026-07-21T08:10:00Z",
+                        "source": "Torra", "sourceRef": "torra:public", "reasonCode": "TORRA_TARGET_WAITING",
+                        "reasonText": "Torra 已接收目标，等待获取", "retryEligible": False,
+                    },
                 }],
             },
         })()
@@ -494,7 +573,7 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         self.assertEqual(snapshot["stats"]["completed"], 0)
         self.assertEqual(snapshot["stats"]["actionRequired"], 0)
 
-    def test_remote_completed_subscription_is_not_reported_as_pending(self):
+    def test_remote_completed_subscription_stays_pending_until_playable(self):
         app = Flask(__name__)
         app.extensions["mcc_subscription_reconciliation"] = type("Reconciliation", (), {
             "snapshot": lambda _self: {
@@ -507,6 +586,27 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
                     "seasonNumber": 1,
                     "reconciliationState": "only_torra",
                     "fulfillmentState": "completed",
+                    "torraFact": {
+                        "stage": "torra",
+                        "state": "succeeded",
+                        "scope": "season",
+                        "evidence": "verified",
+                        "observedAt": "2026-07-21T08:00:00Z",
+                        "freshUntil": "2026-07-21T08:10:00Z",
+                        "source": "Torra",
+                        "sourceRef": "torra:public",
+                        "reasonCode": "TORRA_TARGET_SATISFIED",
+                        "reasonText": "获取目标已满足",
+                        "retryEligible": False,
+                    },
+                    "pipelineOutcome": {
+                        "state": "evidence_insufficient",
+                        "stage": "",
+                        "reasonCode": "EVIDENCE_INSUFFICIENT",
+                        "reasonText": "缺少当前目标的明确可播放证据",
+                        "observedAt": "",
+                        "playableAt": "",
+                    },
                 }],
             },
         })()
@@ -519,12 +619,16 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
             snapshot = service.snapshot(limit=24)
 
         item = snapshot["items"][0]
-        self.assertEqual(item["progressText"], "Torra 订阅已完成")
-        self.assertEqual(item["status"], "done")
-        self.assertEqual(item["chainState"], "completed")
-        self.assertEqual(snapshot["stats"]["pending"], 0)
+        self.assertEqual(item["progressText"], "集数进度未确认")
+        self.assertEqual(item["progress"]["state"], "unconfirmed")
+        self.assertEqual(item["status"], "pending")
+        self.assertEqual(item["chainState"], "waiting")
+        self.assertEqual(item["outcomeState"], "evidence_insufficient")
+        self.assertEqual(item["torraFact"]["reasonText"], "获取目标已满足")
+        self.assertEqual(snapshot["stats"]["pending"], 1)
         self.assertEqual(snapshot["stats"]["following"], 0)
-        self.assertEqual(snapshot["stats"]["completed"], 1)
+        self.assertEqual(snapshot["stats"]["completed"], 0)
+        self.assertEqual(snapshot["stats"]["playable"], 0)
         self.assertEqual(snapshot["stats"]["actionRequired"], 0)
         self.assertEqual(snapshot["stats"]["inLibrary"], 0)
 

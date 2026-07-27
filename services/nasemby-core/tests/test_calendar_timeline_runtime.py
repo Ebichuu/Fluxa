@@ -13,6 +13,35 @@ from app import discover_runtime
 from app.calendar_timeline_runtime import _entry_status, register_calendar_timeline
 
 
+def pipeline_fact(
+    stage,
+    state,
+    *,
+    scope="episode",
+    observed_at="2026-07-22T01:00:00Z",
+    fresh_until="2026-07-22T02:00:00Z",
+    reason_code="",
+):
+    return {
+        "stage": stage,
+        "state": state,
+        "scope": scope,
+        "evidence": "missing" if state == "unknown" else "verified",
+        "observedAt": observed_at,
+        "freshUntil": fresh_until,
+        "source": {
+            "torra": "Torra",
+            "qb": "qBittorrent",
+            "symedia": "Symedia",
+            "emby": "Emby",
+        }.get(stage, ""),
+        "sourceRef": f"{stage}:public",
+        "reasonCode": reason_code or f"{stage.upper()}_{state.upper()}",
+        "reasonText": "",
+        "retryEligible": False,
+    }
+
+
 class FakeTaskService:
     def __init__(self, items=None):
         self.items = items
@@ -23,8 +52,9 @@ class FakeTaskService:
             "mediaType": "tv",
             "tmdbId": "101",
             "seasonNumber": 2,
+            "episodeNumber": 3,
             "chainId": "chain:101",
-            "targetKey": "tv:tmdb:101:season:2",
+            "targetKey": "tv:tmdb:101:season:2:episode:3",
             "subscriptionId": "sub-1",
             "sourceIds": {"subscriptionIds": ["sub-1"]},
             "healthState": "waiting",
@@ -32,6 +62,22 @@ class FakeTaskService:
             "reasonText": "正在下载",
             "observedAt": "2026-07-22T01:30:00Z",
             "freshUntil": "2026-07-22T01:35:00Z",
+            "pipelineFacts": [
+                pipeline_fact("torra", "waiting"),
+                pipeline_fact("qb", "active"),
+                pipeline_fact("cloud115", "unknown", scope="file"),
+                pipeline_fact("symedia", "unknown", scope="file"),
+                pipeline_fact("strm", "unknown"),
+                pipeline_fact("emby", "unknown"),
+            ],
+            "pipelineOutcome": {
+                "state": "in_progress",
+                "stage": "qb",
+                "reasonCode": "QB_ACTIVE",
+                "reasonText": "qB 正在下载",
+                "observedAt": "2026-07-22T01:00:00Z",
+                "playableAt": "",
+            },
             "episodeEvidence": [{
                 "seasonNumber": 2,
                 "episodeStart": 3,
@@ -94,6 +140,8 @@ def calendar_loader(year, month, media_type):
             "episode_label": "S02E03",
             "poster_url": "https://image.tmdb.org/t/p/w342/example.jpg",
             "in_library": False,
+            "subscription_origin": "manual",
+            "follow_scope_explicit": True,
         }],
         "stats": {"entries": 1, "titles": 1, "in_library": 0, "pending": 1},
         "errors": [],
@@ -120,7 +168,7 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
         self.assertEqual(entry["acquiredAt"], "2026-07-22T01:00:00Z")
         self.assertEqual(entry["libraryAt"], "")
         self.assertEqual(entry["chainId"], "chain:101")
-        self.assertEqual(entry["targetKey"], "tv:tmdb:101:season:2")
+        self.assertEqual(entry["targetKey"], "tv:tmdb:101:season:2:episode:3")
         self.assertEqual(payload["calendar"]["timeZone"], "Asia/Shanghai")
         self.assertEqual(payload["calendar"]["stats"]["acquired"], 1)
 
@@ -137,14 +185,18 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
 
     def test_season_level_stage_does_not_mark_episode_acquired_or_library(self):
         season_only = FakeTaskService().full_snapshot()["items"][0]
-        season_only["episodeEvidence"] = []
-        season_only["healthState"] = "normal"
-        season_only["stages"][-1] = {
-            "stage": "library",
-            "status": "done",
-            "evidence": "verified",
-            "observedAt": "2026-07-22T02:00:00Z",
-            "source": "Symedia",
+        season_only["episodeNumber"] = 0
+        season_only["targetKey"] = "tv:tmdb:101:season:2"
+        season_only["pipelineFacts"] = [pipeline_fact(
+            "symedia", "succeeded", scope="file", observed_at="2026-07-22T02:00:00Z",
+        )]
+        season_only["pipelineOutcome"] = {
+            "state": "evidence_insufficient",
+            "stage": "",
+            "reasonCode": "EVIDENCE_INSUFFICIENT",
+            "reasonText": "缺少当前目标的明确可播放证据",
+            "observedAt": "",
+            "playableAt": "",
         }
         self.app.extensions["mcc_task_chain_v2_service"] = FakeTaskService([season_only])
 
@@ -153,31 +205,19 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
         self.assertEqual(entry["acquiredAt"], "")
         self.assertEqual(entry["libraryAt"], "")
         self.assertEqual(entry["healthState"], "evidence_insufficient")
-        self.assertEqual(entry["reasonCode"], "CALENDAR_EPISODE_EVIDENCE_MISSING")
+        self.assertEqual(entry["reasonCode"], "CALENDAR_TASK_NOT_FOUND")
 
     def test_library_evidence_sets_in_library_and_removes_later_acquisition_time(self):
         item = FakeTaskService().full_snapshot()["items"][0]
-        item["episodeEvidence"] = [
-            {
-                "seasonNumber": 2,
-                "episodeStart": 3,
-                "episodeEnd": 3,
-                "numberingScheme": "season_episode",
-                "stage": "download",
-                "source": "qBittorrent",
-                "observedAt": "2026-07-22T10:17:00Z",
-                "status": "done",
-            },
-            {
-                "seasonNumber": 2,
-                "episodeStart": 3,
-                "episodeEnd": 3,
-                "numberingScheme": "season_episode",
-                "stage": "library",
-                "source": "Symedia",
-                "observedAt": "2026-07-22T08:01:00Z",
-                "status": "done",
-            },
+        item["pipelineFacts"] = [
+            pipeline_fact(
+                "qb", "succeeded", observed_at="2026-07-22T10:17:00Z",
+                fresh_until="2026-07-22T11:00:00Z",
+            ),
+            pipeline_fact(
+                "symedia", "succeeded", scope="file", observed_at="2026-07-22T08:01:00Z",
+                fresh_until="2026-07-22T11:00:00Z",
+            ),
         ]
         self.app.extensions["mcc_task_chain_v2_service"] = FakeTaskService([item])
 
@@ -193,17 +233,10 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
 
     def test_expired_episode_evidence_does_not_mark_episode_acquired_or_in_library(self):
         item = FakeTaskService().full_snapshot()["items"][0]
-        item["freshUntil"] = "2026-07-22T01:35:00Z"
-        item["episodeEvidence"] = [{
-            "seasonNumber": 2,
-            "episodeStart": 3,
-            "episodeEnd": 3,
-            "numberingScheme": "season_episode",
-            "stage": "library",
-            "source": "Symedia",
-            "observedAt": "2026-07-22T01:30:00Z",
-            "status": "done",
-        }]
+        item["pipelineFacts"] = [pipeline_fact(
+            "symedia", "succeeded", scope="file",
+            observed_at="2026-07-22T01:30:00Z", fresh_until="2026-07-22T01:35:00Z",
+        )]
         application = Flask(__name__)
         application.extensions["mcc_task_chain_v2_service"] = FakeTaskService([item])
         register_calendar_timeline(
@@ -218,6 +251,28 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
 
         self.assertEqual(entry["libraryAt"], "")
         self.assertEqual(entry["acquiredAt"], "")
+        self.assertFalse(entry["inLibrary"])
+        self.assertEqual(entry["status"], "unknown")
+
+    def test_legacy_in_library_flag_does_not_replace_exact_symedia_evidence(self):
+        def legacy_library_loader(year, month, media_type):
+            payload = calendar_loader(year, month, media_type)
+            payload["entries"][0]["in_library"] = True
+            return payload
+
+        application = Flask(f"{__name__}-legacy-library")
+        application.extensions["mcc_task_chain_v2_service"] = FakeTaskService([])
+        register_calendar_timeline(
+            application,
+            calendar_loader=legacy_library_loader,
+            clock=lambda: datetime(2026, 7, 23, 3, 0, tzinfo=timezone.utc),
+        )
+
+        entry = application.test_client().get(
+            "/api/v2/calendar?year=2026&month=7&type=tv"
+        ).get_json()["calendar"]["entries"][0]
+
+        self.assertEqual(entry["libraryAt"], "")
         self.assertFalse(entry["inLibrary"])
         self.assertEqual(entry["status"], "unknown")
 
@@ -450,6 +505,67 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
         self.assertEqual(remote["subscriptionCreatedAt"], "2026-07-23T00:00:00Z")
         self.assertEqual(reconciliation.calls, 1)
 
+    def test_default_calendar_hides_unlinked_rows_and_explicit_query_can_read_them(self):
+        def unlinked_loader(year, month, media_type):
+            payload = calendar_loader(year, month, media_type)
+            payload["entries"][0]["subscription_origin"] = "auto"
+            return payload
+
+        application = Flask(f"{__name__}-unlinked")
+        application.extensions["mcc_task_chain_v2_service"] = FakeTaskService([])
+        register_calendar_timeline(application, calendar_loader=unlinked_loader)
+        client = application.test_client()
+
+        default_calendar = client.get(
+            "/api/v2/calendar?year=2026&month=7&type=tv"
+        ).get_json()["calendar"]
+        advanced_calendar = client.get(
+            "/api/v2/calendar?year=2026&month=7&type=tv&includeUnlinked=1"
+        ).get_json()["calendar"]
+
+        self.assertEqual(default_calendar["entries"], [])
+        self.assertEqual(default_calendar["stats"]["excludedUnlinked"], 1)
+        self.assertEqual(advanced_calendar["entries"][0]["status"], "unlinked")
+
+    def test_exact_emby_episode_fact_marks_only_that_episode_playable(self):
+        def two_episode_loader(year, month, media_type):
+            payload = calendar_loader(year, month, media_type)
+            first = payload["entries"][0]
+            payload["entries"] = [
+                {**first, "episode_number": 3, "episode_label": "S02E03"},
+                {**first, "episode_number": 4, "episode_label": "S02E04"},
+            ]
+            return payload
+
+        playable = FakeTaskService().full_snapshot()["items"][0]
+        playable["pipelineFacts"] = [pipeline_fact(
+            "emby", "succeeded", scope="episode", observed_at="2026-07-22T01:20:00Z",
+        )]
+        playable["pipelineOutcome"] = {
+            "state": "playable",
+            "stage": "emby",
+            "reasonCode": "EMBY_EPISODE_INDEXED",
+            "reasonText": "Emby 已收录目标集",
+            "observedAt": "2026-07-22T01:20:00Z",
+            "playableAt": "2026-07-22T01:20:00Z",
+        }
+        application = Flask(f"{__name__}-playable")
+        application.extensions["mcc_task_chain_v2_service"] = FakeTaskService([playable])
+        register_calendar_timeline(
+            application,
+            calendar_loader=two_episode_loader,
+            clock=lambda: datetime(2026, 7, 22, 1, 31, tzinfo=timezone.utc),
+        )
+
+        entries = application.test_client().get(
+            "/api/v2/calendar?year=2026&month=7&type=tv"
+        ).get_json()["calendar"]["entries"]
+        by_episode = {entry["episodeNumber"]: entry for entry in entries}
+
+        self.assertEqual(by_episode[3]["status"], "playable")
+        self.assertEqual(by_episode[3]["playableAt"], "2026-07-22T01:20:00Z")
+        self.assertNotEqual(by_episode[4]["status"], "playable")
+
     def test_calendar_matches_public_torra_key_to_raw_task_without_tmdb(self):
         from app.torra_subscription_keys import torra_public_subscription_key
 
@@ -467,6 +583,19 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
             "healthState": "waiting",
             "updatedAt": "2026-07-22T01:30:00Z",
             "freshUntil": "2026-07-23T01:30:00Z",
+            "episodeNumber": 1,
+            "pipelineFacts": [pipeline_fact(
+                "qb", "succeeded", observed_at="2026-07-22T01:00:00Z",
+                fresh_until="2026-07-23T01:30:00Z",
+            )],
+            "pipelineOutcome": {
+                "state": "evidence_insufficient",
+                "stage": "",
+                "reasonCode": "EVIDENCE_INSUFFICIENT",
+                "reasonText": "缺少当前目标的明确可播放证据",
+                "observedAt": "",
+                "playableAt": "",
+            },
             "episodeEvidence": [{
                 "seasonNumber": 1,
                 "episodeStart": 1,
@@ -496,6 +625,9 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
                     "episode_number": 1,
                     "episode_label": "S01E01",
                     "in_library": False,
+                    "subscription_origin": "torra",
+                    "torra_linked": True,
+                    "follow_scope_explicit": True,
                 }],
                 "stats": {"entries": 1, "titles": 1, "in_library": 0, "pending": 1},
                 "errors": [],

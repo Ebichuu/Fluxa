@@ -500,7 +500,7 @@ function mergeRssSeedResponses(payloads: RssSeedListResponse[]): RssSeedListResp
 }
 
 type SubscriptionTab = 'movie' | 'tv' | 'blocked';
-type SubscriptionStatusFilter = 'all' | 'pending' | 'done';
+type SubscriptionStatusFilter = 'all' | 'following' | 'action_required' | 'playable';
 type SubscriptionUpdateFilter = 'all' | 'today' | '3' | '7';
 
 interface DiscoverConfirmation {
@@ -513,10 +513,9 @@ interface DiscoverConfirmation {
 }
 
 function resolvedSubscriptionStatus(item: SubscriptionItem) {
-  if (item.status) return item.status;
-  const match = item.progressText.match(/^(\d+)\/(\d+)$/);
-  if (match && Number(match[2]) > 0 && Number(match[1]) >= Number(match[2])) return 'done';
-  return item.mediaType === 'movie' && item.inLibrary ? 'done' : 'pending';
+  if (item.outcomeState === 'playable') return 'playable';
+  if (item.outcomeState === 'action_required') return 'action_required';
+  return 'following';
 }
 
 function daysSinceSubscriptionUpdate(value: string) {
@@ -558,27 +557,31 @@ function reconciliationLabel(item: SubscriptionItem) {
 }
 
 function reconciliationBadge(item: SubscriptionItem) {
-  if (!item.reconciliationState) return null;
-  const badges = {
-    linked: { label: 'Torra 运行中', tone: 'ok', title: '此追更在 Fluxa 和 Torra 双端运行' },
-    only_fluxa: { label: '仅本地', tone: 'muted', title: '此追更仅在 Fluxa 记录,Torra 中未设置' },
-    only_torra: { label: '仅 Torra', tone: 'muted', title: '此追更仅在 Torra,本地未导入' },
-    conflict: { label: '冲突', tone: 'warn', title: '本地与 Torra 记录不一致' },
-    remote_missing: { label: 'Torra 已失联', tone: 'warn', title: '本地记录的 Torra ID 已失效' }
-  } as const;
-  const badge = badges[item.reconciliationState];
+  const badge = item.reconciliationState === 'conflict' || item.reconciliationState === 'remote_missing'
+    ? { label: '对账异常', tone: 'warn', title: item.reasonText || '本地与 Torra 记录需要核对' }
+    : item.reconciliationState === 'only_fluxa'
+      ? { label: '仅 Fluxa 保存', tone: 'muted', title: '追更意图已保留，尚未同步到 Torra' }
+      : item.torraFact?.state === 'active'
+        ? { label: 'Torra 获取中', tone: 'ok', title: item.torraFact.reasonText || 'Torra 正在获取目标' }
+        : item.torraFact?.state === 'succeeded'
+          ? { label: '获取目标已满足', tone: 'ok', title: 'Torra 已满足获取目标，仍需确认 Emby 可播放' }
+          : item.reconciliationState === 'linked' || item.reconciliationState === 'only_torra' || item.torra?.status === 'linked'
+            ? { label: '已在 Torra', tone: 'muted', title: 'Torra 已保存该追更，当前没有活动获取证据' }
+            : null;
+  if (!badge) return null;
   return <span className={`discover-sub__status-badge discover-sub__status-badge--${badge.tone}`} title={badge.title}>{badge.label}</span>;
 }
 
 function fulfillmentLabel(item: SubscriptionItem) {
   const labels = {
-    pending_sync: '待同步',
-    following: '追更中',
-    completed: '已完成',
-    paused: '已暂停',
-    blocked: '被阻塞'
+    waiting: '等待后续处理',
+    in_progress: '处理中',
+    protected: '正常保护',
+    action_required: '需要处理',
+    playable: '已可播放',
+    evidence_insufficient: '证据不足'
   } as const;
-  return item.fulfillmentState ? labels[item.fulfillmentState] : resolvedSubscriptionStatus(item) === 'done' ? '已完成' : '追更中';
+  return labels[item.outcomeState ?? 'evidence_insufficient'];
 }
 
 function followScopeLabel(item: SubscriptionItem) {
@@ -595,8 +598,11 @@ const followProviderLabels: Record<ManualFollowProvider, string> = {
 };
 
 function subscriptionUserStatus(item: SubscriptionItem) {
-  if (item.healthState === 'action_required' || item.fulfillmentState === 'blocked') {
+  if (item.outcomeState === 'action_required') {
     return item.blockingReason || item.reasonText || '当前追更需要处理';
+  }
+  if (item.outcomeState === 'playable') {
+    return item.pipelineOutcome?.reasonText || 'Emby 已确认可播放';
   }
   if (item.reconciliationState === 'conflict') {
     return '';
@@ -604,17 +610,20 @@ function subscriptionUserStatus(item: SubscriptionItem) {
   if (item.reconciliationState === 'remote_missing') {
     return 'Torra 中已找不到这条追更，请检查是否被删除或替换';
   }
-  if (item.readOnly || item.reconciliationState === 'only_torra') {
-    return item.fulfillmentState === 'completed'
-      ? '追更已在 Torra 完成，Fluxa 正在读取下载与入库结果'
-      : '追更已在 Torra 生效，Fluxa 正在读取下载与入库进度';
+  if (item.torraFact?.state === 'succeeded') {
+    return 'Torra 获取目标已满足，等待确认整理、播放入口和 Emby 可播放证据';
+  }
+  if (item.torraFact?.state === 'active') {
+    return 'Torra 正在获取目标';
+  }
+  if (item.reconciliationState === 'only_fluxa') {
+    return '追更仅保存在 Fluxa，尚未同步到 Torra';
   }
   return item.blockingReason || '';
 }
 
 function subscriptionUserStatusTone(item: SubscriptionItem) {
-  return item.healthState === 'action_required'
-    || item.fulfillmentState === 'blocked'
+  return item.outcomeState === 'action_required'
     || item.reconciliationState === 'remote_missing'
     ? 'is-danger'
     : 'is-neutral';
@@ -682,11 +691,18 @@ function readFollowingFilters() {
   const mediaType = query.get('mediaType');
   const status = query.get('status');
   const updated = query.get('updated');
+  const normalizedStatus: SubscriptionStatusFilter = status === 'pending'
+    ? 'following'
+    : status === 'done'
+      ? 'playable'
+      : status === 'following' || status === 'action_required' || status === 'playable'
+        ? status
+        : 'all';
   return {
     tab: mediaType === 'movie' || mediaType === 'tv' || mediaType === 'blocked' ? mediaType : 'tv' as SubscriptionTab,
     keyword: query.get('q') || '',
     year: query.get('year') || 'all',
-    status: status === 'pending' || status === 'done' ? status : 'all' as SubscriptionStatusFilter,
+    status: normalizedStatus,
     updated: updated === 'today' || updated === '3' || updated === '7' ? updated : 'all' as SubscriptionUpdateFilter,
     missingEpisodesOnly: query.get('missingEpisodes') === '1'
   };
@@ -1164,11 +1180,12 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     total: subs.length,
     movie: subs.filter((item) => item.mediaType === 'movie').length,
     tv: subs.filter((item) => item.mediaType === 'tv').length,
-    pending: subs.filter((item) => !item.inLibrary).length,
-    following: subs.filter((item) => item.fulfillmentState === 'following').length,
-    completed: subs.filter((item) => item.fulfillmentState === 'completed' || item.chainState === 'completed').length,
-    actionRequired: subs.filter((item) => item.healthState === 'action_required' || item.fulfillmentState === 'blocked').length,
-    inLibrary: subs.filter((item) => item.inLibrary).length
+    pending: subs.filter((item) => item.outcomeState !== 'playable').length,
+    following: subs.filter((item) => resolvedSubscriptionStatus(item) === 'following').length,
+    playable: subs.filter((item) => item.outcomeState === 'playable').length,
+    completed: subs.filter((item) => item.outcomeState === 'playable').length,
+    actionRequired: subs.filter((item) => item.outcomeState === 'action_required').length,
+    inLibrary: subs.filter((item) => item.library?.status === 'done').length
   };
   const subscriptionCountsUnavailable = subscriptionsOnly && !workbench;
   const reconciliationSummary = workbench?.reconciliation?.summary;
@@ -2630,7 +2647,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
         {subscriptionsOnly && workbench && (
           <section className="subscription-workbench-summary" aria-label="追更统计">
             <span><b>{workbenchStats.following}</b>追更中</span>
-            <span><b>{workbenchStats.completed}</b>已完成</span>
+            <span><b>{workbenchStats.playable}</b>已可播放</span>
             <span><b>{workbenchStats.actionRequired}</b>需要处理</span>
             <span><b>{workbenchStats.inLibrary}</b>已入库</span>
             <small>{subscriptionReadAtLabel(workbench.lastReadAt)}</small>
@@ -2749,7 +2766,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             </label>
             <div className="discover-sub-filter-row">
               <span>状态</span>
-              {([['all', '全部'], ['pending', '未完成'], ['done', '已完成']] as const).map(([value, label]) => (
+              {([['all', '全部'], ['following', '追更中'], ['action_required', '需要处理'], ['playable', '已可播放']] as const).map(([value, label]) => (
                 <button
                   className={subscriptionStatus === value ? 'is-active' : undefined}
                   key={value}
@@ -2838,11 +2855,9 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
           ) ?? seasons[0];
           const activeSeasonNumber = activeSeason?.seasonNumber ?? activeSeason?.season_number ?? 0;
           const detailInfo = detailId === item.id ? detail?.detail : null;
-          const libraryProgress = detailInfo?.inLibrary || item.inLibrary
-            ? '已完成入库'
-            : item.mediaType === 'tv' && detailInfo?.episodeCount
-              ? `${detailInfo.libraryEpisodeCount ?? 0}/${detailInfo.episodeCount} 集已入库`
-              : item.progressText || '等待首个入库记录';
+          const libraryProgress = item.library?.status === 'done'
+            ? '整理入库完成'
+            : item.progress?.text || item.progressText || '集数进度未确认';
           const subscriptionScope = item.mediaType === 'tv'
             ? item.seasonName || (item.seasonNumber != null ? `第 ${item.seasonNumber} 季` : '按剧集持续追更')
             : '整部电影';
@@ -2878,8 +2893,10 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                     {' · PT'}
                     {item.year && ` · ${item.year}`}
                     {item.seasonName && ` · ${item.seasonName}`}
-                    {item.progressText && ` · 进度 ${item.progressText}`}
-                    {item.inLibrary && ' · 已入库'}
+                    {item.progress?.state === 'unconfirmed'
+                      ? ` · ${item.progress.text}`
+                      : item.progressText && ` · 进度 ${item.progressText}`}
+                    {item.outcomeState === 'playable' && ' · 已可播放'}
                   </small>
                   <em>{item.readOnly ? '来自 Torra · 只读' : item.sourceLabel || 'Fluxa'} · {subscriptionUpdateLabel(item.updatedAt)}</em>
                 </button>
@@ -2923,17 +2940,17 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
 
               {subscriptionsOnly && (
                 <div className="discover-sub__chain" aria-label={`${item.title} 处理状态`}>
-                  <span className={item.fulfillmentState === 'completed' ? 'is-ok' : item.fulfillmentState === 'blocked' ? 'is-warn' : undefined}>
+                  <span className={item.outcomeState === 'playable' ? 'is-ok' : item.outcomeState === 'action_required' ? 'is-warn' : undefined}>
                     <b>当前进展</b><small>{fulfillmentLabel(item)}</small>
                   </span>
                   <span className={item.qb?.status === 'blocked' ? 'is-warn' : item.qb?.status === 'done' || item.qb?.status === 'active' ? 'is-ok' : undefined}>
-                    <b>下载</b><small>{item.qb?.detail || (item.inLibrary ? '已完成' : '等待下载任务')}</small>
+                    <b>下载</b><small>{item.qb?.detail || '等待下载任务'}</small>
                   </span>
-                  <span className={item.library?.status === 'done' || item.inLibrary ? 'is-ok' : item.library?.status === 'blocked' ? 'is-warn' : undefined}>
+                  <span className={item.library?.status === 'done' ? 'is-ok' : item.library?.status === 'blocked' ? 'is-warn' : undefined}>
                     <b>入库</b><small>{item.library?.detail || libraryProgress}</small>
                   </span>
                   <span className={(item.missingEpisodes?.length ?? 0) > 0 ? 'is-warn' : undefined}>
-                    <b>缺集</b><small>{item.missingEpisodes?.length ? item.missingEpisodes.join('、') : item.inLibrary ? '无' : '尚未确认'}</small>
+                    <b>缺集</b><small>{item.missingEpisodes?.length ? item.missingEpisodes.join('、') : item.outcomeState === 'playable' ? '无' : '尚未确认'}</small>
                   </span>
                   <span>
                     <b>最近检查</b><small><RelativeTime value={item.observedAt || item.updatedAt} /></small>
@@ -2981,8 +2998,8 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                     <>
                       <div className="sub-detail__summary">
                         <strong>{detailInfo?.title || item.title}</strong>
-                        <span className={detailInfo?.inLibrary || item.inLibrary ? 'is-library' : 'is-pending'}>
-                          {detailInfo?.inLibrary || item.inLibrary ? '已入库' : '待补'}
+                        <span className={item.outcomeState === 'playable' ? 'is-library' : 'is-pending'}>
+                          {item.outcomeState === 'playable' ? '已可播放' : fulfillmentLabel(item)}
                         </span>
                         <small>
                           {[detailInfo?.year || item.year, detailInfo?.rating ? `评分 ${detailInfo.rating}` : '', detailInfo?.runtime]
@@ -3005,7 +3022,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                           <span><b>01</b><strong>追更来源</strong><small>{item.readOnly ? 'Torra 镜像' : item.sourceLabel || 'Fluxa'}</small></span>
                           <span><b>02</b><strong>追更范围</strong><small>{subscriptionScope}</small></span>
                           <span><b>03</b><strong>PT / Torra</strong><small>{torraRoute}</small></span>
-                          <span className={detailInfo?.inLibrary || item.inLibrary ? 'is-complete' : undefined}><b>04</b><strong>整理入库</strong><small>{libraryProgress}</small></span>
+                          <span className={item.library?.status === 'done' ? 'is-complete' : undefined}><b>04</b><strong>整理入库</strong><small>{libraryProgress}</small></span>
                         </div>
                         <footer>
                           <button

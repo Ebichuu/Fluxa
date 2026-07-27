@@ -116,6 +116,43 @@ class SubscriptionReconciliationRuntimeTests(unittest.TestCase):
             )
             self.assertNotIn("remote-only-mapped", str(result["items"][0]))
 
+    def test_remote_completed_only_satisfies_torra_target_not_playable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SubscriptionRepository(Path(directory) / "subscriptions.sqlite3")
+            result = self.service(repository, FakeTorraClient([{
+                "id": "remote-completed",
+                "name": "已获取剧集",
+                "media_type": "tv",
+                "tmdb_id": 707,
+                "season_number": 1,
+                "completed": True,
+            }])).snapshot()
+
+            item = result["items"][0]
+            self.assertEqual(item["torraFact"]["state"], "succeeded")
+            self.assertEqual(item["torraFact"]["reasonCode"], "TORRA_TARGET_SATISFIED")
+            self.assertEqual(item["torraFact"]["reasonText"], "获取目标已满足")
+            self.assertEqual(item["pipelineOutcome"]["state"], "evidence_insufficient")
+            self.assertEqual(item["fulfillmentState"], "completed")
+            self.assertEqual(result["summary"]["outcome"]["playable"], 0)
+            self.assertNotIn("remote-completed", str(item))
+
+    def test_remote_running_is_the_only_torra_in_progress_signal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SubscriptionRepository(Path(directory) / "subscriptions.sqlite3")
+            result = self.service(repository, FakeTorraClient([{
+                "id": "remote-running",
+                "name": "正在获取剧集",
+                "media_type": "tv",
+                "tmdb_id": 808,
+                "season_number": 1,
+                "is_running": True,
+            }])).snapshot()
+
+            item = result["items"][0]
+            self.assertEqual(item["torraFact"]["state"], "active")
+            self.assertEqual(item["pipelineOutcome"]["state"], "in_progress")
+
     def test_public_torra_key_resolves_legacy_missing_and_collision_without_exposing_remote_id(self):
         remote_id = "remote-private-id"
         public_key = torra_public_subscription_key(remote_id)

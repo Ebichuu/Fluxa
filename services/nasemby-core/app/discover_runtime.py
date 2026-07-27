@@ -2616,6 +2616,20 @@ def build_subscription_calendar_entries_for_item(item, year, month, media_filter
         if isinstance(past_value, bool)
         else str(past_value).strip().lower() in {"1", "true", "on", "yes"}
     )
+    subscription_origin = str(item.get("origin") or item.get("subscription_origin") or "").strip().lower()
+    torra_linked = bool(
+        item.get("torra_remote_id")
+        or str(item.get("torra_mapping_status") or "").strip().lower() == "mapped"
+        or str(item.get("torra_sync_state") or "").strip().lower() == "current"
+        or subscription_origin == "torra"
+        or item.get("read_only") is True
+    )
+    migration_review = str(item.get("migration_state") or "").strip().lower() == "migration_review"
+    source_context = {
+        "subscription_origin": subscription_origin,
+        "torra_linked": torra_linked,
+        "migration_review": migration_review,
+    }
     try:
         allowed_delay_hours = max(0, int(item.get("allowed_delay_hours", item.get("grace_hours", 24))))
     except (TypeError, ValueError):
@@ -2640,6 +2654,7 @@ def build_subscription_calendar_entries_for_item(item, year, month, media_filter
                 "follow_scope_explicit": follow_scope_explicit,
                 "include_past_episodes": include_past_episodes,
                 "allowed_delay_hours": allowed_delay_hours,
+                **source_context,
             })
         return entries, ""
 
@@ -2695,6 +2710,7 @@ def build_subscription_calendar_entries_for_item(item, year, month, media_filter
             "follow_scope_explicit": follow_scope_explicit,
             "include_past_episodes": include_past_episodes,
             "allowed_delay_hours": allowed_delay_hours,
+            **source_context,
         })
     if not entries:
         return [], ""

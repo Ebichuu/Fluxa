@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 from app import discover_runtime
 from app import activity_log
-from app.contract_mapping import map_calendar_payload, map_subscription_detail, sanitize_resource_payload
+from app.contract_mapping import map_calendar_payload, map_subscription_detail, map_subscription_item, sanitize_resource_payload
 from app.main import create_app
 from app.quality_watch_repository import QualityWatchRepository
 from tests.activity_log_test_support import IsolatedActivityLogMixin
@@ -82,6 +82,37 @@ def concrete_path(path):
 
 
 class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase):
+    def test_subscription_progress_requires_confirmed_episode_evidence(self):
+        unconfirmed = map_subscription_item({
+            "subscription_key": "tv:progress:1",
+            "title": "二十五集测试剧",
+            "media_type": "tv",
+            "episode_total": 25,
+            "library_episode_count": 0,
+            "progress_text": "0/25",
+        })
+        confirmed = map_subscription_item({
+            "subscription_key": "tv:progress:2",
+            "title": "已有集级证据",
+            "media_type": "tv",
+            "episode_total": 25,
+            "library_episode_count": 3,
+        })
+
+        self.assertEqual(unconfirmed["progress"], {
+            "state": "unconfirmed",
+            "confirmed": None,
+            "total": 25,
+            "text": "集数进度未确认",
+        })
+        self.assertEqual(unconfirmed["progressText"], "集数进度未确认")
+        self.assertEqual(confirmed["progress"], {
+            "state": "confirmed",
+            "confirmed": 3,
+            "total": 25,
+            "text": "3/25",
+        })
+
     def test_all_47_frozen_routes_exist_on_python_and_compat_routes_win(self):
         contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
         app = create_app(access_environment={})

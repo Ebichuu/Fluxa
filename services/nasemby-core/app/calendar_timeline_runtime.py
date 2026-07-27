@@ -13,13 +13,15 @@ from app import discover_runtime
 from app.contract_mapping import map_calendar_payload
 from app.http_runtime import current_request_id
 from app.task_exception_runtime import protection_rule
-from app.task_public_runtime import public_subscription_ref
+from app.task_public_runtime import (
+    present_pipeline_fact,
+    present_pipeline_outcome,
+    public_subscription_ref,
+)
 
 
 ALLOWED_MEDIA_TYPES = {"all", "movie", "tv"}
 ALLOWED_VIEWS = {"", "summary", "detail"}
-ACQUISITION_STAGES = {"resource", "download", "cloud115"}
-LIBRARY_STAGES = {"symedia", "strm", "library", "emby"}
 BEIJING_TZ = timezone(timedelta(hours=8))
 SNAPSHOT_CACHE_TTL_SECONDS = 300
 
@@ -33,6 +35,10 @@ def _integer(value, default=0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _truthy(value) -> bool:
+    return _text(value).lower() in {"1", "true", "yes", "on"}
 
 
 def _as_datetime(value):
@@ -71,28 +77,6 @@ def _month_keys(start: date, end: date) -> list[tuple[int, int]]:
         values.append((current.year, current.month))
         current = date(current.year + (1 if current.month == 12 else 0), 1 if current.month == 12 else current.month + 1, 1)
     return values
-
-
-def _evidence_is_current(value: dict, current: datetime, fallback="") -> bool:
-    deadline = _as_datetime(value.get("freshUntil") or fallback)
-    return not deadline or deadline > current.astimezone(timezone.utc)
-
-
-def _stage_time(item: dict, names: set[str], statuses: set[str], current: datetime) -> tuple[str, str]:
-    candidates = [
-        stage
-        for stage in item.get("stages") or []
-        if isinstance(stage, dict)
-        and _text(stage.get("stage")) in names
-        and _text(stage.get("status")) in statuses
-        and _text(stage.get("evidence")) != "missing"
-        and _text(stage.get("observedAt"))
-        and _evidence_is_current(stage, current, item.get("freshUntil"))
-    ]
-    if not candidates:
-        return "", ""
-    stage = max(candidates, key=lambda row: _text(row.get("observedAt")))
-    return _text(stage.get("observedAt")), _text(stage.get("source"))
 
 
 def _subscription_keys(*values) -> set[str]:
@@ -145,83 +129,6 @@ def _match_rank(entry: dict, item: dict) -> tuple[int, str]:
     return (0 if same_subscription else 1, _text(item.get("updatedAt")))
 
 
-def _episode_rows(entry: dict, item: dict, current: datetime) -> list[dict]:
-    season = _integer(entry.get("seasonNumber"))
-    episode = _integer(entry.get("episodeNumber"))
-    if not episode and episode != 0:
-        return []
-    all_matches = [
-        row
-        for row in item.get("episodeEvidence") or []
-        if isinstance(row, dict)
-        and _text(row.get("numberingScheme")) in {"season_episode", "special"}
-        and _integer(row.get("seasonNumber")) == season
-        and _integer(row.get("episodeStart")) <= episode <= _integer(row.get("episodeEnd"))
-        and _evidence_is_current(row, current, item.get("freshUntil"))
-    ]
-    # 优先使用明确单集证据，避免季包/多集证据覆盖单集
-    explicit = [r for r in all_matches if _integer(r.get("episodeStart")) == episode == _integer(r.get("episodeEnd"))]
-    return explicit if explicit else all_matches
-
-
-def _latest_episode_time(rows: list[dict], stages: set[str], statuses: set[str]) -> tuple[str, str]:
-    candidates = [
-        row
-        for row in rows
-        if _text(row.get("stage")) in stages
-        and _text(row.get("status")) in statuses
-        and _text(row.get("observedAt"))
-    ]
-    if not candidates:
-        return "", ""
-    latest = max(candidates, key=lambda row: _text(row.get("observedAt")))
-    source = _text(latest.get("source"))
-    # 标注粒度：如果是季包/多集证据，在来源后附加范围说明
-    start = _integer(latest.get("episodeStart"))
-    end = _integer(latest.get("episodeEnd"))
-    if start and end and start < end:
-        source = f"{source}（第 {start}-{end} 集）" if source else f"第 {start}-{end} 集"
-    return _text(latest.get("observedAt")), source
-
-
-def _episode_health(entry: dict, rows: list[dict]) -> tuple[str, str, str]:
-    if entry.get("inLibrary"):
-        return "normal", "CALENDAR_EPISODE_IN_LIBRARY", "该集已在媒体库中"
-    real_failures = [
-        row
-        for row in rows
-        if _text(row.get("status")) == "blocked"
-        and not protection_rule(row.get("reasonCode"), row.get("reasonText"))
-    ]
-    if real_failures:
-        source = _text(real_failures[0].get("source"))
-        return (
-            "action_required",
-            _text(real_failures[0].get("reasonCode")) or "CALENDAR_EPISODE_BLOCKED",
-            "Symedia 未完成该集入库" if source == "Symedia" else "该集获取过程发生阻塞",
-        )
-    protected = [
-        row
-        for row in rows
-        if protection_rule(row.get("reasonCode"), row.get("reasonText"))
-    ]
-    if protected:
-        return "protected", protection_rule(
-            protected[0].get("reasonCode"),
-            protected[0].get("reasonText"),
-        ), "已有更高质量版本，未执行覆盖"
-    if any(_text(row.get("status")) in {"active", "waiting"} for row in rows):
-        return "waiting", "CALENDAR_EPISODE_IN_PROGRESS", "该集正在获取"
-    if any(
-        _text(row.get("stage")) in LIBRARY_STAGES and _text(row.get("status")) == "done"
-        for row in rows
-    ):
-        return "normal", "CALENDAR_EPISODE_LIBRARY_DONE", "该集已完成入库"
-    if rows:
-        return "waiting", "CALENDAR_EPISODE_ACQUIRED", "已找到该集资源，等待入库"
-    return "evidence_insufficient", "CALENDAR_EPISODE_EVIDENCE_MISSING", "尚无该集的明确获取或入库证据"
-
-
 def _empty_task() -> dict:
     return {
         "chainId": "",
@@ -235,54 +142,102 @@ def _empty_task() -> dict:
         "acquisitionSource": "",
         "libraryAt": "",
         "librarySource": "",
+        "playableAt": "",
+        "playableSource": "",
+        "outcomeState": "evidence_insufficient",
+        "pipelineOutcome": present_pipeline_outcome(None),
+        "torraFact": None,
     }
 
 
+def _task_matches_exact_target(entry: dict, item: dict) -> bool:
+    if not _matches_identity(entry, item):
+        return False
+    if _text(entry.get("mediaType")) != "tv":
+        return _text(item.get("mediaType")) == "movie"
+    return (
+        _integer(item.get("seasonNumber")) == _integer(entry.get("seasonNumber"))
+        and _integer(item.get("episodeNumber")) == _integer(entry.get("episodeNumber"))
+        and _integer(entry.get("episodeNumber")) > 0
+    )
+
+
+def _current_pipeline_facts(item: dict, current: datetime) -> list[dict]:
+    result = []
+    for fact in item.get("pipelineFacts") or []:
+        if not isinstance(fact, dict) or fact.get("evidence") != "verified" or fact.get("isStale") is True:
+            continue
+        deadline = _as_datetime(fact.get("freshUntil"))
+        if deadline is None or deadline < current.astimezone(timezone.utc):
+            continue
+        result.append(fact)
+    return result
+
+
+def _latest_fact(facts: list[dict], stages: set[str], states: set[str]) -> dict | None:
+    candidates = [
+        fact for fact in facts
+        if _text(fact.get("stage")) in stages and _text(fact.get("state")) in states
+    ]
+    return max(candidates, key=lambda row: _text(row.get("observedAt"))) if candidates else None
+
+
+def _fact_time(fact: dict | None) -> tuple[str, str]:
+    if not fact:
+        return "", ""
+    return _text(fact.get("observedAt")), _text(fact.get("source"))
+
+
 def _public_task(entry: dict, items: list[dict], current: datetime) -> dict:
-    matches = [item for item in items if isinstance(item, dict) and _matches_identity(entry, item)]
+    matches = [
+        item for item in items
+        if isinstance(item, dict) and _task_matches_exact_target(entry, item)
+    ]
     if not matches:
         return _empty_task()
     item = sorted(matches, key=lambda row: _match_rank(entry, row))[0]
+    facts = _current_pipeline_facts(item, current)
+    acquired_fact = _latest_fact(facts, {"torra", "qb"}, {"active", "succeeded"})
+    library_fact = _latest_fact(facts, {"symedia"}, {"succeeded"})
+    playable_fact = _latest_fact(facts, {"emby"}, {"succeeded"})
+    if playable_fact and _text(entry.get("mediaType")) == "tv" and playable_fact.get("scope") != "episode":
+        playable_fact = None
+    acquired_at, acquisition_source = _fact_time(acquired_fact)
+    library_at, library_source = _fact_time(library_fact)
+    playable_at, playable_source = _fact_time(playable_fact)
+    pipeline_outcome = present_pipeline_outcome(item.get("pipelineOutcome"))
+    if pipeline_outcome["state"] == "playable" and not playable_fact:
+        pipeline_outcome = present_pipeline_outcome(None)
+    outcome_state = pipeline_outcome["state"]
+    health_state = {
+        "playable": "normal",
+        "action_required": "action_required",
+        "in_progress": "waiting",
+        "waiting": "waiting",
+        "protected": "protected",
+        "evidence_insufficient": "evidence_insufficient",
+    }.get(outcome_state, "evidence_insufficient")
+    torra = next((fact for fact in facts if fact.get("stage") == "torra"), None)
     common = {
         "chainId": _text(item.get("chainId")),
         "targetKey": _text(item.get("targetKey")),
         "freshUntil": _text(item.get("freshUntil")),
     }
-    if _text(entry.get("mediaType")) != "tv":
-        acquired_at, acquisition_source = _stage_time(
-            item, ACQUISITION_STAGES, {"active", "done", "blocked"}, current
-        )
-        library_at, library_source = _stage_time(item, LIBRARY_STAGES, {"done"}, current)
-        return {
-            **common,
-            "healthState": _text(item.get("healthState")) or "evidence_insufficient",
-            "reasonCode": _text(item.get("reasonCode")),
-            "reasonText": _text(item.get("reasonText")),
-            "observedAt": _text(item.get("observedAt")),
-            "acquiredAt": acquired_at,
-            "acquisitionSource": acquisition_source,
-            "libraryAt": library_at,
-            "librarySource": library_source,
-        }
-    episode_rows = _episode_rows(entry, item, current)
-    acquired_at, acquisition_source = _latest_episode_time(
-        episode_rows,
-        ACQUISITION_STAGES,
-        {"active", "done", "blocked"},
-    )
-    library_at, library_source = _latest_episode_time(episode_rows, LIBRARY_STAGES, {"done"})
-    health_state, reason_code, reason_text = _episode_health(entry, episode_rows)
-    observed_at = max((_text(row.get("observedAt")) for row in episode_rows), default="")
     return {
         **common,
         "healthState": health_state,
-        "reasonCode": reason_code,
-        "reasonText": reason_text,
-        "observedAt": observed_at,
+        "reasonCode": pipeline_outcome["reasonCode"],
+        "reasonText": pipeline_outcome["reasonText"],
+        "observedAt": pipeline_outcome["observedAt"],
         "acquiredAt": acquired_at,
         "acquisitionSource": acquisition_source,
         "libraryAt": library_at,
         "librarySource": library_source,
+        "playableAt": playable_at,
+        "playableSource": playable_source,
+        "outcomeState": outcome_state,
+        "pipelineOutcome": pipeline_outcome,
+        "torraFact": present_pipeline_fact(torra) if torra else None,
     }
 
 
@@ -290,8 +245,7 @@ def _normalize_entry_evidence(entry: dict) -> dict:
     value = dict(entry)
     library_at = _as_datetime(value.get("libraryAt"))
     acquired_at = _as_datetime(value.get("acquiredAt"))
-    if library_at:
-        value["inLibrary"] = True
+    value["inLibrary"] = bool(library_at)
     if acquired_at and library_at and acquired_at > library_at:
         value["acquiredAt"] = ""
         value["acquisitionSource"] = ""
@@ -300,6 +254,10 @@ def _normalize_entry_evidence(entry: dict) -> dict:
 
 def _entry_status(entry: dict, today: str) -> str:
     current = datetime.now(timezone.utc)
+    if entry.get("linkState") == "unlinked":
+        return "unlinked"
+    if entry.get("playableAt") and entry.get("outcomeState") == "playable":
+        return "playable"
     if entry.get("inLibrary") or entry.get("libraryAt"):
         return "library"
     if entry.get("acquiredAt"):
@@ -338,6 +296,28 @@ def _is_pre_subscription_episode(entry: dict) -> bool:
     return bool(created_at and aired_at and aired_at < created_at)
 
 
+def _calendar_link_state(entry: dict) -> str:
+    explicit_scope = bool(entry.get("followScopeExplicit"))
+    if _text(entry.get("mediaType")) == "tv":
+        explicit_scope = explicit_scope and _integer(entry.get("seasonNumber")) >= 0 and _integer(entry.get("episodeNumber")) > 0
+    if not explicit_scope or entry.get("migrationReview"):
+        return "unlinked"
+    if _text(entry.get("subscriptionOrigin")) == "manual":
+        return "manual"
+    torra_fact = entry.get("torraFact") or {}
+    if (
+        entry.get("torraLinked")
+        or _text(entry.get("subscriptionOrigin")) == "torra"
+        or _text(entry.get("sourceLabel")) == "Torra 只读追更"
+        or (
+            torra_fact.get("evidence") == "verified"
+            and torra_fact.get("state") not in {"", "unknown"}
+        )
+    ):
+        return "linked"
+    return "unlinked"
+
+
 def _summary_calendar(calendar: dict, current: datetime) -> dict:
     today = current.astimezone(BEIJING_TZ).strftime("%Y-%m-%d")
     grouped = {}
@@ -348,7 +328,9 @@ def _summary_calendar(calendar: dict, current: datetime) -> dict:
         entries = grouped[date_key]
         status_counts = {
             state: sum(_entry_status(entry, today) == state for entry in entries)
-            for state in ("upcoming", "acquiring", "library", "protected", "missing", "unknown")
+            for state in (
+                "upcoming", "acquiring", "library", "playable", "protected", "missing", "unknown", "unlinked",
+            )
         }
         days.append({
             "date": date_key,
@@ -399,6 +381,8 @@ def _torra_calendar_source_item(row: dict) -> dict | None:
         "season_number": season,
         "source": "torra",
         "source_label": "Torra 只读追更",
+        "subscription_origin": "torra",
+        "torra_linked": True,
         "read_only": True,
         # 远端创建时间不在公开订阅响应中，使用本次可靠读取时间避免把历史集误判为缺集。
         "subscribed_at": _text(row.get("observedAt")),
@@ -564,9 +548,10 @@ class CalendarTimelineService:
         start: date | None = None,
         end: date | None = None,
         detail_date: date | None = None,
+        include_unlinked: bool = False,
     ) -> dict:
         current = self.clock()
-        cacheable = start is None and end is None and detail_date is None
+        cacheable = start is None and end is None and detail_date is None and not include_unlinked
         if detail_date:
             start = end = detail_date
             year, month = detail_date.year, detail_date.month
@@ -574,18 +559,25 @@ class CalendarTimelineService:
         task_service = self.app.extensions.get("mcc_task_chain_v2_service")
         task_payload = task_service.full_snapshot() if task_service else {"items": [], "version": ""}
         task_items = task_payload.get("items") or []
-        raw_entries = [_normalize_entry_evidence({
-            **entry,
-            "airAt": f"{entry.get('date')}T00:00:00+08:00" if entry.get("date") else "",
-            **_public_task(entry, task_items, current),
-        }) for entry in calendar.get("entries") or []]
+        raw_entries = []
+        for entry in calendar.get("entries") or []:
+            value = _normalize_entry_evidence({
+                **entry,
+                "airAt": f"{entry.get('date')}T00:00:00+08:00" if entry.get("date") else "",
+                **_public_task(entry, task_items, current),
+            })
+            raw_entries.append({**value, "linkState": _calendar_link_state(value)})
         excluded_before_subscription = sum(_is_pre_subscription_episode(entry) for entry in raw_entries)
         entries = [entry for entry in raw_entries if not _is_pre_subscription_episode(entry)]
+        excluded_unlinked = sum(entry.get("linkState") == "unlinked" for entry in entries)
+        if not include_unlinked:
+            entries = [entry for entry in entries if entry.get("linkState") != "unlinked"]
         today = current.astimezone(BEIJING_TZ).strftime("%Y-%m-%d")
         entries = [{**entry, "status": _entry_status(entry, today)} for entry in entries]
         calendar = {
             **calendar,
             "timeZone": "Asia/Shanghai",
+            "includeUnlinked": bool(include_unlinked),
             "entries": entries,
             "view": view or "legacy",
             "stats": {
@@ -596,11 +588,16 @@ class CalendarTimelineService:
                 "pending": sum(not bool(entry.get("inLibrary")) for entry in entries),
                 "acquired": sum(bool(entry.get("acquiredAt")) for entry in entries),
                 "libraryEvidence": sum(bool(entry.get("libraryAt")) for entry in entries),
+                "playable": sum(entry.get("status") == "playable" for entry in entries),
+                "unlinked": excluded_unlinked,
+                "excludedUnlinked": 0 if include_unlinked else excluded_unlinked,
                 "actionRequired": sum(entry.get("healthState") == "action_required" for entry in entries),
                 "excludedBeforeSubscription": excluded_before_subscription,
                 "statusCounts": {
                     state: sum(entry.get("status") == state for entry in entries)
-                    for state in ("upcoming", "acquiring", "library", "protected", "missing", "unknown")
+                    for state in (
+                        "upcoming", "acquiring", "library", "playable", "protected", "missing", "unknown", "unlinked",
+                    )
                 },
             },
         }
@@ -648,6 +645,7 @@ def register_calendar_timeline(app: Flask, calendar_loader=None, clock=None):
         detail_date = _parse_date(request.args.get("date")) if request.args.get("date") else None
         from_value = _parse_date(request.args.get("from")) if request.args.get("from") else None
         to_value = _parse_date(request.args.get("to")) if request.args.get("to") else None
+        include_unlinked = _truthy(request.args.get("includeUnlinked"))
         invalid_date = (
             bool(request.args.get("date")) and not detail_date
             or bool(request.args.get("from")) and not from_value
@@ -676,6 +674,7 @@ def register_calendar_timeline(app: Flask, calendar_loader=None, clock=None):
                 start=from_value,
                 end=to_value,
                 detail_date=detail_date,
+                include_unlinked=include_unlinked,
             )
         except Exception:
             return _error("CALENDAR_TIMELINE_READ_FAILED", "日历时间线读取失败", 502)

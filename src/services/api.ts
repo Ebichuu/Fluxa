@@ -326,10 +326,13 @@ export function getSubscriptionCalendarTimeline(
   year: number,
   month: number,
   mediaType: 'all' | 'movie' | 'tv' = 'all',
-  options?: RequestOptions
+  options?: RequestOptions,
+  includeUnlinked = false
 ): Promise<SubscriptionCalendarTimelineResponse> {
+  const query = new URLSearchParams({ year: String(year), month: String(month), type: mediaType });
+  if (includeUnlinked) query.set('includeUnlinked', '1');
   return readConditionalJson<SubscriptionCalendarTimelineResponse>(
-    `/api/v2/calendar?year=${year}&month=${month}&type=${mediaType}`,
+    `/api/v2/calendar?${query.toString()}`,
     options
   );
 }
@@ -338,10 +341,15 @@ export function getSubscriptionCalendarSummary(
   year: number,
   month: number,
   mediaType: 'all' | 'movie' | 'tv' = 'all',
-  options?: RequestOptions
+  options?: RequestOptions,
+  includeUnlinked = false
 ): Promise<SubscriptionCalendarTimelineResponse> {
+  const query = new URLSearchParams({
+    year: String(year), month: String(month), type: mediaType, view: 'summary'
+  });
+  if (includeUnlinked) query.set('includeUnlinked', '1');
   return readConditionalJson<SubscriptionCalendarTimelineResponse>(
-    `/api/v2/calendar?year=${year}&month=${month}&type=${mediaType}&view=summary`,
+    `/api/v2/calendar?${query.toString()}`,
     options
   );
 }
@@ -350,7 +358,8 @@ export function getSubscriptionCalendarRangeSummary(
   from: string,
   to: string,
   mediaType: 'all' | 'movie' | 'tv' = 'all',
-  options?: RequestOptions
+  options?: RequestOptions,
+  includeUnlinked = false
 ): Promise<SubscriptionCalendarTimelineResponse> {
   const [year = '', month = ''] = from.split('-');
   const query = new URLSearchParams({
@@ -361,6 +370,7 @@ export function getSubscriptionCalendarRangeSummary(
     from,
     to
   });
+  if (includeUnlinked) query.set('includeUnlinked', '1');
   return readConditionalJson<SubscriptionCalendarTimelineResponse>(
     `/api/v2/calendar?${query.toString()}`,
     options
@@ -370,10 +380,13 @@ export function getSubscriptionCalendarRangeSummary(
 export function getSubscriptionCalendarDateDetail(
   date: string,
   mediaType: 'all' | 'movie' | 'tv' = 'all',
-  options?: RequestOptions
+  options?: RequestOptions,
+  includeUnlinked = false
 ): Promise<SubscriptionCalendarTimelineResponse> {
+  const query = new URLSearchParams({ date, type: mediaType, view: 'detail' });
+  if (includeUnlinked) query.set('includeUnlinked', '1');
   return readConditionalJson<SubscriptionCalendarTimelineResponse>(
-    `/api/v2/calendar?date=${encodeURIComponent(date)}&type=${mediaType}&view=detail`,
+    `/api/v2/calendar?${query.toString()}`,
     options
   );
 }

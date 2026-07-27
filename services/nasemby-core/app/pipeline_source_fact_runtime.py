@@ -312,6 +312,15 @@ def _emby_fact(context, scope, window):
     return _tv_emby_fact(index, context, scope, window)
 
 
+def build_torra_source_fact(context: dict, *, observed_at: str) -> dict:
+    observed = _parse(observed_at)
+    window = {
+        "observedAt": _iso(observed),
+        "freshUntil": _iso(observed + timedelta(minutes=5)),
+    }
+    return _torra_fact(context, target_scope_for_item(context), window)
+
+
 def build_pipeline_source_facts(context: dict, *, observed_at: str) -> list[dict]:
     observed = _parse(observed_at)
     window = {
@@ -320,7 +329,7 @@ def build_pipeline_source_facts(context: dict, *, observed_at: str) -> list[dict
     }
     scope = target_scope_for_item(context)
     facts = [
-        _torra_fact(context, scope, window),
+        build_torra_source_fact(context, observed_at=observed_at),
         _qb_fact(context, window),
         _cloud115_fact(context, window),
         _symedia_fact(context, window),

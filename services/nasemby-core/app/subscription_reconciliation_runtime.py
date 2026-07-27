@@ -7,6 +7,10 @@ from flask import Flask, jsonify
 
 from app.health_state_runtime import evidence
 from app.http_runtime import current_request_id
+from app.pipeline_fact_runtime import normalize_pipeline_fact, target_scope_for_item
+from app.pipeline_outcome_runtime import PIPELINE_OUTCOMES, derive_pipeline_outcome
+from app.pipeline_source_fact_runtime import build_torra_source_fact
+from app.task_public_runtime import present_pipeline_fact, present_pipeline_outcome
 from app.torra_subscription_sync_runtime import normalize_torra_subscription
 from app.torra_subscription_keys import (
     resolve_torra_subscription_key,
@@ -87,16 +91,90 @@ def _title_identity(row: dict):
     )
 
 
-def _fulfillment(local: dict | None, remote: dict | None, reconciliation_state: str) -> str:
-    remote_status = (remote or {}).get("remote_status") or {}
-    if (local or {}).get("inLibrary") or remote_status.get("completed"):
-        return "completed"
-    if (local or {}).get("paused") or (remote and not remote_status.get("enabled", True)):
-        return "paused"
+def _pipeline_projection(
+    local: dict | None,
+    remote: dict | None,
+    reconciliation_state: str,
+    observed_at: str,
+    fresh_until: str,
+    now_value: datetime,
+) -> tuple[dict, dict]:
+    remote_item = (remote or {}).get("item") or {}
+    primary = local or {
+        "mediaType": remote_item.get("media_type"),
+        "tmdbId": remote_item.get("tmdb_id"),
+        "seasonNumber": remote_item.get("season_number", remote_item.get("target_season", 0)),
+    }
+    context = {
+        "mediaType": primary.get("mediaType"),
+        "tmdbId": primary.get("tmdbId"),
+        "seasonNumber": primary.get("seasonNumber"),
+    }
+    if (local or {}).get("blocked") or reconciliation_state == "conflict":
+        state = "failed"
+        evidence_kind = "verified"
+        reason_code = "SUBSCRIPTION_BLOCKED" if (local or {}).get("blocked") else "SUBSCRIPTION_IDENTITY_CONFLICT"
+        reason_text = "追更当前被阻塞" if (local or {}).get("blocked") else "本地与 Torra 身份冲突"
+        source = "Fluxa/Torra 对账"
+    elif remote:
+        internal_fact = build_torra_source_fact(
+            {**context, "torra": (remote or {}).get("raw") or {}},
+            observed_at=observed_at,
+        )
+        outcome = derive_pipeline_outcome(
+            [internal_fact],
+            target_scope=target_scope_for_item(context),
+            now=now_value,
+        )
+        return present_pipeline_fact(internal_fact), present_pipeline_outcome(outcome)
+    elif reconciliation_state == "only_fluxa" and (local or {}).get("origin") == "manual":
+        state = "waiting"
+        evidence_kind = "verified"
+        reason_code = "PENDING_TORRA_SYNC"
+        reason_text = "已保存追更意图，尚未同步到 Torra"
+        source = "Fluxa"
+    else:
+        state = "unknown"
+        evidence_kind = "missing"
+        reason_code = "TORRA_EVIDENCE_MISSING"
+        reason_text = "缺少可验证的 Torra 订阅证据"
+        source = ""
+    internal_fact = normalize_pipeline_fact({
+        "stage": "torra",
+        "state": state,
+        "scope": target_scope_for_item(context),
+        "evidence": evidence_kind,
+        "observedAt": observed_at,
+        "freshUntil": fresh_until,
+        "source": source,
+        "sourceRef": str((remote or {}).get("remote_id") or ""),
+        "reasonCode": reason_code,
+        "reasonText": reason_text,
+    })
+    outcome = derive_pipeline_outcome(
+        [internal_fact],
+        target_scope=target_scope_for_item(context),
+        now=now_value,
+    )
+    return present_pipeline_fact(internal_fact), present_pipeline_outcome(outcome)
+
+
+def _fulfillment(
+    local: dict | None,
+    remote: dict | None,
+    reconciliation_state: str,
+    torra_fact: dict,
+) -> str:
     if (local or {}).get("blocked") or reconciliation_state in {"conflict", "remote_missing"}:
         return "blocked"
+    if (local or {}).get("paused") or (
+        remote and ((remote or {}).get("remote_status") or {}).get("enabled") is False
+    ):
+        return "paused"
     if reconciliation_state == "only_fluxa":
         return "pending_sync"
+    if torra_fact.get("state") == "succeeded":
+        return "completed"
     return "following"
 
 
@@ -156,7 +234,14 @@ def _health(reconciliation_state: str, local: dict | None, remote: dict | None, 
     )
 
 
-def _public_item(local: dict | None, remote: dict | None, state: str, observed_at: str, fresh_until: str) -> dict:
+def _public_item(
+    local: dict | None,
+    remote: dict | None,
+    state: str,
+    observed_at: str,
+    fresh_until: str,
+    now_value: datetime,
+) -> dict:
     remote_item = (remote or {}).get("item") or {}
     primary = local or {
         "title": remote_item.get("title"),
@@ -175,6 +260,14 @@ def _public_item(local: dict | None, remote: dict | None, state: str, observed_a
             remote_id or local.get("remoteId"),
         )
     health = _health(state, local, remote, observed_at, fresh_until)
+    torra_fact, pipeline_outcome = _pipeline_projection(
+        local,
+        remote,
+        state,
+        observed_at,
+        fresh_until,
+        now_value,
+    )
     return {
         "id": public_local_key or torra_public_subscription_key(remote_id),
         "localId": public_local_key,
@@ -184,17 +277,20 @@ def _public_item(local: dict | None, remote: dict | None, state: str, observed_a
         "tmdbId": str(primary.get("tmdbId") or remote_item.get("tmdb_id") or ""),
         "seasonNumber": _integer(primary.get("seasonNumber", remote_item.get("season_number", 0)), 0),
         "reconciliationState": state,
-        "fulfillmentState": _fulfillment(local, remote, state),
+        "fulfillmentState": _fulfillment(local, remote, state, torra_fact),
+        "torraFact": torra_fact,
+        "pipelineOutcome": pipeline_outcome,
         **health,
         "local": {
             "present": local is not None,
             "readOnly": bool((local or {}).get("readOnly")),
             "sourceLabel": str((local or {}).get("sourceLabel") or ""),
+            "origin": str((local or {}).get("origin") or ""),
         },
         "torra": {
             "present": remote is not None,
             "enabled": bool(((remote or {}).get("remote_status") or {}).get("enabled", False)),
-            "completed": bool(((remote or {}).get("remote_status") or {}).get("completed", False)),
+            "completed": torra_fact.get("state") == "succeeded",
             "mappingStatus": str((remote or {}).get("mapping_status") or ""),
         },
     }
@@ -246,10 +342,10 @@ class SubscriptionReconciliationService:
             remote_index = remote_by_id.get(remote_id)
             if remote_index is None:
                 state = "remote_missing" if source_available else "linked"
-                rows.append(_public_item(local, None, state, observed_at, fresh_until))
+                rows.append(_public_item(local, None, state, observed_at, fresh_until, now_value))
                 used_local.add(local_index)
                 continue
-            rows.append(_public_item(local, remotes[remote_index], "linked", observed_at, fresh_until))
+            rows.append(_public_item(local, remotes[remote_index], "linked", observed_at, fresh_until, now_value))
             used_local.add(local_index)
             used_remote.add(remote_index)
 
@@ -273,13 +369,18 @@ class SubscriptionReconciliationService:
             remote_indexes = identity_to_remote[identity]
             if len(local_indexes) == 1 and len(remote_indexes) == 1:
                 local_index, remote_index = local_indexes[0], remote_indexes[0]
-                rows.append(_public_item(locals_[local_index], remotes[remote_index], "linked", observed_at, fresh_until))
+                rows.append(_public_item(
+                    locals_[local_index], remotes[remote_index], "linked", observed_at, fresh_until, now_value,
+                ))
                 used_local.add(local_index)
                 used_remote.add(remote_index)
                 continue
             for local_index in local_indexes:
                 if local_index not in used_local:
-                    rows.append(_public_item(locals_[local_index], remotes[remote_indexes[0]], "conflict", observed_at, fresh_until))
+                    rows.append(_public_item(
+                        locals_[local_index], remotes[remote_indexes[0]], "conflict",
+                        observed_at, fresh_until, now_value,
+                    ))
                     used_local.add(local_index)
             used_remote.update(remote_indexes)
 
@@ -304,16 +405,19 @@ class SubscriptionReconciliationService:
             local_indexes = title_to_local[identity]
             remote_indexes = title_to_remote[identity]
             for local_index in local_indexes:
-                rows.append(_public_item(locals_[local_index], remotes[remote_indexes[0]], "conflict", observed_at, fresh_until))
+                rows.append(_public_item(
+                    locals_[local_index], remotes[remote_indexes[0]], "conflict",
+                    observed_at, fresh_until, now_value,
+                ))
                 used_local.add(local_index)
             used_remote.update(remote_indexes)
 
         for index, local in enumerate(locals_):
             if index not in used_local:
-                rows.append(_public_item(local, None, "only_fluxa", observed_at, fresh_until))
+                rows.append(_public_item(local, None, "only_fluxa", observed_at, fresh_until, now_value))
         for index, remote in enumerate(remotes):
             if index not in used_remote:
-                rows.append(_public_item(None, remote, "only_torra", observed_at, fresh_until))
+                rows.append(_public_item(None, remote, "only_torra", observed_at, fresh_until, now_value))
 
         if not source_available:
             for row in rows:
@@ -338,6 +442,10 @@ class SubscriptionReconciliationService:
             state: sum(row["healthState"] == state for row in rows)
             for state in ("normal", "waiting", "protected", "action_required", "evidence_insufficient")
         }
+        outcome_counts = {
+            state: sum((row.get("pipelineOutcome") or {}).get("state") == state for row in rows)
+            for state in PIPELINE_OUTCOMES
+        }
         return {
             "ok": True,
             "configured": configured,
@@ -350,6 +458,7 @@ class SubscriptionReconciliationService:
                 "reconciliation": reconciliation_counts,
                 "fulfillment": fulfillment_counts,
                 "health": health_counts,
+                "outcome": outcome_counts,
             },
             "items": rows,
         }

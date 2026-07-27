@@ -1,4 +1,5 @@
 import type { RssResourceScope, RssResourceScopeCounts } from './rssSeedLibrary';
+import type { PipelineFact, PipelineOutcome, PipelineOutcomeState } from './taskChain';
 
 export interface SubscriptionCalendarEntry {
   date: string;
@@ -32,10 +33,19 @@ export interface SubscriptionCalendarEntry {
   followScopeExplicit?: boolean;
   includePastEpisodes?: boolean;
   allowedDelayHours?: number;
+  playableAt?: string;
+  playableSource?: string;
+  outcomeState?: PipelineOutcomeState;
+  pipelineOutcome?: PipelineOutcome;
+  torraFact?: PipelineFact | null;
+  linkState?: 'linked' | 'manual' | 'unlinked';
+  subscriptionOrigin?: 'manual' | 'auto' | 'torra' | 'unknown' | string;
+  torraLinked?: boolean;
+  migrationReview?: boolean;
   status?: SubscriptionCalendarStatus;
 }
 
-export type SubscriptionCalendarStatus = 'upcoming' | 'acquiring' | 'library' | 'protected' | 'missing' | 'unknown';
+export type SubscriptionCalendarStatus = 'upcoming' | 'acquiring' | 'library' | 'playable' | 'protected' | 'missing' | 'unknown' | 'unlinked';
 
 export interface SubscriptionCalendarDayPreview {
   date?: string;
@@ -55,9 +65,11 @@ export interface SubscriptionCalendarDaySummary {
     upcoming: number;
     acquiring: number;
     library: number;
+    playable: number;
     protected: number;
     missing: number;
     unknown: number;
+    unlinked: number;
   };
   preview: SubscriptionCalendarDayPreview[];
   hasMore: boolean;
@@ -74,6 +86,9 @@ export interface SubscriptionCalendar {
     pending: number;
     acquired?: number;
     libraryEvidence?: number;
+    playable?: number;
+    unlinked?: number;
+    excludedUnlinked?: number;
     actionRequired?: number;
     statusCounts?: Record<SubscriptionCalendarStatus, number>;
   };
@@ -82,6 +97,7 @@ export interface SubscriptionCalendar {
   errors?: string[];
   errorCount?: number;
   view?: 'legacy' | 'summary' | 'detail';
+  includeUnlinked?: boolean;
   days?: SubscriptionCalendarDaySummary[];
   searchIndex?: SubscriptionCalendarDayPreview[];
 }
@@ -109,6 +125,12 @@ export interface SubscriptionItem {
   posterUrl: string;
   backdropUrl?: string;
   progressText: string;
+  progress?: {
+    state: 'confirmed' | 'unconfirmed';
+    confirmed: number | null;
+    total: number | null;
+    text: string;
+  };
   inLibrary: boolean;
   updatedAt: string;
   createdAt?: string;
@@ -136,6 +158,9 @@ export interface SubscriptionItem {
   blockingReason?: string;
   chainState?: 'active' | 'blocked' | 'completed' | 'waiting' | string;
   chainProgress?: number;
+  torraFact?: PipelineFact | null;
+  pipelineOutcome?: PipelineOutcome;
+  outcomeState?: PipelineOutcomeState;
 }
 
 export type SubscriptionCapabilityState = 'ready' | 'disabled' | 'error' | 'unknown';
@@ -166,6 +191,7 @@ export interface SubscriptionWorkbenchResponse {
     pending: number;
     following: number;
     completed: number;
+    playable: number;
     actionRequired: number;
     inLibrary: number;
   };
@@ -284,13 +310,15 @@ export interface SubscriptionReconciliationItem {
   seasonNumber: number;
   reconciliationState: SubscriptionReconciliationState;
   fulfillmentState: SubscriptionFulfillmentState;
+  torraFact: PipelineFact;
+  pipelineOutcome: PipelineOutcome;
   healthState: SubscriptionHealthState;
   observedAt: string;
   freshUntil: string;
   source: string;
   reasonCode: string;
   reasonText: string;
-  local: { present: boolean; readOnly: boolean; sourceLabel: string };
+  local: { present: boolean; readOnly: boolean; sourceLabel: string; origin: string };
   torra: { present: boolean; enabled: boolean; completed: boolean; mappingStatus: string };
 }
 
@@ -306,6 +334,7 @@ export interface SubscriptionReconciliationResponse {
     reconciliation: Record<SubscriptionReconciliationState, number>;
     fulfillment: Record<SubscriptionFulfillmentState, number>;
     health: Record<SubscriptionHealthState, number>;
+    outcome: Record<PipelineOutcomeState, number>;
   };
   items: SubscriptionReconciliationItem[];
 }

@@ -7,6 +7,7 @@ from flask import Flask, jsonify, request
 from app.http_runtime import current_request_id
 from app import discover_runtime
 from app.contract_mapping import map_subscription_item
+from app.task_public_runtime import present_pipeline_fact, present_pipeline_outcome
 
 
 def _truthy(value):
@@ -101,12 +102,41 @@ def _scope(row):
     return "按剧集持续追更"
 
 
-def _step_map(chain_item):
+def _fact_map(chain_item):
     return {
-        str(step.get("key")): step
-        for step in (chain_item or {}).get("steps", [])
-        if isinstance(step, dict) and step.get("key")
+        str(fact.get("stage")): fact
+        for fact in (chain_item or {}).get("pipelineFacts", [])
+        if isinstance(fact, dict) and fact.get("stage")
     }
+
+
+def _fact_stage(fact, fallback_detail):
+    row = fact if isinstance(fact, dict) else {}
+    state = str(row.get("state") or "unknown")
+    status = {
+        "succeeded": "done",
+        "active": "active",
+        "waiting": "waiting",
+        "failed": "blocked",
+        "protected": "protected",
+        "not_applicable": "waiting",
+    }.get(state, "unknown")
+    return {
+        "status": status,
+        "detail": str(row.get("reasonText") or fallback_detail),
+    }
+
+
+def _outcome(chain_item):
+    return present_pipeline_outcome((chain_item or {}).get("pipelineOutcome"))
+
+
+def _legacy_chain_state(outcome_state):
+    return {
+        "playable": "completed",
+        "action_required": "blocked",
+        "in_progress": "active",
+    }.get(str(outcome_state or ""), "waiting")
 
 
 def _chain_item_for_row(row, chain):
@@ -125,34 +155,28 @@ def _chain_item_for_row(row, chain):
 def _item_snapshot(row, chain_item=None):
     mapped = map_subscription_item(row) or {}
     chain_item = chain_item or {}
-    steps = _step_map(chain_item)
-    blocked = next((step for step in steps.values() if step.get("status") == "blocked"), None)
-    qb = steps.get("download") or {}
-    cloud = steps.get("cloud115") or {}
-    library = steps.get("library") or {}
+    facts = _fact_map(chain_item)
+    pipeline_outcome = _outcome(chain_item)
+    outcome_state = pipeline_outcome["state"]
     source_ids = chain_item.get("sourceIds") or {}
+    torra_fact = present_pipeline_fact(facts["torra"]) if facts.get("torra") else None
     return {
         **mapped,
+        "status": "done" if outcome_state == "playable" else "pending",
         "scope": _scope(row),
         "missingEpisodes": _missing_episodes(row),
         "torra": {
             "status": "linked" if source_ids.get("torraId") or row.get("torra_remote_id") else "not_linked",
-            "detail": str((steps.get("subscription") or {}).get("detail") or "Torra 尚未关联"),
+            "detail": str((torra_fact or {}).get("reasonText") or "Torra 尚未关联"),
         },
-        "qb": {
-            "status": str(qb.get("status") or "unknown"),
-            "detail": str(qb.get("detail") or "未接入 qB 任务证据"),
-        },
-        "cloud115": {
-            "status": str(cloud.get("status") or "unknown"),
-            "detail": str(cloud.get("detail") or "未接入 115 记录"),
-        },
-        "library": {
-            "status": str(library.get("status") or ("done" if mapped.get("inLibrary") else "waiting")),
-            "detail": str(library.get("detail") or ("已入库" if mapped.get("inLibrary") else "尚未入库")),
-        },
-        "blockingReason": str(blocked.get("detail") if blocked else "") if blocked else "",
-        "chainState": str(chain_item.get("state") or ("completed" if mapped.get("status") == "done" else "waiting")),
+        "qb": _fact_stage(facts.get("qb"), "未接入 qB 任务证据"),
+        "cloud115": _fact_stage(facts.get("cloud115"), "未接入 115 文件级证据"),
+        "library": _fact_stage(facts.get("symedia"), "尚无 Symedia 整理证据"),
+        "torraFact": torra_fact,
+        "pipelineOutcome": pipeline_outcome,
+        "outcomeState": outcome_state,
+        "blockingReason": pipeline_outcome["reasonText"] if outcome_state == "action_required" else "",
+        "chainState": _legacy_chain_state(outcome_state),
         "chainProgress": int(chain_item.get("progress") or 0),
     }
 
@@ -315,17 +339,31 @@ class SubscriptionWorkbenchService:
                 reconciliation_error = "追更对账读取失败"
         chain = {}
         chain_error = ""
-        task_service = self.app.extensions.get("mcc_task_chain_service")
+        task_service = self.app.extensions.get("mcc_task_chain_v2_service")
+        legacy_task_service = self.app.extensions.get("mcc_task_chain_service")
         if task_service:
             try:
-                chain_payload = task_service.get_chain()
-                chain = {
-                    str(item.get("sourceIds", {}).get("subscriptionId") or ""): item
-                    for item in (chain_payload.get("items") or [])
-                    if isinstance(item, dict) and item.get("sourceIds", {}).get("subscriptionId")
-                }
+                chain_payload = task_service.full_snapshot()
             except Exception:
                 chain_error = "任务链读取失败"
+        elif legacy_task_service:
+            try:
+                chain_payload = legacy_task_service.get_chain()
+            except Exception:
+                chain_error = "任务链读取失败"
+        if 'chain_payload' in locals() and isinstance(chain_payload, dict):
+            for item in chain_payload.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                source_ids = item.get("sourceIds") or {}
+                subscription_ids = [
+                    item.get("subscriptionId"),
+                    source_ids.get("subscriptionId"),
+                    *(source_ids.get("subscriptionIds") or []),
+                ]
+                for subscription_id in subscription_ids:
+                    if subscription_id:
+                        chain[str(subscription_id)] = item
 
         reconciliation_items = {
             str(item.get("localId") or ""): item
@@ -339,7 +377,8 @@ class SubscriptionWorkbenchService:
             visuals = discover_runtime.resolve_subscription_visuals(row, fetch=False)
             if visuals:
                 row.update(visuals)
-            mapped = _item_snapshot(row, _chain_item_for_row(row, chain))
+            chain_item = _chain_item_for_row(row, chain)
+            mapped = _item_snapshot(row, chain_item)
             local_key = str(mapped.get("id") or discover_runtime.get_subscription_item_key(row) or "")
             if (
                 poster_missing
@@ -358,13 +397,21 @@ class SubscriptionWorkbenchService:
                     "observedAt": recon.get("observedAt"),
                     "freshUntil": recon.get("freshUntil"),
                 })
+                if not chain_item:
+                    mapped["torraFact"] = recon.get("torraFact")
+                    mapped["pipelineOutcome"] = present_pipeline_outcome(recon.get("pipelineOutcome"))
+                    mapped["outcomeState"] = mapped["pipelineOutcome"]["state"]
+                    mapped["chainState"] = _legacy_chain_state(mapped["outcomeState"])
+                    mapped["status"] = "done" if mapped["outcomeState"] == "playable" else "pending"
             mapped_items.append(mapped)
 
         for recon in (reconciliation or {}).get("items", []):
             if not isinstance(recon, dict) or recon.get("localId") or recon.get("reconciliationState") != "only_torra":
                 continue
             fulfillment_state = str(recon.get("fulfillmentState") or "following")
-            remote_completed = fulfillment_state == "completed"
+            pipeline_outcome = present_pipeline_outcome(recon.get("pipelineOutcome"))
+            outcome_state = pipeline_outcome["state"]
+            torra_fact = recon.get("torraFact")
             remote_visuals = discover_runtime.resolve_subscription_visuals({
                 "title": recon.get("title") or "",
                 "media_type": recon.get("mediaType") or "unknown",
@@ -378,15 +425,24 @@ class SubscriptionWorkbenchService:
                 "mediaType": recon.get("mediaType") or "unknown",
                 "tmdbId": recon.get("tmdbId") or "",
                 "posterUrl": remote_visuals.get("poster_url") or "",
-                "progressText": "Torra 订阅已完成" if remote_completed else "Torra 正在追更",
+                "progress": {
+                    "state": "unconfirmed",
+                    "confirmed": None,
+                    "total": None,
+                    "text": "集数进度未确认" if recon.get("mediaType") == "tv" else "进度未确认",
+                },
+                "progressText": "集数进度未确认" if recon.get("mediaType") == "tv" else "进度未确认",
                 "inLibrary": False,
                 "updatedAt": recon.get("observedAt") or checked_at,
                 "createdAt": recon.get("observedAt") or checked_at,
                 "sourceLabel": "Torra 已有订阅",
-                "status": "done" if remote_completed else "pending",
+                "status": "done" if outcome_state == "playable" else "pending",
                 "origin": "torra",
                 "readOnly": True,
-                "chainState": "completed" if remote_completed else "waiting",
+                "chainState": _legacy_chain_state(outcome_state),
+                "outcomeState": outcome_state,
+                "pipelineOutcome": pipeline_outcome,
+                "torraFact": torra_fact,
                 "torraSyncState": "current",
                 "torraMappingStatus": "mapped",
                 "reconciliationState": recon.get("reconciliationState"),
@@ -403,24 +459,24 @@ class SubscriptionWorkbenchService:
             ):
                 remote_item["_posterBackfillId"] = str(remote_item.get("id") or "")
             mapped_items.append(remote_item)
+        playable_count = sum(item.get("outcomeState") == "playable" for item in mapped_items)
         stats = {
             "total": len(mapped_items),
             "movie": sum(item.get("mediaType") == "movie" for item in mapped_items),
             "tv": sum(item.get("mediaType") == "tv" for item in mapped_items),
-            "pending": sum(item.get("chainState") not in {"completed"} for item in mapped_items),
-            "following": sum(item.get("fulfillmentState") == "following" for item in mapped_items),
-            "completed": sum(
-                item.get("fulfillmentState") == "completed"
-                or (not item.get("fulfillmentState") and item.get("chainState") == "completed")
+            "pending": len(mapped_items) - playable_count,
+            "following": sum(
+                (item.get("torraFact") or {}).get("state") in {"waiting", "active"}
+                and item.get("outcomeState") != "action_required"
                 for item in mapped_items
             ),
+            "playable": playable_count,
+            "completed": playable_count,
             "actionRequired": sum(
-                item.get("healthState") == "action_required"
-                or item.get("fulfillmentState") == "blocked"
-                or bool(item.get("blockingReason"))
+                item.get("outcomeState") == "action_required"
                 for item in mapped_items
             ),
-            "inLibrary": sum(item.get("inLibrary") is True or item.get("library", {}).get("status") == "done" for item in mapped_items),
+            "inLibrary": sum(item.get("library", {}).get("status") == "done" for item in mapped_items),
         }
         filtered_items = mapped_items
         if media_type in {"movie", "tv"}:

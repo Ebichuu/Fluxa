@@ -14,7 +14,7 @@
 - 115、Telegram、HDHive / pansou 和 MoviePilot 的 v2 细分接口继续保留；MoviePilot 阶段 7 已增加默认关闭的人工备用预览/推送，其他能力延期。
 - Emby、qBittorrent、Torra、Symedia 的服务端适配和凭据隔离。
 - 统一任务链、qB 暂停/恢复和证据驱动的 Emby 刷新。
-- 六阶段独立事实契约与统一结果派生：`torra/qb/cloud115/symedia/strm/emby` 分别保存；P0.2 已接入 Torra、qB、Symedia 与 Emby 明确证据，115 分类摘要不能绑定媒体时及 STRM 独立来源未接入时保持 `unknown + missing`。旧页面暂不消费新结果，旧状态只由六阶段事实作兼容投影。
+- 六阶段独立事实契约与统一结果派生：`torra/qb/cloud115/symedia/strm/emby` 分别保存；P0.2 已接入 Torra、qB、Symedia 与 Emby 明确证据，115 分类摘要不能绑定媒体时及 STRM 独立来源未接入时保持 `unknown + missing`。任务、首页、作品、追更和日历已消费新结果，旧状态只由六阶段事实作兼容投影。
 - 全局作品搜索与单作品生命周期聚合：合并本地追更、已识别 RSS、任务、日历和 Emby，并在本地无结果时使用 TMDB 只读补充。
 - 按明确 TMDB 身份补充本地追更海报，并保持仅 Torra 条目只读。
 - 单一 `data/`、`db/`、`upload/` 持久边界。
@@ -90,13 +90,13 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/v2/tasks/summary`：返回唯一任务链、健康/身份/执行三维状态、兼容 `userCounts`、新 `outcomeCounts`、阶段和服务轻量摘要，支持 ETag 条件读取。
 - `/api/v2/tasks/chains`：按 `chainId/targetKey` 合并重复来源，默认分页返回 20 条摘要；支持可重复 `outcomeState`、兼容 `userState`、可播放日期、健康状态、身份和增量时间筛选，顶层返回 `outcomeState/playableAt`；任务中心按“需要处理 / 处理中 / 已可播放 / 无需处理”消费新结果。
 - `/api/v2/tasks/chains/:chainId`：按需返回单链阶段证据、artifact、原因、动作资格及可选 `pipelineFacts/pipelineOutcome`；完整聚合快照幂等写入本地资源事件账本，但不执行外部动作。
-- `/api/v2/calendar`：只读聚合追更播出日期与任务链的获取、入库证据，使用 `Asia/Shanghai` 并支持 ETag；月摘要与完整轻量搜索索引共用 300 秒完整快照，日期详情按需读取。
+- `/api/v2/calendar`：只读聚合追更播出日期与精确目标的六阶段事实，使用 `Asia/Shanghai` 并支持 ETag；默认排除未关联、自动来源和范围不明记录，显式 `includeUnlinked=1` 才读取高级项；只有 Emby 电影或集级证据生成 `playable`，月摘要与完整轻量搜索索引共用 300 秒完整快照。
 - `/api/v2/subscriptions/capabilities`：返回本地写入、Torra 推送和调度器真实运行状态，发现页据此显示追更确认文案。
 - `/api/qbittorrent/actions/:action/preview`：只读返回暂停/恢复动作资格、实际影响对象、跳过数量、禁止原因、确认要求、幂等键和冷却时间；浏览器提交任务 DTO 中的 40 位不透明引用，服务端从当前 qB 快照解析真实 hash，不调用 qB 写接口。
 - `/api/qbittorrent/actions/:action`：执行前复查任务状态并校验可选预览幂等键，状态变化时拒绝旧确认；旧客户端真实 hash 输入继续兼容，但执行结果、错误和活动记录只返回脱敏公开引用。
 - `/api/v2/home/summary`：基于 `pipelineOutcome` 和调度器心跳生成首页今日结论；媒体异常、辅助能力提醒、处理中与当日可播放分别统计，自动恢复中的明确秒传失败计入处理中；关键服务不可验证时不返回绿色正常，无法核实的归档与下载统计返回 `null` 而不是伪造 `0`。
-- `/api/v2/subscriptions/reconciliation`：只读对比 Fluxa 与 Torra，按对账、履约、健康三个维度返回差异，不写入或删除任一台账。
-- `/api/v2/subscriptions/workbench`：分页返回追更工作台、五项能力状态、对账摘要和可选海报补齐目标。
+- `/api/v2/subscriptions/reconciliation`：只读对比 Fluxa 与 Torra，返回对账、兼容履约、健康、`torraFact` 与 `pipelineOutcome`；Torra completed 只表示获取目标满足，不写入或删除任一台账。
+- `/api/v2/subscriptions/workbench`：分页返回追更工作台、五项能力状态、结构化确认进度、统一派生结果、对账摘要和可选海报补齐目标；没有集级证据时返回“集数进度未确认”。
 - `/api/v2/subscriptions/visual-backfills`：最多处理 100 个订阅 ID，只按明确 TMDB 身份补充空缺海报/背景；本地写入关闭时只返回视觉结果，开启时才补充已有本地记录；不创建仅 Torra 镜像。
 - `/api/internal/nasemby-core/*`：已认证的只读诊断兼容路由。
 - `/api/v2/subscriptions/:id/torra-push-*`：固定目标 Torra 的预览和受保护推送。
@@ -134,7 +134,7 @@ python -m unittest discover -s tests -t . -v
 
 测试使用临时台账、隔离的临时活动日志和模拟客户端，不连接真实服务执行写操作。保留接口只在模拟测试中显式开启；Mineradio 注入片段继续使用冻结的 SHA-256 快照保护视觉桥接基线。
 
-当前共 476 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘、日历时间线、全局作品搜索和系统指标测试全部使用临时台账、临时活动日志与模拟函数，不连接真实外部服务；覆盖默认闸门、脱敏、原子迁移、Torra 镜像幂等与公开哈希 ID、旧 Torra 冲突键公开投影、六阶段任务事实、六来源适配、单向兼容投影、Emby 集级分页索引与结果派生、任务公开引用与 qB 动作反解、任务用户状态、无 TMDB 任务深链、首页关注项、北京时间自然日、日历完整索引、RSS 单条安全匹配与匹配级下载确认、追更海报补齐、qB 安全动作、自动化窗口、租约回收终态和完整幂等请求绑定。
+当前共 483 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘、日历时间线、全局作品搜索和系统指标测试全部使用临时台账、临时活动日志与模拟函数，不连接真实外部服务；覆盖默认闸门、脱敏、原子迁移、Torra 镜像幂等与公开哈希 ID、旧 Torra 冲突键公开投影、六阶段任务事实、六来源适配、单向兼容投影、Emby 集级分页索引与结果派生、任务公开引用与 qB 动作反解、任务用户状态、无 TMDB 任务深链、首页关注项、北京时间自然日、日历完整索引、RSS 单条安全匹配与匹配级下载确认、追更海报补齐、qB 安全动作、自动化窗口、租约回收终态和完整幂等请求绑定。
 
 RSS 身份端到端验收使用临时 SQLite 覆盖结构化 TMDB、简介 IMDb 链接、唯一追更匹配和多候选冲突四类固定样本，不写入正式 RSS 台账。
 

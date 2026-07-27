@@ -110,20 +110,35 @@ function entrySeasonNumber(entry: SubscriptionCalendarEntry) {
 
 function entryStatus(entry: SubscriptionCalendarEntry, todayKey: string): Exclude<CalendarStatus, 'all'> {
   if (entry.status) return entry.status;
-  if (entry.libraryAt || entry.inLibrary) return 'library';
+  if (entry.libraryAt) return 'library';
   if (entry.acquiredAt) return 'acquiring';
   return entry.date < todayKey ? 'unknown' : 'upcoming';
 }
 
 const statusLabel: Record<CalendarStatus, string> = {
-  all: '全部', upcoming: '待播出', acquiring: '正在获取', library: '已入库', protected: '正常保护', missing: '逾期未获取', unknown: '已播出 · 处理状态未关联'
+  all: '全部',
+  upcoming: '待播出',
+  acquiring: '正在获取',
+  library: '整理入库完成',
+  playable: '已可播放',
+  protected: '正常保护',
+  missing: '逾期未获取',
+  unknown: '证据不足',
+  unlinked: '状态未关联'
 };
 
 const statusHealth: Record<Exclude<CalendarStatus, 'all'>, SubscriptionHealthState> = {
-  upcoming: 'waiting', acquiring: 'waiting', library: 'normal', protected: 'protected', missing: 'action_required', unknown: 'waiting'
+  upcoming: 'waiting',
+  acquiring: 'waiting',
+  library: 'normal',
+  playable: 'normal',
+  protected: 'protected',
+  missing: 'action_required',
+  unknown: 'evidence_insufficient',
+  unlinked: 'evidence_insufficient'
 };
-const mobilePrimaryStatuses: CalendarStatus[] = ['all', 'upcoming', 'acquiring', 'library', 'missing'];
-const mobileAdvancedStatuses: CalendarStatus[] = ['protected', 'unknown'];
+const mobilePrimaryStatuses: CalendarStatus[] = ['all', 'upcoming', 'acquiring', 'playable', 'missing'];
+const mobileAdvancedStatuses: CalendarStatus[] = ['library', 'protected', 'unknown', 'unlinked'];
 
 function readCalendarUrlState(todayKey: string, location: Location = window.location): CalendarUrlState {
   const params = new URLSearchParams(location.search);
@@ -181,6 +196,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
   const [mode, setMode] = useState<'loading' | 'live' | 'error'>('loading');
   const [detailMode, setDetailMode] = useState<'idle' | 'loading' | 'live' | 'error'>('idle');
   const [calendarErrors, setCalendarErrors] = useState<string[]>([]);
+  const [unlinkedCount, setUnlinkedCount] = useState(0);
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const detailRequestRef = useRef<AbortController | null>(null);
   const detailPanelRef = useRef<HTMLElement | null>(null);
@@ -188,6 +204,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
   const mobileFilterSheetRef = useRef<HTMLElement | null>(null);
   const visibleWeekStart = calendarView === 'week' ? weekStart(selectedDate) : '';
   const visibleWeekEnd = visibleWeekStart ? shiftDateKey(visibleWeekStart, 6) : '';
+  const includeUnlinked = status === 'unlinked';
 
   const writeCalendarUrlState = (patch: CalendarUrlPatch, mode: UrlHistoryMode, entryKind?: string) => {
     const nextDate = Object.prototype.hasOwnProperty.call(patch, 'date') ? patch.date || '' : selectedDate;
@@ -211,27 +228,37 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     setMode('loading');
     setCalendarErrors([]);
     const request = calendarView === 'week'
-      ? getSubscriptionCalendarRangeSummary(visibleWeekStart, visibleWeekEnd, mediaType, calendarRequestOptions(controller.signal))
-      : getSubscriptionCalendarSummary(year, month, mediaType, calendarRequestOptions(controller.signal));
+      ? getSubscriptionCalendarRangeSummary(
+          visibleWeekStart, visibleWeekEnd, mediaType, calendarRequestOptions(controller.signal), includeUnlinked
+        )
+      : getSubscriptionCalendarSummary(
+          year, month, mediaType, calendarRequestOptions(controller.signal), includeUnlinked
+        );
     request
       .then((payload) => {
         if (controller.signal.aborted) return;
         setDays(payload.calendar.days ?? []);
         setSearchIndex(payload.calendar.searchIndex ?? []);
         setCalendarErrors(payload.calendar.errors ?? []);
+        setUnlinkedCount(payload.calendar.stats.unlinked ?? 0);
         setMode('live');
       })
       .catch(() => {
         if (!controller.signal.aborted) {
           setDays([]);
           setSearchIndex([]);
+          setUnlinkedCount(0);
           setMode('error');
         }
       });
     return () => controller.abort();
-  }, [calendarView, mediaType, month, visibleWeekEnd, visibleWeekStart, year]);
+  }, [calendarView, includeUnlinked, mediaType, month, visibleWeekEnd, visibleWeekStart, year]);
 
-  const requestDateDetail = (dateKey: string, requestedMediaType: CalendarMediaType) => {
+  const requestDateDetail = (
+    dateKey: string,
+    requestedMediaType: CalendarMediaType,
+    requestedIncludeUnlinked = includeUnlinked
+  ) => {
     detailRequestRef.current?.abort();
     const controller = new AbortController();
     detailRequestRef.current = controller;
@@ -239,7 +266,9 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     setDetailDate(dateKey);
     setDetailEntries([]);
     setDetailMode('loading');
-    getSubscriptionCalendarDateDetail(dateKey, requestedMediaType, calendarRequestOptions(controller.signal))
+    getSubscriptionCalendarDateDetail(
+      dateKey, requestedMediaType, calendarRequestOptions(controller.signal), requestedIncludeUnlinked
+    )
       .then((payload) => {
         if (controller.signal.aborted) return;
         setDetailEntries(payload.calendar.entries);
@@ -263,7 +292,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         ? todayKey
         : toDateKey(next.year, next.month, 1)));
       if (next.detailOpen && next.date) {
-        requestDateDetail(next.date, next.mediaType);
+        requestDateDetail(next.date, next.mediaType, next.status === 'unlinked');
       } else {
         detailRequestRef.current?.abort();
         setDetailDate('');
@@ -272,7 +301,13 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
       }
     };
 
-    if (initialUrlState.detailOpen && initialUrlState.date) requestDateDetail(initialUrlState.date, initialUrlState.mediaType);
+    if (initialUrlState.detailOpen && initialUrlState.date) {
+      requestDateDetail(
+        initialUrlState.date,
+        initialUrlState.mediaType,
+        initialUrlState.status === 'unlinked'
+      );
+    }
     window.addEventListener('popstate', applyUrlState);
     return () => {
       detailRequestRef.current?.abort();
@@ -483,10 +518,12 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     upcoming: result.upcoming + day.statusCounts.upcoming,
     acquiring: result.acquiring + day.statusCounts.acquiring,
     library: result.library + day.statusCounts.library,
+    playable: result.playable + (day.statusCounts.playable ?? 0),
     protected: result.protected + (day.statusCounts.protected ?? 0),
     missing: result.missing + day.statusCounts.missing,
-    unknown: result.unknown + (day.statusCounts.unknown ?? 0)
-  }), { upcoming: 0, acquiring: 0, library: 0, protected: 0, missing: 0, unknown: 0 });
+    unknown: result.unknown + (day.statusCounts.unknown ?? 0),
+    unlinked: result.unlinked + (day.statusCounts.unlinked ?? 0)
+  }), { upcoming: 0, acquiring: 0, library: 0, playable: 0, protected: 0, missing: 0, unknown: 0, unlinked: 0 });
   const totalEntries = days.reduce((total, day) => total + day.total, 0);
   const isLoading = mode === 'loading';
 
@@ -494,7 +531,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     <main className="work-page work-page--fill ops-page ops-page--calendar">
       <section className="ops-hero ops-hero--calendar ops-hero--compact">
         <div>
-          <p className="ops-eyebrow">播出 · 获取 · 入库</p>
+          <p className="ops-eyebrow">播出 · 获取 · 整理 · 可播放</p>
           <h1>日历</h1>
           <p className="ops-page-subtitle">什么时候播、何时开始获取、何时真正可看。</p>
           <p className="ops-deck">只有明确到具体季集的证据才会改变状态；季包完成不会批量标记单集。</p>
@@ -502,10 +539,11 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         <div className="ops-calendar-stats" aria-label={calendarView === 'week' ? '本周追更统计' : '本月追更统计'}>
           <div><Radio size={15} /><span>待播出</span><strong>{isLoading ? '—' : counts.upcoming}</strong></div>
           <div><Clock3 size={15} /><span>正在获取</span><strong>{isLoading ? '—' : counts.acquiring}</strong></div>
-          <div><Library size={15} /><span>已入库</span><strong>{isLoading ? '—' : counts.library}</strong></div>
+          <div><Check size={15} /><span>已可播放</span><strong>{isLoading ? '—' : counts.playable}</strong></div>
+          <div><Library size={15} /><span>整理入库</span><strong>{isLoading ? '—' : counts.library}</strong></div>
           <div className={counts.missing ? 'is-alert' : undefined}><ListChecks size={15} /><span>逾期未获取</span><strong>{isLoading ? '—' : counts.missing}</strong></div>
           <div className="is-protected"><ShieldCheck size={15} /><span>正常保护</span><strong>{isLoading ? '—' : counts.protected}</strong></div>
-          <div className="is-faint"><CircleHelp size={15} /><span>状态未关联</span><strong>{isLoading ? '—' : counts.unknown}</strong></div>
+          <div className="is-faint"><CircleHelp size={15} /><span>状态未关联</span><strong>{isLoading ? '—' : unlinkedCount}</strong></div>
         </div>
       </section>
 
@@ -578,9 +616,11 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                       upcoming: 0,
                       acquiring: 0,
                       library: 0,
+                      playable: 0,
                       protected: 0,
                       missing: 0,
-                      unknown: 0
+                      unknown: 0,
+                      unlinked: 0
                     })
                   : day?.statusCounts;
                 const mobilePoster = preview[0];
@@ -594,10 +634,12 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                         {mobilePoster && <EntryPoster entry={mobilePoster} />}
                         <span aria-hidden="true" className="calendar-cell__mobile-states">
                           <i className={filteredStatusCounts?.library ? 'is-library' : undefined} />
+                          <i className={filteredStatusCounts?.playable ? 'is-playable' : undefined} />
                           <i className={filteredStatusCounts?.acquiring ? 'is-acquiring' : undefined} />
                           <i className={filteredStatusCounts?.protected ? 'is-protected' : undefined} />
                           <i className={filteredStatusCounts?.missing ? 'is-missing' : undefined} />
                           <i className={filteredStatusCounts?.unknown ? 'is-unknown' : undefined} />
+                          <i className={filteredStatusCounts?.unlinked ? 'is-unlinked' : undefined} />
                         </span>
                         <b>{filteredCount}</b>
                       </button>
@@ -605,7 +647,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                     {preview.slice(0, 3).map((entry) => (
                       <button className={'calendar-entry calendar-entry--' + entry.status} key={(entry.key || entry.title) + '-' + entry.episodeLabel} type="button" onClick={() => openDate(dateKey)}>
                         <EntryPoster entry={entry} />
-                        <span className="calendar-entry__text"><strong>{entry.status === 'library' && <Check aria-hidden="true" size={11} />}{entry.title}</strong><small>{entry.episodeLabel} · {statusLabel[entry.status]}</small></span>
+                        <span className="calendar-entry__text"><strong>{['library', 'playable'].includes(entry.status) && <Check aria-hidden="true" size={11} />}{entry.title}</strong><small>{entry.episodeLabel} · {statusLabel[entry.status]}</small></span>
                       </button>
                     ))}
                     {filteredCount > preview.slice(0, 3).length && <button className="calendar-cell__more" type="button" onClick={() => openDate(dateKey)}>查看 {filteredCount} 条</button>}
@@ -617,7 +659,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         )}
 
         <footer className="ops-calendar-legend">
-          <span><i className="is-upcoming" />待播出</span><span><i className="is-acquiring" />正在获取</span><span><i className="is-library" />已入库</span><span><i className="is-protected" />正常保护</span><span><i className="is-overdue" />逾期未获取</span><span><i className="is-unknown" />状态未知</span><strong>时区：Asia/Shanghai</strong>
+          <span><i className="is-upcoming" />待播出</span><span><i className="is-acquiring" />正在获取</span><span><i className="is-library" />整理入库</span><span><i className="is-playable" />已可播放</span><span><i className="is-protected" />正常保护</span><span><i className="is-overdue" />逾期未获取</span><span><i className="is-unknown" />证据不足</span><strong>时区：Asia/Shanghai</strong>
         </footer>
       </section>
 
@@ -711,12 +753,13 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                 <header>
                   <EntryPoster entry={entry} />
                   <div><strong>{entry.title}</strong><small>{entry.episodeLabel}{entry.episodeTitle ? ' · ' + entry.episodeTitle : ''}</small></div>
-                  <HealthBadge state={currentStatus === 'missing' || currentStatus === 'unknown' || currentStatus === 'protected' ? statusHealth[currentStatus] : entry.healthState || statusHealth[currentStatus]} />
+                  <HealthBadge state={['missing', 'unknown', 'protected', 'unlinked'].includes(currentStatus) ? statusHealth[currentStatus] : entry.healthState || statusHealth[currentStatus]} />
                 </header>
                 <div className="calendar-evidence-times">
                   <span><b>播出</b><strong>{entry.date}</strong><small>TMDB 日历</small></span>
                   <span><b>获取</b><strong>{formatEvidenceTime(entry.acquiredAt)}</strong><small>{entry.acquisitionSource || '该集证据不足'}</small></span>
-                  <span><b>入库</b><strong>{formatEvidenceTime(entry.libraryAt)}</strong><small>{entry.librarySource || (entry.inLibrary ? '媒体库文件' : '尚无该集证据')}</small></span>
+                  <span><b>入库</b><strong>{formatEvidenceTime(entry.libraryAt)}</strong><small>{entry.librarySource || '尚无该集证据'}</small></span>
+                  <span><b>可播放</b><strong>{formatEvidenceTime(entry.playableAt)}</strong><small>{entry.playableSource || '尚无 Emby 集级证据'}</small></span>
                 </div>
                 {entry.reasonText && <p className="calendar-detail-item__reason">{entry.reasonText}</p>}
                 <footer>
