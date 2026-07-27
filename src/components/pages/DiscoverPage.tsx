@@ -1361,15 +1361,15 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
 
   const runSweep = () => {
     setConfirmation({
-      signal: '自动追更',
-      title: '更新自动追更来源？',
-      description: '这会重新读取已启用的榜单来源，并增量合并到本地台账；不会搜索当前剧集，也不会删除手动追更或 Torra 镜像。',
+      signal: '候选来源',
+      title: '更新发现候选？',
+      description: '这会重新读取已启用的榜单并更新发现候选池，不会创建追更，也不会触发 Torra 或其他获取能力。',
       confirmLabel: '开始更新',
       onConfirm: () => {
         setSubscriptionAction('run');
         runSubscriptionSweep()
           .then(() => {
-            setSweepMessage('自动追更来源已更新，列表正在重新读取。');
+            setSweepMessage('发现候选已更新；追更台账没有改变。');
             loadSubs();
           })
           .catch((error: unknown) => setSweepMessage(error instanceof Error ? error.message : '执行失败'))
@@ -2629,7 +2629,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             <button
               className="ops-action-button ops-action-button--primary subscription-toolbar__primary"
               disabled={Boolean(subscriptionAction) || !localWriteEnabled}
-              title={localWriteEnabled ? '更新已启用的自动追更来源' : '本地追更写入已关闭'}
+              title={localWriteEnabled ? '更新已启用的发现候选来源' : '本地追更写入已关闭'}
               type="button"
               onClick={runSweep}
             >

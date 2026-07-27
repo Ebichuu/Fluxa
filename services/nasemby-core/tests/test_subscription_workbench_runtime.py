@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
 from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
 from flask import Flask
@@ -10,6 +12,7 @@ from app import discover_runtime
 from app.health_state_runtime import SchedulerStatusRegistry
 from app.subscription_workbench_runtime import SubscriptionWorkbenchService, register_subscription_workbench
 from app.subscription_reconciliation_runtime import torra_public_subscription_key
+from app.subscription_repository import SubscriptionRepository
 
 
 class FakeTaskService:
@@ -145,7 +148,7 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         self.assertEqual(by_key["torra:remote-1"]["torra_remote_id"], "remote-1")
         self.assertEqual(stats, {"added": 1, "updated": 1, "preserved": 1})
 
-    def test_automatic_source_refresh_queues_only_current_source_rows(self):
+    def test_automatic_source_refresh_only_updates_candidate_pool(self):
         existing = {
             "subscription_key": "movie:manual",
             "title": "手动保留",
@@ -157,6 +160,7 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
             "dedupe_key": "movie:auto-new",
             "title": "本轮新增",
             "media_type": "movie",
+            "tmdb_id": "200",
             "year": "2026",
             "origin": "auto",
         }
@@ -172,30 +176,30 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
                 "sources": ["hot_movie"],
             },
         }
-        with patch.object(discover_runtime, "load_subscription_config", return_value=deepcopy(config)), patch.object(
-            discover_runtime, "fetch_subscription_source", return_value=[dict(incoming)]
-        ), patch.object(
-            discover_runtime, "normalize_subscription_item_metadata", side_effect=lambda row, **_kwargs: dict(row)
-        ), patch.object(
-            discover_runtime, "load_subscription_items", return_value={"items": [dict(existing)], "errors": []}
-        ), patch.object(
-            discover_runtime, "enrich_subscription_items", side_effect=lambda payload, **_kwargs: payload
-        ), patch.object(
-            discover_runtime, "write_subscription_items_data", side_effect=lambda payload: payload
-        ), patch.object(
-            discover_runtime, "write_subscription_config_data"
-        ), patch.object(
-            discover_runtime, "set_discover_item_cache"
-        ), patch.object(
-            discover_runtime, "write_activity"
-        ), patch.object(
-            discover_runtime, "queue_subscription_resource_rule_transfer", return_value={"enabled": True, "queued": 1}
-        ) as queue:
-            result = discover_runtime.run_subscription_now()
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SubscriptionRepository(Path(directory) / "subscriptions.sqlite3")
+            repository.upsert_item(existing, existing["subscription_key"])
+            with patch.object(discover_runtime, "subscription_repository", return_value=repository), patch.object(
+                discover_runtime, "load_subscription_config", return_value=deepcopy(config)
+            ), patch.object(
+                discover_runtime, "fetch_subscription_source", return_value=[dict(incoming)]
+            ), patch.object(
+                discover_runtime, "normalize_subscription_item_metadata", side_effect=lambda row, **_kwargs: dict(row)
+            ), patch.object(
+                discover_runtime, "write_subscription_config_data"
+            ), patch.object(
+                discover_runtime, "write_activity"
+            ), patch.object(
+                discover_runtime, "write_subscription_items_data", side_effect=AssertionError("候选刷新不得改写追更")
+            ), patch.object(
+                discover_runtime, "queue_subscription_resource_rule_transfer", side_effect=AssertionError("候选刷新不得触发 provider")
+            ):
+                result = discover_runtime.run_subscription_now()
 
-        self.assertEqual({item["title"] for item in result["items"]}, {"手动保留", "本轮新增"})
-        queued_rows = queue.call_args.args[0]
-        self.assertEqual([item["title"] for item in queued_rows], ["本轮新增"])
+            self.assertEqual([item["title"] for item in repository.load_payload()["items"]], ["手动保留"])
+            self.assertEqual(repository.list_discover_candidates()["total"], 1)
+            self.assertEqual(result["candidates"]["added"], 1)
+            self.assertEqual(result["pushed"], 0)
 
     def test_snapshot_returns_real_capabilities_stats_and_chain_evidence(self):
         app = Flask(__name__)

@@ -2134,23 +2134,10 @@ def sync_daily_airing_subscriptions(limit=72):
         write_activity("subscription", "sync_daily_airing", "error", message, error=str(exc))
         raise
 
-    data = load_subscription_items()
     config = load_subscription_config()
     douban = config.get("douban") if isinstance(config, dict) else {}
     exclude_titles = parse_subscription_exclude_titles((douban or {}).get("exclude_titles"))
-    existing_items = data.get("items") if isinstance(data, dict) else []
-    if not isinstance(existing_items, list):
-        existing_items = []
-    existing_keys = set()
-    existing_series_keys = set()
-    for item in existing_items:
-        existing_keys.update(subscription_lookup_key_set(item))
-        if subscription_target_season(item) is None:
-            series_key = subscription_series_lookup_key(item)
-            if series_key:
-                existing_series_keys.add(series_key)
-
-    added = []
+    candidates = []
     skipped = []
     seen = set()
     for raw in rows:
@@ -2180,14 +2167,14 @@ def sync_daily_airing_subscriptions(limit=72):
         if not lookup_keys:
             skipped.append({"title": title, "reason": "缺少订阅目标"})
             continue
-        series_key = subscription_series_lookup_key(item)
-        if lookup_keys & existing_keys or lookup_keys & seen or (series_key and series_key in existing_series_keys):
-            skipped.append({"title": title, "reason": "已订阅"})
+        if lookup_keys & seen:
+            skipped.append({"title": title, "reason": "本次来源重复"})
             continue
         item = dict(item)
         item["source"] = "全球日播"
         item["source_key"] = "daily_airing"
         item["source_label"] = "全球日播"
+        item["origin"] = "auto"
         item["media_type"] = "tv"
         item["type"] = "电视剧"
         item["airing_today"] = True
@@ -2197,42 +2184,38 @@ def sync_daily_airing_subscriptions(limit=72):
         dedupe_key = get_subscription_dedupe_key(item)
         if dedupe_key:
             item["dedupe_key"] = dedupe_key
-        set_discover_item_cache(item, "daily_airing_subscription")
-        added.append(item)
+        candidates.append(item)
         seen.update(lookup_keys)
 
-    next_items = added + existing_items
-    payload = dict(data) if isinstance(data, dict) else {}
-    payload["items"] = next_items
-    payload["stats"] = recalc_subscription_stats(next_items)
-    payload["last_run_at"] = data.get("last_run_at") if isinstance(data, dict) else ""
-    payload["daily_airing_last_run_at"] = now_text
-    payload["errors"] = errors
-    payload = write_subscription_items_data(payload)
-
-    payload["added_count"] = len(added)
-    payload["skipped_count"] = len(skipped)
-    payload["checked_count"] = len(rows)
-    payload["added_items"] = added
-    payload["skipped_items"] = skipped[:30]
-    payload["message"] = f"全球日播检测完成：新增 {len(added)} 条，跳过 {len(skipped)} 条"
-    status = "success" if added else "skip"
+    candidate_run = subscription_repository().upsert_discover_candidates(candidates)
+    candidate_run["expired"] = subscription_repository().expire_discover_candidates()
+    candidate_run.pop("candidateIds", None)
+    payload = {
+        "success": True,
+        "checked_count": len(rows),
+        "candidate_count": len(candidates),
+        "added_count": candidate_run["added"],
+        "updated_count": candidate_run["updated"],
+        "skipped_count": len(skipped) + candidate_run["skipped"],
+        "skipped_items": skipped[:30],
+        "errors": errors,
+        "candidates": candidate_run,
+        "message": (
+            f"全球日播候选更新完成：新增 {candidate_run['added']} 条，"
+            f"更新 {candidate_run['updated']} 条，跳过 {len(skipped) + candidate_run['skipped']} 条"
+        ),
+    }
+    status = "success" if candidates else "skip"
     write_activity(
         "subscription",
         "sync_daily_airing",
         status,
         payload["message"],
         checked=len(rows),
-        added=len(added),
-        skipped=len(skipped),
-        first_added=added[0].get("title") if added else "",
+        added=candidate_run["added"],
+        updated=candidate_run["updated"],
+        skipped=payload["skipped_count"],
     )
-    subscription_task = queue_subscription_resource_rule_transfer(added, "daily_airing_sync") if added else _subscription_task_base(load_subscription_config())
-    if not added:
-        subscription_task["enabled"] = False
-        subscription_task["reason"] = "没有新增订阅"
-    payload["subscription_task"] = subscription_task
-    payload["auto_transfer"] = subscription_task
     return payload
 
 
@@ -3465,6 +3448,7 @@ def run_subscription_now():
                 continue
             seen.add(dedupe_key)
             row["dedupe_key"] = dedupe_key
+            row["origin"] = "auto"
             items.append(row)
     for source_key in selected_sources:
         source = SUBSCRIPTION_SOURCES[source_key]
@@ -3519,6 +3503,7 @@ def run_subscription_now():
                 continue
             seen.add(dedupe_key)
             row["dedupe_key"] = dedupe_key
+            row["origin"] = "auto"
             items.append(row)
 
     now_text = beijing_now_text()
@@ -3529,23 +3514,21 @@ def run_subscription_now():
         "sources": 1 if daily_only else len(selected_sources),
         "daily_only": daily_only,
     }
-    existing_payload = load_subscription_items(remove_completed=False, persist_progress=False)
-    merged_items, merge_stats = merge_subscription_source_items(
-        existing_payload.get("items") if isinstance(existing_payload, dict) else [],
-        items,
-    )
+    candidate_run = subscription_repository().upsert_discover_candidates(items)
+    candidate_run["expired"] = subscription_repository().expire_discover_candidates()
+    candidate_run.pop("candidateIds", None)
     payload = {
         "success": True,
         "last_run_at": now_text,
         "stats": stats,
-        "items": merged_items,
+        "items": [],
         "errors": errors,
-        "source_merge": merge_stats,
+        "candidates": candidate_run,
+        "added": candidate_run["added"],
+        "updated": candidate_run["updated"],
+        "skipped": len(errors) + candidate_run["skipped"],
+        "pushed": 0,
     }
-    for item in merged_items:
-        set_discover_item_cache(item, "subscription_task")
-    payload = enrich_subscription_items(payload, remove_completed=False)
-    write_subscription_items_data(payload)
     config["douban"]["last_run_at"] = now_text
     write_subscription_config_data(config)
     payload["config"] = config
@@ -3554,8 +3537,13 @@ def run_subscription_now():
         "subscription",
         "run_subscription",
         summary_status,
-        f"订阅刷新完成：{len(items)} 条，跳过/错误 {len(errors)} 条",
+        (
+            f"候选来源更新完成：新增 {candidate_run['added']} 条，"
+            f"更新 {candidate_run['updated']} 条，跳过/错误 {payload['skipped']} 条"
+        ),
         total=len(items),
+        added=candidate_run["added"],
+        updated=candidate_run["updated"],
         movie=stats.get("movie"),
         tv=stats.get("tv"),
         skipped=len(errors),
@@ -3563,9 +3551,6 @@ def run_subscription_now():
         task=subscription_mode_task_label(config.get("mode")),
         first_error=errors[0] if errors else "",
     )
-    subscription_task = queue_subscription_resource_rule_transfer(items, "subscription_run")
-    payload["subscription_task"] = subscription_task
-    payload["auto_transfer"] = subscription_task
     return payload
 
 

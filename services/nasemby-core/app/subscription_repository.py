@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from contextlib import closing
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.sqlite_runtime import SQLiteRuntime
 
@@ -22,6 +23,28 @@ def _json_load(value, fallback):
     except Exception:
         return deepcopy(fallback)
     return parsed
+
+
+def _candidate_id(media_type, tmdb_id, season_number):
+    identity = _json_dump({
+        "mediaType": str(media_type or ""),
+        "tmdbId": str(tmdb_id or ""),
+        "seasonNumber": int(season_number or 0),
+    })
+    return f"candidate:{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:24]}"
+
+
+def _future_text(value, days=30):
+    text = str(value or "").strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        parsed = datetime.now(timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (parsed.astimezone(timezone.utc) + timedelta(days=days)).isoformat(
+        timespec="seconds"
+    ).replace("+00:00", "Z")
 
 
 class SubscriptionRepository:
@@ -71,6 +94,29 @@ class SubscriptionRepository:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS torra_subscription_sync_runs ("
                 "idempotency_key TEXT PRIMARY KEY, response_json TEXT NOT NULL, created_at TEXT NOT NULL)"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS discover_candidates ("
+                "candidate_id TEXT PRIMARY KEY, media_type TEXT NOT NULL, tmdb_id TEXT NOT NULL, "
+                "season_number INTEGER NOT NULL DEFAULT 0, title TEXT NOT NULL DEFAULT '', "
+                "year TEXT NOT NULL DEFAULT '', source_key TEXT NOT NULL DEFAULT '', "
+                "state TEXT NOT NULL DEFAULT 'active', payload_json TEXT NOT NULL, "
+                "first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, expires_at TEXT NOT NULL, "
+                "version INTEGER NOT NULL DEFAULT 1, "
+                "UNIQUE(media_type, tmdb_id, season_number))"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_discover_candidates_state "
+                "ON discover_candidates(state, last_seen_at DESC)"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS candidate_migration_runs ("
+                "run_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, "
+                "preview_fingerprint TEXT NOT NULL, backup_ref TEXT NOT NULL DEFAULT '', "
+                "status TEXT NOT NULL, migrated_count INTEGER NOT NULL DEFAULT 0, "
+                "skipped_count INTEGER NOT NULL DEFAULT 0, conflict_summary_json TEXT NOT NULL DEFAULT '{}', "
+                "compensation_json TEXT NOT NULL DEFAULT '[]', response_json TEXT NOT NULL DEFAULT '{}', "
+                "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
             )
 
     @staticmethod
@@ -293,6 +339,121 @@ class SubscriptionRepository:
                 (_json_dump({"last_run_at": "", "stats": {"total": 0, "movie": 0, "tv": 0}, "errors": []}), _now_text()),
             )
         return count
+
+    def upsert_discover_candidates(self, items, *, observed_at="", expires_at=""):
+        source_items = list(items or [])
+        now = str(observed_at or _now_text())
+        expiry = str(expires_at or _future_text(now))
+        prepared = []
+        skipped = 0
+        seen = set()
+        for source in source_items:
+            if not isinstance(source, dict):
+                skipped += 1
+                continue
+            item = dict(source)
+            media_type, tmdb_id, season, title = self._identity(item)
+            if media_type not in {"movie", "tv"} or not tmdb_id.isdigit():
+                skipped += 1
+                continue
+            season_number = int(season or 0) if media_type == "tv" else 0
+            candidate_id = _candidate_id(media_type, tmdb_id, season_number)
+            if candidate_id in seen:
+                skipped += 1
+                continue
+            seen.add(candidate_id)
+            prepared.append({
+                "candidate_id": candidate_id,
+                "media_type": media_type,
+                "tmdb_id": tmdb_id,
+                "season_number": season_number,
+                "title": title,
+                "year": str(item.get("year") or "")[:20],
+                "source_key": str(item.get("source_key") or item.get("source") or "")[:120],
+                "payload_json": _json_dump(item),
+            })
+        added = 0
+        updated = 0
+        with self.runtime.transaction(immediate=True) as connection:
+            for row in prepared:
+                existing = connection.execute(
+                    "SELECT state FROM discover_candidates WHERE candidate_id=?",
+                    (row["candidate_id"],),
+                ).fetchone()
+                if existing:
+                    connection.execute(
+                        "UPDATE discover_candidates SET media_type=?, tmdb_id=?, season_number=?, title=?, "
+                        "year=?, source_key=?, payload_json=?, "
+                        "state=CASE WHEN state='expired' THEN 'active' ELSE state END, "
+                        "last_seen_at=?, expires_at=?, version=version+1 WHERE candidate_id=?",
+                        (
+                            row["media_type"], row["tmdb_id"], row["season_number"], row["title"],
+                            row["year"], row["source_key"], row["payload_json"], now, expiry,
+                            row["candidate_id"],
+                        ),
+                    )
+                    updated += 1
+                else:
+                    connection.execute(
+                        "INSERT INTO discover_candidates ("
+                        "candidate_id, media_type, tmdb_id, season_number, title, year, source_key, state, "
+                        "payload_json, first_seen_at, last_seen_at, expires_at, version"
+                        ") VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 1)",
+                        (
+                            row["candidate_id"], row["media_type"], row["tmdb_id"], row["season_number"],
+                            row["title"], row["year"], row["source_key"], row["payload_json"],
+                            now, now, expiry,
+                        ),
+                    )
+                    added += 1
+        return {
+            "scanned": len(source_items),
+            "added": added,
+            "updated": updated,
+            "skipped": skipped,
+            "candidateIds": [row["candidate_id"] for row in prepared],
+        }
+
+    def expire_discover_candidates(self, *, observed_at=""):
+        now = str(observed_at or _now_text())
+        with self.runtime.transaction(immediate=True) as connection:
+            cursor = connection.execute(
+                "UPDATE discover_candidates SET state='expired', version=version+1 "
+                "WHERE state='active' AND expires_at<=?",
+                (now,),
+            )
+        return int(cursor.rowcount or 0)
+
+    def list_discover_candidates(self, *, state="active", limit=100, offset=0):
+        normalized_state = str(state or "").strip()
+        where = "WHERE state=?" if normalized_state else ""
+        params = [normalized_state] if normalized_state else []
+        with closing(self.runtime.connect()) as connection:
+            total = int(connection.execute(
+                f"SELECT COUNT(*) AS count FROM discover_candidates {where}", params
+            ).fetchone()["count"])
+            rows = connection.execute(
+                f"SELECT * FROM discover_candidates {where} "
+                "ORDER BY last_seen_at DESC, candidate_id LIMIT ? OFFSET ?",
+                (*params, max(1, min(100, int(limit))), max(0, int(offset))),
+            ).fetchall()
+        return {
+            "total": total,
+            "items": [{
+                **dict(row),
+                "payload": _json_load(row["payload_json"], {}),
+            } for row in rows],
+        }
+
+    def get_discover_candidate(self, candidate_id):
+        key = str(candidate_id or "").strip()
+        if not key:
+            return None
+        with closing(self.runtime.connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM discover_candidates WHERE candidate_id=?", (key,)
+            ).fetchone()
+        return {**dict(row), "payload": _json_load(row["payload_json"], {})} if row else None
 
     def list_torra_links(self):
         with closing(self.runtime.connect()) as connection:

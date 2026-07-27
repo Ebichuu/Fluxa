@@ -600,7 +600,14 @@ export function deleteSubscription(id: string): Promise<{ success: boolean }> {
   return postJson('/api/subscriptions/delete', { id });
 }
 
-export function runSubscriptionSweep(): Promise<{ added: number; skipped: number; pushed: number; errors: string[] }> {
+export function runSubscriptionSweep(): Promise<{
+  added: number;
+  updated: number;
+  skipped: number;
+  pushed: 0;
+  errors: string[];
+  candidates: { scanned: number; added: number; updated: number; skipped: number; expired: number };
+}> {
   return postJson('/api/subscriptions/run', {});
 }
 

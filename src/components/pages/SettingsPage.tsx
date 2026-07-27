@@ -125,21 +125,21 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
   return (
     <div className="ops-settings-card ops-settings-card--wide sub-config">
       <header className="ops-settings-card__head">
-        <div><span><Database size={16} /></span><div><small>自动订阅</small><h2>订阅扫描与来源</h2></div></div>
+        <div><span><Database size={16} /></span><div><small>发现候选</small><h2>候选扫描与来源</h2></div></div>
         <strong>当前配置：{currentModeLabel}</strong>
       </header>
       <div className="sub-config__toggles">
         <label>
           <input checked={douban.enabled} disabled={saving} type="checkbox" onChange={(event) => patch({ enabled: event.target.checked })} />
-          <span><strong>启用自动订阅</strong><small>开启后按所选来源维护追更；关闭后保留现有订阅，只停止新增。</small></span>
+          <span><strong>启用候选扫描</strong><small>开启后按所选来源更新发现候选；只有人工确认才会加入追更。</small></span>
         </label>
         <label>
           <input checked={douban.movie_enabled} disabled={saving} type="checkbox" onChange={(event) => patch({ movie_enabled: event.target.checked })} />
-          <span><strong>电影</strong><small>关闭后不再从榜单新增电影追更，已有电影不删除。</small></span>
+          <span><strong>电影</strong><small>关闭后不再从榜单更新电影候选，已有追更不受影响。</small></span>
         </label>
         <label>
           <input checked={douban.tv_enabled} disabled={saving} type="checkbox" onChange={(event) => patch({ tv_enabled: event.target.checked })} />
-          <span><strong>剧集</strong><small>关闭后不再从榜单新增剧集追更，已有剧集继续保留。</small></span>
+          <span><strong>剧集</strong><small>关闭后不再从榜单更新剧集候选，已有追更不受影响。</small></span>
         </label>
         <label>
           <input checked={douban.task_enabled} disabled={saving} type="checkbox" onChange={(event) => patch({ task_enabled: event.target.checked })} />
@@ -157,7 +157,7 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
       </div>
 
       <div className="sub-config__row">
-        <span>订阅来源</span>
+        <span>候选来源</span>
         <div className="sub-config__source-groups">
           {subscriptionSourceGroups.map((group) => (
             <fieldset key={group.key}>

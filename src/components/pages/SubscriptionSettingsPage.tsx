@@ -131,8 +131,8 @@ export function SubscriptionSettingsPage({ onNavigate }: SubscriptionSettingsPag
           </button>
           <p className="ops-eyebrow">来源与时间</p>
           <h1>订阅设置</h1>
-          <p className="ops-page-subtitle">设置系统自动发现哪些内容。</p>
-          <p className="ops-deck">选择内容来源、执行时间和订阅规则；保存后由 PT 主线统一获取。</p>
+          <p className="ops-page-subtitle">设置系统从哪些来源更新发现候选。</p>
+          <p className="ops-deck">候选刷新不会建立追更；只有你在发现页确认加入后，内容才进入 PT 主线。</p>
         </div>
         <div className="ops-subscription-settings-guard">
           <span><Database size={15} />当前 PT 通道</span>

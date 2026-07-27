@@ -149,6 +149,52 @@ class SubscriptionRepositoryTests(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertEqual(len(repository.load_payload()["items"]), 1)
 
+    def test_discover_candidate_refresh_is_idempotent_and_does_not_touch_subscriptions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SubscriptionRepository(Path(directory) / "media_control_center.sqlite3")
+            repository.upsert_item({
+                "subscription_key": "movie:manual",
+                "title": "人工追更",
+                "media_type": "movie",
+                "tmdb_id": "100",
+                "origin": "manual",
+            }, "movie:manual")
+            source = {
+                "title": "榜单候选",
+                "media_type": "tv",
+                "tmdb_id": "200",
+                "target_season": 1,
+                "source_key": "hot_tv",
+            }
+
+            first = repository.upsert_discover_candidates(
+                [source], observed_at="2026-07-28T01:00:00Z", expires_at="2026-08-27T01:00:00Z"
+            )
+            second = repository.upsert_discover_candidates(
+                [{**source, "source_key": "tv_realtime"}],
+                observed_at="2026-07-28T02:00:00Z",
+                expires_at="2026-08-27T02:00:00Z",
+            )
+
+            candidates = repository.list_discover_candidates()
+            self.assertEqual(first["added"], 1)
+            self.assertEqual(second["updated"], 1)
+            self.assertEqual(candidates["total"], 1)
+            self.assertEqual(candidates["items"][0]["version"], 2)
+            self.assertEqual(candidates["items"][0]["source_key"], "tv_realtime")
+            self.assertEqual(repository.load_payload()["items"][0]["title"], "人工追更")
+
+    def test_discover_candidate_requires_explicit_tmdb_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SubscriptionRepository(Path(directory) / "media_control_center.sqlite3")
+            result = repository.upsert_discover_candidates([
+                {"title": "没有身份", "media_type": "tv", "source_key": "hot_tv"},
+            ])
+
+            self.assertEqual(result["added"], 0)
+            self.assertEqual(result["skipped"], 1)
+            self.assertEqual(repository.list_discover_candidates()["total"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

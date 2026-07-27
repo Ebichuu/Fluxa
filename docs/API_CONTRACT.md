@@ -63,6 +63,7 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `POST /api/qbittorrent/actions/:action/preview` | 只读检查最多 20 个 40 位公开任务引用；服务端从实时 qB 快照反解，返回是否允许、影响数量、禁止原因、确认要求、幂等键和冷却时间 |
 | `POST /api/qbittorrent/actions/:action` | `hashes` 字段承载公开任务引用，另含 `taskId`、`title`、可选 `idempotencyKey`；旧客户端真实 hash 输入兼容但响应不回显，执行前重新读取 qB 状态，旧预览键返回 `409 QB_PREVIEW_STALE` |
 | `GET /api/subscriptions/items` | 可选 `include_progress=1` |
+| `POST /api/subscriptions/run` | 无业务正文；只刷新已配置榜单到 `discover_candidates`，返回候选新增/更新/跳过摘要；不写 `subscriptions`，不调用 Torra、qB、115、Symedia 或 Emby |
 | `GET /api/v2/home/summary` | 无参数；按新派生结果、调度器心跳和服务证据返回今日结论；`mediaActionRequired` 只统计任务中心可列出的媒体异常，`auxiliaryAlerts` 独立统计 RSS/服务/调度提醒，`inProgress` 包含媒体活动目标和自动恢复中的明确秒传失败数量，`playableToday` 只统计当日 Emby 明确可播放目标；问题项返回 `issueKind/href` 和可选媒体范围；无法验证时 `archivedToday`、`activeDownloadTasks` 返回 `null` 而不是伪造 `0`，旧 `actionRequired/completedTargetsToday/ingestedToday` 保留兼容 |
 | `GET /api/v2/subscriptions/workbench` | 可选 `limit`（1–100，默认 24）、`offset`（默认 0）、`mediaType`（`movie`/`tv`）和 `query`；返回五项能力状态、全量 `following/playable/actionRequired/inLibrary` 新统计、结构化 `progress`、`torraFact/pipelineOutcome`、当前页订阅、`page.nextOffset` 和可选 `posterBackfillIds`；兼容 `completed/fulfillmentState/chainState` 只由新事实投影，Torra completed 不进入 `playable` |
 | `POST /api/v2/subscriptions/visual-backfills` | `ids` 为最多 100 个订阅 ID；只按明确 TMDB 身份补充空缺海报/背景，不按标题猜图；本地写入开启时可补充已有本地记录，关闭时只返回视觉结果；仅 Torra 条目始终不创建本地镜像 |
