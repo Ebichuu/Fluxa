@@ -4,7 +4,7 @@
 路由数量：47  
 运行实现：Python / Flask
 
-新增能力使用真正的 URL 版本契约：`docs/contracts/http-api-contract-v2.json`，当前共 67 条。v1 的 47 条冻结路径和历史状态码不变。
+新增能力使用真正的 URL 版本契约：`docs/contracts/http-api-contract-v2.json`，当前共 70 条。v1 的 47 条冻结路径和历史状态码不变。
 
 ## 1. 版本规则
 
@@ -79,6 +79,9 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `GET /api/v2/discover/candidates` | 可选 `mediaType/query/limit/offset`；只返回未过期 active 候选的白名单字段和一致分页，不返回原始来源 payload、URL、Cookie、Passkey 或内部 ID |
 | `POST /api/v2/discover/candidates/:candidateId/follow-previews` | 空对象；只读复核候选身份、电视剧季号、重复追更和当前手动追更能力，不写台账、不排队 provider |
 | `POST /api/v2/discover/candidates/:candidateId/follows` | `confirm=true`、12–128 字符幂等键；服务端重新读取候选和能力，创建 `origin/intent_origin=manual` 的追更并返回真实 `activation`；同键重放不重复保存或调用 provider |
+| `GET /api/v2/subscriptions/candidate-migrations/preview` | 纯只读把历史追更分为 `manual/downstream-owned/candidate-eligible/migration-review`，支持 `limit`（1–200）与 `offset`，全量数量和指纹仍覆盖全部订阅版本、Torra link、resource chain；不写候选、追更或迁移记录 |
+| `POST /api/v2/subscriptions/candidate-migrations` | `confirm=true`、12–128 字符幂等键和最新 `previewFingerprint`；先用 SQLite backup API 创建版本化备份，再在单个即时事务中复核指纹、upsert eligible 候选、删除对应旧追更并保存内部补偿清单；首次创建返回 `201 + Location`，同键回放返回 200；不调用任何外部服务 |
+| `GET /api/v2/subscriptions/candidate-migrations/:runId` | 读取一次迁移的脱敏结果，不返回原订阅 key、原始 payload、Torra/resource 标识、路径或 URL |
 | `POST /api/subscriptions/save` | 标题、TMDB ID、媒体类型和可选元数据；响应可选返回 `activation`（`state`=`saved_and_torra_pushed`/`saved_and_queued`/`saved_only`/`already_exists`/`saved_push_failed`，含用户文案 `message`、`provider`、`queued` 与脱敏 `reason`）；异步入队只返回 `saved_and_queued`，不提前声称已推送 Torra |
 | `PATCH /api/subscriptions/:id/category` | 八分类 key 或 `null` |
 | `GET /api/subscriptions/detail` | 必填 `id`，可选 `season` |
@@ -174,10 +177,11 @@ NasEmby 原静态管理页不注册为第二套生产页面，迁移期静态快
 
 ## 9. HTTP v2 契约
 
-当前 47 条 v1 契约不承担新增语义。67 条 `/api/v2` 接口包括：
+当前 47 条 v1 契约不承担新增语义。70 条 `/api/v2` 接口包括：
 
 - 当前 React 使用：集成脱敏摘要、Torra 单条预览/推送、缓存系统指标、私人 RSS 来源管理、本地种子库和管理员运行时配置。
 - 发现候选闭环：独立候选列表、只读加入预览和确认加入追更；候选不进入追更与日历，只有人工确认后才创建追更意图。
+- 历史污染迁移：四类只读预览、带备份和指纹复核的原子迁移、脱敏运行结果查询；不自动执行，不调用外部服务。
 - 阶段 6 人工追更洗版：全局设置、单条观察设置、人工 Torra 分析、人工候选下载和 RSS 匹配级分析/确认下载，已接入 React 订阅详情与 RSS 种子库。
 - 作品统一视图：全局本地搜索和单作品生命周期总览，已接入顶部搜索与可分享作品页。
 - 系统问题闭环：Torra 秒传状态机只读摘要、手动重试预检、确认执行与动作轮询；摘要经 `systemIssues` 附加到任务 summary/chains 与首页。
@@ -236,7 +240,7 @@ v2 新增响应字段允许向后兼容扩展；删除字段、改变类型或�
 
 ## 13. 已实现的私人 PT RSS 种子库接口
 
-以下接口已经进入当前 67 条 v2 机器契约和 React：
+以下接口已经进入当前 70 条 v2 机器契约和 React：
 
 - `GET /api/v2/rss-sources`
 - `POST /api/v2/rss-sources`

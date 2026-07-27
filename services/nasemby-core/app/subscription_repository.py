@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import hashlib
+import sqlite3
+import uuid
 from contextlib import closing
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
 from app.sqlite_runtime import SQLiteRuntime
+from app.resource_identity_runtime import target_key as resource_target_key
 
 
 def _now_text():
@@ -45,6 +48,12 @@ def _future_text(value, days=30):
     return (parsed.astimezone(timezone.utc) + timedelta(days=days)).isoformat(
         timespec="seconds"
     ).replace("+00:00", "Z")
+
+
+class CandidateMigrationConflict(RuntimeError):
+    def __init__(self, reason_code):
+        super().__init__(reason_code)
+        self.reason_code = str(reason_code)
 
 
 class SubscriptionRepository:
@@ -545,6 +554,266 @@ class SubscriptionRepository:
             if not cursor.rowcount:
                 raise ValueError("候选状态已变化，请重新读取")
         return deepcopy(dict(response or {})), False
+
+    @staticmethod
+    def _table_exists(connection, table_name):
+        return connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (str(table_name),),
+        ).fetchone() is not None
+
+    def _candidate_migration_snapshot(self, connection):
+        subscription_rows = connection.execute(
+            "SELECT subscription_key, media_type, tmdb_id, season_number, title, payload_json, "
+            "version, created_at, updated_at FROM subscriptions ORDER BY subscription_key"
+        ).fetchall()
+        torra_rows = connection.execute(
+            "SELECT subscription_key, mapping_status, sync_state, updated_at "
+            "FROM torra_subscription_links ORDER BY subscription_key"
+        ).fetchall()
+        torra_by_subscription = {}
+        for row in torra_rows:
+            torra_by_subscription.setdefault(row["subscription_key"], []).append({
+                "mappingStatus": row["mapping_status"],
+                "syncState": row["sync_state"],
+                "updatedAt": row["updated_at"],
+            })
+
+        resource_by_subscription = {}
+        resource_by_target = {}
+        if self._table_exists(connection, "resource_chains"):
+            resource_rows = connection.execute(
+                "SELECT chain_id, subscription_id, target_key, version, updated_at "
+                "FROM resource_chains ORDER BY chain_id"
+            ).fetchall()
+            for row in resource_rows:
+                evidence = {
+                    "chainId": row["chain_id"],
+                    "version": int(row["version"] or 1),
+                    "updatedAt": row["updated_at"],
+                }
+                if row["subscription_id"]:
+                    resource_by_subscription.setdefault(row["subscription_id"], []).append(evidence)
+                if row["target_key"]:
+                    resource_by_target.setdefault(row["target_key"], []).append(evidence)
+
+        rows = []
+        fingerprint_rows = []
+        for row in subscription_rows:
+            payload = _json_load(row["payload_json"], {})
+            payload = payload if isinstance(payload, dict) else {}
+            media_type = str(row["media_type"] or "")
+            tmdb_id = str(row["tmdb_id"] or "")
+            try:
+                season_number = int(row["season_number"] or 0)
+            except (TypeError, ValueError):
+                season_number = 0
+            title = str(row["title"] or "")
+            target = resource_target_key(media_type, tmdb_id, title, season_number)
+            torra_evidence = torra_by_subscription.get(row["subscription_key"], [])
+            resource_evidence = [
+                *resource_by_subscription.get(row["subscription_key"], []),
+                *resource_by_target.get(target, []),
+            ]
+            item = {
+                "subscriptionKey": row["subscription_key"],
+                "mediaType": media_type,
+                "tmdbId": tmdb_id,
+                "seasonNumber": season_number,
+                "title": title,
+                "payload": payload,
+                "version": int(row["version"] or 1),
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+                "torraOwned": bool(torra_evidence),
+                "resourceOwned": bool(resource_evidence),
+            }
+            rows.append(item)
+            fingerprint_rows.append({
+                "subscriptionKey": item["subscriptionKey"],
+                "version": item["version"],
+                "updatedAt": item["updatedAt"],
+                "payloadHash": hashlib.sha256(row["payload_json"].encode("utf-8")).hexdigest(),
+                "torraEvidence": torra_evidence,
+                "resourceEvidence": resource_evidence,
+            })
+        fingerprint = hashlib.sha256(_json_dump(fingerprint_rows).encode("utf-8")).hexdigest()
+        return {"fingerprint": fingerprint, "rows": rows}
+
+    def candidate_migration_snapshot(self):
+        with self.runtime.transaction() as connection:
+            return self._candidate_migration_snapshot(connection)
+
+    def get_candidate_migration_run(self, *, run_id="", idempotency_key=""):
+        if not run_id and not idempotency_key:
+            return None
+        with closing(self.runtime.connect()) as connection:
+            if run_id:
+                row = connection.execute(
+                    "SELECT run_id, idempotency_key, preview_fingerprint, backup_ref, status, "
+                    "response_json, created_at, updated_at FROM candidate_migration_runs WHERE run_id=?",
+                    (str(run_id),),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT run_id, idempotency_key, preview_fingerprint, backup_ref, status, "
+                    "response_json, created_at, updated_at FROM candidate_migration_runs WHERE idempotency_key=?",
+                    (str(idempotency_key),),
+                ).fetchone()
+        if not row:
+            return None
+        return {
+            "runId": row["run_id"],
+            "idempotencyKey": row["idempotency_key"],
+            "previewFingerprint": row["preview_fingerprint"],
+            "backupRef": row["backup_ref"],
+            "status": row["status"],
+            "response": _json_load(row["response_json"], {}),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    @staticmethod
+    def _valid_candidate_migration_backup(path):
+        try:
+            with closing(sqlite3.connect(path)) as connection:
+                row = connection.execute("PRAGMA quick_check").fetchone()
+            return bool(row and row[0] == "ok")
+        except (OSError, sqlite3.DatabaseError):
+            return False
+
+    def ensure_candidate_migration_backup(self, fingerprint):
+        fingerprint = str(fingerprint or "").strip().lower()
+        if len(fingerprint) != 64 or any(character not in "0123456789abcdef" for character in fingerprint):
+            raise ValueError("迁移指纹无效")
+        suffix = fingerprint[:12]
+        backup_id = f"candidate-migration-v1:{suffix}"
+        backup_path = self.database_path.with_name(
+            f"{self.database_path.stem}.candidate-migration-v1.{suffix}.sqlite3"
+        )
+        if backup_path.exists() and self._valid_candidate_migration_backup(backup_path):
+            return backup_id
+        temporary_path = backup_path.with_suffix(f"{backup_path.suffix}.{uuid.uuid4().hex}.tmp")
+        try:
+            with closing(self.runtime.connect()) as source, closing(sqlite3.connect(temporary_path)) as target:
+                source.backup(target)
+            if not temporary_path.exists() or not self._valid_candidate_migration_backup(temporary_path):
+                raise OSError("候选迁移备份校验失败")
+            temporary_path.replace(backup_path)
+        except Exception:
+            temporary_path.unlink(missing_ok=True)
+            raise
+        return backup_id
+
+    def execute_candidate_migration(
+        self,
+        *,
+        preview_fingerprint,
+        idempotency_key,
+        backup_ref,
+        classify,
+    ):
+        now = _now_text()
+        with self.runtime.transaction(immediate=True) as connection:
+            replay = connection.execute(
+                "SELECT run_id, preview_fingerprint, response_json FROM candidate_migration_runs "
+                "WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+            if replay:
+                if replay["preview_fingerprint"] != preview_fingerprint:
+                    raise CandidateMigrationConflict("IDEMPOTENCY_KEY_CONFLICT")
+                return {**_json_load(replay["response_json"], {}), "replayed": True}
+
+            snapshot = self._candidate_migration_snapshot(connection)
+            if snapshot["fingerprint"] != preview_fingerprint:
+                raise CandidateMigrationConflict("PREVIEW_STALE")
+            classified = classify(snapshot["rows"])
+            eligible = [row for row in classified if row.get("category") == "candidate-eligible"]
+            if not eligible:
+                raise CandidateMigrationConflict("NO_ELIGIBLE_CANDIDATES")
+
+            compensation = []
+            for item in eligible:
+                row = item["row"]
+                candidate_id = _candidate_id(row["mediaType"], row["tmdbId"], row["seasonNumber"])
+                payload = dict(row["payload"])
+                source_key = str(
+                    payload.get("source_key") or payload.get("source") or payload.get("source_label") or "migration"
+                )[:120]
+                connection.execute(
+                    "INSERT INTO discover_candidates ("
+                    "candidate_id, media_type, tmdb_id, season_number, title, year, source_key, state, "
+                    "payload_json, first_seen_at, last_seen_at, expires_at, version"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 1) "
+                    "ON CONFLICT(candidate_id) DO UPDATE SET title=excluded.title, year=excluded.year, "
+                    "source_key=excluded.source_key, payload_json=excluded.payload_json, "
+                    "state=CASE WHEN discover_candidates.state='expired' THEN 'active' ELSE discover_candidates.state END, "
+                    "last_seen_at=excluded.last_seen_at, expires_at=excluded.expires_at, "
+                    "version=discover_candidates.version+1",
+                    (
+                        candidate_id,
+                        row["mediaType"],
+                        row["tmdbId"],
+                        row["seasonNumber"],
+                        row["title"],
+                        str(payload.get("year") or "")[:20],
+                        source_key,
+                        _json_dump(payload),
+                        now,
+                        now,
+                        _future_text(now),
+                    ),
+                )
+                cursor = connection.execute(
+                    "DELETE FROM subscriptions WHERE subscription_key=? AND version=?",
+                    (row["subscriptionKey"], row["version"]),
+                )
+                if int(cursor.rowcount or 0) != 1:
+                    raise CandidateMigrationConflict("SUBSCRIPTION_CHANGED_CONCURRENTLY")
+                compensation.append({
+                    "subscriptionKey": row["subscriptionKey"],
+                    "payload": payload,
+                    "candidateId": candidate_id,
+                    "version": row["version"],
+                })
+            counts = {}
+            for item in classified:
+                counts[item["category"]] = counts.get(item["category"], 0) + 1
+            run_id = f"candidate-migration:{uuid.uuid4().hex[:24]}"
+            response = {
+                "ok": True,
+                "runId": run_id,
+                "status": "succeeded",
+                "previewFingerprint": preview_fingerprint,
+                "backupId": backup_ref,
+                "migratedCount": len(eligible),
+                "preservedCount": len(classified) - len(eligible),
+                "reviewCount": counts.get("migration-review", 0),
+                "counts": counts,
+                "completedAt": now,
+                "replayed": False,
+            }
+            connection.execute(
+                "INSERT INTO candidate_migration_runs ("
+                "run_id, idempotency_key, preview_fingerprint, backup_ref, status, migrated_count, "
+                "skipped_count, conflict_summary_json, compensation_json, response_json, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, 'succeeded', ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    idempotency_key,
+                    preview_fingerprint,
+                    backup_ref,
+                    len(eligible),
+                    len(classified) - len(eligible),
+                    _json_dump(counts),
+                    _json_dump(compensation),
+                    _json_dump(response),
+                    now,
+                    now,
+                ),
+            )
+            return response
 
     def list_torra_links(self):
         with closing(self.runtime.connect()) as connection:
