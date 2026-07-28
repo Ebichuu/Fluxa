@@ -12,7 +12,7 @@
 - Torra 固定目标推送，以及追更洗版分析、候选下载、job 状态解析、按集 Emby 基准、SQLite 幂等/租约和脱敏审计。
 - 30 秒缓存的 NAS 系统指标，以及统一脱敏、可筛选的 v2 活动日志。
 - 115、Telegram、HDHive / pansou 和 MoviePilot 的 v2 细分接口继续保留；MoviePilot 阶段 7 已增加默认关闭的人工备用预览/推送，其他能力延期。
-- Emby、qBittorrent、Torra、Symedia 的服务端适配和凭据隔离；Symedia 摘要把 transfer history 与归档监控、云盘监听、Webhook、STRM、归档调度和文件观察分别建模，未验证接口保持 `unknown + NOT_INTEGRATED`。
+- Emby、qBittorrent、Torra、Symedia 的服务端适配和凭据隔离；Symedia 摘要把 transfer history 与归档监控、云盘监听、Webhook、STRM、归档调度和文件观察分别建模。实机 `/api/v1/system/sync_stats` 只提供按日 STRM 数量，不能绑定媒体目标；STRM 独立结果继续保持 `unknown + NOT_INTEGRATED`。
 - 统一任务链、qB 暂停/恢复和证据驱动的 Emby 刷新。
 - 六阶段独立事实契约与统一结果派生：`torra/qb/cloud115/symedia/strm/emby` 分别保存；P0.2 已接入 Torra、qB、Symedia 与 Emby 明确证据，115 分类摘要不能绑定媒体时及 STRM 独立来源未接入时保持 `unknown + missing`。任务、首页、作品、追更和日历已消费新结果，旧状态只由六阶段事实作兼容投影。
 - 全局作品搜索与单作品生命周期聚合：合并本地追更、已识别 RSS、任务、日历和 Emby，并在本地无结果时使用 TMDB 只读补充。

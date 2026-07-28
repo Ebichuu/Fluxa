@@ -242,6 +242,14 @@ Compose 通过 `MCC_DATA_ROOT` 把三个目录映射到同一个 fnOS 根目录�
 
 ## 13. 变更历史
 
+### 2026-07-28 — STRM 正式接口止损检查 P1.3f
+
+**变更内容**：核对 Symedia 解包源码、路由表和当前实例的只读接口。`POST /autosymlink/strm_test` 与 `POST /webhook/strm_extract/...` 是测试/触发动作，不作为事实源；唯一正式只读 `/api/v1/system/sync_stats` 实测只返回按日 `{date,count}` 汇总。它缺少媒体身份、季集范围、单次生成状态、生成时间、稳定结果 ID 和当前目标归属，因此不接入六阶段事实，STRM 固定保持 `unknown + missing + STRM_INDEPENDENT_RESULT_MISSING`。
+
+**变更理由**：聚合数量只能证明某日发生过 STRM 活动，不能证明当前任务的播放入口已生成。读取 `.strm` 文件名、归档路径或 Emby 命中会重新引入跨阶段反推。
+
+**影响范围**：仅更新事实来源决策、维护文档和防反推回归；没有新增外部请求、数据库字段、公开响应字段或写动作。
+
 ### 2026-07-28 — 候选调度与 Torra 推送语义 P1.3e
 
 **变更内容**：候选配置新增真实 `last_success_at/last_error`，能力响应把规则、全局调度闸门、线程启动、候选运行、Asia/Shanghai 计划和 2 小时宽限分别建模。Torra 后台入队持久化 `queued`，API 接受持久化 `submitted`；旧 activation 枚举继续兼容并新增 `torraPushState`。任务快照或 POST 返回的 ID 不再直接形成 linked，只有只读对账的可靠远端 ID、mapped 身份和一致季范围可投影 `linked`。

@@ -600,7 +600,7 @@ P0 通过前不得执行真实历史污染迁移，也不得宣称产品已达�
    - 成功必须具备身份、季集范围、状态、generatedAt、结果 ID 和当前目标归属。
    - 接口不存在或证据不足立即保持 `unknown + missing + STRM_INDEPENDENT_RESULT_MISSING`。
    - 不读取 `.strm` 文件名，不从归档、路径或 Emby 反推；不得阻塞 P1.3a-e。
-   - 状态：⏳ 待执行正式接口止损检查。
+   - 状态：✅ 已完成止损检查。源码中的 STRM 路由只有 POST 测试/触发动作；当前实例唯一正式只读 `/api/v1/system/sync_stats` 仅返回按日 `{date,count}` 汇总，缺少目标级六项证据，因此不接入并维持 `unknown + missing + STRM_INDEPENDENT_RESULT_MISSING`。
 
 主要涉及文件：
 

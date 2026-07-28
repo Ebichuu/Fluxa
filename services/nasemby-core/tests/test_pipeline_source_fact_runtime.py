@@ -100,7 +100,7 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
         ), observed_at=OBSERVED_AT)
         self.assertEqual(by_stage(unmatched, "cloud115")["state"], "unknown")
 
-    def test_symedia_success_does_not_infer_strm_or_emby_episode(self):
+    def test_symedia_success_and_aggregate_sync_stats_do_not_infer_strm(self):
         facts = build_pipeline_source_facts(context(
             symediaRows=[{
                 "id": "symedia-private-1",
@@ -108,6 +108,7 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
                 "date": "2026-07-27 11:30:00",
                 "dest": "/strm/Test.Show/S01E03.strm",
             }],
+            symediaStrmStats=[{"date": "2026-07-27", "count": 8}],
             embyIndex={"movies": set(), "series": {"100"}, "episodes": set()},
         ), observed_at=OBSERVED_AT)
 
@@ -115,6 +116,7 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
         self.assertEqual(by_stage(facts, "symedia")["eventAt"], "2026-07-27T03:30:00Z")
         self.assertEqual(by_stage(facts, "strm")["state"], "unknown")
         self.assertEqual(by_stage(facts, "strm")["reasonCode"], "STRM_INDEPENDENT_RESULT_MISSING")
+        self.assertEqual(by_stage(facts, "strm")["reasonText"], "Symedia 未提供独立结果")
         self.assertEqual(by_stage(facts, "emby")["state"], "unknown")
         self.assertEqual(by_stage(facts, "emby")["reasonCode"], "EMBY_EPISODE_EVIDENCE_MISSING")
 
