@@ -83,6 +83,7 @@ def build_save_activation(data):
             "provider": provider if enabled else "none",
             "queued": False,
             "reason": "同一媒体和范围已存在",
+            "torraPushState": "unknown",
         }
     if errors and not pushed and not queued:
         # 同步提交明确失败：只给脱敏结论，不透出上游错误细节
@@ -92,31 +93,35 @@ def build_save_activation(data):
             "provider": provider,
             "queued": False,
             "reason": "上游提交返回失败",
+            "torraPushState": "failed" if provider == "torra" else "not_applicable",
         }
     if pushed and provider == "torra":
-        # 只有 Torra 明确确认创建时才允许声明已推送
+        # POST 接受只能表示 submitted；linked 必须等待只读对账取得可靠远端 ID。
         return {
             "state": "saved_and_torra_pushed",
-            "message": "已保存，Torra 已确认创建订阅",
+            "message": "已提交 Torra · 等待确认",
             "provider": "torra",
             "queued": False,
             "reason": "",
+            "torraPushState": "submitted",
         }
     if enabled and (queued or task.get("skipped")):
         # 已成功入队（或同一目标已在队列中），后续结果由后台动作刷新
         return {
             "state": "saved_and_queued",
-            "message": f"已保存，已进入后台队列：{task_label}",
+            "message": "追更已保存 · 等待推送 Torra" if provider == "torra" else f"已保存，已进入后台队列：{task_label}",
             "provider": provider,
             "queued": True,
             "reason": "",
+            "torraPushState": "queued" if provider == "torra" else "not_applicable",
         }
     return {
         "state": "saved_only",
-        "message": "已保存到 Fluxa（仅保存），当前没有可运行的后续能力",
+        "message": "追更已保存 · Torra 自动推送已关闭" if "Torra" in (reason or "") else "已保存到 Fluxa（仅保存），当前没有可运行的后续能力",
         "provider": "none",
         "queued": False,
         "reason": reason or "后续处理能力未开启",
+        "torraPushState": "disabled" if "Torra" in (reason or "") else "not_applicable",
     }
 
 
@@ -337,9 +342,17 @@ def _push_preview(item, environment, torra_client):
             "seasonNumber": payload["season_number"],
             "year": payload["year"],
         }
-        duplicate = torra_client.inspect_duplicate(target)
-        if duplicate.get("error") and torra_client.is_configured():
-            blockers.append(f"Torra 在线查重未完成：{duplicate['error']}")
+        raw_duplicate = torra_client.inspect_duplicate(target)
+        duplicate = {
+            "checked": bool(raw_duplicate.get("checked")),
+            "found": bool(raw_duplicate.get("found")),
+            "subscriptionId": "",
+            "name": str(raw_duplicate.get("name") or "")[:200],
+        }
+        if raw_duplicate.get("error"):
+            duplicate["error"] = "Torra 在线查重未完成"
+            if torra_client.is_configured():
+                blockers.append("Torra 在线查重未完成")
     return {
         "ready": not blockers,
         "blockers": blockers,
@@ -371,8 +384,7 @@ def register_subscription_compat(app: Flask, environment=None, action_repository
         app.extensions["mcc_torra_client"],
         _find_item,
         lambda item: _push_preview(item, environment, app.extensions["mcc_torra_client"]),
-        link_recorder=(app.extensions.get("mcc_torra_subscription_sync") or object()).record_push_link
-        if app.extensions.get("mcc_torra_subscription_sync") else None,
+        state_recorder=discover_runtime.record_subscription_torra_push_state,
     )
     app.extensions["mcc_torra_subscription_action_service"] = torra_action_service
 
@@ -484,8 +496,21 @@ def register_subscription_compat(app: Flask, environment=None, action_repository
         if not plan["ready"]:
             return jsonify({"success": False, "error": "；".join(plan["blockers"]), "preview": plan}), 409
         try:
-            return jsonify(app.extensions["mcc_torra_client"].push_subscription(plan["payload"]))
+            result = app.extensions["mcc_torra_client"].push_subscription(plan["payload"])
+            success = bool(result.get("success"))
+            push_state = "submitted" if success else "failed"
+            discover_runtime.record_subscription_torra_push_state(key, push_state)
+            return jsonify({
+                "success": success,
+                "pushed": bool(result.get("pushed")),
+                "alreadyExists": bool(result.get("alreadyExists")),
+                "searchTriggered": bool(result.get("searchTriggered")),
+                "subscriptionId": "",
+                "message": "已提交 Torra · 等待确认" if success else "Torra 推送未完成",
+                "torraPushState": push_state,
+            })
         except Exception:
+            discover_runtime.record_subscription_torra_push_state(key, "failed")
             return _error("TORRA_PUSH_FAILED", "Torra 推送失败", 502)
 
     @app.post(

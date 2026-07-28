@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Flask, jsonify, request
 
@@ -10,12 +10,111 @@ from app.contract_mapping import map_subscription_item
 from app.task_public_runtime import present_pipeline_fact, present_pipeline_outcome
 
 
+SHANGHAI_TZ = timezone(timedelta(hours=8), "Asia/Shanghai")
+CANDIDATE_SCHEDULE_GRACE = timedelta(hours=2)
+
+
 def _truthy(value):
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _as_datetime(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.strptime(text[:19], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=SHANGHAI_TZ)
+    return parsed.astimezone(timezone.utc)
+
+
+def _candidate_scan_snapshot(environment, douban, scheduler, now_value=None):
+    now_value = now_value or datetime.now(timezone.utc)
+    if now_value.tzinfo is None:
+        now_value = now_value.replace(tzinfo=timezone.utc)
+    local_now = now_value.astimezone(SHANGHAI_TZ)
+    douban = douban if isinstance(douban, dict) else {}
+    scheduler = scheduler if isinstance(scheduler, dict) else {}
+    rule_enabled = bool(douban.get("enabled") and douban.get("task_enabled"))
+    scheduler_configured = "MCC_SUBSCRIPTION_SCHEDULER_ENABLED" in environment
+    scheduler_enabled = (
+        _truthy(environment.get("MCC_SUBSCRIPTION_SCHEDULER_ENABLED"))
+        if scheduler_configured else bool(scheduler.get("enabled"))
+    )
+    scheduler_started = bool(scheduler.get("started"))
+    scheduler_running = bool(scheduler_enabled and scheduler_started)
+    task_time = str(douban.get("task_time") or "08:30")
+    try:
+        hour, minute = [int(part) for part in task_time.split(":", 1)]
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError
+    except (TypeError, ValueError):
+        hour, minute = 8, 30
+        task_time = "08:30"
+    today_schedule = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    grace_until = today_schedule + CANDIDATE_SCHEDULE_GRACE
+    expected = today_schedule if local_now > grace_until else today_schedule - timedelta(days=1)
+    last_run_at = str(douban.get("last_run_at") or "")
+    last_success_at = str(douban.get("last_success_at") or "")
+    configured_error = str(douban.get("last_error") or "")
+    scheduler_error = str(scheduler.get("lastError") or "")
+    last_error = configured_error or scheduler_error
+    if not last_success_at and last_run_at and not configured_error:
+        last_success_at = last_run_at
+    last_success = _as_datetime(last_success_at)
+    overdue = bool(last_success and last_success < expected.astimezone(timezone.utc))
+    if not rule_enabled:
+        state = "rules_disabled"
+        label = "候选规则未启用"
+        detail = ""
+    elif not scheduler_running:
+        state = "scheduler_stopped"
+        label = "候选规则已启用"
+        detail = "服务端调度未启动"
+    elif last_error:
+        state = "error"
+        label = "候选调度异常"
+        detail = "最近运行失败"
+    elif not last_run_at:
+        state = "waiting_first_run"
+        label = "调度已启动"
+        detail = "等待首次运行"
+    elif overdue:
+        state = "overdue"
+        label = "候选调度逾期"
+        detail = f"最近成功 {last_success_at}"
+    else:
+        state = "healthy"
+        label = "候选自动更新正常"
+        detail = f"最近运行 {last_run_at}"
+    return {
+        "configured": bool(douban),
+        "ruleEnabled": rule_enabled,
+        "schedulerConfigured": scheduler_configured,
+        "schedulerEnabled": scheduler_enabled,
+        "schedulerStarted": scheduler_started,
+        "running": scheduler_running,
+        "state": state,
+        "label": label,
+        "detail": detail,
+        "taskTime": task_time,
+        "lastRunAt": last_run_at,
+        "lastSuccessAt": last_success_at,
+        "lastError": last_error,
+        "expectedRunAt": expected.isoformat(timespec="seconds"),
+        "graceUntil": grace_until.isoformat(timespec="seconds"),
+        "overdue": overdue,
+    }
 
 
 def _state(key, label, state, detail, *, enabled=False, configured=False, checked_at=""):
@@ -152,23 +251,60 @@ def _chain_item_for_row(row, chain):
     return next((chain.get(str(value)) for value in candidates if value and chain.get(str(value))), None)
 
 
+TORRA_PUSH_DETAILS = {
+    "queued": "追更已保存 · 等待推送 Torra",
+    "submitted": "已提交 Torra · 等待确认",
+    "linked": "追更已保存 · 已在 Torra",
+    "disabled": "追更已保存 · Torra 自动推送已关闭",
+    "failed": "追更已保存 · Torra 推送失败",
+    "unknown": "追更已保存 · 推送状态暂未确认",
+}
+
+
+def _torra_push_snapshot(row, reconciliation=None, push_enabled=True):
+    row = row if isinstance(row, dict) else {}
+    reconciliation = reconciliation if isinstance(reconciliation, dict) else {}
+    remote = reconciliation.get("torra") if isinstance(reconciliation.get("torra"), dict) else {}
+    reliably_linked = bool(
+        reconciliation.get("reconciliationState") in {"linked", "only_torra"}
+        and reconciliation.get("remoteRef")
+        and remote.get("present")
+        and remote.get("mappingStatus") == "mapped"
+    )
+    stored = str(row.get("torra_push_state") or "").strip().lower()
+    if reliably_linked:
+        state = "linked"
+    elif stored in {"queued", "submitted", "failed"}:
+        state = stored
+    elif not push_enabled:
+        state = "disabled"
+    else:
+        state = "unknown"
+    return {
+        "status": "linked" if state == "linked" else "not_linked",
+        "pushState": state,
+        "detail": TORRA_PUSH_DETAILS[state],
+        "observedAt": str(
+            reconciliation.get("observedAt")
+            or row.get("torra_push_observed_at")
+            or ""
+        ),
+    }
+
+
 def _item_snapshot(row, chain_item=None):
     mapped = map_subscription_item(row) or {}
     chain_item = chain_item or {}
     facts = _fact_map(chain_item)
     pipeline_outcome = _outcome(chain_item)
     outcome_state = pipeline_outcome["state"]
-    source_ids = chain_item.get("sourceIds") or {}
     torra_fact = present_pipeline_fact(facts["torra"]) if facts.get("torra") else None
     return {
         **mapped,
         "status": "done" if outcome_state == "playable" else "pending",
         "scope": _scope(row),
         "missingEpisodes": _missing_episodes(row),
-        "torra": {
-            "status": "linked" if source_ids.get("torraId") or row.get("torra_remote_id") else "not_linked",
-            "detail": str((torra_fact or {}).get("reasonText") or "Torra 尚未关联"),
-        },
+        "torra": _torra_push_snapshot(row),
         "qb": _fact_stage(facts.get("qb"), "未接入 qB 任务证据"),
         "cloud115": _fact_stage(facts.get("cloud115"), "未接入 115 文件级证据"),
         "library": _fact_stage(facts.get("symedia"), "尚无 Symedia 整理证据"),
@@ -182,9 +318,10 @@ def _item_snapshot(row, chain_item=None):
 
 
 class SubscriptionWorkbenchService:
-    def __init__(self, app: Flask, environment=None):
+    def __init__(self, app: Flask, environment=None, clock=None):
         self.app = app
         self.environment = environment if environment is not None else {}
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     def capability_snapshot(self):
         checked_at = _now()
@@ -200,7 +337,9 @@ class SubscriptionWorkbenchService:
             config = {}
         douban = config.get("douban") if isinstance(config, dict) else {}
         douban = douban if isinstance(douban, dict) else {}
-        source_enabled = bool(douban.get("enabled") and douban.get("task_enabled"))
+        source_scan = _candidate_scan_snapshot(
+            self.environment, douban, scheduler, self.clock()
+        )
         return {
             "ok": True,
             "checkedAt": checked_at,
@@ -215,16 +354,13 @@ class SubscriptionWorkbenchService:
                 "enabled": scheduler_enabled,
                 "started": scheduler_started,
                 "running": bool(scheduler_enabled and scheduler_started and not scheduler_error),
-                "lastRunAt": str(scheduler.get("lastRunAt") or ""),
+                "lastRunAt": source_scan["lastRunAt"],
+                "heartbeatAt": str(scheduler.get("lastRunAt") or ""),
                 "lastError": scheduler_error,
             },
             # 手动加入结果只看 manualFollow；sourceScan 只描述后台来源扫描
             "manualFollow": manual_follow_snapshot(self.environment, config),
-            "sourceScan": {
-                "configured": bool(douban),
-                "enabled": source_enabled and (scheduler_enabled if scheduler_configured else True),
-                "running": bool(scheduler_started and not scheduler_error),
-            },
+            "sourceScan": source_scan,
         }
 
     @staticmethod
@@ -397,12 +533,19 @@ class SubscriptionWorkbenchService:
                     "observedAt": recon.get("observedAt"),
                     "freshUntil": recon.get("freshUntil"),
                 })
+                mapped["torra"] = _torra_push_snapshot(
+                    row, recon, _truthy(self.environment.get("TORRA_PUSH_ENABLED"))
+                )
                 if not chain_item:
                     mapped["torraFact"] = recon.get("torraFact")
                     mapped["pipelineOutcome"] = present_pipeline_outcome(recon.get("pipelineOutcome"))
                     mapped["outcomeState"] = mapped["pipelineOutcome"]["state"]
                     mapped["chainState"] = _legacy_chain_state(mapped["outcomeState"])
                     mapped["status"] = "done" if mapped["outcomeState"] == "playable" else "pending"
+            else:
+                mapped["torra"] = _torra_push_snapshot(
+                    row, None, _truthy(self.environment.get("TORRA_PUSH_ENABLED"))
+                )
             mapped_items.append(mapped)
 
         for recon in (reconciliation or {}).get("items", []):
@@ -443,6 +586,9 @@ class SubscriptionWorkbenchService:
                 "outcomeState": outcome_state,
                 "pipelineOutcome": pipeline_outcome,
                 "torraFact": torra_fact,
+                "torra": _torra_push_snapshot(
+                    {}, recon, _truthy(self.environment.get("TORRA_PUSH_ENABLED"))
+                ),
                 "torraSyncState": "current",
                 "torraMappingStatus": "mapped",
                 "reconciliationState": recon.get("reconciliationState"),
@@ -546,33 +692,23 @@ class SubscriptionWorkbenchService:
         config = discover_runtime.load_subscription_config() or {}
         douban = config.get("douban") if isinstance(config, dict) else {}
         douban = douban if isinstance(douban, dict) else {}
-        source_scheduler_enabled = bool(douban.get("enabled") and douban.get("task_enabled"))
-        global_scheduler_configured = "MCC_SUBSCRIPTION_SCHEDULER_ENABLED" in self.environment
-        global_scheduler_enabled = _truthy(self.environment.get("MCC_SUBSCRIPTION_SCHEDULER_ENABLED"))
         scheduler_registry = self.app.extensions.get("mcc_scheduler_status")
         scheduler_runtime = scheduler_registry.snapshot("subscription-task") if scheduler_registry else {}
-        scheduler_started = bool(scheduler_runtime.get("started"))
-        scheduler_error = str(scheduler_runtime.get("lastError") or "")
-        scheduler_enabled = source_scheduler_enabled and (
-            global_scheduler_enabled and scheduler_started
-            if global_scheduler_configured
-            else (scheduler_started if scheduler_registry else True)
+        source_scan = _candidate_scan_snapshot(
+            self.environment, douban, scheduler_runtime, self.clock()
         )
-        if not source_scheduler_enabled:
-            scheduler_state = "disabled"
-            scheduler_detail = "自动订阅来源或定时任务未开启"
-        elif global_scheduler_configured and not global_scheduler_enabled:
-            scheduler_state = "disabled"
-            scheduler_detail = "系统定时任务总开关已关闭"
-        elif scheduler_error:
-            scheduler_state = "error"
-            scheduler_detail = "后台定时任务最近执行失败"
-        elif scheduler_registry and not scheduler_started:
-            scheduler_state = "unknown"
-            scheduler_detail = "定时任务已开启，后台尚未确认运行"
-        else:
-            scheduler_state = "ready"
-            scheduler_detail = f"每日 {douban.get('task_time') or '08:30'} 自动更新来源"
+        scheduler_enabled = bool(source_scan["ruleEnabled"] and source_scan["running"])
+        scheduler_state = {
+            "rules_disabled": "disabled",
+            "scheduler_stopped": "unknown",
+            "waiting_first_run": "unknown",
+            "error": "error",
+            "overdue": "error",
+            "healthy": "ready",
+        }[source_scan["state"]]
+        scheduler_detail = " · ".join(
+            value for value in (source_scan["label"], source_scan["detail"]) if value
+        )
         if not rss_summary.get("enabled"):
             rss_state = "disabled"
             rss_detail = "RSS 采集未开启"
@@ -616,9 +752,11 @@ class SubscriptionWorkbenchService:
             "scheduler": {
                 "enabled": scheduler_enabled,
                 "state": scheduler_state,
-                "taskTime": str(douban.get("task_time") or "08:30"),
-                "lastRunAt": str(scheduler_runtime.get("lastRunAt") or douban.get("last_run_at") or ""),
-                "lastError": scheduler_error,
+                "taskTime": source_scan["taskTime"],
+                "lastRunAt": source_scan["lastRunAt"],
+                "lastSuccessAt": source_scan["lastSuccessAt"],
+                "lastError": source_scan["lastError"],
+                "sourceScan": source_scan,
             },
             "reconciliation": reconciliation or {
                 "ok": False,

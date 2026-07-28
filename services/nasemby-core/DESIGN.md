@@ -242,6 +242,14 @@ Compose 通过 `MCC_DATA_ROOT` 把三个目录映射到同一个 fnOS 根目录�
 
 ## 13. 变更历史
 
+### 2026-07-28 — 候选调度与 Torra 推送语义 P1.3e
+
+**变更内容**：候选配置新增真实 `last_success_at/last_error`，能力响应把规则、全局调度闸门、线程启动、候选运行、Asia/Shanghai 计划和 2 小时宽限分别建模。Torra 后台入队持久化 `queued`，API 接受持久化 `submitted`；旧 activation 枚举继续兼容并新增 `torraPushState`。任务快照或 POST 返回的 ID 不再直接形成 linked，只有只读对账的可靠远端 ID、mapped 身份和一致季范围可投影 `linked`。
+
+**变更理由**：配置开启不等于服务端线程运行，线程心跳也不等于候选刷新成功；同样，HTTP 接受或客户端预生成 ID 不能证明远端订阅已经可读并归属当前目标。
+
+**影响范围**：候选运行记录、订阅能力/工作台、Torra 手动与后台推送状态、发现/追更/控制室文案、TypeScript 类型、API 契约和回归测试。只增加可选响应字段和本地追更状态字段，旧枚举、URL、状态码、幂等与写闸门保持不变。
+
 ### 2026-07-28 — 日历集级历史桥接 P1.3d
 
 **变更内容**：日历从现有 `resource_events` 与当前六阶段快照合并读取集级 qB、Symedia、STRM 和 Emby 事件；规范范围 owner 可投影到对应单集，但底层 artifact 仍只有一个 owner。成功发生时间永久保留，当前 Emby 命中单独受 `freshUntil` 约束；失败过期后保留历史，只有同一 artifact、同一阶段的后续成功或恢复才能结束历史失败提示。公开日历条目兼容增加 `strmAt/strmSource/firstConfirmedPlayableAt`。

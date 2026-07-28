@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 import tempfile
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,7 +11,11 @@ from flask import Flask
 
 from app import discover_runtime
 from app.health_state_runtime import SchedulerStatusRegistry
-from app.subscription_workbench_runtime import SubscriptionWorkbenchService, register_subscription_workbench
+from app.subscription_workbench_runtime import (
+    SubscriptionWorkbenchService,
+    _candidate_scan_snapshot,
+    register_subscription_workbench,
+)
 from app.subscription_reconciliation_runtime import torra_public_subscription_key
 from app.subscription_repository import SubscriptionRepository
 
@@ -187,7 +192,7 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
                 discover_runtime, "normalize_subscription_item_metadata", side_effect=lambda row, **_kwargs: dict(row)
             ), patch.object(
                 discover_runtime, "write_subscription_config_data"
-            ), patch.object(
+            ) as write_config, patch.object(
                 discover_runtime, "write_activity"
             ), patch.object(
                 discover_runtime, "write_subscription_items_data", side_effect=AssertionError("候选刷新不得改写追更")
@@ -200,6 +205,45 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
             self.assertEqual(repository.list_discover_candidates()["total"], 1)
             self.assertEqual(result["candidates"]["added"], 1)
             self.assertEqual(result["pushed"], 0)
+            saved_douban = write_config.call_args.args[0]["douban"]
+            self.assertTrue(saved_douban["last_success_at"])
+            self.assertEqual(saved_douban["last_error"], "")
+
+    def test_candidate_rule_skips_do_not_mark_the_run_as_failed(self):
+        incoming = {
+            "title": "未匹配候选",
+            "media_type": "movie",
+            "tmdb_id": "",
+        }
+        config = {
+            "douban": {
+                "enabled": True,
+                "task_enabled": True,
+                "movie_enabled": True,
+                "tv_enabled": True,
+                "sources": ["hot_movie"],
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SubscriptionRepository(Path(directory) / "subscriptions.sqlite3")
+            with patch.object(discover_runtime, "subscription_repository", return_value=repository), patch.object(
+                discover_runtime, "load_subscription_config", return_value=deepcopy(config)
+            ), patch.object(
+                discover_runtime, "fetch_subscription_source", return_value=[incoming]
+            ), patch.object(
+                discover_runtime, "normalize_subscription_item_metadata", side_effect=lambda row, **_kwargs: dict(row)
+            ), patch.object(
+                discover_runtime, "subscription_has_required_tmdb", return_value=False
+            ), patch.object(
+                discover_runtime, "write_subscription_config_data"
+            ) as write_config, patch.object(discover_runtime, "write_activity"):
+                result = discover_runtime.run_subscription_now()
+
+            saved_douban = write_config.call_args.args[0]["douban"]
+            self.assertEqual(result["stats"]["total"], 0)
+            self.assertEqual(len(result["errors"]), 1)
+            self.assertTrue(saved_douban["last_success_at"])
+            self.assertEqual(saved_douban["last_error"], "")
 
     def test_snapshot_returns_real_capabilities_stats_and_chain_evidence(self):
         app = Flask(__name__)
@@ -246,7 +290,7 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
             "torra_connection": "ready",
             "torra_mirror": "ready",
             "rss": "ready",
-            "scheduler": "ready",
+            "scheduler": "unknown",
         })
         mirror = next(item for item in snapshot["capabilities"] if item["key"] == "torra_mirror")
         self.assertIn("当前对账已关联 0 条", mirror["detail"])
@@ -256,7 +300,7 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         self.assertEqual(snapshot["stats"]["following"], 0)
         self.assertEqual(snapshot["stats"]["completed"], 0)
         self.assertEqual(snapshot["stats"]["actionRequired"], 1)
-        self.assertEqual(snapshot["items"][0]["torra"]["status"], "linked")
+        self.assertEqual(snapshot["items"][0]["torra"]["status"], "not_linked")
         self.assertEqual(snapshot["items"][0]["qb"]["status"], "blocked")
         self.assertEqual(snapshot["items"][0]["blockingReason"], "qB 下载卡住")
         self.assertNotIn("remoteId", snapshot["items"][0]["torra"])
@@ -265,6 +309,27 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         serialized = str(snapshot["items"][0])
         self.assertNotIn("torra-1", serialized)
         self.assertNotIn("hash-1", serialized)
+
+    def test_torra_push_submission_state_persists_without_creating_remote_link(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SubscriptionRepository(Path(directory) / "subscriptions.sqlite3")
+            row = {
+                "subscription_key": "tv:manual",
+                "title": "提交状态测试",
+                "media_type": "tv",
+                "tmdb_id": "404",
+                "target_season": 1,
+                "origin": "manual",
+            }
+            repository.upsert_item(row, row["subscription_key"])
+            with patch.object(discover_runtime, "subscription_repository", return_value=repository):
+                discover_runtime.record_subscription_torra_push_state(row, "queued")
+                discover_runtime.record_subscription_torra_push_state(row, "submitted")
+
+            saved = repository.load_payload()["items"][0]
+            self.assertEqual(saved["torra_push_state"], "submitted")
+            self.assertTrue(saved["torra_push_observed_at"])
+            self.assertEqual(repository.list_torra_links(), [])
 
     def test_snapshot_maps_legacy_torra_mirror_key_to_public_hash(self):
         remote_id = "legacy-private-remote"
@@ -284,6 +349,9 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
                     "tmdbId": "202",
                     "seasonNumber": 1,
                     "reconciliationState": "linked",
+                    "remoteRef": public_key.removeprefix("torra:"),
+                    "observedAt": "2026-07-22T08:00:00Z",
+                    "torra": {"present": True, "mappingStatus": "mapped"},
                 }],
             },
         })()
@@ -307,7 +375,30 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
 
         self.assertEqual(snapshot["items"][0]["id"], public_key)
         self.assertEqual(snapshot["items"][0]["reconciliationState"], "linked")
+        self.assertEqual(snapshot["items"][0]["torra"]["pushState"], "linked")
         self.assertNotIn(remote_id, str(snapshot))
+
+    def test_raw_torra_id_without_read_only_reconciliation_is_not_linked(self):
+        app = Flask(f"{__name__}-unreconciled-torra-id")
+        service = SubscriptionWorkbenchService(app, {"TORRA_PUSH_ENABLED": "true"})
+        row = {
+            "subscription_key": "tv:manual",
+            "title": "待对账剧",
+            "media_type": "tv",
+            "tmdb_id": "202",
+            "target_season": 1,
+            "origin": "manual",
+            "torra_remote_id": "post-response-id",
+            "torra_push_state": "submitted",
+        }
+        with patch.object(discover_runtime, "load_subscription_items", return_value={"items": [row], "errors": []}), patch.object(
+            discover_runtime, "load_subscription_config", return_value={}
+        ), patch.object(discover_runtime, "subscription_blocked_titles", return_value=[]):
+            item = service.snapshot(limit=24)["items"][0]
+
+        self.assertEqual(item["torra"]["status"], "not_linked")
+        self.assertEqual(item["torra"]["pushState"], "submitted")
+        self.assertEqual(item["torra"]["detail"], "已提交 Torra · 等待确认")
 
     def test_task_chain_torra_fact_wins_over_reconciliation_projection(self):
         class FullSnapshotTaskService:
@@ -473,8 +564,12 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
             "blockers": [],
         })
         self.assertTrue(payload["sourceScan"]["configured"])
-        self.assertFalse(payload["sourceScan"]["enabled"])
+        self.assertTrue(payload["sourceScan"]["ruleEnabled"])
+        self.assertFalse(payload["sourceScan"]["schedulerEnabled"])
         self.assertFalse(payload["sourceScan"]["running"])
+        self.assertEqual(payload["sourceScan"]["state"], "scheduler_stopped")
+        self.assertEqual(payload["sourceScan"]["label"], "候选规则已启用")
+        self.assertEqual(payload["sourceScan"]["detail"], "服务端调度未启动")
 
     def test_scheduler_state_uses_global_runtime_gate_instead_of_source_config(self):
         app = Flask(__name__)
@@ -491,9 +586,47 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
             snapshot = service.snapshot()
 
         scheduler = next(item for item in snapshot["capabilities"] if item["key"] == "scheduler")
-        self.assertEqual(scheduler["state"], "disabled")
-        self.assertEqual(scheduler["detail"], "系统定时任务总开关已关闭")
+        self.assertEqual(scheduler["state"], "unknown")
+        self.assertEqual(scheduler["detail"], "候选规则已启用 · 服务端调度未启动")
         self.assertFalse(snapshot["scheduler"]["enabled"])
+
+    def test_candidate_schedule_uses_shanghai_time_two_hour_grace_and_real_runs(self):
+        environment = {"MCC_SUBSCRIPTION_SCHEDULER_ENABLED": "true"}
+        scheduler = {"enabled": True, "started": True, "lastRunAt": "2026-07-28T00:00:00Z"}
+        base = {
+            "enabled": True,
+            "task_enabled": True,
+            "task_time": "08:30",
+            "last_run_at": "2026-07-27 08:40:00",
+            "last_success_at": "2026-07-27 08:40:00",
+            "last_error": "",
+        }
+
+        in_grace = _candidate_scan_snapshot(
+            environment, base, scheduler,
+            datetime(2026, 7, 28, 2, 29, tzinfo=timezone.utc),
+        )
+        overdue = _candidate_scan_snapshot(
+            environment, base, scheduler,
+            datetime(2026, 7, 28, 2, 31, tzinfo=timezone.utc),
+        )
+        waiting = _candidate_scan_snapshot(
+            environment, {**base, "last_run_at": "", "last_success_at": ""}, scheduler,
+            datetime(2026, 7, 28, 3, 0, tzinfo=timezone.utc),
+        )
+        failed = _candidate_scan_snapshot(
+            environment, {**base, "last_error": "候选来源更新存在错误"}, scheduler,
+            datetime(2026, 7, 28, 3, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(in_grace["state"], "healthy")
+        self.assertFalse(in_grace["overdue"])
+        self.assertEqual(overdue["state"], "overdue")
+        self.assertTrue(overdue["overdue"])
+        self.assertEqual(waiting["state"], "waiting_first_run")
+        self.assertEqual(waiting["detail"], "等待首次运行")
+        self.assertEqual(failed["state"], "error")
+        self.assertEqual(failed["detail"], "最近运行失败")
 
     def test_snapshot_paginates_after_media_type_and_query_filters(self):
         app = Flask(__name__)

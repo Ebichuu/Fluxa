@@ -154,7 +154,11 @@ export interface SubscriptionItem {
   freshUntil?: string;
   scope?: string;
   missingEpisodes?: string[];
-  torra?: SubscriptionWorkbenchStage & { remoteId?: string };
+  torra?: SubscriptionWorkbenchStage & {
+    remoteId?: string;
+    pushState?: TorraPushState;
+    observedAt?: string;
+  };
   qb?: SubscriptionWorkbenchStage & { hashes?: string[] };
   cloud115?: SubscriptionWorkbenchStage & { ids?: string[] };
   library?: SubscriptionWorkbenchStage;
@@ -229,7 +233,9 @@ export interface SubscriptionWorkbenchResponse {
     state?: SubscriptionCapabilityState;
     taskTime: string;
     lastRunAt: string;
+    lastSuccessAt?: string;
     lastError?: string;
+    sourceScan?: SourceScanCapability;
   };
   reconciliation?: SubscriptionReconciliationResponse;
 }
@@ -258,9 +264,24 @@ export interface ManualFollowCapability {
 
 export interface SourceScanCapability {
   configured: boolean;
-  enabled: boolean;
+  ruleEnabled: boolean;
+  schedulerConfigured: boolean;
+  schedulerEnabled: boolean;
+  schedulerStarted: boolean;
   running: boolean;
+  state: 'rules_disabled' | 'scheduler_stopped' | 'waiting_first_run' | 'error' | 'overdue' | 'healthy';
+  label: string;
+  detail: string;
+  taskTime: string;
+  lastRunAt: string;
+  lastSuccessAt: string;
+  lastError: string;
+  expectedRunAt: string;
+  graceUntil: string;
+  overdue: boolean;
 }
+
+export type TorraPushState = 'queued' | 'submitted' | 'linked' | 'failed' | 'disabled' | 'unknown' | 'not_applicable';
 
 export interface SubscriptionCapabilitiesResponse {
   ok: boolean;
@@ -273,6 +294,7 @@ export interface SubscriptionCapabilitiesResponse {
     started: boolean;
     running: boolean;
     lastRunAt: string;
+    heartbeatAt?: string;
     lastError: string;
   };
   manualFollow?: ManualFollowCapability;
@@ -292,6 +314,7 @@ export interface SubscriptionActivation {
   provider?: ManualFollowProvider;
   queued?: boolean;
   reason?: string;
+  torraPushState?: TorraPushState;
 }
 
 export interface SubscriptionSaveResponse {
@@ -433,6 +456,7 @@ export interface TorraPushResult {
   searchTriggered: boolean;
   subscriptionId: string;
   message: string;
+  torraPushState?: TorraPushState;
   requestId: string;
   replayed: boolean;
 }
@@ -690,6 +714,8 @@ export interface SubscriptionHubConfig {
     task_enabled: boolean;
     updated_at: string;
     last_run_at: string;
+    last_success_at?: string;
+    last_error?: string;
   };
 }
 

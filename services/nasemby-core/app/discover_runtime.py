@@ -221,6 +221,8 @@ DEFAULT_SUBSCRIPTION_CONFIG = {
         "task_enabled": True,
         "updated_at": "",
         "last_run_at": "",
+        "last_success_at": "",
+        "last_error": "",
     },
 }
 
@@ -2053,6 +2055,25 @@ def update_subscription_item(key, updater):
     return subscription_repository().mutate_item(key, mutate, get_subscription_item_key)
 
 
+def record_subscription_torra_push_state(item_or_key, state):
+    state = str(state or "").strip().lower()
+    if state not in {"queued", "submitted", "failed", "disabled"}:
+        return None
+    key = (
+        str(item_or_key or "").strip()
+        if isinstance(item_or_key, str)
+        else str(get_subscription_item_key(item_or_key) or "").strip()
+    )
+    if not key:
+        return None
+
+    def mutate(item):
+        item["torra_push_state"] = state
+        item["torra_push_observed_at"] = beijing_now_text()
+
+    return subscription_repository().mutate_item(key, mutate, get_subscription_item_key)
+
+
 def subscription_lookup_key_set(item):
     if not isinstance(item, dict):
         return set()
@@ -3124,6 +3145,8 @@ def run_subscription_provider_push(items, config, errors, provider, skip_existin
             result["skipped"] += 1
             continue
         data = push_subscription_to_provider(item, provider_key, f"{result['label']} 后台执行", errors, skip_existing=skip_existing)
+        if provider_key == "torra":
+            record_subscription_torra_push_state(item, "submitted" if data.get("ok") else "failed")
         if data.get("skipped_existing"):
             result["skipped"] += 1
         elif data.get("ok"):
@@ -3288,6 +3311,9 @@ def queue_subscription_resource_rule_transfer(items, trigger="subscription_saved
         if not torra_push_enabled:
             result["enabled"] = False
             result["reason"] = "允许向 Torra 创建订阅已关闭"
+            for item in items or []:
+                if isinstance(item, dict):
+                    record_subscription_torra_push_state(item, "disabled")
             return result
     if not enabled:
         result["reason"] = "资源规则未启用"
@@ -3314,6 +3340,9 @@ def queue_subscription_resource_rule_transfer(items, trigger="subscription_saved
     result["queued"] = len(queued)
     if not queued:
         return result
+    if mode == "torra":
+        for item in queued:
+            record_subscription_torra_push_state(item, "queued")
     postprocess_category = subscription_postprocess_category(mode)
     write_activity(
         postprocess_category,
@@ -3408,10 +3437,12 @@ def run_subscription_now():
     items = []
     seen = set()
     errors = []
+    run_failed = False
     if daily_only:
         try:
             rows = fetch_daily_airing_subscription_source(72)
         except Exception as exc:
+            run_failed = True
             add_subscription_run_issue(errors, f"全球日播: {exc}", "error", "fetch_subscription_source", source="全球日播", error=str(exc))
             rows = []
         for row in rows:
@@ -3455,6 +3486,7 @@ def run_subscription_now():
         try:
             rows = fetch_subscription_source(source_key, 24)
         except Exception as exc:
+            run_failed = True
             add_subscription_run_issue(errors, f"{source['label']}: {exc}", "error", "fetch_subscription_source", source=source.get("label") or source_key, error=str(exc))
             continue
         for row in rows:
@@ -3530,6 +3562,9 @@ def run_subscription_now():
         "pushed": 0,
     }
     config["douban"]["last_run_at"] = now_text
+    config["douban"]["last_error"] = "候选来源更新存在错误" if run_failed else ""
+    if not run_failed:
+        config["douban"]["last_success_at"] = now_text
     write_subscription_config_data(config)
     payload["config"] = config
     summary_status = "success" if not errors else ("skip" if items else "error")

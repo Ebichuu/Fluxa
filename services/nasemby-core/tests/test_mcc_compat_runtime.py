@@ -616,6 +616,10 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
                 pushed = client.post("/api/subscriptions/push", json={"id": key})
                 self.assertEqual(pushed.status_code, 200)
                 self.assertTrue(pushed.get_json()["pushed"])
+                self.assertEqual(pushed.get_json()["torraPushState"], "submitted")
+                self.assertEqual(pushed.get_json()["message"], "已提交 Torra · 等待确认")
+                self.assertEqual(pushed.get_json()["subscriptionId"], "")
+                self.assertNotIn(key, json.dumps(pushed.get_json(), ensure_ascii=False))
                 self.assertEqual(app.extensions["mcc_torra_client"].pushes[0]["save_path"], "/downloads/torra/00-日漫")
 
                 v2_preview = client.get(f"/api/v2/subscriptions/{key}/torra-push-preview")
@@ -633,6 +637,10 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
                 })
                 self.assertEqual(first_push.status_code, 200)
                 self.assertFalse(first_push.get_json()["replayed"])
+                self.assertEqual(first_push.get_json()["torraPushState"], "submitted")
+                self.assertEqual(first_push.get_json()["message"], "已提交 Torra · 等待确认")
+                self.assertEqual(first_push.get_json()["subscriptionId"], "")
+                self.assertNotIn(key, json.dumps(first_push.get_json(), ensure_ascii=False))
                 self.assertEqual(replayed_push.status_code, 200)
                 self.assertTrue(replayed_push.get_json()["replayed"])
                 self.assertEqual(cooldown_push.status_code, 409)
@@ -799,10 +807,11 @@ class SubscriptionSaveActivationTests(IsolatedActivityLogMixin, unittest.TestCas
         self.assertEqual(response.status_code, 200)
         activation = response.get_json()["activation"]
         self.assertEqual(activation["state"], "saved_only")
-        self.assertEqual(activation["message"], "已保存到 Fluxa（仅保存），当前没有可运行的后续能力")
+        self.assertEqual(activation["message"], "追更已保存 · Torra 自动推送已关闭")
         self.assertEqual(activation["provider"], "none")
         self.assertFalse(activation["queued"])
         self.assertEqual(activation["reason"], "允许向 Torra 创建订阅已关闭")
+        self.assertEqual(activation["torraPushState"], "disabled")
 
     def test_saved_and_queued_when_push_enabled_even_if_source_scan_stopped(self):
         # 后台来源扫描是否运行不参与手动加入结果；入队成功只返回 saved_and_queued
@@ -811,9 +820,10 @@ class SubscriptionSaveActivationTests(IsolatedActivityLogMixin, unittest.TestCas
         self.assertEqual(response.status_code, 200)
         activation = response.get_json()["activation"]
         self.assertEqual(activation["state"], "saved_and_queued")
-        self.assertEqual(activation["message"], "已保存，已进入后台队列：Torra 推送")
+        self.assertEqual(activation["message"], "追更已保存 · 等待推送 Torra")
         self.assertEqual(activation["provider"], "torra")
         self.assertTrue(activation["queued"])
+        self.assertEqual(activation["torraPushState"], "queued")
         # 异步动作不得提前写成"已推送 Torra"
         self.assertNotIn("已推送", activation["message"])
         self.assertNotEqual(activation["state"], "saved_and_torra_pushed")
@@ -845,14 +855,15 @@ class SubscriptionSaveActivationTests(IsolatedActivityLogMixin, unittest.TestCas
         self.assertNotIn("torra.internal", serialized)
         self.assertNotIn("secret-token", serialized)
 
-    def test_saved_and_torra_pushed_only_with_confirmed_push(self):
+    def test_saved_and_torra_pushed_compat_state_is_only_submitted_until_reconciled(self):
         response = self._save(self._saved_data(task={"queued": 0, "pushed": 1}))
 
         self.assertEqual(response.status_code, 200)
         activation = response.get_json()["activation"]
         self.assertEqual(activation["state"], "saved_and_torra_pushed")
-        self.assertEqual(activation["message"], "已保存，Torra 已确认创建订阅")
+        self.assertEqual(activation["message"], "已提交 Torra · 等待确认")
         self.assertEqual(activation["provider"], "torra")
+        self.assertEqual(activation["torraPushState"], "submitted")
 
     def test_activation_exposes_only_whitelisted_fields(self):
         data = self._saved_data()
@@ -860,7 +871,7 @@ class SubscriptionSaveActivationTests(IsolatedActivityLogMixin, unittest.TestCas
         response = self._save(data)
 
         activation = response.get_json()["activation"]
-        self.assertEqual(set(activation), {"state", "message", "provider", "queued", "reason"})
+        self.assertEqual(set(activation), {"state", "message", "provider", "queued", "reason", "torraPushState"})
         self.assertNotIn("torra:tv:202", json.dumps(response.get_json(), ensure_ascii=False))
 
 

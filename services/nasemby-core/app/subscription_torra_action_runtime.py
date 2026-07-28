@@ -25,12 +25,8 @@ def _safe_torra_push_result(result, request_id):
     pushed = bool(source.get("pushed"))
     already_exists = bool(source.get("alreadyExists"))
     search_triggered = bool(source.get("searchTriggered"))
-    if success and pushed:
-        message = "已创建 Torra 订阅并触发搜索"
-    elif success and already_exists:
-        message = "Torra 已有订阅，未重复创建；已触发搜索"
-    elif success:
-        message = "Torra 已接受订阅动作"
+    if success:
+        message = "已提交 Torra · 等待确认"
     else:
         message = "Torra 推送未完成"
     response = {
@@ -39,8 +35,10 @@ def _safe_torra_push_result(result, request_id):
         "pushed": pushed,
         "alreadyExists": already_exists,
         "searchTriggered": search_triggered,
-        "subscriptionId": str(source.get("subscriptionId") or "")[:200],
+        # Keep the compatibility field without exposing an upstream identifier.
+        "subscriptionId": "",
         "message": message,
+        "torraPushState": "submitted" if success else "failed",
         "requestId": request_id,
         "replayed": False,
     }
@@ -51,13 +49,13 @@ def _safe_torra_push_result(result, request_id):
 
 
 class TorraSubscriptionActionService:
-    def __init__(self, environment, repository, client, item_loader, preview_builder, link_recorder=None):
+    def __init__(self, environment, repository, client, item_loader, preview_builder, state_recorder=None):
         self.environment = environment
         self.repository = repository
         self.client = client
         self.item_loader = item_loader
         self.preview_builder = preview_builder
-        self.link_recorder = link_recorder
+        self.state_recorder = state_recorder
 
     def _validate(self, key, body):
         if body.get("confirm") is not True:
@@ -120,13 +118,11 @@ class TorraSubscriptionActionService:
         try:
             result = self.client.push_subscription(payload)
             response = _safe_torra_push_result(result, request_id)
-            if response["success"] and response["subscriptionId"] and callable(self.link_recorder):
+            if callable(self.state_recorder):
                 try:
-                    self.link_recorder(key, response["subscriptionId"])
-                    response["linkRecorded"] = True
+                    self.state_recorder(key, response["torraPushState"])
                 except Exception:
-                    response["linkRecorded"] = False
-                    response["message"] += "；本地关联将在下次同步时补齐"
+                    pass
             http_status = 200 if response["success"] else 502
         except Exception:
             response = {
@@ -138,10 +134,16 @@ class TorraSubscriptionActionService:
                 "searchTriggered": False,
                 "subscriptionId": "",
                 "message": "Torra 推送失败",
+                "torraPushState": "failed",
                 "error": "Torra 推送失败",
                 "requestId": request_id,
                 "replayed": False,
             }
+            if callable(self.state_recorder):
+                try:
+                    self.state_recorder(key, "failed")
+                except Exception:
+                    pass
             http_status = 502
         self.repository.complete_action(
             action_id,

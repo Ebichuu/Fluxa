@@ -594,7 +594,13 @@ function reconciliationBadge(item: SubscriptionItem) {
   const badge = item.reconciliationState === 'conflict' || item.reconciliationState === 'remote_missing'
     ? { label: '对账异常', tone: 'warn', title: item.reasonText || '本地与 Torra 记录需要核对' }
     : item.reconciliationState === 'only_fluxa'
-      ? { label: '仅 Fluxa 保存', tone: 'muted', title: '追更意图已保留，尚未同步到 Torra' }
+      ? item.torra?.pushState === 'queued'
+        ? { label: '等待推送 Torra', tone: 'muted', title: item.torra.detail }
+        : item.torra?.pushState === 'submitted'
+          ? { label: '等待 Torra 确认', tone: 'muted', title: item.torra.detail }
+          : item.torra?.pushState === 'failed'
+            ? { label: 'Torra 推送失败', tone: 'warn', title: item.torra.detail }
+            : { label: '仅 Fluxa 保存', tone: 'muted', title: item.torra?.detail || '追更意图已保留，尚未同步到 Torra' }
       : item.torraFact?.state === 'active'
         ? { label: 'Torra 获取中', tone: 'ok', title: item.torraFact.reasonText || 'Torra 正在获取目标' }
         : item.torraFact?.state === 'succeeded'
@@ -651,7 +657,7 @@ function subscriptionUserStatus(item: SubscriptionItem) {
     return 'Torra 正在获取目标';
   }
   if (item.reconciliationState === 'only_fluxa') {
-    return '追更仅保存在 Fluxa，尚未同步到 Torra';
+    return item.torra?.detail || '追更仅保存在 Fluxa，推送状态暂未确认';
   }
   return item.blockingReason || '';
 }
@@ -1247,7 +1253,6 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   const subscriptionCountsUnavailable = subscriptionsOnly && !workbench;
   const reconciliationSummary = workbench?.reconciliation?.summary;
   const torraPushEnabled = Boolean(subscriptionCapabilities?.torraPush.enabled);
-  const schedulerRunning = Boolean(subscriptionCapabilities?.scheduler.running);
   const manualFollow = subscriptionCapabilities?.manualFollow;
   // manualFollow 缺失（后端未就绪）时回退到现有 capabilities 推断，不报错
   const manualFollowState = manualFollow?.state
@@ -1276,15 +1281,11 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     : !subscriptionCapabilities
       ? '保存追更意图；实际生效结果将在保存后确认。'
       : !torraPushEnabled
-        ? '保存追更意图，当前不会自动获取；可稍后预览并手动同步到 Torra。'
-        : !schedulerRunning
-          ? '保存追更意图；Torra 推送已开启，但定时任务未运行，需要手动同步。'
-          : '保存后进入自动追更，系统会按 PT 优先策略继续处理。';
+        ? '保存追更意图；Torra 自动推送已关闭，可稍后预览并手动提交。'
+        : '保存后进入 Torra 推送队列；是否已在 Torra 以只读对账为准。';
   const followFallbackSuccessText = !subscriptionCapabilities || !torraPushEnabled
-    ? '已保存追更，当前不会自动获取'
-    : !schedulerRunning
-      ? '已保存追更，等待手动同步到 Torra'
-      : '已保存追更，已进入自动追更';
+    ? '追更已保存 · Torra 自动推送已关闭'
+    : '追更已保存 · 等待推送 Torra';
   const followPolicyHint = !subscriptionCapabilities
     ? '正在确认追更能力'
     : manualFollow
@@ -1294,24 +1295,18 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
           ? '加入后仅保存，暂无后续获取能力'
           : `加入后交给${manualFollowProviderLabel || '后续能力'}处理`
       : !torraPushEnabled
-        ? '保存意图，暂不自动获取'
-        : !schedulerRunning
-          ? '保存后等待手动同步'
-          : '保存后进入自动追更';
+        ? '保存追更 · Torra 自动推送关闭'
+        : '保存追更 · 进入 Torra 推送队列';
   // 发现页顶部说明随 manualFollow 状态变化；能力缺失时保持原文案回退
   const discoverDeckText = manualFollowState === 'write_disabled'
     ? '可以浏览榜单、国内平台和海外流媒体；追更写入已关闭，暂时无法加入追更。'
     : manualFollowState === 'saved_only'
-      ? '可以浏览榜单、国内平台和海外流媒体；加入后仅保存到 Fluxa，暂不会自动获取。'
+      ? '可以浏览榜单、国内平台和海外流媒体；加入后保存到 Fluxa，Torra 自动推送保持关闭。'
       : '可以浏览榜单、国内平台和海外流媒体；加入追更后由 PT 主线继续处理。';
-  // 追更区域“自动获取”标注：仅在来源扫描（或推断的追更能力）真实可用时显示
   const sourceScan = subscriptionCapabilities?.sourceScan;
-  const autoFetchActive = !subscriptionCapabilities
-    ? true
-    : sourceScan
-      ? sourceScan.enabled && sourceScan.running
-      : manualFollowState === 'queued_ready';
-  const followSectionTagLabel = autoFetchActive ? '自动获取' : '自动扫描已关闭';
+  const followSectionTagLabel = sourceScan
+    ? [sourceScan.label, sourceScan.detail].filter(Boolean).join(' · ')
+    : '候选调度状态读取中';
   const recentFollows = useMemo(() => {
     if (subscriptionsOnly) return [];
     const updatedAtMs = (item: SubscriptionItem) => {
@@ -1399,7 +1394,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             ? `电视剧 · 第 ${preview.candidate.seasonNumber} 季`
             : '电影';
           const nextStep = preview.manualFollow.state === 'saved_only'
-            ? '确认后只保存到 Fluxa，当前不会自动获取。'
+            ? '确认后保存到 Fluxa；Torra 自动推送已关闭。'
             : `确认后保存追更，并交给${followProviderLabels[preview.manualFollow.provider] || '后续能力'}继续处理。`;
           setConfirmation({
             signal: '候选转追更',

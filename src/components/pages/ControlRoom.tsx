@@ -232,13 +232,18 @@ export function ControlRoom() {
         : moviePilot.connected === false
           ? { label: '需检查', tone: 'warn' }
           : { label: '已配置', tone: 'configured' };
-  const schedulerStatus = !subscriptionCapabilities
-    ? { label: '正在读取', detail: '调度状态尚未读取', tone: 'loading' as const }
-    : !subscriptionCapabilities.scheduler.configured || !subscriptionCapabilities.scheduler.enabled
-      ? { label: '已关闭', detail: '自动追更调度当前不运行', tone: 'idle' as const }
-      : subscriptionCapabilities.scheduler.running
-        ? { label: '运行中', detail: subscriptionCapabilities.scheduler.lastRunAt ? `上次执行 ${formatTimeAgo(subscriptionCapabilities.scheduler.lastRunAt)}` : '已确认后台运行', tone: 'ok' as const }
-        : { label: '未运行', detail: subscriptionCapabilities.scheduler.lastError || '已开启，但没有读到后台运行证据', tone: 'warn' as const };
+  const sourceScan = subscriptionCapabilities?.sourceScan;
+  const schedulerStatus = !subscriptionCapabilities || !sourceScan
+    ? { label: '正在读取', detail: '候选调度状态尚未读取', tone: 'loading' as const }
+    : {
+        label: sourceScan.label,
+        detail: sourceScan.detail || `计划时间 ${sourceScan.taskTime}`,
+        tone: sourceScan.state === 'healthy'
+          ? 'ok' as const
+          : sourceScan.state === 'rules_disabled'
+            ? 'idle' as const
+            : 'warn' as const
+      };
   const torraPushLabel = !subscriptionCapabilities ? '读取中' : subscriptionCapabilities.torraPush.enabled ? '已开启' : '已关闭';
 
   return (
@@ -353,7 +358,7 @@ export function ControlRoom() {
       </section>
 
       <section className="ops-control-foot">
-        <span className={`ops-control-foot__backup ops-control-foot__backup--${schedulerStatus.tone}`}><ShieldCheck aria-hidden="true" size={12} />追更调度 · {schedulerStatus.label}</span>
+        <span className={`ops-control-foot__backup ops-control-foot__backup--${schedulerStatus.tone}`}><ShieldCheck aria-hidden="true" size={12} />候选调度 · {schedulerStatus.label}</span>
         <strong>{schedulerStatus.detail}</strong>
         <span className={`ops-control-foot__backup ops-control-foot__backup--${!subscriptionCapabilities ? 'loading' : subscriptionCapabilities.torraPush.enabled ? 'ok' : 'idle'}`}>
           <Rss aria-hidden="true" size={12} />Torra 推送 · {torraPushLabel}

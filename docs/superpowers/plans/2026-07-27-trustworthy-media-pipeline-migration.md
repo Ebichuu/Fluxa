@@ -566,35 +566,41 @@ P0 通过前不得执行真实历史污染迁移，也不得宣称产品已达�
    - qB、Symedia、STRM 使用上游真实发生时间；Emby 使用 `firstConfirmedPlayableAt`。
    - 成功和失败历史不因 `freshUntil` 删除；当前状态仍按新鲜度判断。
    - 验收：过期成功仍在日历，过期失败保留历史但不继续红色，范围 artifact 只有一个 owner。
+   - 状态：✅ 已提交 `d94d9f7`。
 
 2. **P1.3b 六阶段详情与确认数**
    - 普通任务详情固定读取 `pipelineFacts` 六阶段。
    - 移除普通页面百分比，改为“已确认 N/6 个阶段”。
    - `stages/steps/progress` 仅保留兼容和高级诊断。
    - 验收：Symedia 失败任务显示六阶段；115 和 STRM 不被下游成功反推。
+   - 状态：✅ 已提交 `5dbc956`。
 
 3. **P1.3c 今日归档事件查询**
    - 增加 `archivedDate` 和 `archiveSummary`。
    - 按 Asia/Shanghai、正式成功事件和稳定文件身份去重。
    - 返回 `archivedFiles/linkedFiles/linkedTasks/unlinkedFiles`，解析 chain alias 后统计任务。
    - 验收：等式成立，首页深链口径一致，不复用 playable。
+   - 状态：✅ 已提交 `a791981`。
 
 4. **P1.3d 日历集级桥接**
    - 按 TMDB、媒体类型、季号、合法集号范围和唯一 artifact owner 投影集级历史。
    - 显示 qB 完成、Symedia 入库、STRM 生成和 Emby 首次确认可播放时间。
    - 验收：刷新和等待后历史不消失；冲突、跨季和模糊标题保持未关联。
+   - 状态：✅ 已提交 `a8ef31b`，47 项定向回归和前端构建通过。
 
 5. **P1.3e 调度与 Torra 推送语义**
    - 候选规则、服务端调度、最近错误、最近运行和逾期分别建模。
    - 候选正常要求规则启用、调度运行、无错误且最近运行未逾期。
    - Torra 推送拆为 queued/submitted/linked，只有可靠远端 ID 可进入 linked。
    - 验收：当前 fnOS 文案直接表达“规则已启用但调度未启动”和真实推送阶段。
+   - 状态：✅ 已完成实现；97 项订阅/候选/对账/Torra 回归、TypeScript 检查和生产构建通过，待本阶段提交。
 
 6. **P1.3f STRM 正式接口检查与止损**
    - 只检查 Symedia 正式、只读、独立 STRM 结果。
    - 成功必须具备身份、季集范围、状态、generatedAt、结果 ID 和当前目标归属。
    - 接口不存在或证据不足立即保持 `unknown + missing + STRM_INDEPENDENT_RESULT_MISSING`。
    - 不读取 `.strm` 文件名，不从归档、路径或 Emby 反推；不得阻塞 P1.3a-e。
+   - 状态：⏳ 待执行正式接口止损检查。
 
 主要涉及文件：
 

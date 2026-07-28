@@ -92,7 +92,7 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/v2/tasks/chains/:chainId`：按需返回单链阶段证据、artifact、原因、动作资格及可选 `pipelineFacts/pipelineOutcome`；完整聚合快照幂等写入本地资源事件账本，但不执行外部动作。
 - `/api/v2/system-issues/secupload-failures`：从 Torra `recent_runs.result` 读取结构化成功/失败计数和可选 `failure_details`；公开响应只增加脱敏文件显示名、错误分类、可空重试次数、批次引用和 file-scope 115 事实。没有详情时只说明“本次运行没有文件级详情”，路径、错误原文和内部 ID 不返回。
 - `/api/v2/calendar`：只读聚合追更播出日期与精确目标的六阶段事实，使用 `Asia/Shanghai` 并支持 ETag；默认排除未关联、自动来源和范围不明记录，显式 `includeUnlinked=1` 才读取高级项；规范范围 owner 可投影集级 qB、Symedia、STRM 和 Emby 历史时间，成功历史不因当前新鲜度过期而消失，只有当前 Emby 集级证据生成 `playable`；月摘要与完整轻量搜索索引共用 300 秒完整快照。
-- `/api/v2/subscriptions/capabilities`：返回本地写入、Torra 推送和调度器真实运行状态，发现页据此显示追更确认文案。
+- `/api/v2/subscriptions/capabilities`：分别返回候选规则、服务端调度、真实候选运行/成功/错误、Asia/Shanghai 计划与 2 小时宽限，以及本地写入和 Torra 推送能力；线程心跳不代替候选运行，发现页据此显示追更确认文案。
 - `/api/v2/discover/candidates`：分页读取未过期的独立发现候选，只返回海报、标题、TMDB 身份、季号和来源标签等白名单字段。
 - `/api/v2/discover/candidates/:candidateId/follow-previews`、`/follows`：先只读复核候选、重复追更和写入能力，再以明确确认和幂等键创建人工追更；只有确认动作会进入现有 provider 链路。
 - `/api/v2/subscriptions/candidate-migrations/*`：把历史追更按人工、下游归属、可迁候选和待复核四类只读预览；确认执行要求最新指纹、幂等键和 SQLite 备份，只迁移可安全识别的自动来源记录，不调用外部服务。
@@ -100,10 +100,10 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/qbittorrent/actions/:action`：执行前复查任务状态并校验可选预览幂等键，状态变化时拒绝旧确认；旧客户端真实 hash 输入继续兼容，但执行结果、错误和活动记录只返回脱敏公开引用。
 - `/api/v2/home/summary`：基于 `pipelineOutcome` 和调度器心跳生成首页今日结论；媒体异常、辅助能力提醒、处理中与当日可播放分别统计，自动恢复中的明确秒传失败计入处理中；关键服务不可验证时不返回绿色正常，无法核实的归档与下载统计返回 `null` 而不是伪造 `0`。
 - `/api/v2/subscriptions/reconciliation`：只读对比 Fluxa 与 Torra，返回对账、兼容履约、健康、`torraFact` 与 `pipelineOutcome`；Torra completed 只表示获取目标满足，不写入或删除任一台账。
-- `/api/v2/subscriptions/workbench`：分页返回追更工作台、五项能力状态、结构化确认进度、统一派生结果、对账摘要和可选海报补齐目标；没有集级证据时返回“集数进度未确认”。
+- `/api/v2/subscriptions/workbench`：分页返回追更工作台、五项能力状态、结构化确认进度、统一派生结果、对账摘要和可选海报补齐目标；Torra 入队、已提交待确认和只读对账 linked 分开表达，没有集级证据时返回“集数进度未确认”。
 - `/api/v2/subscriptions/visual-backfills`：最多处理 100 个订阅 ID，只按明确 TMDB 身份补充空缺海报/背景；本地写入关闭时只返回视觉结果，开启时才补充已有本地记录；不创建仅 Torra 镜像。
 - `/api/internal/nasemby-core/*`：已认证的只读诊断兼容路由。
-- `/api/v2/subscriptions/:id/torra-push-*`：固定目标 Torra 的预览和受保护推送。
+- `/api/v2/subscriptions/:id/torra-push-*`：固定目标 Torra 的预览和受保护推送；提交响应不公开上游订阅 ID，兼容 `subscriptionId` 固定为空，linked 只由后续只读对账投影。
 - `/api/v2/torra/subscription-sync/*`：Torra 已有订阅状态、只读预览、幂等确认导入和手动状态同步。
 - `/api/v2/activity/logs`：读取或经确认清空统一脱敏活动日志；React 任务中心使用读取接口。
 - `/api/v2/system/metrics`：缓存、白名单映射的系统指标。

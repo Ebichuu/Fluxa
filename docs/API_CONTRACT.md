@@ -65,7 +65,7 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `GET /api/subscriptions/items` | 可选 `include_progress=1` |
 | `POST /api/subscriptions/run` | 无业务正文；只刷新已配置榜单到 `discover_candidates`，返回候选新增/更新/跳过摘要；不写 `subscriptions`，不调用 Torra、qB、115、Symedia 或 Emby |
 | `GET /api/v2/home/summary` | 无参数；按新派生结果、调度器心跳和服务证据返回今日结论；`mediaActionRequired` 只统计任务中心可列出的媒体异常，`auxiliaryAlerts` 独立统计 RSS/服务/调度提醒，`inProgress` 包含媒体活动目标和自动恢复中的明确秒传失败数量，`playableToday` 只统计当日 Emby 明确可播放目标；`archiveSummary` 实时解释归档文件、已关联文件、关联任务和未关联文件；问题项返回 `issueKind/href` 和可选媒体范围；无法验证时 `archivedToday`、`activeDownloadTasks` 返回 `null` 而不是伪造 `0`，旧 `actionRequired/completedTargetsToday/ingestedToday` 保留兼容 |
-| `GET /api/v2/subscriptions/workbench` | 可选 `limit`（1–100，默认 24）、`offset`（默认 0）、`mediaType`（`movie`/`tv`）和 `query`；返回五项能力状态、全量 `following/playable/actionRequired/inLibrary` 新统计、结构化 `progress`、`torraFact/pipelineOutcome`、当前页订阅、`page.nextOffset` 和可选 `posterBackfillIds`；兼容 `completed/fulfillmentState/chainState` 只由新事实投影，Torra completed 不进入 `playable` |
+| `GET /api/v2/subscriptions/workbench` | 可选 `limit`（1–100，默认 24）、`offset`（默认 0）、`mediaType`（`movie`/`tv`）和 `query`；返回五项能力状态、全量 `following/playable/actionRequired/inLibrary` 新统计、结构化 `progress`、`torraFact/pipelineOutcome`、当前页订阅、`page.nextOffset` 和可选 `posterBackfillIds`；订阅 `torra.pushState` 可选为 `queued/submitted/linked/failed/disabled/unknown`，只有只读对账取得可靠远端 ID 且身份与范围一致才返回 `linked`；兼容 `completed/fulfillmentState/chainState` 只由新事实投影，Torra completed 不进入 `playable` |
 | `POST /api/v2/subscriptions/visual-backfills` | `ids` 为最多 100 个订阅 ID；只按明确 TMDB 身份补充空缺海报/背景，不按标题猜图；本地写入开启时可补充已有本地记录，关闭时只返回视觉结果；仅 Torra 条目始终不创建本地镜像 |
 | `GET /api/v2/subscriptions/reconciliation` | 无参数；只读对比 Fluxa 与 Torra，独立返回对账、兼容履约、健康、`torraFact` 和 `pipelineOutcome`；Torra completed 投影为“获取目标已满足”，没有 Emby 事实时结果仍为 `evidence_insufficient`；不修改或删除任一台账 |
 | `GET /api/v2/tasks/summary` | 返回唯一任务链数量、健康/身份/执行三维状态数量、兼容四态 `userCounts`、新派生六态 `outcomeCounts`、阶段数量、服务状态和稳定 `version`；支持 ETag 条件读取；可选 `systemIssues` 返回系统级问题（如 Torra 秒传）的分类级安全摘要 |
@@ -75,19 +75,19 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `GET /api/v2/calendar` | 支持 `year/month/type/view`、单日 `date`、范围 `from/to` 和显式高级参数 `includeUnlinked=1`；默认只返回人工追更、已关联 Torra 且季集范围明确的记录，自动来源、迁移复核和范围不明记录计入 `stats.unlinked/excludedUnlinked` 但不进入默认月/周视图；详情兼容增加 `strmAt/strmSource/firstConfirmedPlayableAt`，规范范围 owner 可投影集级历史事件，成功历史不因 `freshUntil` 过期消失；状态增加 `playable/unlinked`，只有仍新鲜的精确电影或集级 Emby 事实生成当前 `playable`；月摘要保留前三条 `preview`、完整轻量 `searchIndex` 和 ETag |
 | `GET /api/v2/search` | `q` 最长 200 字符，`limit` 为 1–20；聚合本地追更、已识别 RSS、任务、当月日历和 Emby TMDB 索引，按 `mediaKey` 去重并返回 `outcomeState`；任务结果和生命周期阶段只读取 `pipelineOutcome/pipelineFacts`，电视剧作品级 Emby 索引不生成 `playable`；本地没有匹配结果时使用现有 TMDB 只读客户端补充，未配置或读取失败降级为空且不写缓存；无 TMDB 本地任务可返回空 `tmdbId`、公开 `chainId` 和任务深链 |
 | `GET /api/v2/media/:mediaKey` | 外部只读返回单作品 `outcomeState`、追更、Torra、下载、115、入库、Emby、日历、唯一主操作和深链；`mediaKey` 为 `movie:tmdbId` 或 `tv:tmdbId`；阶段展示只读取当前 verified 的独立事实，日历兼容状态不反推任务结果；只有电影级或精确集级 Emby 证据可显示已可播放 |
-| `GET /api/v2/subscriptions/capabilities` | 只读返回本地写入、Torra 推送和调度器真实运行状态，供发现页生成不夸大的追更文案；新增可选 `manualFollow`（`state`=`write_disabled`/`saved_only`/`queued_ready`、`provider`、`blockers`）与 `sourceScan`（`configured`/`enabled`/`running`）；`sourceScan` 只描述后台来源扫描，不参与手动加入结果判定 |
+| `GET /api/v2/subscriptions/capabilities` | 只读返回本地写入、Torra 推送和调度器真实运行状态，供发现页生成不夸大的追更文案；可选 `manualFollow` 返回 `state/provider/blockers`；`sourceScan` 分别返回 `ruleEnabled`、服务端调度配置/启用/启动状态、真实 `lastRunAt/lastSuccessAt/lastError`、Asia/Shanghai 的 `expectedRunAt/graceUntil`、`overdue` 和派生 `state/label/detail`，每日计划保留 2 小时宽限；线程 `heartbeatAt` 不作为候选运行时间，`sourceScan` 不参与手动加入结果判定 |
 | `GET /api/v2/discover/candidates` | 可选 `mediaType/query/limit/offset`；只返回未过期 active 候选的白名单字段和一致分页，不返回原始来源 payload、URL、Cookie、Passkey 或内部 ID |
 | `POST /api/v2/discover/candidates/:candidateId/follow-previews` | 空对象；只读复核候选身份、电视剧季号、重复追更和当前手动追更能力，不写台账、不排队 provider |
 | `POST /api/v2/discover/candidates/:candidateId/follows` | `confirm=true`、12–128 字符幂等键；服务端重新读取候选和能力，创建 `origin/intent_origin=manual` 的追更并返回真实 `activation`；同键重放不重复保存或调用 provider |
 | `GET /api/v2/subscriptions/candidate-migrations/preview` | 纯只读把历史追更分为 `manual/downstream-owned/candidate-eligible/migration-review`，支持 `limit`（1–200）与 `offset`，全量数量和指纹仍覆盖全部订阅版本、Torra link、resource chain；不写候选、追更或迁移记录 |
 | `POST /api/v2/subscriptions/candidate-migrations` | `confirm=true`、12–128 字符幂等键和最新 `previewFingerprint`；先用 SQLite backup API 创建版本化备份，再在单个即时事务中复核指纹、upsert eligible 候选、删除对应旧追更并保存内部补偿清单；首次创建返回 `201 + Location`，同键回放返回 200；不调用任何外部服务 |
 | `GET /api/v2/subscriptions/candidate-migrations/:runId` | 读取一次迁移的脱敏结果，不返回原订阅 key、原始 payload、Torra/resource 标识、路径或 URL |
-| `POST /api/subscriptions/save` | 标题、TMDB ID、媒体类型和可选元数据；响应可选返回 `activation`（`state`=`saved_and_torra_pushed`/`saved_and_queued`/`saved_only`/`already_exists`/`saved_push_failed`，含用户文案 `message`、`provider`、`queued` 与脱敏 `reason`）；异步入队只返回 `saved_and_queued`，不提前声称已推送 Torra |
+| `POST /api/subscriptions/save` | 标题、TMDB ID、媒体类型和可选元数据；响应可选返回兼容 `activation.state`、用户文案、`provider/queued/reason` 和新增 `torraPushState`；Torra 异步入队为 `queued`，API 接受为 `submitted`，均不得提前声称 `linked`；推送关闭固定返回“追更已保存 · Torra 自动推送已关闭” |
 | `PATCH /api/subscriptions/:id/category` | 八分类 key 或 `null` |
 | `GET /api/subscriptions/detail` | 必填 `id`，可选 `season` |
 | `GET /api/subscriptions/calendar` | `year`、`month`、`type` |
 | `GET /api/v2/subscriptions/:id/torra-push-preview` | 路径中的订阅 ID，只读预检 |
-| `POST /api/v2/subscriptions/:id/torra-pushes` | `confirm=true`、12–128 字符幂等键 |
+| `POST /api/v2/subscriptions/:id/torra-pushes` | `confirm=true`、12–128 字符幂等键；成功仅返回 `torraPushState=submitted`，兼容 `subscriptionId` 固定为空且不得依据 POST 响应 ID 建立 linked；后续只读对账确认后由 workbench 投影 `linked` |
 | `PATCH /api/v2/subscription-automation/settings` | camelCase 设置字段；窗口只允许 24/48 小时，时间点严格递增且最早 30 分钟 |
 | `PATCH /api/v2/subscriptions/:id/quality-watch` | 可选 `paused`、`windowHours`、`scheduleMinutes` |
 | `POST /api/v2/subscriptions/:id/torra-rewash-analyses` | `idempotencyKey`、可选 `unitId` |
