@@ -72,7 +72,7 @@ export function readNavigation(location: Location = window.location): Navigation
   } : ['tasks', 'subscriptions'].includes(page) && (
     query.has('chainId') || query.has('targetKey') || query.has('subscriptionId') || query.has('tmdbId') || query.has('title')
     || query.has('outcomeState') || query.has('userState') || query.has('completedDate') || query.has('advanced') || query.has('identityState')
-    || query.has('systemIssue')
+    || query.has('systemIssue') || query.has('archivedDate')
   ) ? {
     mediaType: query.get('mediaType') === 'movie' ? 'movie' : query.get('mediaType') === 'tv' ? 'tv' : undefined,
     chainId: optionalString(query.get('chainId')),
@@ -87,6 +87,7 @@ export function readNavigation(location: Location = window.location): Navigation
       ? query.get('userState') as TaskNavigationTarget['userState']
       : undefined,
     completedDate: optionalString(query.get('completedDate')),
+    archivedDate: optionalString(query.get('archivedDate')),
     advanced: query.get('advanced') === '1',
     identityStates: query.getAll('identityState').filter((value): value is 'unidentified' | 'linked' | 'conflict' => (
       ['unidentified', 'linked', 'conflict'].includes(value)
@@ -124,6 +125,7 @@ export function pathForNavigation(page: PageId, target?: TaskNavigationTarget | 
     const outcomeStates = [...new Set(requestedOutcomeStates)];
     outcomeStates.forEach((value) => query.append('outcomeState', value));
     if (target.completedDate) query.set('completedDate', target.completedDate);
+    if (target.archivedDate) query.set('archivedDate', target.archivedDate);
     if (target.advanced) query.set('advanced', '1');
     target.identityStates?.forEach((value) => query.append('identityState', value));
     if (target.systemIssue) query.set('systemIssue', target.systemIssue);

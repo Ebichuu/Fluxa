@@ -299,8 +299,21 @@ class HomeSummaryService:
             and _today_key((item.get("pipelineOutcome") or {}).get("playableAt")) == today_key
             for item in unique_items.values()
         )
+        archive_summary = None
+        archive_reader = getattr(chain_v2_service, "archive_summary", None)
+        if callable(archive_reader):
+            try:
+                archive_summary = archive_reader(today_key, chain)
+            except Exception:
+                archive_summary = None
         symedia_totals = (((chain.get("services") or {}).get("symedia") or {}).get("totals") or {})
-        archived_today = _integer(symedia_totals.get("archivedToday")) if "archivedToday" in symedia_totals else None
+        archived_today = (
+            _integer(archive_summary.get("archivedFiles"))
+            if isinstance(archive_summary, dict)
+            else _integer(symedia_totals.get("archivedToday"))
+            if "archivedToday" in symedia_totals
+            else None
+        )
         if archived_today is not None and archived_today < 0:
             archived_today = None
         counts = {
@@ -592,7 +605,13 @@ class HomeSummaryService:
         archived_today_value = archived_today
         if archived_today_value is not None and archived_today_value >= 0:
             archived_today_state = "normal"
-            archived_today_detail = f"Symedia 今日明确记录 {archived_today_value} 个归档文件"
+            archived_today_detail = (
+                f"Symedia 今日归档 {archived_today_value} 个文件 · "
+                f"关联 {archive_summary.get('linkedTasks', 0)} 个任务 · "
+                f"未关联 {archive_summary.get('unlinkedFiles', 0)} 个文件"
+                if isinstance(archive_summary, dict)
+                else f"Symedia 今日明确记录 {archived_today_value} 个归档文件"
+            )
         else:
             archived_today_value = None
             archived_today_state = "unknown"
@@ -641,7 +660,7 @@ class HomeSummaryService:
             ),
             _focus_item(
                 "archived_today", "今日入库", "个文件", archived_today_value, archived_today_state,
-                archived_today_detail, f"/tasks?outcomeState=playable&completedDate={today_key}",
+                archived_today_detail, f"/tasks?archivedDate={today_key}",
             ),
             _focus_item(
                 "missing_episodes", "追更缺集", "集", missing_episodes_value, missing_episodes_state,
@@ -729,6 +748,7 @@ class HomeSummaryService:
             "headline": headline,
             "detail": detail,
             "counts": counts,
+            "archiveSummary": archive_summary,
             "focusItems": focus_items,
             "issueTotal": len(issues),
             "issues": issues[:8],

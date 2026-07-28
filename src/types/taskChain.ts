@@ -279,6 +279,7 @@ export interface TaskChainResponse {
   contractVersion?: number;
   generatedAt: string;
   items: TaskChainListItem[];
+  archiveSummary?: ArchiveSummary;
   version?: string;
   page?: {
     total: number;
@@ -320,6 +321,15 @@ export interface TaskChainResponse {
   systemIssues?: SystemIssueSummary[];
 }
 
+export interface ArchiveSummary {
+  date: string;
+  timezone: 'Asia/Shanghai';
+  archivedFiles: number;
+  linkedFiles: number;
+  linkedTasks: number;
+  unlinkedFiles: number;
+}
+
 export interface TaskChainDetailResponse extends Omit<TaskChainResponse, 'items' | 'page'> {
   item: TaskChainItem;
 }
@@ -334,6 +344,7 @@ export interface TaskChainQuery {
   outcomeStates?: PipelineOutcomeState[];
   userState?: TaskChainUserState;
   completedDate?: string;
+  archivedDate?: string;
   chainId?: string;
   targetKey?: string;
   subscriptionId?: string;

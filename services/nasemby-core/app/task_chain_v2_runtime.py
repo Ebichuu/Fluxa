@@ -307,6 +307,81 @@ def _confirmed_stage_count(facts: list[dict]) -> int:
     )
 
 
+class ArchiveSourceUnavailable(RuntimeError):
+    pass
+
+
+def _archive_date_key(value) -> str:
+    parsed = _parse_datetime(value)
+    return parsed.astimezone(BEIJING_TZ).strftime("%Y-%m-%d") if parsed else ""
+
+
+def _archive_projection(payload: dict, archived_date: str, repository=None) -> dict:
+    service = ((payload.get("services") or {}).get("symedia") or {})
+    if service.get("connected") is not True:
+        raise ArchiveSourceUnavailable("Symedia 归档数据源暂不可用")
+    files = {}
+    for item in payload.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        chain_id_value = str(item.get("chainId") or "")
+        canonical_chain_id = (
+            repository.resolve_chain_id(chain_id_value)
+            if repository and chain_id_value
+            else chain_id_value
+        )
+        linked_chain = canonical_chain_id if (
+            canonical_chain_id
+            and str(item.get("confidence") or "unlinked") in {"strong", "fallback"}
+            and str(item.get("identityState") or "unidentified") == "linked"
+        ) else ""
+        fact = next((
+            row for row in item.get("pipelineFacts") or []
+            if isinstance(row, dict) and row.get("stage") == "symedia"
+        ), None)
+        if not fact:
+            continue
+        for unit in fact.get("units") or []:
+            if not isinstance(unit, dict):
+                continue
+            if unit.get("state") != "succeeded" or unit.get("evidence") != "verified":
+                continue
+            event_at = str(unit.get("eventAt") or fact.get("eventAt") or "")
+            if _archive_date_key(event_at) != archived_date:
+                continue
+            source_identity = str(unit.get("sourceRef") or unit.get("unitKey") or "").strip()
+            if not source_identity or source_identity.startswith("row-"):
+                continue
+            file_key = hashlib.sha256(f"symedia-archive\0{source_identity}".encode("utf-8")).hexdigest()
+            record = files.setdefault(file_key, {"owners": set(), "unlinked": False, "eventAt": event_at})
+            if linked_chain:
+                record["owners"].add(linked_chain)
+            else:
+                record["unlinked"] = True
+
+    linked_chain_ids = {
+        next(iter(record["owners"]))
+        for record in files.values()
+        if len(record["owners"]) == 1 and not record["unlinked"]
+    }
+    linked_files = sum(
+        len(record["owners"]) == 1 and not record["unlinked"]
+        for record in files.values()
+    )
+    archived_files = len(files)
+    return {
+        "summary": {
+            "date": archived_date,
+            "timezone": "Asia/Shanghai",
+            "archivedFiles": archived_files,
+            "linkedFiles": linked_files,
+            "linkedTasks": len(linked_chain_ids),
+            "unlinkedFiles": archived_files - linked_files,
+        },
+        "chainIds": linked_chain_ids,
+    }
+
+
 def _stage_by_name(item: dict, *names: str) -> dict:
     wanted = set(names)
     return next((
@@ -738,6 +813,14 @@ class TaskChainV2Service:
         result["systemIssues"] = present_system_issues(payload.get("systemIssues"))
         return result
 
+    def archive_summary(self, archived_date: str, payload=None) -> dict:
+        projection = _archive_projection(
+            payload or self.full_snapshot(force=False),
+            archived_date,
+            self.repository,
+        )
+        return projection["summary"]
+
     def list_items(
         self,
         *,
@@ -748,6 +831,7 @@ class TaskChainV2Service:
         outcome_states=None,
         user_state="",
         completed_date="",
+        archived_date="",
         chain_id_value="",
         target_key_value="",
         subscription_id="",
@@ -761,6 +845,11 @@ class TaskChainV2Service:
     ):
         payload = self.full_snapshot(force=force)
         items = payload.get("items") or []
+        archive_summary = None
+        if archived_date:
+            archive = _archive_projection(payload, archived_date, self.repository)
+            archive_summary = archive["summary"]
+            items = [item for item in items if item.get("chainId") in archive["chainIds"]]
         if chain_id_value and self.repository:
             chain_id_value = self.repository.resolve_chain_id(chain_id_value)
         if health_state:
@@ -815,7 +904,7 @@ class TaskChainV2Service:
             ]
         total = len(items)
         page = items[offset:offset + limit]
-        return {
+        result = {
             **self.summary(force=False),
             "items": [_summary_item(item) for item in page],
             "page": {
@@ -826,6 +915,9 @@ class TaskChainV2Service:
                 "hasMore": offset + len(page) < total,
             },
         }
+        if archive_summary is not None:
+            result["archiveSummary"] = archive_summary
+        return result
 
     def detail(self, chain_id_value: str, *, force=False):
         payload = self.full_snapshot(force=force)
@@ -931,6 +1023,12 @@ def register_task_chain_v2(app: Flask, repository=None, clock=None):
                 datetime.strptime(completed_date, "%Y-%m-%d")
             except ValueError:
                 return _error("TASK_COMPLETED_DATE_INVALID", "完成日期筛选无效", 400)
+        archived_date = str(request.args.get("archivedDate") or "").strip()
+        if archived_date:
+            try:
+                datetime.strptime(archived_date, "%Y-%m-%d")
+            except ValueError:
+                return _error("TASK_ARCHIVED_DATE_INVALID", "归档日期筛选无效", 400)
         try:
             offset = _integer_query("offset", 0, 0, 1_000_000)
             limit = _integer_query("limit", 20, 1, 100)
@@ -950,6 +1048,7 @@ def register_task_chain_v2(app: Flask, repository=None, clock=None):
                 outcome_states=outcome_states,
                 user_state=user_state,
                 completed_date=completed_date,
+                archived_date=archived_date,
                 chain_id_value=str(request.args.get("chainId") or "").strip(),
                 target_key_value=str(request.args.get("targetKey") or "").strip(),
                 subscription_id=str(request.args.get("subscriptionId") or "").strip(),
@@ -963,6 +1062,8 @@ def register_task_chain_v2(app: Flask, repository=None, clock=None):
             )
             scope = request.query_string.decode("utf-8", errors="replace") or "default"
             return _conditional(payload, f"list:{scope}")
+        except ArchiveSourceUnavailable:
+            return _error("TASK_ARCHIVE_SOURCE_UNAVAILABLE", "Symedia 归档数据源暂不可用", 502)
         except Exception:
             return _error("TASK_CHAIN_V2_READ_FAILED", "任务链读取失败", 502)
 

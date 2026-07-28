@@ -240,11 +240,13 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   const initialOutcome = target?.outcomeState;
   const initialFilter = initialOutcome
     ? filterForOutcome(initialOutcome)
-    : target?.advanced && target.identityStates?.length
+    : target?.archivedDate
       ? '无需处理'
-      : '处理中';
+      : target?.advanced && target.identityStates?.length
+        ? '无需处理'
+        : '处理中';
   const [filter, setFilter] = useState<FilterName>(initialFilter);
-  const [filterReady, setFilterReady] = useState(Boolean(focusActive || initialOutcome || target?.advanced));
+  const [filterReady, setFilterReady] = useState(Boolean(focusActive || initialOutcome || target?.advanced || target?.archivedDate));
   const [chain, setChain] = useState<TaskChainResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -266,6 +268,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   const [activityError, setActivityError] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(Boolean(target?.advanced));
   const [completedDate, setCompletedDate] = useState(target?.completedDate ?? '');
+  const [archivedDate, setArchivedDate] = useState(target?.archivedDate ?? '');
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const advancedOpenRef = useRef(Boolean(target?.advanced));
   const taskCardRefs = useRef(new Map<string, HTMLElement>());
@@ -281,8 +284,9 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     setError('');
     try {
       const payload = await getTaskChainV2({
-        outcomeStates: focusActive ? undefined : outcomeStatesForFilter(filter),
+        outcomeStates: focusActive || archivedDate ? undefined : outcomeStatesForFilter(filter),
         completedDate: focusActive ? undefined : completedDate || undefined,
+        archivedDate: focusActive ? undefined : archivedDate || undefined,
         identityStates: advancedOpen ? target?.identityStates : undefined,
         chainId: target?.chainId,
         targetKey: target?.targetKey,
@@ -303,7 +307,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
           }
         }
         if (append) setPageLimit((current) => Math.max(current, offset + payload.items.length));
-        const scopeKey = `${filter}:${completedDate}:${advancedOpen}:${focusActive}`;
+        const scopeKey = `${filter}:${completedDate}:${archivedDate}:${advancedOpen}:${focusActive}`;
         const nextVersion = payload.version ?? '';
         const nextCounts = filterCounts(payload);
         if (!append && !focusActive && nextVersion && nextCounts) {
@@ -345,17 +349,18 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     void loadChain(new AbortController().signal, offset, true);
   };
 
-  usePolling(loadChain, 30000, { enabled: filterReady, key: `${filter}:${completedDate}:${advancedOpen}:${JSON.stringify(target)}` });
+  usePolling(loadChain, 30000, { enabled: filterReady, key: `${filter}:${completedDate}:${archivedDate}:${advancedOpen}:${JSON.stringify(target)}` });
 
   useEffect(() => {
     setPageLimit(20);
-  }, [completedDate, filter, target]);
+  }, [archivedDate, completedDate, filter, target]);
 
   useEffect(() => {
     const nextAdvancedOpen = Boolean(target?.advanced);
     advancedOpenRef.current = nextAdvancedOpen;
     setAdvancedOpen(nextAdvancedOpen);
     setCompletedDate(target?.completedDate ?? '');
+    setArchivedDate(target?.archivedDate ?? '');
     if (!(target?.chainId || target?.targetKey || target?.subscriptionId || target?.tmdbId || target?.title)) {
       setExpandedChainId('');
       setTechnicalChainId('');
@@ -365,6 +370,9 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
       setFilter(filterForOutcome(target.outcomeState));
       setFilterReady(true);
     } else if (focusActive) {
+      setFilterReady(true);
+    } else if (target?.archivedDate) {
+      setFilter('无需处理');
       setFilterReady(true);
     } else if (target?.advanced && target.identityStates?.length) {
       setFilter('无需处理');
@@ -539,7 +547,8 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
       mediaType: null,
       outcomeState: outcomeStatesForFilter(filter),
       userState: null,
-      completedDate: completedDate || null
+      completedDate: completedDate || null,
+      archivedDate: archivedDate || null
     }, 'replace');
   };
 
@@ -549,12 +558,14 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     setExpandedChainId('');
     setTechnicalChainId('');
     setCompletedDate('');
+    setArchivedDate('');
     advancedOpenRef.current = false;
     setAdvancedOpen(false);
     writeUrlQuery({
       outcomeState: outcomeStatesForFilter(name),
       userState: null,
       completedDate: null,
+      archivedDate: null,
       advanced: null,
       identityState: null,
       chainId: null,
@@ -570,6 +581,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   const changeCompletedDate = (next: string) => {
     if (target) onClearTarget();
     setCompletedDate(next);
+    setArchivedDate('');
     if (next) setFilter('已可播放');
     setExpandedChainId('');
     setTechnicalChainId('');
@@ -577,6 +589,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
       outcomeState: next ? ['playable'] : outcomeStatesForFilter(filter),
       userState: null,
       completedDate: next || null,
+      archivedDate: null,
       chainId: null,
       targetKey: null,
       subscriptionId: null,
@@ -827,7 +840,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
         )}
         <header className="ops-task-toolbar">
           <div className="ops-mobile-filter-summary">
-            <span><small>当前筛选</small><strong>{filter}{completedDate ? ' · 今日可播放' : ''}{advancedOpen ? ' · 高级诊断' : ''}</strong></span>
+            <span><small>当前筛选</small><strong>{archivedDate ? `归档 ${archivedDate}` : `${filter}${completedDate ? ' · 今日可播放' : ''}`}{advancedOpen ? ' · 高级诊断' : ''}</strong></span>
             <button
               aria-controls="task-mobile-filter-sheet"
               aria-expanded={mobileFiltersOpen}
@@ -863,11 +876,24 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
           </div>
         </header>
 
+        {chain?.archiveSummary && (
+          <div className="ops-task-archive-summary" aria-label={`${chain.archiveSummary.date} 归档统计`}>
+            <span><small>归档文件</small><strong>{chain.archiveSummary.archivedFiles}</strong></span>
+            <span><small>已关联文件</small><strong>{chain.archiveSummary.linkedFiles}</strong></span>
+            <span><small>关联任务</small><strong>{chain.archiveSummary.linkedTasks}</strong></span>
+            <span><small>未关联文件</small><strong>{chain.archiveSummary.unlinkedFiles}</strong></span>
+          </div>
+        )}
+
         {loading && !chain && <div className="ops-empty ops-task-empty">正在汇总下载、整理和可播放状态…</div>}
         {!loading && error && <div className="ops-empty ops-task-empty">{error}</div>}
         {!loading && chain && visible.length === 0 && (
           <div className="ops-empty ops-task-empty">
-            {focusActive ? '订阅已保存，但暂未形成关联任务。任务产生后会显示在这里。' : '这个筛选下暂时没有任务。'}
+            {focusActive
+              ? '订阅已保存，但暂未形成关联任务。任务产生后会显示在这里。'
+              : archivedDate
+                ? '这一天没有可关联到规范任务的归档文件；未关联文件仍计入上方统计。'
+                : '这个筛选下暂时没有任务。'}
           </div>
         )}
         {actionFeedback && (

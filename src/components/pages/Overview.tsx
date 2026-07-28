@@ -26,7 +26,7 @@ interface OverviewProps {
 }
 
 const metricDefinitions = [
-  { key: 'archivedToday', label: '归档文件', unit: '个文件', icon: Library, target: null },
+  { key: 'archivedToday', label: '归档文件', unit: '个文件', icon: Library, target: 'archived' },
   { key: 'playableToday', label: '已可播放', unit: '个', icon: ShieldCheck, target: 'playable' },
   { key: 'activeDownloadTasks', label: 'qB 下载任务', unit: '个', icon: Download, target: 'in_progress' },
   { key: 'mediaActionRequired', label: '媒体需处理', unit: '项', icon: TriangleAlert, target: 'action_required' }
@@ -56,7 +56,7 @@ function emptySummary(): HomeSummaryResponse {
       emptyFocusItem('current_downloads', '当前下载', '个', '/tasks?outcomeState=in_progress'),
       emptyFocusItem('secupload_failures', '秒传失败', '个', '/tasks?systemIssue=secupload_failures'),
       emptyFocusItem('downloaded_not_archived', '下载完成未入库', '个', '/tasks?outcomeState=in_progress'),
-      emptyFocusItem('archived_today', '今日入库', '个文件', `/tasks?outcomeState=playable&completedDate=${shanghaiDateKey()}`),
+      emptyFocusItem('archived_today', '今日入库', '个文件', `/tasks?archivedDate=${shanghaiDateKey()}`),
       emptyFocusItem('missing_episodes', '追更缺集', '集', '/following?missingEpisodes=1'),
       emptyFocusItem('action_required', '真实异常', '项', '/tasks?outcomeState=action_required')
     ],
@@ -101,6 +101,10 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
   const StatusIcon = status === 'normal' ? CheckCircle2 : status === 'action_required' ? TriangleAlert : Clock3;
 
   const openMetric = (target: typeof metricDefinitions[number]['target']) => {
+    if (target === 'archived') {
+      onNavigate('tasks', { archivedDate: shanghaiDateKey() });
+      return;
+    }
     if (target === 'playable') {
       onNavigate('tasks', { outcomeState: 'playable', completedDate: shanghaiDateKey() });
       return;

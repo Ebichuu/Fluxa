@@ -61,6 +61,14 @@ export interface HomeSummaryResponse {
   headline: string;
   detail: string;
   counts: HomeSummaryCounts;
+  archiveSummary?: {
+    date: string;
+    timezone: 'Asia/Shanghai';
+    archivedFiles: number;
+    linkedFiles: number;
+    linkedTasks: number;
+    unlinkedFiles: number;
+  } | null;
   focusItems: HomeSummaryFocusItem[];
   issueTotal?: number;
   issues: HomeSummaryIssue[];

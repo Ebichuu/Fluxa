@@ -20,6 +20,18 @@ class FakeTaskChainService:
         return self.payload
 
 
+class FakeTaskChainV2Service:
+    def __init__(self, payload, archive_summary):
+        self.payload = payload
+        self.archive = archive_summary
+
+    def full_snapshot(self):
+        return self.payload
+
+    def archive_summary(self, archived_date, payload=None):
+        return {**self.archive, "date": archived_date, "timezone": "Asia/Shanghai"}
+
+
 class FakeRssRepository:
     def __init__(self, error_sources=0):
         self.error_sources = error_sources
@@ -209,7 +221,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["counts"]["ingestedToday"], 2)
         self.assertEqual(result["counts"]["completedTargetsToday"], 2)
         archived_focus = next(value for value in result["focusItems"] if value["key"] == "archived_today")
-        self.assertEqual(archived_focus["href"], "/tasks?outcomeState=playable&completedDate=2026-07-22")
+        self.assertEqual(archived_focus["href"], "/tasks?archivedDate=2026-07-22")
 
     def test_today_archive_uses_symedia_success_count_without_changing_legacy_target_count(self):
         app = self.build_app([item()])
@@ -226,6 +238,24 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["counts"]["completedTargetsToday"], 1)
         self.assertEqual(result["counts"]["ingestedToday"], 1)
         self.assertIn("归档文件 24 · 已可播放 1", result["detail"])
+
+    def test_today_archive_prefers_recomputed_v2_file_and_link_counts(self):
+        app = Flask(f"{__name__}-archive-v2")
+        payload = chain_payload([item()])
+        app.extensions["mcc_task_chain_v2_service"] = FakeTaskChainV2Service(payload, {
+            "archivedFiles": 35,
+            "linkedFiles": 30,
+            "linkedTasks": 18,
+            "unlinkedFiles": 5,
+        })
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+
+        self.assertEqual(result["counts"]["archivedToday"], 35)
+        self.assertEqual(result["archiveSummary"]["linkedTasks"], 18)
+        archived = next(value for value in result["focusItems"] if value["key"] == "archived_today")
+        self.assertIn("关联 18 个任务", archived["detail"])
+        self.assertIn("未关联 5 个文件", archived["detail"])
 
     def test_enabled_scheduler_without_runtime_is_neutral_diagnostic(self):
         app = self.build_app([item()], scheduler_enabled=True)
@@ -449,7 +479,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
             self.assertEqual(focus[key]["value"], 0)
             self.assertEqual(focus[key]["state"], "normal")
         self.assertEqual(focus["current_downloads"]["href"], "/tasks?outcomeState=in_progress")
-        self.assertEqual(focus["archived_today"]["href"], "/tasks?outcomeState=playable&completedDate=2026-07-22")
+        self.assertEqual(focus["archived_today"]["href"], "/tasks?archivedDate=2026-07-22")
         self.assertEqual(focus["missing_episodes"]["href"], "/following?missingEpisodes=1")
         self.assertEqual(focus["action_required"]["href"], "/tasks?outcomeState=action_required")
 

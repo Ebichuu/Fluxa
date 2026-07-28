@@ -400,6 +400,35 @@
   font-size: 11px;
 }
 
+.ops-task-archive-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(157, 184, 207, 0.035);
+}
+
+.ops-task-archive-summary > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 12px 16px;
+}
+
+.ops-task-archive-summary > span + span {
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.ops-task-archive-summary small {
+  color: var(--ops-muted);
+  font-size: 11px;
+}
+
+.ops-task-archive-summary strong {
+  color: var(--ops-ink-strong);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
 .ops-task-list {
   display: grid;
   gap: 10px;
@@ -1019,6 +1048,18 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .ops-task-archive-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ops-task-archive-summary > span:nth-child(odd) {
+    border-left: 0;
+  }
+
+  .ops-task-archive-summary > span:nth-child(n + 3) {
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
   .ops-task-summary > div {
     grid-template-columns: 24px minmax(0, 1fr);
     min-height: 68px;
@@ -1134,6 +1175,16 @@
 
 .app-shell:not(.app-shell--hall)[data-theme='light'] .ops-task-chain__step.is-done .ops-task-chain__evidence > span {
   color: #2f7651;
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-task-archive-summary {
+  border-color: rgba(46, 58, 70, 0.1);
+  background: rgba(46, 58, 70, 0.035);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-task-archive-summary > span + span,
+.app-shell:not(.app-shell--hall)[data-theme='light'] .ops-task-archive-summary > span:nth-child(n + 3) {
+  border-color: rgba(46, 58, 70, 0.1);
 }
 
 .ops-mobile-filter-summary,

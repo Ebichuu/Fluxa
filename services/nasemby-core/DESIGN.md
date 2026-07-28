@@ -242,6 +242,14 @@ Compose 通过 `MCC_DATA_ROOT` 把三个目录映射到同一个 fnOS 根目录�
 
 ## 13. 变更历史
 
+### 2026-07-28 — 今日归档事件查询 P1.3c
+
+**变更内容**：任务列表新增可选 `archivedDate`，按 Asia/Shanghai 从 Symedia 成功文件单元实时筛选并用稳定内部身份去重，返回 `archivedFiles/linkedFiles/linkedTasks/unlinkedFiles`。只有唯一规范链拥有文件时才计入已关联；链别名解析后统计任务。首页归档数字和深链改用同一聚合，不再复用 Emby `playable/completedDate`。
+
+**变更理由**：Symedia 文件归档数和 Emby 可播放作品数是不同事实；同一文件重复扫描、保护、取消覆盖和失败均不能进入归档成功计数，未关联文件也不能被隐藏成任务数。
+
+**影响范围**：v2 任务查询、首页摘要、导航查询状态、任务中心归档摘要、公开类型和 API 契约。只增加可选参数/字段；非法日期返回稳定 400，数据源不可用返回稳定 502，旧查询与状态码保持不变。
+
 ### 2026-07-28 — 历史事件时间与集级范围所有权 P1.3a
 
 **变更内容**：六阶段事实和文件单元新增可选 `eventAt`，Emby 明确集级命中新增 `firstConfirmedPlayableAt`；qB 优先使用完成时间，Symedia 按 Asia/Shanghai 解析正式结果时间，上游缺失时才回退观察时间。`resource_events` 兼容增加 `event_at` 并继续使用原表、原幂等与链别名迁移。集级证据增加规范单集/范围 owner；同一 artifact 多范围、跨季或多 owner 时保持未关联。

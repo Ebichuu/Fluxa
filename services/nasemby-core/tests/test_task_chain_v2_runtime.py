@@ -53,6 +53,77 @@ class FakeTaskChain:
 
 
 class TaskChainV2RuntimeTests(unittest.TestCase):
+    @staticmethod
+    def _archive_fact(*refs):
+        units = [{
+            "unitKey": ref,
+            "state": "succeeded",
+            "scope": "file",
+            "evidence": "verified",
+            "eventAt": "2026-07-28T02:00:00Z",
+            "observedAt": "2026-07-28T03:00:00Z",
+            "freshUntil": "2026-07-28T03:05:00Z",
+            "sourceRef": ref,
+            "reasonCode": "SYMEDIA_ORGANIZED",
+            "reasonText": "Symedia 整理入库完成",
+        } for ref in refs]
+        return {
+            "stage": "symedia", "state": "succeeded", "scope": "file", "evidence": "verified",
+            "eventAt": "2026-07-28T02:00:00Z",
+            "observedAt": "2026-07-28T03:00:00Z", "freshUntil": "2026-07-28T03:05:00Z",
+            "source": "Symedia", "sourceRef": refs[0] if len(refs) == 1 else "",
+            "reasonCode": "SYMEDIA_ORGANIZED", "reasonText": "Symedia 整理入库完成",
+            "units": units,
+        }
+
+    def test_archived_date_counts_unique_files_tasks_and_unlinked_files(self):
+        chain = FakeTaskChain().get_chain()
+        chain["services"] = {"symedia": {"connected": True}}
+        chain["items"][0]["pipelineFacts"] = [self._archive_fact("symedia-1", "symedia-2")]
+        chain["items"].append({
+            "id": "symedia:unlinked", "title": "未关联文件", "mediaType": "unknown", "tmdbId": "",
+            "seasonNumber": 0, "state": "completed", "confidence": "unlinked", "origin": "library",
+            "steps": [], "sourceIds": {"subscriptionId": "", "qbHashes": [], "symediaIds": ["symedia-3"]},
+            "pipelineFacts": [self._archive_fact("symedia-3")],
+        })
+        app = Flask(f"{__name__}-archive")
+        fake = FakeTaskChain()
+        fake.get_chain = lambda: chain
+        app.extensions["mcc_task_chain_service"] = fake
+        register_task_chain_v2(
+            app,
+            clock=lambda: datetime(2026, 7, 28, 3, 1, tzinfo=timezone.utc),
+        )
+
+        response = app.test_client().get("/api/v2/tasks/chains?archivedDate=2026-07-28")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["archiveSummary"], {
+            "date": "2026-07-28",
+            "timezone": "Asia/Shanghai",
+            "archivedFiles": 3,
+            "linkedFiles": 2,
+            "linkedTasks": 1,
+            "unlinkedFiles": 1,
+        })
+        self.assertEqual(payload["page"]["total"], 1)
+
+    def test_archived_date_rejects_invalid_date_and_unavailable_source(self):
+        app = Flask(f"{__name__}-archive-errors")
+        app.extensions["mcc_task_chain_service"] = FakeTaskChain()
+        register_task_chain_v2(app)
+        client = app.test_client()
+
+        invalid = client.get("/api/v2/tasks/chains?archivedDate=2026-02-30")
+        unavailable = client.get("/api/v2/tasks/chains?archivedDate=2026-07-28")
+
+        self.assertEqual((invalid.status_code, invalid.get_json()["code"]), (400, "TASK_ARCHIVED_DATE_INVALID"))
+        self.assertEqual(
+            (unavailable.status_code, unavailable.get_json()["code"]),
+            (502, "TASK_ARCHIVE_SOURCE_UNAVAILABLE"),
+        )
+
     def test_missing_pipeline_evidence_projects_to_no_action(self):
         payload = adapt_task_chain(
             FakeTaskChain().get_chain(),

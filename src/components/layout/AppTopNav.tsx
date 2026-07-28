@@ -20,6 +20,7 @@ export interface TaskNavigationTarget {
   outcomeStates?: PipelineOutcomeState[];
   userState?: 'action_required' | 'in_progress' | 'completed' | 'no_action';
   completedDate?: string;
+  archivedDate?: string;
   advanced?: boolean;
   identityStates?: Array<'unidentified' | 'linked' | 'conflict'>;
   systemIssue?: string;
