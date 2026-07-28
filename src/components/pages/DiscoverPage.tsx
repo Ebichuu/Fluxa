@@ -1248,7 +1248,12 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     playable: subs.filter((item) => item.outcomeState === 'playable').length,
     completed: subs.filter((item) => item.outcomeState === 'playable').length,
     actionRequired: subs.filter((item) => item.outcomeState === 'action_required').length,
-    inLibrary: subs.filter((item) => item.library?.status === 'done').length
+    inLibrary: subs.filter((item) => item.library?.status === 'done').length,
+    linked: subs.filter((item) => item.reconciliationState === 'linked').length,
+    onlyTorra: subs.filter((item) => item.reconciliationState === 'only_torra').length,
+    onlyFluxa: subs.filter((item) => item.reconciliationState === 'only_fluxa').length,
+    attention: subs.filter((item) => ['conflict', 'remote_missing'].includes(item.reconciliationState ?? '')).length,
+    unclassified: subs.filter((item) => !['linked', 'only_torra', 'only_fluxa', 'conflict', 'remote_missing'].includes(item.reconciliationState ?? '')).length
   };
   const subscriptionCountsUnavailable = subscriptionsOnly && !workbench;
   const reconciliationSummary = workbench?.reconciliation?.summary;
@@ -2748,7 +2753,10 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             <span><b>{workbenchStats.playable}</b>已可播放</span>
             <span><b>{workbenchStats.actionRequired}</b>需要处理</span>
             <span><b>{workbenchStats.inLibrary}</b>已入库</span>
-            <small>{subscriptionReadAtLabel(workbench.lastReadAt)}</small>
+            <small className="subscription-workbench-summary__composition">
+              总数构成：已关联 {workbenchStats.linked} · 仅 Torra {workbenchStats.onlyTorra} · 仅 Fluxa {workbenchStats.onlyFluxa} · 对账异常 {workbenchStats.attention} · 未分类 {workbenchStats.unclassified}
+            </small>
+            <small className="subscription-workbench-summary__updated">{subscriptionReadAtLabel(workbench.lastReadAt)}</small>
           </section>
         )}
         {sweepMessage && <p className="console-panel__hint">{sweepMessage}</p>}

@@ -14,6 +14,7 @@ from app.health_state_runtime import SchedulerStatusRegistry
 from app.subscription_workbench_runtime import (
     SubscriptionWorkbenchService,
     _candidate_scan_snapshot,
+    _reconciliation_composition,
     register_subscription_workbench,
 )
 from app.subscription_reconciliation_runtime import torra_public_subscription_key
@@ -107,6 +108,27 @@ class FakeRssService:
 
 
 class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
+    def test_reconciliation_composition_is_mutually_exclusive_and_complete(self):
+        items = [
+            {"reconciliationState": "linked"},
+            {"reconciliationState": "only_torra"},
+            {"reconciliationState": "only_fluxa"},
+            {"reconciliationState": "conflict"},
+            {"reconciliationState": "remote_missing"},
+            {"reconciliationState": ""},
+        ]
+
+        counts = _reconciliation_composition(items)
+
+        self.assertEqual(counts, {
+            "linked": 1,
+            "onlyTorra": 1,
+            "onlyFluxa": 1,
+            "attention": 2,
+            "unclassified": 1,
+        })
+        self.assertEqual(sum(counts.values()), len(items))
+
     def test_automatic_source_merge_preserves_manual_and_torra_rows(self):
         existing = [
             {
@@ -300,6 +322,11 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         self.assertEqual(snapshot["stats"]["following"], 0)
         self.assertEqual(snapshot["stats"]["completed"], 0)
         self.assertEqual(snapshot["stats"]["actionRequired"], 1)
+        self.assertEqual(snapshot["stats"]["unclassified"], 1)
+        self.assertEqual(sum(
+            snapshot["stats"][key]
+            for key in ("linked", "onlyTorra", "onlyFluxa", "attention", "unclassified")
+        ), snapshot["stats"]["total"])
         self.assertEqual(snapshot["items"][0]["torra"]["status"], "not_linked")
         self.assertEqual(snapshot["items"][0]["qb"]["status"], "blocked")
         self.assertEqual(snapshot["items"][0]["blockingReason"], "qB 下载卡住")

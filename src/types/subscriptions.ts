@@ -92,6 +92,9 @@ export interface SubscriptionCalendar {
     playable?: number;
     unlinked?: number;
     excludedUnlinked?: number;
+    linkedEntries?: number;
+    unlinkedEntries?: number;
+    totalEntries?: number;
     actionRequired?: number;
     statusCounts?: Record<SubscriptionCalendarStatus, number>;
   };
@@ -201,6 +204,11 @@ export interface SubscriptionWorkbenchResponse {
     playable: number;
     actionRequired: number;
     inLibrary: number;
+    linked: number;
+    onlyTorra: number;
+    onlyFluxa: number;
+    attention: number;
+    unclassified: number;
   };
   items: SubscriptionItem[];
   posterBackfillIds?: string[];

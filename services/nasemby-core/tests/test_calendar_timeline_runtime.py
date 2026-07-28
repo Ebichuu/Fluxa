@@ -776,6 +776,20 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
 
         self.assertEqual(default_calendar["entries"], [])
         self.assertEqual(default_calendar["stats"]["excludedUnlinked"], 1)
+        self.assertEqual(
+            {
+                key: default_calendar["stats"][key]
+                for key in ("linkedEntries", "unlinkedEntries", "totalEntries")
+            },
+            {"linkedEntries": 0, "unlinkedEntries": 1, "totalEntries": 1},
+        )
+        self.assertEqual(
+            {
+                key: advanced_calendar["stats"][key]
+                for key in ("linkedEntries", "unlinkedEntries", "totalEntries")
+            },
+            {"linkedEntries": 0, "unlinkedEntries": 1, "totalEntries": 1},
+        )
         self.assertEqual(advanced_calendar["entries"][0]["status"], "unlinked")
 
     def test_exact_emby_episode_fact_marks_only_that_episode_playable(self):

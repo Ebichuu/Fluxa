@@ -238,6 +238,29 @@ def _legacy_chain_state(outcome_state):
     }.get(str(outcome_state or ""), "waiting")
 
 
+def _reconciliation_composition(items):
+    counts = {
+        "linked": 0,
+        "onlyTorra": 0,
+        "onlyFluxa": 0,
+        "attention": 0,
+        "unclassified": 0,
+    }
+    for item in items or []:
+        state = str(item.get("reconciliationState") or "")
+        if state == "linked":
+            counts["linked"] += 1
+        elif state == "only_torra":
+            counts["onlyTorra"] += 1
+        elif state == "only_fluxa":
+            counts["onlyFluxa"] += 1
+        elif state in {"conflict", "remote_missing"}:
+            counts["attention"] += 1
+        else:
+            counts["unclassified"] += 1
+    return counts
+
+
 def _chain_item_for_row(row, chain):
     mapped = map_subscription_item(row) or {}
     candidates = [
@@ -623,6 +646,7 @@ class SubscriptionWorkbenchService:
                 for item in mapped_items
             ),
             "inLibrary": sum(item.get("library", {}).get("status") == "done" for item in mapped_items),
+            **_reconciliation_composition(mapped_items),
         }
         filtered_items = mapped_items
         if media_type in {"movie", "tv"}:

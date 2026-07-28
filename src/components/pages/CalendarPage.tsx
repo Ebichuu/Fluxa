@@ -196,7 +196,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
   const [mode, setMode] = useState<'loading' | 'live' | 'error'>('loading');
   const [detailMode, setDetailMode] = useState<'idle' | 'loading' | 'live' | 'error'>('idle');
   const [calendarErrors, setCalendarErrors] = useState<string[]>([]);
-  const [unlinkedCount, setUnlinkedCount] = useState(0);
+  const [entryTotals, setEntryTotals] = useState({ linked: 0, unlinked: 0, total: 0 });
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const detailRequestRef = useRef<AbortController | null>(null);
   const detailPanelRef = useRef<HTMLElement | null>(null);
@@ -240,14 +240,19 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         setDays(payload.calendar.days ?? []);
         setSearchIndex(payload.calendar.searchIndex ?? []);
         setCalendarErrors(payload.calendar.errors ?? []);
-        setUnlinkedCount(payload.calendar.stats.unlinked ?? 0);
+        setEntryTotals({
+          linked: payload.calendar.stats.linkedEntries ?? payload.calendar.stats.entries,
+          unlinked: payload.calendar.stats.unlinkedEntries ?? payload.calendar.stats.unlinked ?? 0,
+          total: payload.calendar.stats.totalEntries
+            ?? payload.calendar.stats.entries + (payload.calendar.stats.excludedUnlinked ?? 0)
+        });
         setMode('live');
       })
       .catch(() => {
         if (!controller.signal.aborted) {
           setDays([]);
           setSearchIndex([]);
-          setUnlinkedCount(0);
+          setEntryTotals({ linked: 0, unlinked: 0, total: 0 });
           setMode('error');
         }
       });
@@ -524,7 +529,6 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     unknown: result.unknown + (day.statusCounts.unknown ?? 0),
     unlinked: result.unlinked + (day.statusCounts.unlinked ?? 0)
   }), { upcoming: 0, acquiring: 0, library: 0, playable: 0, protected: 0, missing: 0, unknown: 0, unlinked: 0 });
-  const totalEntries = days.reduce((total, day) => total + day.total, 0);
   const isLoading = mode === 'loading';
 
   return (
@@ -543,7 +547,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
           <div><Library size={15} /><span>整理入库</span><strong>{isLoading ? '—' : counts.library}</strong></div>
           <div className={counts.missing ? 'is-alert' : undefined}><ListChecks size={15} /><span>逾期未获取</span><strong>{isLoading ? '—' : counts.missing}</strong></div>
           <div className="is-protected"><ShieldCheck size={15} /><span>正常保护</span><strong>{isLoading ? '—' : counts.protected}</strong></div>
-          <div className="is-faint"><CircleHelp size={15} /><span>状态未关联</span><strong>{isLoading ? '—' : unlinkedCount}</strong></div>
+          <div className="is-faint"><CircleHelp size={15} /><span>状态未关联</span><strong>{isLoading ? '—' : entryTotals.unlinked}</strong></div>
         </div>
       </section>
 
@@ -562,7 +566,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
             <button aria-label="上一周期" className="ops-icon-button" title="上一周期" type="button" onClick={() => shiftPeriod(-1)}><ChevronLeft aria-hidden="true" size={14} /></button>
             <button className="tool-link" type="button" onClick={goToday}>今天</button>
             <button aria-label="下一周期" className="ops-icon-button" title="下一周期" type="button" onClick={() => shiftPeriod(1)}><ChevronRight aria-hidden="true" size={14} /></button>
-            <span className="ops-calendar-mode">{mode === 'loading' ? '加载中…' : mode === 'error' ? '日历不可用' : totalEntries + ' 条真实记录'}</span>
+            <span className="ops-calendar-mode">{mode === 'loading' ? '加载中…' : mode === 'error' ? '日历不可用' : `已关联 ${entryTotals.linked} · 未关联 ${entryTotals.unlinked} · 合计 ${entryTotals.total}`}</span>
           </div>
         </header>
 

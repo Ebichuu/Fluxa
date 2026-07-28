@@ -1894,7 +1894,7 @@
 
 .subscription-workbench-summary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 1px;
   align-items: center;
   margin-bottom: 10px;
@@ -1924,6 +1924,18 @@
 
 .subscription-workbench-summary small {
   color: var(--ops-faint);
+}
+
+.subscription-workbench-summary__composition,
+.subscription-workbench-summary__updated {
+  grid-column: 1 / -1;
+}
+
+.subscription-workbench-summary__composition {
+  white-space: normal;
+}
+
+.subscription-workbench-summary__updated {
   white-space: nowrap;
 }
 

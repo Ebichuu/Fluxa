@@ -765,6 +765,8 @@ class CalendarTimelineService:
         excluded_before_subscription = sum(_is_pre_subscription_episode(entry) for entry in raw_entries)
         entries = [entry for entry in raw_entries if not _is_pre_subscription_episode(entry)]
         excluded_unlinked = sum(entry.get("linkState") == "unlinked" for entry in entries)
+        linked_entries = len(entries) - excluded_unlinked
+        total_entries = len(entries)
         if not include_unlinked:
             entries = [entry for entry in entries if entry.get("linkState") != "unlinked"]
         today = current.astimezone(BEIJING_TZ).strftime("%Y-%m-%d")
@@ -786,6 +788,9 @@ class CalendarTimelineService:
                 "playable": sum(entry.get("status") == "playable" for entry in entries),
                 "unlinked": excluded_unlinked,
                 "excludedUnlinked": 0 if include_unlinked else excluded_unlinked,
+                "linkedEntries": linked_entries,
+                "unlinkedEntries": excluded_unlinked,
+                "totalEntries": total_entries,
                 "actionRequired": sum(entry.get("healthState") == "action_required" for entry in entries),
                 "excludedBeforeSubscription": excluded_before_subscription,
                 "statusCounts": {
