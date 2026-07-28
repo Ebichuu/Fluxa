@@ -551,7 +551,73 @@ P0 通过前不得执行真实历史污染迁移，也不得宣称产品已达�
 
 状态：✅ 2026-07-28 已完成实现与本地验收。结构化计数优先于 message，`result/failure_details` 对象与数组均兼容；重复文件去重，重试次数缺失保持 `null`。文件级 115 事实只有完整路径键与 qB 精确一致时绑定媒体链，其余保留在系统问题。公开响应不含路径、错误原文或内部 ID。用户界面的 `evidence_insufficient` 显示名改为“暂未确认”，高级诊断深浅主题和 390px 视口通过。全量 509 项 Python 回归、TypeScript/生产构建、Compose 与差异检查通过。
 
-## 12. P1.3：异常动作与历史迁移复查
+## 12. P1.3：六阶段详情、历史日历与调度语义收口
+
+目标：让任务详情、日历、首页归档和调度文案完全消费新事实契约，同时保留可审计历史事件，不扩张为第二套统一账本。
+
+设计依据：
+
+- `docs/superpowers/specs/2026-07-28-pipeline-facts-calendar-final-mile-design.md`
+
+独立提交顺序：
+
+1. **P1.3a 历史时间与范围所有权**
+   - 在现有 `resource_events/resource_artifacts` 上增加 `eventAt` 历史投影和规范 `episode_range` owner。
+   - qB、Symedia、STRM 使用上游真实发生时间；Emby 使用 `firstConfirmedPlayableAt`。
+   - 成功和失败历史不因 `freshUntil` 删除；当前状态仍按新鲜度判断。
+   - 验收：过期成功仍在日历，过期失败保留历史但不继续红色，范围 artifact 只有一个 owner。
+
+2. **P1.3b 六阶段详情与确认数**
+   - 普通任务详情固定读取 `pipelineFacts` 六阶段。
+   - 移除普通页面百分比，改为“已确认 N/6 个阶段”。
+   - `stages/steps/progress` 仅保留兼容和高级诊断。
+   - 验收：Symedia 失败任务显示六阶段；115 和 STRM 不被下游成功反推。
+
+3. **P1.3c 今日归档事件查询**
+   - 增加 `archivedDate` 和 `archiveSummary`。
+   - 按 Asia/Shanghai、正式成功事件和稳定文件身份去重。
+   - 返回 `archivedFiles/linkedFiles/linkedTasks/unlinkedFiles`，解析 chain alias 后统计任务。
+   - 验收：等式成立，首页深链口径一致，不复用 playable。
+
+4. **P1.3d 日历集级桥接**
+   - 按 TMDB、媒体类型、季号、合法集号范围和唯一 artifact owner 投影集级历史。
+   - 显示 qB 完成、Symedia 入库、STRM 生成和 Emby 首次确认可播放时间。
+   - 验收：刷新和等待后历史不消失；冲突、跨季和模糊标题保持未关联。
+
+5. **P1.3e 调度与 Torra 推送语义**
+   - 候选规则、服务端调度、最近错误、最近运行和逾期分别建模。
+   - 候选正常要求规则启用、调度运行、无错误且最近运行未逾期。
+   - Torra 推送拆为 queued/submitted/linked，只有可靠远端 ID 可进入 linked。
+   - 验收：当前 fnOS 文案直接表达“规则已启用但调度未启动”和真实推送阶段。
+
+6. **P1.3f STRM 正式接口检查与止损**
+   - 只检查 Symedia 正式、只读、独立 STRM 结果。
+   - 成功必须具备身份、季集范围、状态、generatedAt、结果 ID 和当前目标归属。
+   - 接口不存在或证据不足立即保持 `unknown + missing + STRM_INDEPENDENT_RESULT_MISSING`。
+   - 不读取 `.strm` 文件名，不从归档、路径或 Emby 反推；不得阻塞 P1.3a-e。
+
+主要涉及文件：
+
+- `services/nasemby-core/app/pipeline_fact_runtime.py`
+- `services/nasemby-core/app/pipeline_source_fact_runtime.py`
+- `services/nasemby-core/app/resource_identity_runtime.py`
+- `services/nasemby-core/app/resource_task_repository.py`
+- `services/nasemby-core/app/episode_evidence_runtime.py`
+- `services/nasemby-core/app/task_chain_v2_runtime.py`
+- `services/nasemby-core/app/calendar_timeline_runtime.py`
+- `services/nasemby-core/app/home_summary_runtime.py`
+- `services/nasemby-core/app/subscription_workbench_runtime.py`
+- `src/components/pages/TasksCenter.tsx`
+- `src/components/pages/Overview.tsx`
+- `src/components/pages/CalendarPage.tsx`
+- `src/components/pages/DiscoverPage.tsx`
+- `src/types/taskChain.ts`
+- `src/types/homeSummary.ts`
+- `src/types/subscriptions.ts`
+
+总验收：当前实例三个 Symedia 失败任务显示六阶段；115 暂未确认；STRM 明确说明未提供独立结果；今日归档深链解释四项实时计数；明确集级历史长期保留；普通页面不再读取旧四段链路或百分比。
+
+## 13. P1.4：异常动作与历史迁移复查
 
 目标：让每个明确失败都有安全下一步，并完成历史污染数据的受控复查。
 
@@ -579,7 +645,7 @@ P0 通过前不得执行真实历史污染迁移，也不得宣称产品已达�
 
 验收：每个主操作唯一、可解释；没有正式安全动作时只打开原工具，不伪造自动修复能力。
 
-## 13. P2.1：发现、追更与日历信息密度
+## 14. P2.1：发现、追更与日历信息密度
 
 涉及文件：
 
@@ -601,7 +667,7 @@ P0 通过前不得执行真实历史污染迁移，也不得宣称产品已达�
 
 验证：320/390/768/1440、最长中文标题、空数据、2000 条追更分页、返回恢复、无页面级横向溢出。
 
-## 14. P2.2：活动运行摘要与低价值信息清理
+## 15. P2.2：活动运行摘要与低价值信息清理
 
 涉及文件：
 
@@ -626,7 +692,7 @@ P0 通过前不得执行真实历史污染迁移，也不得宣称产品已达�
 
 验证：203 条扫描/21 条未匹配显示一条摘要；后台同步 892 次不平铺；原始记录仍可查询；limit 在聚合后应用。
 
-## 15. 契约、文档与弃用登记
+## 16. 契约、文档与弃用登记
 
 每个阶段同步更新相关文档，最终至少覆盖：
 
@@ -650,9 +716,9 @@ P0 通过前不得执行真实历史污染迁移，也不得宣称产品已达�
 5. activity run summary、旧 URL 映射和新 URL 参数。
 6. 公共字段脱敏边界、写动作守卫和真实迁移审批要求。
 
-## 16. 全量验证与发布关卡
+## 17. 全量验证与发布关卡
 
-### 16.1 自动验证
+### 17.1 自动验证
 
 ```powershell
 python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v
@@ -671,7 +737,7 @@ git diff --check
 - 临时数据库升级、备份、迁移、回滚演练通过；
 - 自动测试日志不写入真实活动记录。
 
-### 16.2 浏览器验收
+### 17.2 浏览器验收
 
 - 320、390、768、1440 视口；
 - 深色、浅色主题；
@@ -680,7 +746,7 @@ git diff --check
 - 文本不重叠、按钮不溢出、卡片不因状态变化跳动；
 - 网络响应和 DOM 不出现路径、Token、Cookie、Passkey 或原始外部 ID。
 
-### 16.3 发布与实机
+### 17.3 发布与实机
 
 1. 所有代码和文档提交后推送 `main`。
 2. 等待 GitHub Actions validate、双架构构建和镜像冒烟全部成功。
@@ -690,7 +756,7 @@ git diff --check
 6. 候选迁移只运行 preview；真实执行仍需用户单独批准。
 7. 不在发布流程中自动开启任何外部写开关。
 
-## 17. 观察期与方案 B 退出关卡
+## 18. 观察期与方案 B 退出关卡
 
 P0–P2 发布后开启至少 7 个连续自然日影子观察。观察记录只保存聚合差异：
 
@@ -719,7 +785,7 @@ P0–P2 发布后开启至少 7 个连续自然日影子观察。观察记录只
 
 未满足退出条件时继续保留方案 A 的兼容层，不提前宣称达到方案 B。
 
-## 18. 文件所有权建议
+## 19. 文件所有权建议
 
 如果后续明确采用多代理并行，按以下边界分配；未明确要求多代理时按提交顺序串行执行：
 

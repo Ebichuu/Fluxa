@@ -1131,3 +1131,36 @@ Fluxa 的前端不以展示更多工程数据为目标，而是让用户更快�
 - 后端全量 509 项、v2 70 条机器契约、TypeScript、Vite 生产构建、Compose 和差异检查通过。
 - Torra 详情覆盖有/无 `failure_details`、对象/数组、结构化计数优先、重复文件、缺失重试次数、有效/无效恢复计划及路径/凭据脱敏。
 - 浏览器桌面深浅主题与 390px 通过，高级诊断前景/背景对比明确，控制台无错误。
+
+## 31. P1.3：六阶段事实、历史日历与调度语义收口（2026-07-28）
+
+### 31.1 六阶段任务详情
+
+- 普通任务卡与详情固定消费 `pipelineFacts`，按 Torra、qB、115、Symedia、STRM、Emby 展示；旧 `stages/steps` 只保留在高级诊断。
+- 取消线性百分比，改为“已确认 N/6 个阶段”；`unknown + missing` 不计入确认数，确认数不参与最终完成判定。
+- 115 仅接受可唯一归属当前目标的文件级证据；STRM 仅接受 Symedia 正式、只读、独立结果。缺少证据时分别显示“暂未确认”，不得由 Symedia 归档或 Emby 收录反推。
+
+### 31.2 历史时间与集级所有权
+
+- 历史事实区分 `eventAt`、`observedAt` 与 `freshUntil`。qB 完成、Symedia 归档、STRM 生成和 Emby 首次确认可播放的历史时间不因新鲜度过期而消失。
+- 过期失败退出当前红色状态，但保留“曾于 xx 失败 · 当前状态暂未确认”；只有后续明确成功或恢复事件才能标记已恢复。
+- 范围资源使用唯一 `episode_range` owner；日历可从一个范围 owner 投影多集，但不得复制 artifact 所有权。跨季、范围冲突或多 owner 保持“证据未关联”。
+
+### 31.3 今日归档与日历
+
+- 首页“今日归档”进入 `archivedDate`，不复用 `playable`。按 Asia/Shanghai 对 Symedia 明确成功事件去重，排除低分保护、取消覆盖和真实失败。
+- 响应解释 `archivedFiles/linkedFiles/linkedTasks/unlinkedFiles`，并保证 `archivedFiles = linkedFiles + unlinkedFiles`；任务数解析永久 chain alias 后按规范任务 ID 去重。
+- 日历只投影身份、季号、集号范围和唯一 owner 均明确的 qB 完成、Symedia 归档、STRM 生成和 Emby 首次确认可播放历史；刷新或等待不得清除历史时间。
+
+### 31.4 调度、Torra 与 STRM 止损
+
+- 候选规则与服务端调度分开表达；只有规则启用、调度运行、无最近错误且最近运行未逾期时显示“候选自动更新正常”。每日调度按 Asia/Shanghai 计算，并保留 2 小时执行宽限。
+- Torra 推送拆为 `queued/submitted/linked`；只有只读对账取得可靠远端 ID 且身份与范围一致时显示“已在 Torra”。
+- 本波次只检查 Symedia 是否提供正式、只读、独立 STRM 结果。缺少媒体身份、季集范围、成功状态、生成时间、结果 ID 或当前目标归属中的任一项，立即保持“STRM · 暂未确认 · Symedia 未提供独立结果”，且不阻塞其余实施。
+
+### 31.5 验收关卡
+
+- 当前三个 Symedia 失败任务展开后固定显示六阶段；无秒传文件级证据时 115 不再由 Symedia 反推完成。
+- 首页归档深链展示四项实时计数；日历明确集级历史在刷新和等待后仍保留。
+- 普通页面源码不读取 `stages/steps/progress`，旧字段只作为兼容响应与高级诊断投影存在。
+- 新接口仅增加可选字段、查询参数和稳定错误响应，不移除或改型现有字段；公开响应不泄露路径、凭据、内部 ID 或错误原文。
