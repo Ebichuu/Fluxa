@@ -17,6 +17,7 @@ export interface PipelineFactUnit {
   state: PipelineFactState;
   scope: PipelineScope;
   evidence: TaskChainEvidence;
+  eventAt: string;
   observedAt: string;
   freshUntil: string;
   sourceRef: string;
@@ -31,6 +32,7 @@ export interface PipelineFact {
   state: PipelineFactState;
   scope: PipelineScope;
   evidence: TaskChainEvidence;
+  eventAt: string;
   observedAt: string;
   freshUntil: string;
   source: string;
@@ -41,6 +43,7 @@ export interface PipelineFact {
   plannedRetryAt: string;
   retryEligible: boolean;
   isStale: boolean;
+  firstConfirmedPlayableAt: string;
   units: PipelineFactUnit[];
 }
 
@@ -193,6 +196,7 @@ export interface TaskChainItem {
   state: TaskChainState;
   confidence: TaskChainConfidence;
   progress: number;
+  confirmedStageCount?: number;
   currentStep: TaskChainStep['key'];
   steps: TaskChainStep[];
   embyIndexed: boolean;

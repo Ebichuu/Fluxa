@@ -274,6 +274,7 @@ ITEM_FIELDS = (
     "observedAt", "freshUntil", "source", "reasonCode", "identityState", "executionState",
     "outcomeState", "playableAt", "userState", "completedAt", "relatedRecords", "activeDownloadTasks",
     "completedDownloadTasks", "concurrentDownloadCount", "retryEligible", "plannedRetryAt",
+    "confirmedStageCount",
 )
 
 

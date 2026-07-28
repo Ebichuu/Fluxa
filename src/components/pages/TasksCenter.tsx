@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertTriangle, Braces, CheckCircle2, CircleHelp, Clock3, Copy, Download, ExternalLink, Filter, Pause, Play, RefreshCcw, Rss, Server, ShieldCheck, X } from 'lucide-react';
 import { getActivityLogs, getTaskChainDetailV2, getTaskChainV2, getTaskSummaryV2, previewQbittorrentAction, runQbittorrentAction } from '../../services/api';
 import type { QbittorrentAction, QbittorrentActionPreview } from '../../types/qbittorrent';
-import type { PipelineOutcomeState, TaskChainHealthState, TaskChainItem, TaskChainListItem, TaskChainResponse, TaskChainStage } from '../../types/taskChain';
+import type { PipelineFact, PipelineOutcomeState, TaskChainHealthState, TaskChainItem, TaskChainListItem, TaskChainResponse, TaskChainStage } from '../../types/taskChain';
 import type { ActivityLogItem } from '../../types/operations';
 import { usePolling } from '../../hooks/usePolling';
 import { currentHistoryEntryIs, writeUrlQuery } from '../../app/urlState';
@@ -48,7 +48,7 @@ const stageStatusLabel: Record<string, string> = {
   active: '处理中',
   blocked: '已阻塞',
   waiting: '等待中',
-  unknown: '待确认'
+  unknown: '暂未确认'
 };
 
 function isUnknownStage(stage: TaskChainStage) {
@@ -58,7 +58,7 @@ function isUnknownStage(stage: TaskChainStage) {
 
 function stageStatusText(status: string) {
   const normalized = status.toLowerCase();
-  return stageStatusLabel[normalized] || (normalized.endsWith('_unknown') ? '待确认' : '状态待确认');
+  return stageStatusLabel[normalized] || (normalized.endsWith('_unknown') ? '暂未确认' : '状态暂未确认');
 }
 
 function resolvedHealth(item: TaskChainListItem | TaskChainItem): TaskChainHealthState {
@@ -72,24 +72,56 @@ function resolvedHealth(item: TaskChainListItem | TaskChainItem): TaskChainHealt
   } as const)[resolvedOutcomeState(item)];
 }
 
-function stageItems(item: TaskChainListItem | TaskChainItem): TaskChainStage[] {
-  if (item.stages?.length) return item.stages;
-  return (item.steps ?? []).map((step) => ({
-    stage: step.key,
-    label: step.label,
-    status: step.status,
-    healthState: step.status === 'done' ? 'normal' : step.status === 'blocked' ? 'action_required' : step.status === 'unknown' ? 'evidence_insufficient' : 'waiting',
-    evidence: step.evidence,
-    observedAt: step.timestamp,
-    freshUntil: '',
-    source: step.source,
-    reasonCode: '',
-    reasonText: step.detail,
-    recommendedAction: '',
-    retryEligible: false,
-    plannedRetryAt: '',
-    actions: { preview: false, retry: false }
-  }));
+const pipelineStageLabels: Record<PipelineFact['stage'], string> = {
+  torra: 'Torra 获取目标',
+  qb: 'qB 下载',
+  cloud115: '115 秒传',
+  symedia: 'Symedia 整理入库',
+  strm: 'STRM 播放入口',
+  emby: 'Emby 可播放'
+};
+
+function pipelineStageItems(item: TaskChainItem): TaskChainStage[] {
+  return (item.pipelineFacts ?? []).map((fact) => {
+    const staleFailure = fact.state === 'failed' && fact.isStale;
+    const status = staleFailure ? 'unknown' : ({
+      succeeded: 'done',
+      active: 'active',
+      failed: 'blocked',
+      protected: 'blocked',
+      not_applicable: 'done',
+      waiting: 'waiting',
+      unknown: 'unknown'
+    } as const)[fact.state];
+    const healthState: TaskChainHealthState = staleFailure || fact.state === 'unknown'
+      ? 'evidence_insufficient'
+      : fact.state === 'failed'
+        ? fact.plannedRetryAt ? 'waiting' : 'action_required'
+        : fact.state === 'protected'
+          ? 'protected'
+          : fact.state === 'succeeded' || fact.state === 'not_applicable'
+            ? 'normal'
+            : 'waiting';
+    const historyText = staleFailure
+      ? `曾于 ${fact.eventAt || fact.observedAt || '未知时间'} 失败 · 当前状态暂未确认`
+      : fact.reasonText;
+    return {
+      stage: fact.stage,
+      label: pipelineStageLabels[fact.stage],
+      status,
+      healthState,
+      evidence: fact.evidence,
+      observedAt: fact.eventAt || fact.observedAt,
+      freshUntil: fact.freshUntil,
+      source: fact.source,
+      reasonCode: fact.reasonCode,
+      reasonText: historyText,
+      recommendedAction: '',
+      retryEligible: fact.retryEligible,
+      plannedRetryAt: fact.plannedRetryAt,
+      actions: { preview: false, retry: false }
+    };
+  });
 }
 
 function stageClass(stage: TaskChainStage) {
@@ -104,10 +136,11 @@ function stageClass(stage: TaskChainStage) {
 function evidenceLabel(stage: TaskChainStage) {
   if (stage.evidence === 'verified') return '已确认';
   if (stage.evidence === 'inferred') return '系统判断';
-  return '待确认';
+  return '暂未确认';
 }
 
 function stageDisplayLabel(stage: TaskChainStage) {
+  if (stage.stage in pipelineStageLabels) return pipelineStageLabels[stage.stage as PipelineFact['stage']];
   if (stage.stage === 'download') return 'qB 下载';
   if (stage.stage === 'cloud115') return '115 接管';
   if (stage.stage === 'library') return '整理与入库';
@@ -118,12 +151,7 @@ function currentDetail(item: TaskChainListItem | TaskChainItem) {
   if (item.pipelineOutcome?.reasonText) return item.pipelineOutcome.reasonText;
   if (item.resultText) return item.resultText;
   if (item.userReasonText || item.reasonText) return item.userReasonText || item.reasonText;
-  if (!item.stages?.length && !item.steps?.length) return '展开后查看完整处理进度';
-  const stages = stageItems(item);
-  const current = stages.find((stage) => stage.stage === item.currentStep)
-    ?? stages.find((stage) => stage.status === 'blocked' || stage.status === 'active')
-    ?? stages[stages.length - 1];
-  return item.userReasonText || item.reasonText || current?.userReasonText || current?.reasonText || '等待下一步状态';
+  return item.userReasonText || item.reasonText || '展开后查看六阶段事实';
 }
 
 function guidanceIcon(health: TaskChainHealthState) {
@@ -856,7 +884,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
             const expanded = expandedChainId === chainId;
             const health = resolvedHealth(item);
             const outcomeState = resolvedOutcomeState(item);
-            const stages = detail ? stageItems(detail) : [];
+            const stages = detail ? pipelineStageItems(detail) : [];
             const primaryAction = item.primaryAction;
             const detailsArePrimaryAction = Boolean(
               primaryAction?.available && primaryAction.kind === 'view_details'
@@ -888,7 +916,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                     )}
                   </div>
                 </div>
-                <strong>{item.progress}%</strong>
+                <strong>已确认 {item.confirmedStageCount ?? 0}/6</strong>
               </div>
 
               {outcomeState === 'action_required' && (
@@ -900,7 +928,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
               )}
 
               {expanded && detailLoading === chainId && <div className="ops-empty ops-task-empty">正在读取完整处理进度…</div>}
-              {expanded && detail && <div className="ops-task-chain" aria-label="任务处理进度">
+              {expanded && detail && stages.length > 0 && <div className="ops-task-chain" aria-label="六阶段任务事实">
                 {stages.map((stage, index) => (
                   <div className={stageClass(stage)} key={`${stage.stage}-${index}`}>
                     <div className="ops-task-chain__evidence">
@@ -920,6 +948,10 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                   </div>
                 ))}
               </div>}
+
+              {expanded && detail && stages.length === 0 && (
+                <div className="ops-empty ops-task-empty">六阶段事实尚未返回</div>
+              )}
 
               {expanded && detail && (
                 <div className="ops-task-technical">
@@ -965,10 +997,6 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                   )}
                 </div>
               )}
-
-              <div className="ops-task-progress" aria-label={`链路进度 ${item.progress}%`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={item.progress}>
-                <span style={{ '--progress': `${item.progress}%` } as React.CSSProperties} />
-              </div>
 
               <div className="ops-task-card__foot">
                 <span>{item.relatedRecords && item.relatedRecords > 1 ? `已合并 ${item.relatedRecords} 条来源记录` : item.playableAt ? <>可播放于 <RelativeTime value={item.playableAt} /></> : '唯一资源链路'}</span>

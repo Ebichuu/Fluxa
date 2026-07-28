@@ -73,6 +73,7 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(item["outcomeState"], "evidence_insufficient")
         self.assertEqual(item["userState"], "no_action")
         self.assertEqual(item["completedAt"], "")
+        self.assertEqual(item["confirmedStageCount"], 0)
 
     def test_verified_emby_episode_projects_playable_to_legacy_completed(self):
         chain = FakeTaskChain().get_chain()
@@ -99,6 +100,7 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(item["outcomeState"], "playable")
         self.assertEqual(item["userState"], "completed")
         self.assertEqual(item["resultText"], "已可播放")
+        self.assertEqual(item["confirmedStageCount"], 1)
         self.assertEqual(item["playableAt"], "2026-07-22T03:00:00Z")
         self.assertEqual(item["completedAt"], item["playableAt"])
 

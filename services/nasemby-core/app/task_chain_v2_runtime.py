@@ -298,6 +298,15 @@ def _chain_progress(stages: list[dict], items: list[dict]) -> int:
     return round(completed / len(stages) * 100)
 
 
+def _confirmed_stage_count(facts: list[dict]) -> int:
+    return sum(
+        str(fact.get("state") or "unknown") != "unknown"
+        and str(fact.get("evidence") or "missing") != "missing"
+        for fact in facts
+        if isinstance(fact, dict)
+    )
+
+
 def _stage_by_name(item: dict, *names: str) -> dict:
     wanted = set(names)
     return next((
@@ -441,6 +450,7 @@ def _merge_group(items: list[dict], observed_at: str, fresh_until: str, now_valu
         "evidenceOwnership": _evidence_ownership(items),
         "episodeEvidence": episode_evidence,
         "pipelineFacts": pipeline_facts,
+        "confirmedStageCount": _confirmed_stage_count(pipeline_facts),
         "pipelineOutcome": pipeline_outcome,
         "origins": _dedupe(item.get("origin") for item in items),
         "relatedRecords": len(items),
@@ -563,7 +573,7 @@ def _summary_item(item: dict) -> dict:
         "reasonCode", "reasonText", "userReasonText", "recommendedAction", "retryEligible", "plannedRetryAt",
         "identityState", "executionState", "outcomeState", "playableAt",
         "userState", "resultText", "completedAt", "primaryAction",
-        "pipelineOutcome",
+        "pipelineOutcome", "confirmedStageCount",
         "relatedRecords", "activeDownloadTasks", "completedDownloadTasks", "concurrentDownloadCount",
     )
     result = {field: item.get(field) for field in fields if field in item}
