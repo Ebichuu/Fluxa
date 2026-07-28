@@ -537,6 +537,12 @@ type SubscriptionTab = 'movie' | 'tv' | 'blocked';
 type SubscriptionStatusFilter = 'all' | 'following' | 'action_required' | 'playable';
 type SubscriptionUpdateFilter = 'all' | 'today' | '3' | '7';
 
+const subscriptionTabHeading: Record<SubscriptionTab, string> = {
+  movie: '电影',
+  tv: '电视剧',
+  blocked: '屏蔽列表'
+};
+
 interface DiscoverConfirmation {
   signal: string;
   title: string;
@@ -2720,9 +2726,9 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
         </aside>
       )}
       {subscriptionsOnly && (
-      <aside className="ops-inspector ops-subscription-console discover-subs discover-subs--full" aria-label="我的追更">
+      <aside className="ops-inspector ops-subscription-console discover-subs discover-subs--full" aria-label={subscriptionTabHeading[subscriptionTab]}>
         <div className="activity-panel__head">
-          <div><small>{followSectionTagLabel}</small><h2>我的追更</h2></div>
+          <div><small>{followSectionTagLabel}</small><h2>{subscriptionTabHeading[subscriptionTab]}</h2></div>
           <span className="queue-count">
             {subscriptionCountsUnavailable
               ? (subsLoading ? '读取中' : '—')
