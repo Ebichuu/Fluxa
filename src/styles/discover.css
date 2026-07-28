@@ -2203,7 +2203,8 @@
 
 .discover-sub__advanced {
   grid-column: 1 / -1;
-  background: rgba(20, 24, 32, 0.5);
+  background: var(--theme-surface-strong);
+  color: var(--theme-text);
 }
 
 .discover-sub__advanced > summary {
@@ -2212,7 +2213,7 @@
   align-items: center;
   gap: 8px;
   padding: 7px 8px;
-  color: rgba(255, 255, 255, 0.68);
+  color: var(--theme-muted);
   cursor: pointer;
   font-size: 12px;
   list-style: none;
@@ -2220,14 +2221,15 @@
 
 .discover-sub__advanced > summary::after {
   margin-left: auto;
+  color: var(--theme-faint);
 }
 
 .discover-sub__advanced > div {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
-  border-top: 1px solid var(--border-subtle);
-  background: var(--border-subtle);
+  border-top: 1px solid var(--theme-border);
+  background: var(--theme-border);
 }
 
 .discover-sub__advanced > div > span {
@@ -2235,7 +2237,15 @@
   min-width: 0;
   gap: 3px;
   padding: 8px;
-  background: rgba(18, 22, 30, 0.8);
+  background: var(--theme-surface);
+}
+
+.discover-sub__advanced > div > span > b {
+  color: var(--theme-text-strong);
+}
+
+.discover-sub__advanced > div > span > small {
+  color: var(--theme-muted);
 }
 
 .discover-sub__advanced > div > span.is-ok small {
