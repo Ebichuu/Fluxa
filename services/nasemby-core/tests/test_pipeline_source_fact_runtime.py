@@ -136,6 +136,26 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
 
         self.assertEqual(by_stage(protected, "symedia")["state"], "protected")
         self.assertEqual(by_stage(failed, "symedia")["state"], "failed")
+        self.assertEqual(by_stage(failed, "symedia")["reasonText"], "media lookup failed")
+
+    def test_symedia_multiple_failures_group_real_reasons(self):
+        facts = build_pipeline_source_facts(context(symediaRows=[
+            {"id": "failed-1", "status": False, "date": "2026-07-27 11:30:00", "errmsg": "媒体识别失败"},
+            {"id": "failed-2", "status": False, "date": "2026-07-27 11:31:00", "errmsg": "媒体识别失败"},
+            {"id": "failed-3", "status": False, "date": "2026-07-27 11:32:00", "errmsg": "目标目录只读"},
+        ]), observed_at=OBSERVED_AT)
+
+        symedia = by_stage(facts, "symedia")
+
+        self.assertEqual(symedia["state"], "failed")
+        self.assertEqual(
+            symedia["reasonText"],
+            "媒体识别失败（2 个文件）；目标目录只读（1 个文件）",
+        )
+        self.assertEqual(
+            [unit["reasonText"] for unit in symedia["units"]],
+            ["媒体识别失败", "媒体识别失败", "目标目录只读"],
+        )
 
     def test_symedia_numeric_status_is_normalized_and_missing_status_stays_unknown(self):
         facts = build_pipeline_source_facts(context(symediaRows=[

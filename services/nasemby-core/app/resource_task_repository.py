@@ -19,6 +19,11 @@ CREDENTIAL_ASSIGNMENT_PATTERN = re.compile(
     re.I,
 )
 BEARER_PATTERN = re.compile(r"\bBearer\s+[A-Za-z0-9._~+\-/]+=*", re.I)
+PERMANENT_PIPELINE_STATES = {"succeeded", "failed", "protected", "not_applicable"}
+TRANSIENT_PIPELINE_STATUSES = {"active", "waiting"}
+TASK_FACT_EVENT_KINDS = {"pipeline_fact", "pipeline_fact_unit", "episode_evidence"}
+TRANSIENT_EVENT_MIGRATION_ID = "resource-events-transient-v1"
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 def _utc_now() -> datetime:
@@ -60,6 +65,47 @@ def _opaque_ref(namespace, value) -> str:
     return f"{namespace}:{digest}"
 
 
+def pipeline_source_ref(stage, value) -> str:
+    return _opaque_ref(f"fact-{str(stage or '').strip() or 'unknown'}", value)
+
+
+def pipeline_unit_ref(value) -> str:
+    return _opaque_ref("unit", value)
+
+
+def _parse_timestamp(value):
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _archive_event_units(row):
+    try:
+        payload = json.loads(row["payload_json"] or "{}")
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    fallback_time = row["event_at"] or row["observed_at"] or ""
+    if payload.get("kind") == "pipeline_fact_unit":
+        return [(payload, row["status"], row["evidence"], payload.get("eventAt") or fallback_time)]
+    if payload.get("kind") != "pipeline_fact":
+        return []
+    units = [unit for unit in payload.get("units") or [] if isinstance(unit, dict)]
+    if units:
+        return [(
+            unit,
+            str(unit.get("state") or "unknown"),
+            str(unit.get("evidence") or "missing"),
+            unit.get("eventAt") or fallback_time,
+        ) for unit in units]
+    return [(payload, row["status"], row["evidence"], payload.get("eventAt") or fallback_time)]
+
+
 def _pipeline_fact_health(fact) -> str:
     state = str(fact.get("state") or "unknown")
     if str(fact.get("evidence") or "missing") != "verified":
@@ -76,32 +122,38 @@ def _pipeline_fact_health(fact) -> str:
     }.get(state, "evidence_insufficient")
 
 
-def _pipeline_fact_payload(fact) -> dict:
+def _pipeline_fact_payload(fact, *, kind="pipeline_fact") -> dict:
     stage = str(fact.get("stage") or "")
 
     def unit_payload(unit):
         return {
-            "unitKey": _opaque_ref("unit", unit.get("unitKey")),
+            "unitKey": pipeline_unit_ref(unit.get("unitKey")),
             "state": str(unit.get("state") or "unknown"),
             "scope": str(unit.get("scope") or "system-category"),
             "evidence": str(unit.get("evidence") or "missing"),
             "eventAt": _text(unit.get("eventAt"), 80),
-            "sourceRef": _opaque_ref(f"fact-{stage}", unit.get("sourceRef")),
+            "sourceRef": pipeline_source_ref(stage, unit.get("sourceRef")),
+            "resultRef": _opaque_ref(f"result-{stage}", unit.get("resultRef")),
             "reasonCode": _safe_code(unit.get("reasonCode"), ""),
-            "plannedRetryAt": _text(unit.get("plannedRetryAt"), 80),
-            "retryEligible": bool(unit.get("retryEligible")),
         }
 
+    unit_key_value = str(fact.get("unitKey") or "")
+    episode_match = re.fullmatch(r"tv:[^:]+:s(\d+):e(\d+)", unit_key_value)
+    episode_payload = {
+        "seasonNumber": int(episode_match.group(1)),
+        "episodeStart": int(episode_match.group(2)),
+        "episodeEnd": int(episode_match.group(2)),
+    } if episode_match else {}
     return {
-        "kind": "pipeline_fact",
+        "kind": kind,
         "scope": str(fact.get("scope") or "system-category"),
         "eventAt": _text(fact.get("eventAt"), 80),
         "firstConfirmedPlayableAt": _text(fact.get("firstConfirmedPlayableAt"), 80),
-        "unitKey": _opaque_ref("unit", fact.get("unitKey")),
-        "sourceRef": _opaque_ref(f"fact-{stage}", fact.get("sourceRef")),
-        "plannedRetryAt": _text(fact.get("plannedRetryAt"), 80),
-        "retryEligible": bool(fact.get("retryEligible")),
+        "unitKey": pipeline_unit_ref(unit_key_value),
+        "sourceRef": pipeline_source_ref(stage, fact.get("sourceRef")),
+        "resultRef": _opaque_ref(f"result-{stage}", fact.get("resultRef")),
         "units": [unit_payload(unit) for unit in fact.get("units") or [] if isinstance(unit, dict)],
+        **episode_payload,
     }
 
 
@@ -124,6 +176,7 @@ class ResourceTaskRepository:
         self.clock = clock or _utc_now
         self.runtime.initialize()
         self.initialize()
+        self.transient_event_cleanup = self._run_transient_event_cleanup()
 
     def initialize(self):
         with self.runtime.transaction(immediate=True) as connection:
@@ -132,10 +185,27 @@ class ResourceTaskRepository:
                 "chain_id TEXT PRIMARY KEY, media_key TEXT NOT NULL, target_key TEXT NOT NULL, "
                 "subscription_id TEXT NOT NULL DEFAULT '', media_type TEXT NOT NULL DEFAULT '', "
                 "tmdb_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', origin TEXT NOT NULL DEFAULT '', "
+                "confidence TEXT NOT NULL DEFAULT 'unlinked', identity_state TEXT NOT NULL DEFAULT 'unidentified', "
                 "state TEXT NOT NULL DEFAULT 'waiting', health_state TEXT NOT NULL DEFAULT 'evidence_insufficient', "
                 "observed_at TEXT NOT NULL, fresh_until TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', "
                 "reason_code TEXT NOT NULL DEFAULT '', reason_text TEXT NOT NULL DEFAULT '', "
                 "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1)"
+            )
+            chain_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(resource_chains)").fetchall()
+            }
+            if "confidence" not in chain_columns:
+                connection.execute(
+                    "ALTER TABLE resource_chains ADD COLUMN confidence TEXT NOT NULL DEFAULT 'unlinked'"
+                )
+            if "identity_state" not in chain_columns:
+                connection.execute(
+                    "ALTER TABLE resource_chains ADD COLUMN identity_state TEXT NOT NULL DEFAULT 'unidentified'"
+                )
+            connection.execute(
+                "UPDATE resource_chains SET confidence='strong', identity_state='linked' "
+                "WHERE identity_state='unidentified' AND tmdb_id<>'' "
+                "AND (target_key LIKE 'movie:tmdb:%' OR target_key LIKE 'tv:tmdb:%')"
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_resource_chains_target "
@@ -186,6 +256,12 @@ class ResourceTaskRepository:
                 "ON resource_events(stage, event_at DESC, observed_at DESC)"
             )
             connection.execute(
+                "CREATE TABLE IF NOT EXISTS resource_ledger_migrations ("
+                "migration_id TEXT PRIMARY KEY, status TEXT NOT NULL, backup_ref TEXT NOT NULL DEFAULT '', "
+                "deleted_count INTEGER NOT NULL DEFAULT 0, stage_counts_json TEXT NOT NULL DEFAULT '{}', "
+                "created_at TEXT NOT NULL)"
+            )
+            connection.execute(
                 "CREATE TABLE IF NOT EXISTS resource_chain_aliases ("
                 "alias_chain_id TEXT PRIMARY KEY, canonical_chain_id TEXT NOT NULL, "
                 "reason_code TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, "
@@ -198,21 +274,129 @@ class ResourceTaskRepository:
             )
 
     def _event_key(self, chain_id, artifact_key_value, stage):
+        payload = stage.get("_eventPayload") or {}
         return hashlib.sha256(
             _json({
                 "chainId": chain_id,
                 "artifactKey": artifact_key_value,
                 "stage": stage.get("stage"),
                 "status": stage.get("status") or stage.get("state"),
-                "healthState": stage.get("healthState"),
                 "evidence": stage.get("evidence"),
                 "eventAt": _text(stage.get("eventAt"), 80),
                 "source": _text(stage.get("source"), 160),
                 "reasonCode": _safe_code(stage.get("reasonCode"), ""),
-                "reasonText": _text(stage.get("reasonText")),
-                "payload": stage.get("_eventPayload") or {},
+                "kind": payload.get("kind"),
+                "unitKey": payload.get("unitKey"),
+                "sourceRef": payload.get("sourceRef"),
+                "resultRef": payload.get("resultRef"),
             }).encode("utf-8")
         ).hexdigest()
+
+    def _ensure_transient_event_backup(self):
+        backup_path = self.database_path.with_name(
+            f"{self.database_path.stem}.{TRANSIENT_EVENT_MIGRATION_ID}.sqlite3"
+        )
+        if backup_path.exists():
+            return False
+        temporary_path = backup_path.with_suffix(f"{backup_path.suffix}.{uuid.uuid4().hex}.tmp")
+        try:
+            with closing(self.runtime.connect()) as source, closing(sqlite3.connect(temporary_path)) as target:
+                source.backup(target)
+            temporary_path.replace(backup_path)
+        except Exception:
+            temporary_path.unlink(missing_ok=True)
+            raise
+        return True
+
+    @staticmethod
+    def _transient_event_candidates(connection):
+        candidates = []
+        rows = connection.execute(
+            "SELECT event_id, stage, payload_json FROM resource_events WHERE status IN ('active', 'waiting')"
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if isinstance(payload, dict) and payload.get("kind") in TASK_FACT_EVENT_KINDS:
+                candidates.append((row["event_id"], str(row["stage"] or "unknown")))
+        return candidates
+
+    @staticmethod
+    def _write_transient_cleanup_audit(connection, result, now_text):
+        connection.execute(
+            "INSERT INTO resource_ledger_migrations ("
+            "migration_id, status, backup_ref, deleted_count, stage_counts_json, created_at) "
+            "VALUES (?, 'success', ?, ?, ?, ?)",
+            (
+                TRANSIENT_EVENT_MIGRATION_ID,
+                result.get("backupId") or "",
+                int(result.get("deletedEvents") or 0),
+                _json(result.get("deletedByStage") or {}),
+                now_text,
+            ),
+        )
+
+    def _run_transient_event_cleanup(self):
+        now_text = _iso(self.clock())
+        base = {
+            "migrationId": TRANSIENT_EVENT_MIGRATION_ID,
+            "status": "success",
+            "applied": False,
+            "alreadyApplied": False,
+            "backupCreated": False,
+            "backupId": "",
+            "deletedEvents": 0,
+            "deletedByStage": {},
+        }
+        try:
+            with closing(self.runtime.connect()) as connection:
+                existing = connection.execute(
+                    "SELECT backup_ref FROM resource_ledger_migrations WHERE migration_id=? AND status='success'",
+                    (TRANSIENT_EVENT_MIGRATION_ID,),
+                ).fetchone()
+                if existing:
+                    return {**base, "alreadyApplied": True, "backupId": existing["backup_ref"] or ""}
+                initial_candidates = self._transient_event_candidates(connection)
+            backup_created = False
+            if initial_candidates:
+                backup_created = self._ensure_transient_event_backup()
+
+            with self.runtime.transaction(immediate=True) as connection:
+                existing = connection.execute(
+                    "SELECT backup_ref FROM resource_ledger_migrations WHERE migration_id=? AND status='success'",
+                    (TRANSIENT_EVENT_MIGRATION_ID,),
+                ).fetchone()
+                if existing:
+                    return {**base, "alreadyApplied": True, "backupId": existing["backup_ref"] or ""}
+
+                candidates = self._transient_event_candidates(connection)
+                stage_counts = {}
+                for _event_id, stage in candidates:
+                    stage_counts[stage] = stage_counts.get(stage, 0) + 1
+                result = {
+                    **base,
+                    "applied": True,
+                    "deletedEvents": len(candidates),
+                    "deletedByStage": dict(sorted(stage_counts.items())),
+                }
+                if candidates:
+                    result["backupCreated"] = backup_created
+                    result["backupId"] = TRANSIENT_EVENT_MIGRATION_ID
+                    connection.executemany(
+                        "DELETE FROM resource_events WHERE event_id=?",
+                        [(event_id,) for event_id, _stage in candidates],
+                    )
+                self._write_transient_cleanup_audit(connection, result, now_text)
+                return result
+        except Exception as exc:
+            return {
+                **base,
+                "status": "failed",
+                "reasonCode": "TRANSIENT_EVENT_MIGRATION_FAILED",
+                "errorType": type(exc).__name__,
+            }
 
     @staticmethod
     def _artifact_rows(item):
@@ -243,6 +427,8 @@ class ResourceTaskRepository:
             _text(item.get("tmdbId"), 80),
             _text(item.get("title"), 240),
             _text(item.get("origin"), 60),
+            _safe_code(item.get("confidence"), "unlinked"),
+            _safe_code(item.get("identityState"), "unidentified"),
             _text(item.get("state"), 40) or "waiting",
             _safe_code(item.get("healthState"), "evidence_insufficient"),
             observed_at,
@@ -255,12 +441,13 @@ class ResourceTaskRepository:
         )
         connection.execute(
             "INSERT INTO resource_chains ("
-            "chain_id, media_key, target_key, subscription_id, media_type, tmdb_id, title, origin, state, "
+            "chain_id, media_key, target_key, subscription_id, media_type, tmdb_id, title, origin, confidence, identity_state, state, "
             "health_state, observed_at, fresh_until, source, reason_code, reason_text, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(chain_id) DO UPDATE SET media_key=excluded.media_key, target_key=excluded.target_key, "
             "subscription_id=excluded.subscription_id, media_type=excluded.media_type, tmdb_id=excluded.tmdb_id, "
-            "title=excluded.title, origin=excluded.origin, state=excluded.state, health_state=excluded.health_state, "
+            "title=excluded.title, origin=excluded.origin, confidence=excluded.confidence, "
+            "identity_state=excluded.identity_state, state=excluded.state, health_state=excluded.health_state, "
             "observed_at=excluded.observed_at, fresh_until=excluded.fresh_until, source=excluded.source, "
             "reason_code=excluded.reason_code, reason_text=excluded.reason_text, updated_at=excluded.updated_at, "
             "version=resource_chains.version + 1",
@@ -365,6 +552,48 @@ class ResourceTaskRepository:
             return artifact_key(remote_file_id=source_ref)
         return ""
 
+    @staticmethod
+    def _permanent_pipeline_event(fact, artifact_key_value, payload):
+        state = str(fact.get("state") or "unknown")
+        if str(fact.get("evidence") or "missing") != "verified":
+            return False
+        if state not in PERMANENT_PIPELINE_STATES:
+            return False
+        if state != "failed":
+            return True
+        stable_identity = bool(
+            artifact_key_value
+            or payload.get("unitKey")
+            or payload.get("sourceRef")
+        )
+        stable_occurrence = bool(payload.get("resultRef") or fact.get("eventAt"))
+        return stable_identity and stable_occurrence
+
+    def _record_pipeline_fact_event(self, connection, chain_id, item, fact, now_text, *, kind):
+        artifact_key_value = self._pipeline_fact_artifact_key(item, fact)
+        payload = _pipeline_fact_payload(fact, kind=kind)
+        if not self._permanent_pipeline_event(fact, artifact_key_value, payload):
+            return 0
+        return self._append_event(
+            connection,
+            chain_id,
+            artifact_key_value,
+            {
+                "stage": fact["stage"],
+                "status": str(fact.get("state") or "unknown"),
+                "healthState": _pipeline_fact_health(fact),
+                "evidence": str(fact.get("evidence") or "missing"),
+                "eventAt": fact.get("eventAt"),
+                "observedAt": fact.get("observedAt"),
+                "freshUntil": fact.get("freshUntil"),
+                "source": fact.get("source"),
+                "reasonCode": fact.get("reasonCode"),
+                "reasonText": fact.get("reasonText"),
+                "_eventPayload": payload,
+            },
+            now_text,
+        )
+
     def _record_pipeline_facts(self, connection, chain_id, item, now_text):
         event_count = 0
         for fact in item.get("pipelineFacts") or []:
@@ -376,62 +605,22 @@ class ResourceTaskRepository:
             stage = fact["stage"]
             if stage not in PIPELINE_STAGES:
                 raise ValueError(f"pipeline fact stage 值无效: {stage}")
-            artifact_key_value = self._pipeline_fact_artifact_key(item, fact)
-            event_count += self._append_event(
-                connection,
-                chain_id,
-                artifact_key_value,
-                {
+            units = [unit for unit in fact.get("units") or [] if isinstance(unit, dict)]
+            if not units:
+                event_count += self._record_pipeline_fact_event(
+                    connection, chain_id, item, fact, now_text, kind="pipeline_fact"
+                )
+                continue
+            for unit in units:
+                unit_fact = {
+                    **{key: value for key, value in fact.items() if key != "units"},
+                    **unit,
                     "stage": stage,
-                    "status": str(fact.get("state") or "unknown"),
-                    "healthState": _pipeline_fact_health(fact),
-                    "evidence": str(fact.get("evidence") or "missing"),
-                    "eventAt": fact.get("eventAt"),
-                    "observedAt": fact.get("observedAt"),
-                    "freshUntil": fact.get("freshUntil"),
                     "source": fact.get("source"),
-                    "reasonCode": fact.get("reasonCode"),
-                    "reasonText": fact.get("reasonText"),
-                    "_eventPayload": _pipeline_fact_payload(fact),
-                },
-                now_text,
-            )
-            if stage == "emby":
-                for unit in fact.get("units") or []:
-                    if unit.get("state") != "succeeded" or unit.get("evidence") != "verified":
-                        continue
-                    if not unit.get("eventAt"):
-                        continue
-                    unit_key_value = str(unit.get("unitKey") or "")
-                    episode_match = re.fullmatch(r"tv:[^:]+:s(\d+):e(\d+)", unit_key_value)
-                    episode_payload = {
-                        "seasonNumber": int(episode_match.group(1)),
-                        "episodeStart": int(episode_match.group(2)),
-                        "episodeEnd": int(episode_match.group(2)),
-                    } if episode_match else {}
-                    event_count += self._append_event(
-                        connection,
-                        chain_id,
-                        "",
-                        {
-                            "stage": "emby",
-                            "status": "succeeded",
-                            "healthState": "normal",
-                            "evidence": "verified",
-                            "eventAt": unit.get("eventAt"),
-                            "observedAt": unit.get("observedAt"),
-                            "freshUntil": unit.get("freshUntil"),
-                            "source": fact.get("source") or "Emby",
-                            "reasonCode": unit.get("reasonCode") or "EMBY_EPISODE_INDEXED",
-                            "reasonText": unit.get("reasonText") or "Emby 已收录目标集",
-                            "_eventPayload": {
-                                "kind": "pipeline_fact_unit",
-                                "unitKey": _opaque_ref("unit", unit_key_value),
-                                **episode_payload,
-                            },
-                        },
-                        now_text,
-                    )
+                }
+                event_count += self._record_pipeline_fact_event(
+                    connection, chain_id, item, unit_fact, now_text, kind="pipeline_fact_unit"
+                )
         return event_count
 
     def _record_episode_evidence(self, connection, chain_id, item, now_text):
@@ -451,6 +640,8 @@ class ResourceTaskRepository:
             reason_code = _safe_code(row.get("reasonCode"), "")
             protected = status == "failed" and reason_code.startswith("QUALITY_")
             event_status = "protected" if protected else status
+            if event_status not in PERMANENT_PIPELINE_STATES:
+                continue
             event_count += self._append_event(
                 connection,
                 chain_id,
@@ -474,6 +665,10 @@ class ResourceTaskRepository:
                         "seasonNumber": int(row.get("seasonNumber") or 0),
                         "episodeStart": int(row.get("episodeStart") or 0),
                         "episodeEnd": int(row.get("episodeEnd") or 0),
+                        "resultRef": _opaque_ref(
+                            f"result-{stage}",
+                            f"{artifact}\0{event_at}",
+                        ),
                     },
                 },
                 now_text,
@@ -935,6 +1130,7 @@ class ResourceTaskRepository:
             "events": event_count,
             "artifactConflicts": conflict_count,
             "observedAt": now_text,
+            "transientEventCleanup": dict(self.transient_event_cleanup),
             **{
                 **self._migration_result(),
                 **migration_result,
@@ -965,6 +1161,65 @@ class ResourceTaskRepository:
         with closing(self.runtime.connect()) as connection:
             row = connection.execute("SELECT * FROM resource_chains WHERE chain_id=?", (str(chain_id),)).fetchone()
         return _row(row)
+
+    def list_symedia_archive_events(self, archived_date):
+        try:
+            local_start = datetime.strptime(str(archived_date), "%Y-%m-%d").replace(tzinfo=BEIJING_TZ)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("archived_date must use YYYY-MM-DD") from exc
+        start = local_start.astimezone(timezone.utc)
+        end = (local_start + timedelta(days=1)).astimezone(timezone.utc)
+
+        with closing(self.runtime.connect()) as connection:
+            rows = connection.execute(
+                "SELECT chain_id, status, evidence, event_at, observed_at, payload_json "
+                "FROM resource_events WHERE stage='symedia'"
+            ).fetchall()
+            aliases = {
+                row["alias_chain_id"]: row["canonical_chain_id"]
+                for row in connection.execute(
+                    "SELECT alias_chain_id, canonical_chain_id FROM resource_chain_aliases"
+                ).fetchall()
+            }
+            chains = {
+                row["chain_id"]: dict(row)
+                for row in connection.execute(
+                    "SELECT chain_id, confidence, identity_state FROM resource_chains"
+                ).fetchall()
+            }
+
+        def canonical_chain_id(value):
+            current = str(value or "")
+            visited = set()
+            while current and current not in visited and current in aliases:
+                visited.add(current)
+                current = aliases[current]
+            return current
+
+        def linked_owner(value):
+            canonical = canonical_chain_id(value)
+            chain = chains.get(canonical) or {}
+            if (
+                chain.get("identity_state") == "linked"
+                and chain.get("confidence") in {"strong", "fallback"}
+            ):
+                return canonical
+            return ""
+
+        result = []
+        for row in rows:
+            for payload, status, evidence, event_at in _archive_event_units(row):
+                parsed = _parse_timestamp(event_at)
+                if status != "succeeded" or evidence != "verified" or not parsed or not start <= parsed < end:
+                    continue
+                file_key = str(payload.get("sourceRef") or payload.get("unitKey") or "")
+                if file_key:
+                    result.append({
+                        "fileKey": file_key,
+                        "chainId": linked_owner(row["chain_id"]),
+                        "eventAt": str(event_at),
+                    })
+        return result
 
     def project_historical_fact_times(self, payload):
         items = [item for item in (payload or {}).get("items") or [] if isinstance(item, dict)]

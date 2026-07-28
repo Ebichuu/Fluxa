@@ -295,6 +295,18 @@ export interface TaskChainResponse {
     events: number;
     artifactConflicts: number;
     artifactMigrations?: number;
+    transientEventCleanup?: {
+      migrationId: string;
+      status: 'success' | 'failed';
+      applied: boolean;
+      alreadyApplied: boolean;
+      backupCreated: boolean;
+      backupId: string;
+      deletedEvents: number;
+      deletedByStage: Record<string, number>;
+      reasonCode?: string;
+      errorType?: string;
+    };
     observedAt: string;
   };
   counts: {

@@ -12,11 +12,11 @@ PIPELINE_EVIDENCE = ("verified", "inferred", "missing")
 _FACT_FIELDS = {
     "stage", "state", "scope", "evidence", "eventAt", "observedAt", "freshUntil", "source", "sourceRef",
     "unitKey", "reasonCode", "reasonText", "plannedRetryAt", "retryEligible", "units",
-    "firstConfirmedPlayableAt",
+    "firstConfirmedPlayableAt", "resultRef",
 }
 _UNIT_FIELDS = {
     "unitKey", "state", "scope", "evidence", "eventAt", "observedAt", "freshUntil", "sourceRef",
-    "reasonCode", "reasonText", "plannedRetryAt", "retryEligible",
+    "reasonCode", "reasonText", "plannedRetryAt", "retryEligible", "resultRef",
 }
 _CODE_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
 
@@ -92,6 +92,9 @@ def _add_optional_fields(result: dict, value: dict):
         result["firstConfirmedPlayableAt"] = _iso(
             _parse_datetime(first_playable, "firstConfirmedPlayableAt")
         )
+    result_ref = str(value.get("resultRef") or "").strip()
+    if result_ref:
+        result["resultRef"] = result_ref[:500]
 
 
 def _normalize_units(values, parent):
@@ -133,6 +136,9 @@ def _normalize_unit(value, *, parent: dict) -> dict:
         "reasonText": str(value.get("reasonText") or parent.get("reasonText") or "").strip()[:1000],
         "retryEligible": bool(value.get("retryEligible", parent.get("retryEligible"))),
     }
+    result_ref = str(value.get("resultRef") or "").strip()
+    if result_ref:
+        result["resultRef"] = result_ref[:500]
     event_at = value.get("eventAt")
     if event_at:
         result["eventAt"] = _iso(_parse_datetime(event_at, "unit.eventAt"))

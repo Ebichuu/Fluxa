@@ -50,13 +50,21 @@ def _latest(rows):
 
 def _outcome(state: str, row=None) -> dict:
     row = row or {}
+    playable_at = ""
+    if state == "playable":
+        playable_at = str(
+            row.get("firstConfirmedPlayableAt")
+            or row.get("eventAt")
+            or row.get("observedAt")
+            or ""
+        )
     return {
         "state": state,
         "stage": str(row.get("stage") or ""),
         "reasonCode": str(row.get("reasonCode") or ""),
         "reasonText": str(row.get("reasonText") or ""),
         "observedAt": str(row.get("observedAt") or ""),
-        "playableAt": str(row.get("observedAt") or "") if state == "playable" else "",
+        "playableAt": playable_at,
     }
 
 

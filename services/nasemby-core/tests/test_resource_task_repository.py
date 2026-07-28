@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
+import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,6 +70,59 @@ def snapshot(reason_text="下载完成"):
                 "reasonCode": "DOWNLOAD_DONE",
                 "reasonText": reason_text,
             }],
+        }],
+    }
+
+
+def archive_snapshot(*refs, chain_id="chain:archive"):
+    units = [{
+        "unitKey": ref,
+        "state": "succeeded" if index < 2 else "failed",
+        "scope": "file",
+        "evidence": "verified",
+        "eventAt": f"2026-07-28T02:0{index}:00Z",
+        "observedAt": "2026-07-28T03:00:00Z",
+        "freshUntil": "2026-07-28T03:05:00Z",
+        "sourceRef": ref,
+        "resultRef": f"result-{index}",
+        "reasonCode": "SYMEDIA_ORGANIZED" if index < 2 else "SYMEDIA_LIBRARY_FAILED",
+        "reasonText": "整理入库完成" if index < 2 else "媒体识别失败",
+    } for index, ref in enumerate(refs)]
+    return {
+        "items": [{
+            "chainId": chain_id,
+            "mediaKey": "tv:tmdb:900",
+            "targetKey": "tv:tmdb:900:season:1",
+            "subscriptionId": "subscription:archive",
+            "mediaType": "tv",
+            "tmdbId": "900",
+            "title": "归档测试剧",
+            "origin": "library",
+            "confidence": "strong",
+            "identityState": "linked",
+            "state": "blocked",
+            "healthState": "action_required",
+            "observedAt": "2026-07-28T03:00:00Z",
+            "freshUntil": "2026-07-28T03:05:00Z",
+            "source": "task-chain",
+            "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+            "reasonText": "部分文件整理失败",
+            "sourceIds": {"qbHashes": [], "symediaIds": list(refs)},
+            "pipelineFacts": [{
+                "stage": "symedia",
+                "state": "failed",
+                "scope": "file",
+                "evidence": "verified",
+                "eventAt": "2026-07-28T02:02:00Z",
+                "observedAt": "2026-07-28T03:00:00Z",
+                "freshUntil": "2026-07-28T03:05:00Z",
+                "source": "Symedia",
+                "sourceRef": "",
+                "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+                "reasonText": "部分文件整理失败",
+                "units": units,
+            }],
+            "stages": [],
         }],
     }
 
@@ -176,6 +231,60 @@ def rows(repository, statement, parameters=()):
 
 
 class ResourceTaskRepositoryTests(unittest.TestCase):
+    def test_symedia_archive_reads_successful_file_units_from_mixed_batch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ResourceTaskRepository(Path(directory) / "media.sqlite3", clock=lambda: NOW)
+            repository.record_snapshot(archive_snapshot("file-a", "file-b", "file-c"))
+
+            events = repository.list_symedia_archive_events("2026-07-28")
+
+            self.assertEqual(len(events), 2)
+            self.assertEqual({event["chainId"] for event in events}, {"chain:archive"})
+            self.assertEqual(len({event["fileKey"] for event in events}), 2)
+
+    def test_symedia_archive_reads_success_units_from_legacy_failed_parent_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ResourceTaskRepository(Path(directory) / "media.sqlite3", clock=lambda: NOW)
+            payload = archive_snapshot()
+            payload["items"][0]["sourceIds"] = {"qbHashes": [], "symediaIds": []}
+            payload["items"][0]["pipelineFacts"] = []
+            repository.record_snapshot(payload)
+            with repository.runtime.transaction(immediate=True) as connection:
+                repository._append_event(connection, "chain:archive", "", {
+                    "stage": "symedia",
+                    "status": "failed",
+                    "healthState": "action_required",
+                    "evidence": "verified",
+                    "eventAt": "2026-07-28T02:02:00Z",
+                    "observedAt": "2026-07-28T03:00:00Z",
+                    "freshUntil": "2026-07-28T03:05:00Z",
+                    "source": "Symedia",
+                    "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+                    "reasonText": "部分文件整理失败",
+                    "_eventPayload": {
+                        "kind": "pipeline_fact",
+                        "units": [
+                            {
+                                "state": "succeeded",
+                                "evidence": "verified",
+                                "eventAt": "2026-07-28T02:00:00Z",
+                                "sourceRef": "fact-symedia:file-a",
+                            },
+                            {
+                                "state": "failed",
+                                "evidence": "verified",
+                                "eventAt": "2026-07-28T02:01:00Z",
+                                "sourceRef": "fact-symedia:file-b",
+                            },
+                        ],
+                    },
+                }, "2026-07-28T03:00:00Z")
+
+            events = repository.list_symedia_archive_events("2026-07-28")
+
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["fileKey"], "fact-symedia:file-a")
+
     def test_event_time_is_persisted_and_existing_database_is_upgraded(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "media.sqlite3"
@@ -312,7 +421,7 @@ class ResourceTaskRepositoryTests(unittest.TestCase):
                 event for event in repository.list_events("chain:canonical")
                 if event["reason_code"] == "DOWNLOAD_DONE"
             ]
-            self.assertEqual(len(download_events), 1)
+            self.assertEqual(len(download_events), 2)
 
     def test_partial_artifact_migration_keeps_chain_level_history_and_old_chain(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -334,7 +443,8 @@ class ResourceTaskRepositoryTests(unittest.TestCase):
             self.assertIsNotNone(repository.get_chain("chain:legacy"))
             self.assertTrue(rows(
                 repository,
-                "SELECT event_id FROM resource_events WHERE chain_id='chain:legacy' AND artifact_key=''",
+                "SELECT event_id FROM resource_events "
+                "WHERE chain_id='chain:legacy' AND artifact_key='artifact:hash-b'",
             ))
             self.assertTrue(rows(
                 repository,
@@ -409,6 +519,183 @@ class ResourceTaskRepositoryTests(unittest.TestCase):
             self.assertIn("passkey=***", events[0]["reason_text"])
             self.assertNotIn("hash-1", events[0]["payload_json"])
             self.assertIn('"kind":"pipeline_fact"', events[0]["payload_json"])
+
+    def test_pipeline_event_whitelist_and_stable_failure_idempotency(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ResourceTaskRepository(Path(directory) / "media.sqlite3", clock=lambda: NOW)
+            payload = snapshot()
+            common = {
+                "scope": "file",
+                "observedAt": "2026-07-22T05:59:00Z",
+                "freshUntil": "2026-07-22T06:05:00Z",
+                "source": "qBittorrent",
+                "sourceRef": "hash-1",
+            }
+            payload["items"][0]["pipelineFacts"] = [
+                {
+                    **common, "stage": "qb", "state": "active", "evidence": "verified",
+                    "reasonCode": "QB_DOWNLOAD_ACTIVE", "reasonText": "正在下载",
+                },
+                {
+                    **common, "stage": "cloud115", "state": "waiting", "evidence": "verified",
+                    "reasonCode": "CLOUD115_WAITING", "reasonText": "等待处理",
+                },
+                {
+                    **common, "stage": "strm", "state": "unknown", "evidence": "missing",
+                    "reasonCode": "STRM_UNKNOWN", "reasonText": "暂未确认",
+                },
+                {
+                    **common, "stage": "torra", "state": "not_applicable", "evidence": "verified",
+                    "reasonCode": "TORRA_DISABLED", "reasonText": "订阅已停用",
+                },
+                {
+                    **common, "stage": "symedia", "state": "failed", "evidence": "verified",
+                    "reasonCode": "SYMEDIA_FAILED", "reasonText": "没有稳定发生依据",
+                },
+            ]
+
+            first = repository.record_snapshot(payload)
+            events = repository.list_events("chain:test")
+
+            self.assertEqual(first["events"], 1)
+            self.assertEqual([(event["stage"], event["status"]) for event in events], [
+                ("torra", "not_applicable"),
+            ])
+            reloaded = ResourceTaskRepository(repository.database_path, clock=lambda: NOW)
+            self.assertEqual(
+                [(event["stage"], event["status"]) for event in reloaded.list_events("chain:test")],
+                [("torra", "not_applicable")],
+            )
+
+            failed = {
+                **common,
+                "stage": "symedia",
+                "state": "failed",
+                "evidence": "verified",
+                "eventAt": "2026-07-22T05:50:00Z",
+                "resultRef": "symedia-run-1",
+                "reasonCode": "SYMEDIA_FAILED",
+                "reasonText": "媒体信息匹配失败",
+            }
+            payload["items"][0]["pipelineFacts"] = [failed]
+            repeated = repository.record_snapshot(payload)
+            payload["items"][0]["pipelineFacts"] = [{
+                **failed,
+                "observedAt": "2026-07-22T06:00:00Z",
+                "freshUntil": "2026-07-22T06:05:00Z",
+                "reasonText": "媒体信息匹配失败（重复轮询）",
+            }]
+            duplicate = repository.record_snapshot(payload)
+            payload["items"][0]["pipelineFacts"] = [{
+                **failed,
+                "eventAt": "2026-07-22T05:55:00Z",
+                "resultRef": "symedia-run-2",
+            }]
+            new_failure = repository.record_snapshot(payload)
+
+            self.assertEqual(repeated["events"], 1)
+            self.assertEqual(duplicate["events"], 0)
+            self.assertEqual(new_failure["events"], 1)
+            self.assertEqual(sum(
+                event["stage"] == "symedia" and event["status"] == "failed"
+                for event in repository.list_events("chain:test")
+            ), 2)
+
+    def test_transient_event_cleanup_is_scoped_audited_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "media.sqlite3"
+            repository = ResourceTaskRepository(path, clock=lambda: NOW)
+            repository.record_snapshot(snapshot())
+            with repository.runtime.transaction(immediate=True) as connection:
+                connection.execute(
+                    "DELETE FROM resource_ledger_migrations WHERE migration_id='resource-events-transient-v1'"
+                )
+                for index, (stage, status, kind) in enumerate((
+                    ("qb", "active", "pipeline_fact"),
+                    ("torra", "waiting", "pipeline_fact_unit"),
+                    ("symedia", "active", "episode_evidence"),
+                    ("scheduler", "waiting", "operation"),
+                )):
+                    repository._append_event(connection, "chain:test", "", {
+                        "stage": stage,
+                        "status": status,
+                        "healthState": "waiting",
+                        "evidence": "verified",
+                        "observedAt": f"2026-07-22T05:5{index}:00Z",
+                        "freshUntil": "2026-07-22T06:05:00Z",
+                        "source": "test",
+                        "reasonCode": f"TEST_{index}",
+                        "reasonText": "test",
+                        "_eventPayload": {"kind": kind, "unitKey": f"unit:{index}"},
+                    }, "2026-07-22T06:00:00Z")
+
+            migrated = ResourceTaskRepository(path, clock=lambda: NOW)
+            repeated = migrated._run_transient_event_cleanup()
+            statuses = [(row["stage"], row["status"]) for row in rows(
+                migrated, "SELECT stage, status FROM resource_events ORDER BY stage"
+            )]
+            audits = rows(migrated, "SELECT * FROM resource_ledger_migrations")
+
+            self.assertEqual(migrated.transient_event_cleanup["deletedEvents"], 3)
+            self.assertEqual(migrated.transient_event_cleanup["deletedByStage"], {
+                "qb": 1, "symedia": 1, "torra": 1,
+            })
+            self.assertTrue(migrated.transient_event_cleanup["backupCreated"])
+            self.assertEqual(repeated["deletedEvents"], 0)
+            self.assertTrue(repeated["alreadyApplied"])
+            self.assertEqual(len(audits), 1)
+            self.assertEqual(json.loads(audits[0]["stage_counts_json"]), {
+                "qb": 1, "symedia": 1, "torra": 1,
+            })
+            self.assertIn(("scheduler", "waiting"), statuses)
+            self.assertIn(("qb", "succeeded"), statuses)
+
+    def test_transient_cleanup_backup_or_audit_failure_rolls_back(self):
+        class BackupFailureRepository(ResourceTaskRepository):
+            def _ensure_transient_event_backup(self):
+                raise OSError("backup failed")
+
+        class AuditFailureRepository(ResourceTaskRepository):
+            @staticmethod
+            def _write_transient_cleanup_audit(connection, result, now_text):
+                raise sqlite3.OperationalError("audit failed")
+
+        def prepare(path):
+            repository = ResourceTaskRepository(path, clock=lambda: NOW)
+            repository.record_snapshot(snapshot())
+            with repository.runtime.transaction(immediate=True) as connection:
+                connection.execute(
+                    "DELETE FROM resource_ledger_migrations WHERE migration_id='resource-events-transient-v1'"
+                )
+                repository._append_event(connection, "chain:test", "", {
+                    "stage": "qb", "status": "active", "healthState": "waiting", "evidence": "verified",
+                    "observedAt": "2026-07-22T05:59:00Z", "freshUntil": "2026-07-22T06:05:00Z",
+                    "source": "test", "reasonCode": "QB_ACTIVE", "reasonText": "test",
+                    "_eventPayload": {"kind": "pipeline_fact", "unitKey": "unit:test"},
+                }, "2026-07-22T06:00:00Z")
+
+        with tempfile.TemporaryDirectory() as directory:
+            backup_path = Path(directory) / "backup.sqlite3"
+            prepare(backup_path)
+            backup_failed = BackupFailureRepository(backup_path, clock=lambda: NOW)
+            self.assertEqual(backup_failed.transient_event_cleanup["status"], "failed")
+            self.assertEqual(rows(
+                backup_failed, "SELECT count(*) n FROM resource_events WHERE status='active'"
+            )[0]["n"], 1)
+            self.assertEqual(rows(
+                backup_failed, "SELECT count(*) n FROM resource_ledger_migrations"
+            )[0]["n"], 0)
+
+            audit_path = Path(directory) / "audit.sqlite3"
+            prepare(audit_path)
+            audit_failed = AuditFailureRepository(audit_path, clock=lambda: NOW)
+            self.assertEqual(audit_failed.transient_event_cleanup["status"], "failed")
+            self.assertEqual(rows(
+                audit_failed, "SELECT count(*) n FROM resource_events WHERE status='active'"
+            )[0]["n"], 1)
+            self.assertEqual(rows(
+                audit_failed, "SELECT count(*) n FROM resource_ledger_migrations"
+            )[0]["n"], 0)
 
     def test_identity_upgrade_keeps_one_chain_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -124,6 +124,36 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
             (502, "TASK_ARCHIVE_SOURCE_UNAVAILABLE"),
         )
 
+    def test_archived_date_uses_history_while_symedia_is_offline_and_deduplicates_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            chain = FakeTaskChain().get_chain()
+            chain["services"] = {"symedia": {"connected": True}}
+            chain["items"][0]["pipelineFacts"] = [self._archive_fact("symedia-1")]
+            app = Flask(f"{__name__}-archive-history")
+            fake = FakeTaskChain()
+            fake.get_chain = lambda: chain
+            app.extensions["mcc_task_chain_service"] = fake
+            repository = ResourceTaskRepository(
+                Path(directory) / "media.sqlite3",
+                clock=lambda: datetime(2026, 7, 28, 3, 1, tzinfo=timezone.utc),
+            )
+            service = TaskChainV2Service(
+                app,
+                repository=repository,
+                clock=lambda: datetime(2026, 7, 28, 3, 1, tzinfo=timezone.utc),
+            )
+
+            current = service.full_snapshot(force=True)
+            current_summary = service.archive_summary("2026-07-28", current)
+            offline_summary = service.archive_summary("2026-07-28", {
+                "items": [],
+                "services": {"symedia": {"connected": False}},
+            })
+
+            self.assertEqual(current_summary["archivedFiles"], 1)
+            self.assertEqual(current_summary["linkedTasks"], 1)
+            self.assertEqual(offline_summary, current_summary)
+
     def test_missing_pipeline_evidence_projects_to_no_action(self):
         payload = adapt_task_chain(
             FakeTaskChain().get_chain(),
@@ -174,6 +204,51 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(item["confirmedStageCount"], 1)
         self.assertEqual(item["playableAt"], "2026-07-22T03:00:00Z")
         self.assertEqual(item["completedAt"], item["playableAt"])
+
+    def test_historical_emby_time_is_rederived_into_task_projection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            chain = FakeTaskChain().get_chain()
+            chain["items"][0]["episodeNumber"] = 3
+            emby_fact = {
+                "stage": "emby",
+                "state": "succeeded",
+                "scope": "episode",
+                "evidence": "verified",
+                "eventAt": "2026-07-22T02:00:00Z",
+                "observedAt": "2026-07-22T02:00:00Z",
+                "freshUntil": "2026-07-22T04:05:00Z",
+                "source": "Emby",
+                "sourceRef": "emby-private-episode-3",
+                "reasonCode": "EMBY_EPISODE_INDEXED",
+                "reasonText": "Emby 已收录目标集",
+            }
+            chain["items"][0]["pipelineFacts"] = [emby_fact]
+            app = Flask(f"{__name__}-playable-history")
+            fake = FakeTaskChain()
+            fake.get_chain = lambda: chain
+            app.extensions["mcc_task_chain_service"] = fake
+            repository = ResourceTaskRepository(
+                Path(directory) / "media.sqlite3",
+                clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+            )
+            service = TaskChainV2Service(
+                app,
+                repository=repository,
+                clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+            )
+            service.full_snapshot(force=True)
+            emby_fact.update({
+                "eventAt": "2026-07-22T03:00:00Z",
+                "observedAt": "2026-07-22T03:00:00Z",
+            })
+
+            refreshed = service.full_snapshot(force=True)
+            item = refreshed["items"][0]
+
+            self.assertEqual(item["pipelineFacts"][-1]["firstConfirmedPlayableAt"], "2026-07-22T02:00:00Z")
+            self.assertEqual(item["pipelineOutcome"]["playableAt"], "2026-07-22T02:00:00Z")
+            self.assertEqual(item["playableAt"], "2026-07-22T02:00:00Z")
+            self.assertEqual(item["completedAt"], "2026-07-22T02:00:00Z")
 
     def test_migration_preview_route_is_read_only(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -330,7 +405,7 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(public["page"]["total"], 1)
         self.assertEqual(legacy["page"]["total"], 1)
 
-    def test_filtered_snapshot_persists_full_chain_before_response_filter(self):
+    def test_filtered_snapshot_persists_current_chain_without_transient_history(self):
         with tempfile.TemporaryDirectory() as directory:
             app = Flask(__name__)
             app.extensions["mcc_task_chain_service"] = FakeTaskChain()
@@ -352,11 +427,7 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
             self.assertEqual(payload["ledger"]["chains"], 1)
             self.assertEqual(repository.get_chain(expected_chain_id)["health_state"], "action_required")
             events = repository.list_events(expected_chain_id)
-            self.assertEqual(len(events), 6)
-            self.assertEqual(
-                {event["stage"] for event in events},
-                {"torra", "qb", "cloud115", "symedia", "strm", "emby"},
-            )
+            self.assertEqual(events, [])
 
     def test_duplicate_target_records_are_merged_into_one_chain(self):
         chain = FakeTaskChain().get_chain()

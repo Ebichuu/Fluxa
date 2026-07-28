@@ -83,6 +83,9 @@ def _fact(
     first_playable = _text(details.get("first_confirmed_playable_at"))
     if first_playable:
         result["firstConfirmedPlayableAt"] = first_playable
+    result_ref = _text(details.get("result_ref"))
+    if result_ref:
+        result["resultRef"] = result_ref
     units = details.get("units")
     if units:
         result["units"] = units
@@ -115,6 +118,7 @@ def _torra_fact(context, scope, window):
         state, code, text = "not_applicable", "TORRA_SUBSCRIPTION_DISABLED", "Torra 订阅已停用"
     else:
         state, code, text = "waiting", "TORRA_TARGET_WAITING", "Torra 已接收目标，等待获取"
+    completed_at = row.get("completedAt") or row.get("completed_at") or row.get("updated_at")
     return _fact(
         "torra",
         state,
@@ -124,10 +128,8 @@ def _torra_fact(context, scope, window):
         source_ref=_text(row.get("id")),
         reason_code=code,
         reason_text=text,
-        event_at=_event_at(
-            row.get("completedAt") or row.get("completed_at") or row.get("updated_at"),
-            window["observedAt"],
-        ) if state == "succeeded" else window["observedAt"],
+        event_at=_event_at(completed_at) if state == "succeeded" else "",
+        result_ref=_text(row.get("id")) if state in {"succeeded", "not_applicable"} else "",
     )
 
 
@@ -157,11 +159,12 @@ def _qb_unit(task, window):
         "reasonCode": code,
         "reasonText": text,
     }
-    if state != "unknown":
-        result["eventAt"] = _event_at(
-            task.get("completedAt") or task.get("completion_on") or task.get("completionOn"),
-            window["observedAt"],
-        ) if state == "succeeded" else window["observedAt"]
+    if state == "succeeded":
+        completed_at = task.get("completedAt") or task.get("completion_on") or task.get("completionOn")
+        event_at = _event_at(completed_at)
+        if event_at:
+            result["eventAt"] = event_at
+        result["resultRef"] = _text(task.get("hash"))
     return result
 
 
@@ -195,7 +198,7 @@ def _qb_fact(context, window):
         source_ref=units[0]["sourceRef"] if len(units) == 1 else "",
         reason_code=code,
         reason_text=f"{len(units)} 个 qB 文件任务",
-        event_at=_latest_event_at(units, window["observedAt"]),
+        event_at=_latest_event_at(units),
         units=units,
     )
 
@@ -264,10 +267,13 @@ def _cloud115_unit(row, window):
             f"{_text(row.get('errorLabel')) or '秒传失败'}{retry_text}"
         ),
         "retryEligible": bool(planned_retry_at),
+        "resultRef": _text(row.get("batchKey")),
     }
     if planned_retry_at:
         unit["plannedRetryAt"] = planned_retry_at
-    unit["eventAt"] = _event_at(row.get("observedAt"), window["observedAt"])
+    event_at = _event_at(row.get("observedAt"))
+    if event_at:
+        unit["eventAt"] = event_at
     return unit
 
 
@@ -341,10 +347,34 @@ def _symedia_unit(row, index, window):
         "sourceRef": reference,
         "reasonCode": code,
         "reasonText": text,
+        "resultRef": _text(row.get("id")),
     }
     if state != "unknown":
-        result["eventAt"] = _event_at(date, window["observedAt"], default_timezone=BEIJING_TZ)
+        event_at = _event_at(date, default_timezone=BEIJING_TZ)
+        if event_at:
+            result["eventAt"] = event_at
     return result
+
+
+def _symedia_reason_text(units, state):
+    fallback_text = {
+        "failed": "Symedia 整理失败",
+        "succeeded": "Symedia 整理入库完成",
+        "protected": "Symedia 正常保护",
+        "unknown": "Symedia 结果无法确认",
+    }[state]
+    if len(units) == 1:
+        return _text(units[0].get("reasonText")) or fallback_text
+    reason_counts = {}
+    for unit in units:
+        if unit.get("state") != state:
+            continue
+        text = _text(unit.get("reasonText")) or fallback_text
+        reason_counts[text] = reason_counts.get(text, 0) + 1
+    return "；".join(
+        f"{text}（{count} 个文件）"
+        for text, count in sorted(reason_counts.items())
+    ) or fallback_text
 
 
 def _symedia_fact(context, window):
@@ -370,8 +400,8 @@ def _symedia_fact(context, window):
         source="Symedia",
         source_ref=units[0]["sourceRef"] if len(units) == 1 else "",
         reason_code=code,
-        reason_text=f"{len(units)} 条 Symedia 文件记录",
-        event_at=_latest_event_at(units, window["observedAt"]),
+        reason_text=_symedia_reason_text(units, state),
+        event_at=_latest_event_at(units),
         units=units,
     )
 

@@ -65,6 +65,26 @@ class PipelineOutcomeRuntimeTests(unittest.TestCase):
         self.assertEqual(movie["state"], "playable")
         self.assertEqual(episode["playableAt"], "2026-07-27T03:59:00Z")
 
+    def test_playable_time_prefers_first_confirmation_then_event_time(self):
+        first_confirmed = derive_pipeline_outcome(
+            [fact(
+                "emby",
+                "succeeded",
+                eventAt="2026-07-27T03:30:00Z",
+                firstConfirmedPlayableAt="2026-07-27T03:00:00Z",
+            )],
+            target_scope="episode",
+            now=NOW,
+        )
+        event_time = derive_pipeline_outcome(
+            [fact("emby", "succeeded", eventAt="2026-07-27T03:30:00Z")],
+            target_scope="episode",
+            now=NOW,
+        )
+
+        self.assertEqual(first_confirmed["playableAt"], "2026-07-27T03:00:00Z")
+        self.assertEqual(event_time["playableAt"], "2026-07-27T03:30:00Z")
+
     def test_outcome_priority_distinguishes_recovery_failure_and_protection(self):
         recovering = derive_pipeline_outcome([
             fact(

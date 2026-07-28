@@ -16,6 +16,7 @@ from app.pipeline_fact_runtime import (
 )
 from app.pipeline_outcome_runtime import PIPELINE_OUTCOMES, derive_outcome_counts, derive_pipeline_outcome
 from app.resource_identity_runtime import artifact_key, chain_id, media_key, target_key
+from app.resource_task_repository import pipeline_source_ref, pipeline_unit_ref
 from app.task_exception_runtime import classify_stage, classify_task
 from app.task_public_runtime import (
     present_migration_preview,
@@ -316,11 +317,23 @@ def _archive_date_key(value) -> str:
     return parsed.astimezone(BEIJING_TZ).strftime("%Y-%m-%d") if parsed else ""
 
 
-def _archive_projection(payload: dict, archived_date: str, repository=None) -> dict:
-    service = ((payload.get("services") or {}).get("symedia") or {})
-    if service.get("connected") is not True:
-        raise ArchiveSourceUnavailable("Symedia 归档数据源暂不可用")
-    files = {}
+def _historical_archive_files(repository, archived_date):
+    history_reader = getattr(repository, "list_symedia_archive_events", None) if repository else None
+    if not callable(history_reader):
+        return []
+    return [
+        (
+            str(event.get("fileKey") or ""),
+            str(event.get("chainId") or ""),
+            str(event.get("eventAt") or ""),
+        )
+        for event in history_reader(archived_date)
+        if isinstance(event, dict)
+    ]
+
+
+def _current_archive_files(payload, archived_date, repository):
+    result = []
     for item in payload.get("items") or []:
         if not isinstance(item, dict):
             continue
@@ -339,9 +352,7 @@ def _archive_projection(payload: dict, archived_date: str, repository=None) -> d
             row for row in item.get("pipelineFacts") or []
             if isinstance(row, dict) and row.get("stage") == "symedia"
         ), None)
-        if not fact:
-            continue
-        for unit in fact.get("units") or []:
+        for unit in (fact or {}).get("units") or []:
             if not isinstance(unit, dict):
                 continue
             if unit.get("state") != "succeeded" or unit.get("evidence") != "verified":
@@ -349,23 +360,45 @@ def _archive_projection(payload: dict, archived_date: str, repository=None) -> d
             event_at = str(unit.get("eventAt") or fact.get("eventAt") or "")
             if _archive_date_key(event_at) != archived_date:
                 continue
-            source_identity = str(unit.get("sourceRef") or unit.get("unitKey") or "").strip()
-            if not source_identity or source_identity.startswith("row-"):
+            source_ref = str(unit.get("sourceRef") or "").strip()
+            unit_key = str(unit.get("unitKey") or "").strip()
+            raw_identity = source_ref or unit_key
+            if not raw_identity or raw_identity.startswith("row-"):
                 continue
-            file_key = hashlib.sha256(f"symedia-archive\0{source_identity}".encode("utf-8")).hexdigest()
-            record = files.setdefault(file_key, {"owners": set(), "unlinked": False, "eventAt": event_at})
-            if linked_chain:
-                record["owners"].add(linked_chain)
-            else:
-                record["unlinked"] = True
+            file_key = pipeline_source_ref("symedia", source_ref) if source_ref else pipeline_unit_ref(unit_key)
+            result.append((file_key, linked_chain, event_at))
+    return result
+
+
+def _archive_projection(payload: dict, archived_date: str, repository=None) -> dict:
+    service = ((payload.get("services") or {}).get("symedia") or {})
+    files = {}
+
+    def add_file(file_key, owner="", event_at=""):
+        if not file_key:
+            return
+        record = files.setdefault(file_key, {"owners": set(), "eventAt": event_at})
+        if owner:
+            record["owners"].add(owner)
+        if event_at and (not record["eventAt"] or event_at < record["eventAt"]):
+            record["eventAt"] = event_at
+
+    for file_key, owner, event_at in [
+        *_historical_archive_files(repository, archived_date),
+        *_current_archive_files(payload, archived_date, repository),
+    ]:
+        add_file(file_key, owner, event_at)
+
+    if not files and service.get("connected") is not True:
+        raise ArchiveSourceUnavailable("Symedia 归档数据源暂不可用")
 
     linked_chain_ids = {
         next(iter(record["owners"]))
         for record in files.values()
-        if len(record["owners"]) == 1 and not record["unlinked"]
+        if len(record["owners"]) == 1
     }
     linked_files = sum(
-        len(record["owners"]) == 1 and not record["unlinked"]
+        len(record["owners"]) == 1
         for record in files.values()
     )
     archived_files = len(files)
@@ -475,6 +508,29 @@ def _apply_user_projection(item: dict, services: dict) -> dict:
         "completedAt": playable_at if user_state == "completed" else "",
         "primaryAction": _primary_action(item, services, outcome),
     }
+
+
+def _refresh_pipeline_projections(payload: dict, now_value: datetime) -> dict:
+    services = payload.get("services") or {}
+    items = []
+    for item in payload.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        item["pipelineOutcome"] = derive_pipeline_outcome(
+            item.get("pipelineFacts") or [],
+            target_scope=target_scope_for_item(item),
+            target_unit_key=str(item.get("targetUnitKey") or ""),
+            now=now_value,
+        )
+        items.append(_apply_user_projection(item, services))
+    payload["items"] = items
+    payload["counts"] = _counts(items)
+    payload["userCounts"] = {
+        state: sum(item.get("userState") == state for item in items)
+        for state in USER_STATES
+    }
+    payload["outcomeCounts"] = derive_outcome_counts(items)
+    return payload
 
 
 def _merge_group(items: list[dict], observed_at: str, fresh_until: str, now_value: datetime) -> dict:
@@ -768,7 +824,8 @@ class TaskChainV2Service:
             service = self.app.extensions.get("mcc_task_chain_service")
             if not service:
                 raise RuntimeError("任务链尚未注册")
-            payload = adapt_task_chain(service.get_chain(), now=self.clock())
+            now_value = self.clock()
+            payload = adapt_task_chain(service.get_chain(), now=now_value)
             issue_service = self.app.extensions.get("mcc_secupload_issue")
             if issue_service:
                 secupload = (((payload.get("services") or {}).get("torra") or {}).get("secupload115"))
@@ -780,6 +837,7 @@ class TaskChainV2Service:
                 project_history = getattr(self.repository, "project_historical_fact_times", None)
                 if callable(project_history):
                     project_history(payload)
+                    _refresh_pipeline_projections(payload, now_value)
                 payload["ledger"] = self.repository.record_snapshot(payload)
             payload["version"] = _version(payload)
             self._cache = payload
