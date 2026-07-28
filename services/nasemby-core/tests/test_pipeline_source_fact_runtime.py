@@ -51,7 +51,7 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
     def test_qb_summary_uses_file_units_and_does_not_complete_cloud115(self):
         facts = build_pipeline_source_facts(context(qbTasks=[
             {"hash": "hash-a", "status": "completed", "state": "uploading", "progress": 1, "completionOn": 1785121200},
-            {"hash": "hash-b", "status": "downloading", "state": "downloading", "progress": 0.5},
+            {"hash": "hash-b", "status": "downloading", "state": "downloading", "progress": 0.5, "dlspeed": 1024},
         ]), observed_at=OBSERVED_AT)
         qb = by_stage(facts, "qb")
 
@@ -74,13 +74,13 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
 
         self.assertEqual(qb["state"], "failed")
         self.assertEqual(qb["reasonCode"], "QB_DOWNLOAD_STALLED")
-        self.assertIn("qB 下载卡住", qb["reasonText"])
+        self.assertIn("qB 下载持续无活动", qb["reasonText"])
         self.assertIn("2 小时无下载活动", qb["reasonText"])
-        self.assertIn("建议检查 Tracker、网络连接与文件状态", qb["reasonText"])
+        self.assertIn("建议检查 Tracker、网络和可用做种", qb["reasonText"])
 
     def test_qb_facts_distinguish_waiting_no_speed_checking_seeding_and_failure(self):
         cases = (
-            ({"status": "downloading", "state": "downloading", "progress": 0.4, "dlspeed": 0}, "active", "QB_DOWNLOAD_NO_SPEED", "当前无下载速度"),
+            ({"status": "downloading", "state": "downloading", "progress": 0.4, "dlspeed": 0}, "waiting", "QB_DOWNLOAD_STALLED_OBSERVING", "短暂无下载活动"),
             ({"status": "queued", "state": "queuedDL", "progress": 0.2}, "waiting", "QB_DOWNLOAD_QUEUED", "等待下载"),
             ({"status": "queued", "state": "checkingDL", "progress": 0.2}, "active", "QB_CHECKING", "正在校验"),
             ({"status": "completed", "state": "uploading", "progress": 1}, "succeeded", "QB_SEEDING", "正在做种"),
@@ -96,8 +96,48 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
                 qb = by_stage(facts, "qb")
                 self.assertEqual((qb["state"], qb["reasonCode"]), (state, code))
                 self.assertIn(text, qb["reasonText"])
-                if code not in {"QB_DOWNLOAD_STALLED", "QB_DOWNLOAD_NO_SPEED"}:
+                if code != "QB_DOWNLOAD_STALLED":
                     self.assertIn("持续时间暂未确认", qb["reasonText"])
+
+    def test_qb_observation_window_boundaries_and_priority(self):
+        cases = (
+            (
+                {"status": "stalled", "state": "stalledDL", "dlspeed": 0, "lastActivity": "2026-07-27T03:45:01Z"},
+                "waiting", "QB_DOWNLOAD_STALLED_OBSERVING", "14 分钟无下载活动",
+            ),
+            (
+                {"status": "stalled", "state": "stalledDL", "dlspeed": 0, "lastActivity": "2026-07-27T03:45:00Z"},
+                "failed", "QB_DOWNLOAD_STALLED", "15 分钟无下载活动",
+            ),
+            (
+                {"status": "stalled", "state": "stalledDL", "dlspeed": 1024, "lastActivity": "2026-07-27T02:00:00Z"},
+                "active", "QB_DOWNLOAD_ACTIVE", "正在下载",
+            ),
+            (
+                {"status": "stalled", "state": "missingFiles", "dlspeed": 1024},
+                "failed", "QB_MISSING_FILES", "文件缺失",
+            ),
+            (
+                {"status": "stalled", "state": "error", "dlspeed": 1024},
+                "failed", "QB_DOWNLOAD_FAILED", "发生错误",
+            ),
+            (
+                {"status": "stalled", "state": "stalledDL", "dlspeed": 0},
+                "waiting", "QB_DOWNLOAD_STALLED_OBSERVING", "持续时间暂未确认",
+            ),
+            (
+                {"status": "stalled", "state": "stalledDL", "dlspeed": 0, "lastActivity": "2026-07-27T04:01:00Z"},
+                "waiting", "QB_DOWNLOAD_STALLED_OBSERVING", "持续时间暂未确认",
+            ),
+        )
+
+        for index, (task, state, code, text) in enumerate(cases):
+            with self.subTest(index=index, code=code):
+                qb = by_stage(build_pipeline_source_facts(context(qbTasks=[{
+                    "hash": f"window-{index}", "progress": 0.4, **task,
+                }]), observed_at=OBSERVED_AT), "qb")
+                self.assertEqual((qb["state"], qb["reasonCode"]), (state, code))
+                self.assertIn(text, qb["reasonText"])
 
     def test_cloud115_file_failure_requires_exact_qb_path_evidence(self):
         from app.torra_read_runtime import secupload_file_path_key

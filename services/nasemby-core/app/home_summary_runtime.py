@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
@@ -44,6 +45,49 @@ def _action_required_work_key(item: dict, target_key: str) -> str:
         return f"tv:tmdb:{tmdb_id}:season:{season}"
     resource_identity = str(item.get("chainId") or target_key or item.get("id") or "").strip()
     return f"resource:{resource_identity}"
+
+
+def _positive_integer(value):
+    parsed = _integer(value)
+    return parsed if parsed is not None and parsed > 0 else None
+
+
+def _reliable_media_identity(item: dict) -> bool:
+    if str(item.get("identityState") or "") != "linked":
+        return False
+    media_type = str(item.get("mediaType") or "").strip().lower()
+    if media_type not in {"movie", "tv"} or _positive_integer(item.get("tmdbId")) is None:
+        return False
+    return media_type == "movie" or _positive_integer(item.get("seasonNumber")) is not None
+
+
+def _mechanical_title_key(value) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return "".join(
+        character
+        for character in normalized
+        if not character.isspace() and not unicodedata.category(character).startswith("P")
+    )
+
+
+def _action_required_group_key(item: dict, target_key: str) -> str:
+    media_type = str(item.get("mediaType") or "").strip().lower()
+    tmdb_id = _positive_integer(item.get("tmdbId"))
+    season = _positive_integer(item.get("seasonNumber"))
+    if _reliable_media_identity(item):
+        return (
+            f"identity:movie:tmdb:{tmdb_id}"
+            if media_type == "movie"
+            else f"identity:tv:tmdb:{tmdb_id}:season:{season}"
+        )
+    resource_identity = str(item.get("chainId") or target_key or item.get("id") or "").strip()
+    resource_key = f"resource:{resource_identity}"
+    if str(item.get("identityState") or "") == "conflict" or media_type not in {"movie", "tv"}:
+        return resource_key
+    title = _mechanical_title_key(item.get("title"))
+    if not title or (media_type == "tv" and season is None):
+        return resource_key
+    return f"display:{media_type}:{title}" + (f":season:{season}" if media_type == "tv" else "")
 
 
 def _fresh_until(now: datetime, minutes: int = 5) -> str:
@@ -537,14 +581,26 @@ class HomeSummaryService:
         # 口径统一：actionRequired 计数（首页指标与移动端角标共用，深链 outcomeState=action_required）
         # 只统计任务中心该筛选实际会列出的任务链；RSS 来源失败、调度与服务异常
         # 保留在 issues 列表（各自有独立深链），不再计入该计数。
+        action_required_evidence = [
+            (target_key, item)
+            for target_key, item, result in visible_item_evidence
+            if result["healthState"] == "action_required"
+        ]
         counts["mediaActionRequired"] = len(media_issues)
         counts["actionRequired"] = counts["mediaActionRequired"]
         counts["actionRequiredResources"] = counts["mediaActionRequired"]
         counts["actionRequiredWorks"] = len({
             _action_required_work_key(item, target_key)
-            for target_key, item, result in visible_item_evidence
-            if result["healthState"] == "action_required"
+            for target_key, item in action_required_evidence
         })
+        counts["actionRequiredGroups"] = len({
+            _action_required_group_key(item, target_key)
+            for target_key, item in action_required_evidence
+        })
+        counts["actionRequiredIdentityUnconfirmedResources"] = sum(
+            not _reliable_media_identity(item)
+            for _, item in action_required_evidence
+        )
         counts["auxiliaryAlerts"] = len(auxiliary_issues)
 
         services = chain.get("services") or {}
@@ -689,9 +745,10 @@ class HomeSummaryService:
                 missing_episodes_detail, "/following?missingEpisodes=1",
             ),
             _focus_item(
-                "action_required", "需要处理", "部作品", counts["actionRequiredWorks"],
+                "action_required", "需要处理", "个问题组", counts["actionRequiredGroups"],
                 "action_required" if counts["actionRequired"] > 0 else "normal",
-                f"{counts['actionRequiredWorks']} 部作品需要处理 · 涉及 {counts['actionRequiredResources']} 个资源",
+                f"{counts['actionRequiredGroups']} 个问题组 · 涉及 {counts['actionRequiredResources']} 个资源"
+                f" · 其中 {counts['actionRequiredIdentityUnconfirmedResources']} 条身份未确认",
                 "/tasks?outcomeState=action_required",
             ),
         ]
@@ -741,8 +798,9 @@ class HomeSummaryService:
         if counts["mediaActionRequired"] > 0:
             health_state = "action_required"
             headline = (
-                f"{counts['actionRequiredWorks']} 部作品需要处理"
+                f"{counts['actionRequiredGroups']} 个问题组"
                 f" · 涉及 {counts['actionRequiredResources']} 个资源"
+                f" · 其中 {counts['actionRequiredIdentityUnconfirmedResources']} 条身份未确认"
             )
         elif counts["auxiliaryAlerts"] > 0:
             health_state = "action_required"
@@ -763,8 +821,9 @@ class HomeSummaryService:
         active_downloads_text = counts["activeDownloadTasks"] if counts["activeDownloadTasks"] is not None else "未知"
         detail = (
             f"归档文件 {archived_today_text} · 已可播放 {counts['playableToday']} · "
-            f"qB 下载任务 {active_downloads_text} · 需处理作品 {counts['actionRequiredWorks']}"
-            f"（{counts['actionRequiredResources']} 个资源） · "
+            f"qB 下载任务 {active_downloads_text} · 需处理问题组 {counts['actionRequiredGroups']}"
+            f"（{counts['actionRequiredResources']} 个资源，"
+            f"{counts['actionRequiredIdentityUnconfirmedResources']} 条身份未确认） · "
             f"辅助提醒 {counts['auxiliaryAlerts']}"
         )
         return {

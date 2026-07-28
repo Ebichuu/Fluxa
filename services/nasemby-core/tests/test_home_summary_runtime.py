@@ -315,7 +315,16 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["healthState"], "action_required")
 
     def test_action_required_counts_resources_and_reliable_works_separately(self):
-        def blocked_resource(item_id, *, media_type="tv", tmdb_id="123", season=1, episode=1, title="测试剧"):
+        def blocked_resource(
+            item_id,
+            *,
+            media_type="tv",
+            tmdb_id="123",
+            season=1,
+            episode=1,
+            title="测试剧",
+            identity_state="linked",
+        ):
             value = item(item_id=item_id, library_status="blocked")
             value.update({
                 "state": "blocked",
@@ -324,6 +333,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
                 "seasonNumber": season,
                 "episodeNumber": episode,
                 "title": title,
+                "identityState": identity_state,
             })
             return value
 
@@ -333,21 +343,77 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
             blocked_resource("s1e3", episode=3),
             blocked_resource("s2e1", season=2, episode=1),
             blocked_resource("movie", media_type="movie", tmdb_id="999", season=0, episode=None, title="测试电影"),
-            blocked_resource("unknown-e1", tmdb_id="", episode=1, title="同名未识别"),
-            blocked_resource("unknown-e2", tmdb_id="", episode=2, title="同名未识别"),
+            blocked_resource(
+                "unknown-e1", tmdb_id="", episode=1, title="Show A", identity_state="unidentified",
+            ),
+            blocked_resource(
+                "unknown-e2", tmdb_id="", episode=2, title="ＳＨＯＷ　Ａ！", identity_state="unidentified",
+            ),
+            blocked_resource(
+                "unknown-e3", tmdb_id="", episode=3, title="Show A Extra", identity_state="unidentified",
+            ),
         ]
         app = self.build_app(resources, scheduler_enabled=True, scheduler_started=True)
 
         result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
         focus = {value["key"]: value for value in result["focusItems"]}
 
-        self.assertEqual(result["counts"]["actionRequired"], 7)
-        self.assertEqual(result["counts"]["mediaActionRequired"], 7)
-        self.assertEqual(result["counts"]["actionRequiredResources"], 7)
-        self.assertEqual(result["counts"]["actionRequiredWorks"], 5)
-        self.assertEqual(result["headline"], "5 部作品需要处理 · 涉及 7 个资源")
+        self.assertEqual(result["counts"]["actionRequired"], 8)
+        self.assertEqual(result["counts"]["mediaActionRequired"], 8)
+        self.assertEqual(result["counts"]["actionRequiredResources"], 8)
+        self.assertEqual(result["counts"]["actionRequiredWorks"], 6)
+        self.assertEqual(result["counts"]["actionRequiredGroups"], 5)
+        self.assertEqual(result["counts"]["actionRequiredIdentityUnconfirmedResources"], 3)
+        self.assertEqual(result["headline"], "5 个问题组 · 涉及 8 个资源 · 其中 3 条身份未确认")
         self.assertEqual(focus["action_required"]["value"], 5)
-        self.assertIn("涉及 7 个资源", focus["action_required"]["detail"])
+        self.assertIn("涉及 8 个资源", focus["action_required"]["detail"])
+        self.assertIn("3 条身份未确认", focus["action_required"]["detail"])
+
+    def test_action_required_groups_use_all_resources_and_keep_conflicts_separate(self):
+        resources = []
+        for episode in range(1, 10):
+            value = item(item_id=f"unknown-{episode}", library_status="blocked")
+            value.update({
+                "state": "blocked",
+                "identityState": "unidentified",
+                "mediaType": "tv",
+                "tmdbId": "",
+                "seasonNumber": 1,
+                "episodeNumber": episode,
+                "title": "机械 分组",
+            })
+            resources.append(value)
+        conflict = item(item_id="conflict", library_status="blocked")
+        conflict.update({
+            "state": "blocked",
+            "identityState": "conflict",
+            "mediaType": "tv",
+            "tmdbId": "123",
+            "seasonNumber": 1,
+            "episodeNumber": 10,
+            "title": "机械分组",
+        })
+        resources.append(conflict)
+        untitled = item(item_id="untitled", library_status="blocked")
+        untitled.update({
+            "state": "blocked",
+            "identityState": "unidentified",
+            "mediaType": "tv",
+            "tmdbId": "",
+            "seasonNumber": 1,
+            "episodeNumber": 11,
+            "title": "",
+        })
+        resources.append(untitled)
+        app = self.build_app(resources, scheduler_enabled=True, scheduler_started=True)
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+
+        self.assertEqual(result["issueTotal"], 11)
+        self.assertEqual(len(result["issues"]), 8)
+        self.assertEqual(result["counts"]["actionRequired"], 11)
+        self.assertEqual(result["counts"]["actionRequiredGroups"], 3)
+        self.assertEqual(result["counts"]["actionRequiredIdentityUnconfirmedResources"], 11)
 
     def test_collected_rss_without_matcher_run_is_neutral_diagnostic(self):
         app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)

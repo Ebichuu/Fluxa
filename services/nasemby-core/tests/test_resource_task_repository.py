@@ -636,6 +636,30 @@ class ResourceTaskRepositoryTests(unittest.TestCase):
                 for event in repository.list_events("chain:test")
             ), 2)
 
+    def test_qb_observation_failure_never_enters_permanent_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ResourceTaskRepository(Path(directory) / "media.sqlite3", clock=lambda: NOW)
+            payload = snapshot()
+            payload["items"][0]["pipelineFacts"] = [{
+                "stage": "qb",
+                "state": "failed",
+                "scope": "file",
+                "evidence": "verified",
+                "eventAt": "2026-07-22T05:45:00Z",
+                "observedAt": "2026-07-22T06:00:00Z",
+                "freshUntil": "2026-07-22T06:05:00Z",
+                "source": "qBittorrent",
+                "sourceRef": "hash-1",
+                "resultRef": "hash-1:observation-window",
+                "reasonCode": "QB_DOWNLOAD_STALLED",
+                "reasonText": "qB 下载持续无活动",
+            }]
+
+            result = repository.record_snapshot(payload)
+
+            self.assertEqual(result["events"], 0)
+            self.assertEqual(repository.list_events("chain:test"), [])
+
     def test_transient_event_cleanup_is_scoped_audited_and_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "media.sqlite3"

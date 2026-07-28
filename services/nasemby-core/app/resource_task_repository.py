@@ -21,6 +21,10 @@ CREDENTIAL_ASSIGNMENT_PATTERN = re.compile(
 BEARER_PATTERN = re.compile(r"\bBearer\s+[A-Za-z0-9._~+\-/]+=*", re.I)
 PERMANENT_PIPELINE_STATES = {"succeeded", "failed", "protected", "not_applicable"}
 TRANSIENT_PIPELINE_STATUSES = {"active", "waiting"}
+NON_PERMANENT_PIPELINE_REASON_CODES = {
+    "QB_DOWNLOAD_STALLED",
+    "QB_DOWNLOAD_STALLED_OBSERVING",
+}
 TASK_FACT_EVENT_KINDS = {"pipeline_fact", "pipeline_fact_unit", "episode_evidence"}
 TRANSIENT_EVENT_MIGRATION_ID = "resource-events-transient-v1"
 BEIJING_TZ = timezone(timedelta(hours=8))
@@ -566,6 +570,8 @@ class ResourceTaskRepository:
     def _permanent_pipeline_event(fact, artifact_key_value, payload):
         state = str(fact.get("state") or "unknown")
         if str(fact.get("evidence") or "missing") != "verified":
+            return False
+        if str(fact.get("reasonCode") or "") in NON_PERMANENT_PIPELINE_REASON_CODES:
             return False
         if state not in PERMANENT_PIPELINE_STATES:
             return False
