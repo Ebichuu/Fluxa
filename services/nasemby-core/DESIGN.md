@@ -242,6 +242,12 @@ Compose 通过 `MCC_DATA_ROOT` 把三个目录映射到同一个 fnOS 根目录�
 
 ## 13. 变更历史
 
+### 2026-07-28 — 资源台账实例验收收紧
+
+Symedia 历史归档只接受文件单元或持久事件的明确 `eventAt`，不再用轮询 `observedAt` 补发生时间。瞬时事件迁移失败改为仓储初始化异常，使 `create_app()` 在 v2 任务快照、日历与首页消费者注册前终止；备份或审计失败仍保持事务回滚。
+
+任务公开投影把 Symedia 媒体识别和文件转移类原因固定为用户文案，并完整遮蔽相对媒体目录片段；未新增原始错误字段。影响范围仅为资源台账读取、启动门禁和公开任务响应，未改变路由、HTTP 方法、状态码或外部写权限。
+
 ### 2026-07-28 — STRM 正式接口止损检查 P1.3f
 
 **变更内容**：核对 Symedia 解包源码、路由表和当前实例的只读接口。`POST /autosymlink/strm_test` 与 `POST /webhook/strm_extract/...` 是测试/触发动作，不作为事实源；唯一正式只读 `/api/v1/system/sync_stats` 实测只返回按日 `{date,count}` 汇总。它缺少媒体身份、季集范围、单次生成状态、生成时间、稳定结果 ID 和当前目标归属，因此不接入六阶段事实，STRM 固定保持 `unknown + missing + STRM_INDEPENDENT_RESULT_MISSING`。

@@ -90,7 +90,7 @@ def _archive_event_units(row):
         return []
     if not isinstance(payload, dict):
         return []
-    fallback_time = row["event_at"] or row["observed_at"] or ""
+    fallback_time = row["event_at"] or ""
     if payload.get("kind") == "pipeline_fact_unit":
         return [(payload, row["status"], row["evidence"], payload.get("eventAt") or fallback_time)]
     if payload.get("kind") != "pipeline_fact":
@@ -167,6 +167,14 @@ class ResourceMigrationConflict(RuntimeError):
         self.reason_code = reason_code
 
 
+class ResourceLedgerMigrationError(RuntimeError):
+    def __init__(self, result):
+        self.result = dict(result or {})
+        code = self.result.get("reasonCode") or "RESOURCE_LEDGER_MIGRATION_FAILED"
+        error_type = self.result.get("errorType") or "unknown"
+        super().__init__(f"{code}: {error_type}")
+
+
 class ResourceTaskRepository:
     """Local evidence ledger for stable media chains and stage observations."""
 
@@ -177,6 +185,8 @@ class ResourceTaskRepository:
         self.runtime.initialize()
         self.initialize()
         self.transient_event_cleanup = self._run_transient_event_cleanup()
+        if self.transient_event_cleanup.get("status") != "success":
+            raise ResourceLedgerMigrationError(self.transient_event_cleanup)
 
     def initialize(self):
         with self.runtime.transaction(immediate=True) as connection:

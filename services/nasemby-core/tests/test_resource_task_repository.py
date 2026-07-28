@@ -8,7 +8,11 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.resource_task_repository import ResourceIdentityConflict, ResourceTaskRepository
+from app.resource_task_repository import (
+    ResourceIdentityConflict,
+    ResourceLedgerMigrationError,
+    ResourceTaskRepository,
+)
 
 
 NOW = datetime(2026, 7, 22, 6, 0, tzinfo=timezone.utc)
@@ -230,6 +234,12 @@ def rows(repository, statement, parameters=()):
         return [dict(row) for row in connection.execute(statement, parameters).fetchall()]
 
 
+def database_rows(path, statement, parameters=()):
+    with closing(sqlite3.connect(path)) as connection:
+        connection.row_factory = sqlite3.Row
+        return [dict(row) for row in connection.execute(statement, parameters).fetchall()]
+
+
 class ResourceTaskRepositoryTests(unittest.TestCase):
     def test_symedia_archive_reads_successful_file_units_from_mixed_batch(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -241,6 +251,31 @@ class ResourceTaskRepositoryTests(unittest.TestCase):
             self.assertEqual(len(events), 2)
             self.assertEqual({event["chainId"] for event in events}, {"chain:archive"})
             self.assertEqual(len({event["fileKey"] for event in events}), 2)
+
+    def test_symedia_archive_excludes_success_without_explicit_event_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ResourceTaskRepository(Path(directory) / "media.sqlite3", clock=lambda: NOW)
+            repository.record_snapshot(snapshot())
+            with repository.runtime.transaction(immediate=True) as connection:
+                repository._append_event(connection, "chain:test", "", {
+                    "stage": "symedia",
+                    "status": "succeeded",
+                    "healthState": "normal",
+                    "evidence": "verified",
+                    "observedAt": "2026-07-28T03:00:00Z",
+                    "freshUntil": "2026-07-28T03:05:00Z",
+                    "source": "Symedia",
+                    "reasonCode": "SYMEDIA_ORGANIZED",
+                    "reasonText": "Symedia 整理入库完成",
+                    "_eventPayload": {
+                        "kind": "pipeline_fact_unit",
+                        "sourceRef": "fact-symedia:legacy-without-event-time",
+                    },
+                }, "2026-07-28T03:00:00Z")
+
+            events = repository.list_symedia_archive_events("2026-07-28")
+
+            self.assertEqual(events, [])
 
     def test_symedia_archive_reads_success_units_from_legacy_failed_parent_event(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -677,24 +712,26 @@ class ResourceTaskRepositoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             backup_path = Path(directory) / "backup.sqlite3"
             prepare(backup_path)
-            backup_failed = BackupFailureRepository(backup_path, clock=lambda: NOW)
-            self.assertEqual(backup_failed.transient_event_cleanup["status"], "failed")
-            self.assertEqual(rows(
-                backup_failed, "SELECT count(*) n FROM resource_events WHERE status='active'"
+            with self.assertRaises(ResourceLedgerMigrationError) as backup_error:
+                BackupFailureRepository(backup_path, clock=lambda: NOW)
+            self.assertEqual(backup_error.exception.result["status"], "failed")
+            self.assertEqual(database_rows(
+                backup_path, "SELECT count(*) n FROM resource_events WHERE status='active'"
             )[0]["n"], 1)
-            self.assertEqual(rows(
-                backup_failed, "SELECT count(*) n FROM resource_ledger_migrations"
+            self.assertEqual(database_rows(
+                backup_path, "SELECT count(*) n FROM resource_ledger_migrations"
             )[0]["n"], 0)
 
             audit_path = Path(directory) / "audit.sqlite3"
             prepare(audit_path)
-            audit_failed = AuditFailureRepository(audit_path, clock=lambda: NOW)
-            self.assertEqual(audit_failed.transient_event_cleanup["status"], "failed")
-            self.assertEqual(rows(
-                audit_failed, "SELECT count(*) n FROM resource_events WHERE status='active'"
+            with self.assertRaises(ResourceLedgerMigrationError) as audit_error:
+                AuditFailureRepository(audit_path, clock=lambda: NOW)
+            self.assertEqual(audit_error.exception.result["status"], "failed")
+            self.assertEqual(database_rows(
+                audit_path, "SELECT count(*) n FROM resource_events WHERE status='active'"
             )[0]["n"], 1)
-            self.assertEqual(rows(
-                audit_failed, "SELECT count(*) n FROM resource_ledger_migrations"
+            self.assertEqual(database_rows(
+                audit_path, "SELECT count(*) n FROM resource_ledger_migrations"
             )[0]["n"], 0)
 
     def test_identity_upgrade_keeps_one_chain_and_is_idempotent(self):
