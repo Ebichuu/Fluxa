@@ -85,11 +85,12 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/discover/*`：发现、趋势、搜索和资源搜索。
 - `/api/subscriptions/*`：唯一台账、配置、详情、日历和受保护动作。
 - `/api/media/*`：影院大厅与 Emby。
-- `/api/qbittorrent/*`、`/api/torra/summary`、`/api/symedia/summary`；后者兼容保留原统计并新增七项能力证据和脱敏洗版摘要，只有可证明的成功评分替换进入替换计数，缺失状态返回证据不足。
+- `/api/qbittorrent/*`、`/api/torra/summary`、`/api/symedia/summary`；后者兼容保留原统计并新增七项能力证据和脱敏洗版摘要，只有可证明的成功评分替换进入替换计数；缺失状态仍返回 `evidence_insufficient`，界面显示“暂未确认”。
 - `/api/tasks/chain`：订阅到入库的统一证据链。
 - `/api/v2/tasks/summary`：返回唯一任务链、健康/身份/执行三维状态、兼容 `userCounts`、新 `outcomeCounts`、阶段和服务轻量摘要，支持 ETag 条件读取。
 - `/api/v2/tasks/chains`：按 `chainId/targetKey` 合并重复来源，默认分页返回 20 条摘要；支持可重复 `outcomeState`、兼容 `userState`、可播放日期、健康状态、身份和增量时间筛选，顶层返回 `outcomeState/playableAt`；任务中心按“需要处理 / 处理中 / 已可播放 / 无需处理”消费新结果。
 - `/api/v2/tasks/chains/:chainId`：按需返回单链阶段证据、artifact、原因、动作资格及可选 `pipelineFacts/pipelineOutcome`；完整聚合快照幂等写入本地资源事件账本，但不执行外部动作。
+- `/api/v2/system-issues/secupload-failures`：从 Torra `recent_runs.result` 读取结构化成功/失败计数和可选 `failure_details`；公开响应只增加脱敏文件显示名、错误分类、可空重试次数、批次引用和 file-scope 115 事实。没有详情时只说明“本次运行没有文件级详情”，路径、错误原文和内部 ID 不返回。
 - `/api/v2/calendar`：只读聚合追更播出日期与精确目标的六阶段事实，使用 `Asia/Shanghai` 并支持 ETag；默认排除未关联、自动来源和范围不明记录，显式 `includeUnlinked=1` 才读取高级项；只有 Emby 电影或集级证据生成 `playable`，月摘要与完整轻量搜索索引共用 300 秒完整快照。
 - `/api/v2/subscriptions/capabilities`：返回本地写入、Torra 推送和调度器真实运行状态，发现页据此显示追更确认文案。
 - `/api/v2/discover/candidates`：分页读取未过期的独立发现候选，只返回海报、标题、TMDB 身份、季号和来源标签等白名单字段。

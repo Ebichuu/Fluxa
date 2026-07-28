@@ -59,6 +59,46 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
         self.assertEqual([unit["state"] for unit in qb["units"]], ["succeeded", "active"])
         self.assertEqual(by_stage(facts, "cloud115")["state"], "unknown")
 
+    def test_cloud115_file_failure_requires_exact_qb_path_evidence(self):
+        from app.torra_read_runtime import secupload_file_path_key
+
+        failure_file = {
+            "fileKey": "private-file-key",
+            "batchKey": "private-batch-key",
+            "pathKey": secupload_file_path_key("/downloads/tv/Show.S01E03.mkv"),
+            "displayName": "Show.S01E03.mkv",
+            "errorCategory": "retry_failed",
+            "errorLabel": "重试后仍失败",
+            "retryCount": 3,
+            "plannedRetryAt": "2026-07-28T08:00:00+08:00",
+        }
+        facts = build_pipeline_source_facts(context(
+            qbTasks=[{
+                "hash": "hash-a",
+                "name": "Show.S01E03.mkv",
+                "savePath": "/downloads/tv",
+                "status": "completed",
+                "state": "uploading",
+                "progress": 1,
+            }],
+            cloud115={
+                "readable": True,
+                "perFileEvidence": True,
+                "failureFiles": [failure_file],
+            },
+        ), observed_at=OBSERVED_AT)
+
+        cloud = by_stage(facts, "cloud115")
+        self.assertEqual((cloud["state"], cloud["scope"], cloud["evidence"]), ("failed", "file", "verified"))
+        self.assertEqual(cloud["units"][0]["retryEligible"], True)
+        self.assertEqual(cloud["units"][0]["plannedRetryAt"], "2026-07-28T08:00:00+08:00")
+
+        unmatched = build_pipeline_source_facts(context(
+            qbTasks=[{"hash": "hash-a", "name": "Other.mkv", "savePath": "/downloads/tv"}],
+            cloud115={"readable": True, "perFileEvidence": True, "failureFiles": [failure_file]},
+        ), observed_at=OBSERVED_AT)
+        self.assertEqual(by_stage(unmatched, "cloud115")["state"], "unknown")
+
     def test_symedia_success_does_not_infer_strm_or_emby_episode(self):
         facts = build_pipeline_source_facts(context(
             symediaRows=[{

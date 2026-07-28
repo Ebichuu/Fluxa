@@ -251,6 +251,119 @@ class TorraReadRuntimeContractTests(unittest.TestCase):
         self.assertEqual(summary["recentBatches"][1]["counts"], {"success": 3, "failed": 1})
         self.assertEqual(summary["nextRunAt"], "2026-07-24T16:00:00+08:00")
 
+    def test_secupload_summary_prefers_structured_counts_and_sanitizes_file_details(self):
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        private_path = "/private/pending/Show.S01E01.mkv"
+        session = FakeSession([FakeResponse(payload={
+            "data": {
+                "manifest": {"enabled": True},
+                "schedules": [{
+                    "task_key": "retry_pending",
+                    "target_item_id": "category-tv",
+                    "enabled": True,
+                    "next_run_at": "2026-07-24T16:00:00+08:00",
+                }],
+                "recent_runs": [{
+                    "run_id": "private-run-1",
+                    "task_key": "retry_pending",
+                    "target_item_id": "category-tv",
+                    "trigger": "schedule",
+                    "status": "success",
+                    "message": "旧文本，成功 99 个，失败 99 个",
+                    "started_at": "2026-07-24T08:00:00+08:00",
+                    "finished_at": "2026-07-24T08:00:06+08:00",
+                    "result": {
+                        "success_count": 2,
+                        "failed_count": 2,
+                        "failure_details": [
+                            {
+                                "file_name": "Show.S01E01.mkv",
+                                "path": private_path,
+                                "outcome": "pending_failed",
+                                "attempts": 4,
+                                "last_error": "network timeout token=must-not-escape",
+                                "last_attempt_at": "2026-07-24T08:00:05+08:00",
+                            },
+                            {
+                                "file_name": "Show.S01E01.mkv",
+                                "path": private_path,
+                                "outcome": "pending_failed",
+                                "attempts": 3,
+                                "last_error": "duplicate private error",
+                            },
+                            {
+                                "path": r"C:\private\Show.S01E02.mkv",
+                                "outcome": "sample_failed",
+                                "attempts": "2",
+                                "last_error": "cookie authentication failed at http://private.example.test",
+                            },
+                        ],
+                    },
+                }],
+            },
+        })])
+        client = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+        )
+
+        summary = client.get_secupload_summary()
+
+        self.assertEqual(summary["latestRun"]["counts"], {"success": 2, "failed": 2})
+        self.assertEqual(summary["latestBatch"]["counts"], {"success": 2, "failed": 2})
+        self.assertTrue(summary["perFileEvidence"])
+        self.assertEqual(len(summary["failureFiles"]), 2)
+        self.assertEqual(
+            [(row["displayName"], row["errorCategory"], row["retryCount"]) for row in summary["failureFiles"]],
+            [
+                ("Show.S01E01.mkv", "network_failed", 4),
+                ("Show.S01E02.mkv", "authentication_failed", 2),
+            ],
+        )
+        self.assertTrue(all(row["plannedRetryAt"] == "2026-07-24T16:00:00+08:00" for row in summary["failureFiles"]))
+        serialized = str(summary)
+        for private_value in (private_path, r"C:\private", "must-not-escape", "private.example.test"):
+            self.assertNotIn(private_value, serialized)
+
+    def test_secupload_summary_accepts_result_arrays_and_missing_retry_count(self):
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        session = FakeSession([FakeResponse(payload={
+            "data": {
+                "manifest": {"enabled": True},
+                "recent_runs": [{
+                    "task_key": "retry_pending",
+                    "target_item_id": "category-tv",
+                    "trigger": "manual",
+                    "status": "failed",
+                    "message": "任务运行失败",
+                    "started_at": "2026-07-24T09:00:00+08:00",
+                    "finished_at": "2026-07-24T09:00:02+08:00",
+                    "result": [{
+                        "success_count": 0,
+                        "failed_count": 1,
+                        "failure_details": {
+                            "/private/pending/Movie.2026.mkv": {
+                                "outcome": "pending_failed",
+                                "last_error": "unknown failure",
+                            },
+                        },
+                    }],
+                }],
+            },
+        })])
+
+        summary = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+        ).get_secupload_summary()
+
+        self.assertEqual(summary["latestRun"]["counts"], {"success": 0, "failed": 1})
+        self.assertEqual(summary["failureFiles"][0]["displayName"], "Movie.2026.mkv")
+        self.assertIsNone(summary["failureFiles"][0]["retryCount"])
+        self.assertNotIn("/private/pending", str(summary))
+
     def test_secupload_retry_run_uses_official_task_route_and_returns_new_run_id(self):
         from app.torra_read_runtime import TorraReadClient, TorraReadConfig
 

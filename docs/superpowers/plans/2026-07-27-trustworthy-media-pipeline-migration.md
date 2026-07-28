@@ -528,7 +528,9 @@ P0 通过前不得执行真实历史污染迁移，也不得宣称产品已达�
 涉及文件：
 
 - `services/nasemby-core/app/torra_read_runtime.py`
+- `services/nasemby-core/app/secupload_result_runtime.py`
 - `services/nasemby-core/app/secupload_issue_runtime.py`
+- `services/nasemby-core/app/pipeline_source_fact_runtime.py`
 - `services/nasemby-core/app/task_public_runtime.py`
 - `services/nasemby-core/tests/test_torra_read_runtime.py`
 - `services/nasemby-core/tests/test_secupload_issue_runtime.py`
@@ -546,6 +548,8 @@ P0 通过前不得执行真实历史污染迁移，也不得宣称产品已达�
 6. 手动重试仍受自动计划、幂等、锁和写闸门约束。
 
 验证：有/无 failure_details、混合成功失败、重复文件、重试完成、活动 run、路径和凭据脱敏。
+
+状态：✅ 2026-07-28 已完成实现与本地验收。结构化计数优先于 message，`result/failure_details` 对象与数组均兼容；重复文件去重，重试次数缺失保持 `null`。文件级 115 事实只有完整路径键与 qB 精确一致时绑定媒体链，其余保留在系统问题。公开响应不含路径、错误原文或内部 ID。用户界面的 `evidence_insufficient` 显示名改为“暂未确认”，高级诊断深浅主题和 390px 视口通过。全量 509 项 Python 回归、TypeScript/生产构建、Compose 与差异检查通过。
 
 ## 12. P1.3：异常动作与历史迁移复查
 

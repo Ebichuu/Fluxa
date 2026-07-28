@@ -252,16 +252,25 @@
 }
 
 .ops-task-diagnostics {
-  border-top: 1px solid var(--ops-hair);
-  border-bottom: 1px solid var(--ops-hair);
-  color: var(--ops-muted);
+  overflow: hidden;
+  border: 1px solid var(--theme-border-strong);
+  border-radius: 12px;
+  padding-inline: 12px;
+  background: var(--theme-surface-strong);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--theme-text-strong) 7%, transparent);
+  color: var(--theme-muted);
 }
 
 .ops-task-diagnostics > summary {
   min-height: 42px;
   padding: 11px 2px;
+  color: var(--theme-text);
   cursor: pointer;
   font-size: 12px;
+}
+
+.ops-task-diagnostics > summary::marker {
+  color: var(--theme-faint);
 }
 
 .ops-task-diagnostics > div {
@@ -271,19 +280,52 @@
 }
 
 .ops-task-diagnostics strong {
-  color: var(--ops-text);
+  color: var(--theme-text-strong);
   font-size: 13px;
 }
 
 .ops-task-diagnostics span {
-  color: var(--ops-muted);
+  color: var(--theme-muted);
   font-size: 13px;
   line-height: 1.55;
 }
 
 .ops-task-diagnostics small {
-  color: var(--ops-faint);
+  color: var(--theme-faint);
   font-size: 11px;
+}
+
+.ops-system-issue__files {
+  display: grid;
+  gap: 6px;
+  margin: 5px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ops-system-issue__files li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 7px 9px;
+  border: 1px solid var(--theme-border);
+  border-radius: 8px;
+  background: var(--theme-surface-subtle);
+}
+
+.ops-system-issue__files li strong {
+  overflow: hidden;
+  color: var(--theme-text-strong);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ops-system-issue__files li span {
+  color: var(--theme-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
 }
 
 .ops-task-focus span {
@@ -948,6 +990,15 @@
 }
 
 @media (max-width: 640px) {
+
+  .ops-system-issue__files li {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
+  }
+
+  .ops-system-issue__files li span {
+    white-space: normal;
+  }
 
   .ops-task-toolbar {
     align-items: stretch;

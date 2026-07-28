@@ -174,7 +174,7 @@ function outcomeStateLabel(value: PipelineOutcomeState) {
     playable: '已可播放',
     waiting: '等待中',
     protected: '已保护',
-    evidence_insufficient: '证据不足'
+    evidence_insufficient: '暂未确认'
   } as const)[value];
 }
 
@@ -747,6 +747,16 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                     {category.recentFailedCounts.length > 0 && <span>近三批失败数：{category.recentFailedCounts.join(' → ')}</span>}
                     {issue.nextRunAt && issue.state === 'recovering' && <span>下次自动重试：<RelativeTime value={issue.nextRunAt} /></span>}
                     {category.retryPolicyText && <span>{category.retryPolicyText}</span>}
+                    {(issue.files ?? []).some((file) => file.categoryId === category.id) && (
+                      <ul className="ops-system-issue__files" aria-label={`${category.label}失败文件`}>
+                        {(issue.files ?? []).filter((file) => file.categoryId === category.id).map((file) => (
+                          <li key={file.ref}>
+                            <strong title={file.displayName}>{file.displayName}</strong>
+                            <span>{file.errorLabel}{file.retryCount == null ? ' · 重试次数暂未确认' : ` · 已重试 ${file.retryCount} 次`}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 ))}
                 {issue.primaryAction && issue.state !== 'normal' && (

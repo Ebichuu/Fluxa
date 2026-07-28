@@ -337,6 +337,10 @@ def _present_upload_record(value) -> dict | None:
     return result
 
 
+def _public_nonnegative_integer(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
 def _present_secupload(value) -> dict:
     source = value if isinstance(value, dict) else {}
     result = {
@@ -373,6 +377,7 @@ def _present_issue_category(value) -> dict | None:
     category_id = str(source.get("id") or "")[:80]
     if not category_id.startswith("category:"):
         category_id = ""
+    file_evidence_count = _public_nonnegative_integer(source.get("fileEvidenceCount")) or 0
     return {
         "id": category_id,
         "label": safe_public_text(source.get("label"), "未命名分类")[:80],
@@ -385,6 +390,34 @@ def _present_issue_category(value) -> dict | None:
         "retryPolicyText": safe_public_text(source.get("retryPolicyText"), "重试策略未提供")[:120],
         "nextRunAt": str(source.get("nextRunAt") or "")[:80],
         "fileEvidenceAvailable": source.get("fileEvidenceAvailable") is True,
+        "fileEvidenceCount": file_evidence_count,
+    }
+
+
+def _present_issue_file(value) -> dict | None:
+    source = value if isinstance(value, dict) else None
+    if source is None:
+        return None
+    retry_count = _public_nonnegative_integer(source.get("retryCount"))
+    file_ref = str(source.get("ref") or "")[:80]
+    batch_ref = str(source.get("batchRef") or "")[:80]
+    category_id = str(source.get("categoryId") or "")[:80]
+    refs_are_public = all((
+        file_ref.startswith("file:"),
+        batch_ref.startswith("batch:"),
+        category_id.startswith("category:"),
+    ))
+    if not refs_are_public:
+        return None
+    return {
+        "ref": file_ref,
+        "batchRef": batch_ref,
+        "categoryId": category_id,
+        "displayName": safe_public_text(source.get("displayName"), "未命名文件")[:160],
+        "errorCategory": str(source.get("errorCategory") or "upload_failed")[:80],
+        "errorLabel": safe_public_text(source.get("errorLabel"), "秒传失败")[:80],
+        "retryCount": retry_count,
+        "observedAt": str(source.get("observedAt") or "")[:80],
     }
 
 
@@ -399,9 +432,11 @@ def present_system_issue(value) -> dict:
         row for row in (_present_issue_category(item) for item in source.get("categories") or [])
         if row is not None and row.get("id")
     ]
-    failed_total = source.get("failedTotal")
-    if not isinstance(failed_total, int) or isinstance(failed_total, bool) or failed_total < 0:
-        failed_total = None
+    failed_total = _public_nonnegative_integer(source.get("failedTotal"))
+    files = [
+        row for row in (_present_issue_file(item) for item in source.get("files") or [])
+        if row is not None
+    ][:100]
     return {
         "id": "secupload_failures",
         "state": state,
@@ -415,8 +450,10 @@ def present_system_issue(value) -> dict:
         "fileEvidenceAvailable": source.get("fileEvidenceAvailable") is True,
         "evidenceLimitText": safe_public_text(
             source.get("evidenceLimitText"),
-            "Torra 当前未返回失败文件名、具体错误和单文件重试次数。",
+            "本次运行没有文件级详情。",
         )[:160],
+        "files": files,
+        "fileFacts": [present_pipeline_fact(fact) for fact in source.get("fileFacts") or []][:100],
         "manualRetry": {
             "supported": manual.get("supported") is True,
             "allowed": manual.get("allowed") is True,

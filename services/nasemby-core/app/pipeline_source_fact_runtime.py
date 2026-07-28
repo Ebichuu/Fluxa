@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from app.pipeline_fact_runtime import PIPELINE_STAGES, target_scope_for_item
+from app.secupload_result_runtime import secupload_file_path_key
 from app.symedia_evidence_runtime import normalize_symedia_status, symedia_protection_rule
 
 
@@ -157,8 +158,102 @@ def _qb_fact(context, window):
     )
 
 
+CLOUD115_REASON_CODES = {
+    "authentication_failed": "CLOUD115_AUTHENTICATION_FAILED",
+    "network_failed": "CLOUD115_NETWORK_FAILED",
+    "file_missing": "CLOUD115_FILE_MISSING",
+    "storage_unavailable": "CLOUD115_STORAGE_UNAVAILABLE",
+    "instant_upload_failed": "CLOUD115_INSTANT_UPLOAD_FAILED",
+    "retry_failed": "CLOUD115_RETRY_FAILED",
+}
+
+
+def _cloud115_path_keys(context):
+    return {
+        secupload_file_path_key(_text(task.get("savePath")).rstrip("/\\") + "/" + _text(task.get("name")))
+        for task in context.get("qbTasks") or []
+        if _text(task.get("savePath")) and _text(task.get("name"))
+    }
+
+
+def _cloud115_matched_files(context, summary):
+    path_keys = _cloud115_path_keys(context)
+    return [
+        row for row in summary.get("failureFiles") or []
+        if isinstance(row, dict)
+        and _text(row.get("fileKey"))
+        and _text(row.get("batchKey"))
+        and _text(row.get("pathKey")) in path_keys
+    ]
+
+
+def _cloud115_planned_retry(value):
+    planned = _text(value)
+    if not planned:
+        return ""
+    try:
+        _parse(planned)
+    except (TypeError, ValueError):
+        return ""
+    return planned
+
+
+def _cloud115_unit(row, window):
+    planned_retry_at = _cloud115_planned_retry(row.get("plannedRetryAt"))
+    retry_count = row.get("retryCount")
+    retry_text = (
+        f"，已重试 {retry_count} 次"
+        if isinstance(retry_count, int) and not isinstance(retry_count, bool) and retry_count >= 0
+        else "，重试次数暂未确认"
+    )
+    unit = {
+        "unitKey": _text(row.get("fileKey")),
+        "state": "failed",
+        "scope": "file",
+        "evidence": "verified",
+        **window,
+        "sourceRef": _text(row.get("batchKey")),
+        "reasonCode": CLOUD115_REASON_CODES.get(
+            _text(row.get("errorCategory")),
+            "CLOUD115_UPLOAD_FAILED",
+        ),
+        "reasonText": (
+            f"{_text(row.get('displayName')) or '未命名文件'}："
+            f"{_text(row.get('errorLabel')) or '秒传失败'}{retry_text}"
+        ),
+        "retryEligible": bool(planned_retry_at),
+    }
+    if planned_retry_at:
+        unit["plannedRetryAt"] = planned_retry_at
+    return unit
+
+
+def _cloud115_failure_fact(matched, window):
+    units = [_cloud115_unit(row, window) for row in matched]
+    planned_values = [unit.get("plannedRetryAt") for unit in units if unit.get("plannedRetryAt")]
+    all_retrying = len(planned_values) == len(units)
+    fact = _fact(
+        "cloud115",
+        "failed",
+        "file",
+        window,
+        source="Torra secupload_115",
+        source_ref=_text(matched[0].get("batchKey")),
+        reason_code="CLOUD115_FILE_FAILURE",
+        reason_text=f"{len(units)} 个 115 失败文件已通过完整路径关联当前 qB 任务",
+        retry_eligible=all_retrying,
+        units=units,
+    )
+    if all_retrying:
+        fact["plannedRetryAt"] = min(planned_values, key=_parse)
+    return fact
+
+
 def _cloud115_fact(context, window):
     summary = context.get("cloud115") or {}
+    matched = _cloud115_matched_files(context, summary)
+    if matched:
+        return _cloud115_failure_fact(matched, window)
     if summary.get("readable"):
         return _unknown(
             "cloud115",

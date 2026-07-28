@@ -52,7 +52,7 @@ function capabilityStateLabel(state: SymediaCapabilityState, reasonCode = '') {
 }
 
 function washCount(value: number | null | undefined, evidenceState?: string) {
-  if (value == null || evidenceState === 'insufficient') return '证据不足';
+  if (value == null || evidenceState === 'insufficient') return '暂未确认';
   return evidenceState === 'partial' ? `${value}（部分证据）` : String(value);
 }
 
@@ -197,7 +197,7 @@ export function ControlRoom() {
         facts: symedia?.connected ? [
           { label: '能力证据', value: symedia.capabilities ? `${availableCapabilities} / 7 项已验证` : '能力明细尚未返回' },
           { label: '今日洗版', value: `替换 ${washCount(washSummary?.successfulReplacements, washSummary?.evidenceState)} · 低分保护 ${washCount(washSummary?.lowScoreProtected, washSummary?.evidenceState)} · 取消覆盖 ${washCount(washSummary?.cancelledOverrides, washSummary?.evidenceState)} · 真实失败 ${washCount(washSummary?.realFailures, washSummary?.evidenceState)}` },
-          { label: '最近对象', value: latestTransfer ? `${latestTransfer.title}${latestTransfer.seasonEpisode ? ` · ${latestTransfer.seasonEpisode}` : ''}` : '证据不足' }
+          { label: '最近对象', value: latestTransfer ? `${latestTransfer.title}${latestTransfer.seasonEpisode ? ` · ${latestTransfer.seasonEpisode}` : ''}` : '暂未确认' }
         ] : [{ label: '连接说明', value: symedia?.error || (servicesLoaded ? '历史接口暂不可用' : '正在读取 Symedia 历史') }],
         icon: <Wrench aria-hidden="true" size={20} />, toolUrl: symedia?.webUrl || ''
       },
@@ -310,8 +310,8 @@ export function ControlRoom() {
           {selected.id === 'emby' && (
             <div className={`ops-emby-refresh-evidence ops-emby-refresh-evidence--${embyRefresh?.state || 'loading'}`}>
               <header><span>整理 → 媒体库</span><strong>{embyRefresh?.reason || '正在读取索引记录'}</strong></header>
-              <div><small>Symedia 最新入库</small><span>{embyRefresh?.latestSymediaAt ? formatTimeAgo(embyRefresh.latestSymediaAt) : '证据不足'}</span></div>
-              <div><small>Emby 最新索引</small><span>{embyRefresh?.latestEmbyAt ? formatTimeAgo(embyRefresh.latestEmbyAt) : '证据不足'}</span></div>
+              <div><small>Symedia 最新入库</small><span>{embyRefresh?.latestSymediaAt ? formatTimeAgo(embyRefresh.latestSymediaAt) : '暂未确认'}</span></div>
+              <div><small>Emby 最新索引</small><span>{embyRefresh?.latestEmbyAt ? formatTimeAgo(embyRefresh.latestEmbyAt) : '暂未确认'}</span></div>
             </div>
           )}
           {selected.id === 'emby' && embyRefreshFeedback && (

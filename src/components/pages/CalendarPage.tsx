@@ -123,7 +123,7 @@ const statusLabel: Record<CalendarStatus, string> = {
   playable: '已可播放',
   protected: '正常保护',
   missing: '逾期未获取',
-  unknown: '证据不足',
+  unknown: '暂未确认',
   unlinked: '状态未关联'
 };
 
@@ -659,7 +659,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         )}
 
         <footer className="ops-calendar-legend">
-          <span><i className="is-upcoming" />待播出</span><span><i className="is-acquiring" />正在获取</span><span><i className="is-library" />整理入库</span><span><i className="is-playable" />已可播放</span><span><i className="is-protected" />正常保护</span><span><i className="is-overdue" />逾期未获取</span><span><i className="is-unknown" />证据不足</span><strong>时区：Asia/Shanghai</strong>
+          <span><i className="is-upcoming" />待播出</span><span><i className="is-acquiring" />正在获取</span><span><i className="is-library" />整理入库</span><span><i className="is-playable" />已可播放</span><span><i className="is-protected" />正常保护</span><span><i className="is-overdue" />逾期未获取</span><span><i className="is-unknown" />暂未确认</span><strong>时区：Asia/Shanghai</strong>
         </footer>
       </section>
 
@@ -757,7 +757,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                 </header>
                 <div className="calendar-evidence-times">
                   <span><b>播出</b><strong>{entry.date}</strong><small>TMDB 日历</small></span>
-                  <span><b>获取</b><strong>{formatEvidenceTime(entry.acquiredAt)}</strong><small>{entry.acquisitionSource || '该集证据不足'}</small></span>
+                  <span><b>获取</b><strong>{formatEvidenceTime(entry.acquiredAt)}</strong><small>{entry.acquisitionSource || '该集暂未确认'}</small></span>
                   <span><b>入库</b><strong>{formatEvidenceTime(entry.libraryAt)}</strong><small>{entry.librarySource || '尚无该集证据'}</small></span>
                   <span><b>可播放</b><strong>{formatEvidenceTime(entry.playableAt)}</strong><small>{entry.playableSource || '尚无 Emby 集级证据'}</small></span>
                 </div>

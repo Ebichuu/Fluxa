@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Flask, jsonify, request
 
 from app.activity_log import write_activity
 from app.http_runtime import current_request_id
-from app.task_public_runtime import present_system_issue
+from app.pipeline_fact_runtime import normalize_pipeline_fact
+from app.task_public_runtime import present_system_issue, safe_public_text
 
 
 SCHEDULE_GRACE_SECONDS = 600
@@ -74,11 +75,111 @@ def _public_category_id(value):
     return f"category:{digest}"
 
 
+def _public_evidence_ref(namespace, value):
+    raw = _text(value, 400)
+    if not raw:
+        return ""
+    digest = hashlib.sha256(f"{namespace}\0{raw}".encode("utf-8")).hexdigest()[:24]
+    return f"{namespace}:{digest}"
+
+
 def _safe_label(value):
     label = _text(value, 80)
     if not label or "://" in label or "/" in label or "\\" in label:
         return "未命名分类"
     return label
+
+
+def _safe_file_name(value):
+    name = safe_public_text(value, "未命名文件")[:160]
+    if not name or "://" in name or "/" in name or "\\" in name:
+        return "未命名文件"
+    return name
+
+
+CLOUD115_FAILURE_REASON_CODES = {
+    "authentication_failed": "CLOUD115_AUTHENTICATION_FAILED",
+    "network_failed": "CLOUD115_NETWORK_FAILED",
+    "file_missing": "CLOUD115_FILE_MISSING",
+    "storage_unavailable": "CLOUD115_STORAGE_UNAVAILABLE",
+    "instant_upload_failed": "CLOUD115_INSTANT_UPLOAD_FAILED",
+    "retry_failed": "CLOUD115_RETRY_FAILED",
+}
+
+
+def _normalized_file_fact(file, retry, now):
+    source_ref = _public_evidence_ref("batch", file.get("batchKey"))
+    unit_key = _public_evidence_ref("file", file.get("fileKey"))
+    if not source_ref or not unit_key:
+        return None
+    observed = (
+        _parse_absolute(file.get("observedAt"))
+        or _parse_absolute(file.get("finishedAt"))
+        or now
+    )
+    planned = (
+        _parse_absolute(file.get("plannedRetryAt") or retry["plannedRetryAt"])
+        if retry["allowed"]
+        else None
+    )
+    retry_eligible = planned is not None and planned > now
+    category = _text(file.get("errorCategory"), 80) or "upload_failed"
+    display_name = _safe_file_name(file.get("displayName"))
+    error_label = safe_public_text(file.get("errorLabel"), "秒传失败")[:80]
+    retry_count = _integer(file.get("retryCount"))
+    retry_text = f"，已重试 {retry_count} 次" if retry_count is not None else "，重试次数暂未确认"
+    payload = {
+        "stage": "cloud115",
+        "state": "failed",
+        "scope": "file",
+        "evidence": "verified",
+        "observedAt": observed.isoformat(),
+        "freshUntil": (now + timedelta(minutes=5)).isoformat(),
+        "source": "Torra secupload_115",
+        "sourceRef": source_ref,
+        "unitKey": unit_key,
+        "reasonCode": CLOUD115_FAILURE_REASON_CODES.get(category, "CLOUD115_UPLOAD_FAILED"),
+        "reasonText": f"{display_name}：{error_label}{retry_text}",
+        "retryEligible": retry_eligible,
+    }
+    if retry_eligible:
+        payload["plannedRetryAt"] = planned.isoformat()
+    return normalize_pipeline_fact(payload)
+
+
+def _file_evidence(file, *, category_id, retry, now):
+    fact = _normalized_file_fact(file, retry, now)
+    if fact is None:
+        return None
+    return {
+        "fact": fact,
+        "file": {
+            "ref": fact["unitKey"],
+            "batchRef": fact["sourceRef"],
+            "categoryId": category_id,
+            "displayName": _safe_file_name(file.get("displayName")),
+            "errorCategory": _text(file.get("errorCategory"), 80) or "upload_failed",
+            "errorLabel": safe_public_text(file.get("errorLabel"), "秒传失败")[:80],
+            "retryCount": _integer(file.get("retryCount")),
+            "observedAt": fact["observedAt"],
+        },
+    }
+
+
+def _category_file_evidence(latest_files, target_item_id, category_id, retry, now):
+    files = []
+    facts = []
+    seen = set()
+    for file in latest_files:
+        if _text(file.get("targetItemId"), 200) != target_item_id:
+            continue
+        evidence = _file_evidence(file, category_id=category_id, retry=retry, now=now)
+        if evidence is None or evidence["file"]["ref"] in seen:
+            continue
+        seen.add(evidence["file"]["ref"])
+        files.append(evidence["file"])
+        facts.append(evidence["fact"])
+    return files, facts
 
 
 def _counts(value):
@@ -155,7 +256,9 @@ def _issue_context(value, now=None):
         "maxScheduleHorizonSeconds": MAX_SCHEDULE_HORIZON_SECONDS,
         "categories": [],
         "fileEvidenceAvailable": False,
-        "evidenceLimitText": "Torra 当前未返回失败文件名、具体错误和单文件重试次数。",
+        "evidenceLimitText": "本次运行没有文件级详情。",
+        "files": [],
+        "fileFacts": [],
         "manualRetry": {"supported": False, "allowed": False, "reason": "秒传状态尚不可确认"},
         "primaryAction": {"kind": "none", "label": "等待状态恢复", "available": False},
     }
@@ -183,6 +286,12 @@ def _issue_context(value, now=None):
     }
     schedules = [row for row in summary.get("schedules") or [] if isinstance(row, dict)]
     failed_runs, runs = _latest_failed_runs(summary, failed_total)
+    latest_files = (
+        summary.get("failureFiles")
+        or latest.get("failureFiles")
+        or [file for run in failed_runs for file in run.get("failureFiles") or []]
+    )
+    latest_files = [row for row in latest_files if isinstance(row, dict)] if failed_total > 0 else []
     private["runIds"] = {
         _text(run.get("runId"), 200)
         for run in runs
@@ -190,6 +299,8 @@ def _issue_context(value, now=None):
     }
 
     categories = []
+    files = []
+    file_facts = []
     schedule_checks = []
     next_times = []
     for run in failed_runs:
@@ -206,14 +317,15 @@ def _issue_context(value, now=None):
         if parsed_next is not None:
             next_times.append((parsed_next, next_run_at))
         task = tasks.get("retry_pending") or {}
-        schedule_checks.append(bool(
+        schedule_valid = bool(
             summary.get("pluginEnabled") is True
             and task.get("allowSchedule") is True
             and schedule.get("enabled") is True
             and parsed_next is not None
             and now.timestamp() - SCHEDULE_GRACE_SECONDS <= parsed_next.timestamp()
             and parsed_next.timestamp() <= now.timestamp() + MAX_SCHEDULE_HORIZON_SECONDS
-        ))
+        )
+        schedule_checks.append(schedule_valid)
         category = {
             "id": public_id,
             "label": _safe_label(item.get("name")),
@@ -226,7 +338,19 @@ def _issue_context(value, now=None):
             "retryPolicyText": _retry_policy(item),
             "nextRunAt": next_run_at,
             "fileEvidenceAvailable": False,
+            "fileEvidenceCount": 0,
         }
+        category_files, category_facts = _category_file_evidence(
+            latest_files,
+            target_item_id,
+            public_id,
+            {"plannedRetryAt": next_run_at, "allowed": schedule_valid},
+            now,
+        )
+        files.extend(category_files)
+        file_facts.extend(category_facts)
+        category["fileEvidenceCount"] = len(category_files)
+        category["fileEvidenceAvailable"] = bool(category_files)
         categories.append(category)
         private["targets"][public_id] = target_item_id
 
@@ -240,6 +364,10 @@ def _issue_context(value, now=None):
         "nextRunAt": next_run_at,
         "observedAt": _text(summary.get("lastRunAt") or summary.get("lastCheckedAt"), 80),
         "categories": categories,
+        "fileEvidenceAvailable": bool(files),
+        "evidenceLimitText": "" if files else "本次运行没有文件级详情。",
+        "files": files,
+        "fileFacts": file_facts,
     }
 
     if failed_total == 0:

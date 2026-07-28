@@ -613,7 +613,7 @@ function fulfillmentLabel(item: SubscriptionItem) {
     protected: '正常保护',
     action_required: '需要处理',
     playable: '已可播放',
-    evidence_insufficient: '证据不足'
+    evidence_insufficient: '暂未确认'
   } as const;
   return labels[item.outcomeState ?? 'evidence_insufficient'];
 }

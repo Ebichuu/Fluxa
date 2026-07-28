@@ -9,6 +9,13 @@ from urllib.parse import quote
 import requests
 from flask import Flask, jsonify
 
+from app.secupload_result_runtime import (
+    merge_secupload_failure_files,
+    parse_secupload_failure_files,
+    parse_secupload_run_counts,
+    secupload_file_path_key,
+)
+
 
 REQUEST_TIMEOUT_SECONDS = 15
 SECUPLOAD_PLUGIN_KEY = "secupload_115"
@@ -77,16 +84,6 @@ def _compact_title(value) -> str:
     return "".join(character for character in str(value or "").lower() if character.isalnum())
 
 
-def _run_counts(message: str) -> dict:
-    text = str(message or "")
-    success = re.search(r"成功\s*(\d+)\s*个", text)
-    failed = re.search(r"失败\s*(\d+)\s*个", text)
-    return {
-        "success": int(success.group(1)) if success else None,
-        "failed": int(failed.group(1)) if failed else None,
-    }
-
-
 def _safe_run_message(status: str, counts: dict) -> str:
     if counts.get("success") is not None or counts.get("failed") is not None:
         return f"任务完成，成功 {counts.get('success') or 0} 个，失败 {counts.get('failed') or 0} 个"
@@ -118,6 +115,9 @@ def _run_batches(runs: list[dict]) -> list[dict]:
         known_success = [run["counts"]["success"] for run in batch_runs if run["counts"].get("success") is not None]
         known_failed = [run["counts"]["failed"] for run in batch_runs if run["counts"].get("failed") is not None]
         statuses = {str(run.get("status") or "").lower() for run in batch_runs}
+        failure_files = merge_secupload_failure_files(
+            file for run in batch_runs for file in run.get("failureFiles") or []
+        )
         failed_total = sum(known_failed) if known_failed else None
         if statuses & active_statuses:
             status = "running"
@@ -142,6 +142,7 @@ def _run_batches(runs: list[dict]) -> list[dict]:
             },
             "startedAt": min((str(run.get("startedAt") or "") for run in batch_runs if run.get("startedAt")), default=""),
             "finishedAt": max((str(run.get("finishedAt") or "") for run in batch_runs if run.get("finishedAt")), default=""),
+            "failureFiles": failure_files,
         })
     return sorted(batches, key=lambda batch: str(batch.get("startedAt") or ""), reverse=True)
 
@@ -368,6 +369,7 @@ class TorraReadClient:
             "tasks": [],
             "schedules": [],
             "recentRuns": [],
+            "failureFiles": [],
             "lastCheckedAt": _iso_timestamp(self.clock()),
             "error": "",
         }
@@ -432,9 +434,10 @@ class TorraReadClient:
                 if not isinstance(run, dict):
                     continue
                 raw_message = str(run.get("message") or "")
-                counts = _run_counts(raw_message)
+                result = run.get("result")
+                counts = parse_secupload_run_counts(raw_message, result)
                 status_text = str(run.get("status") or "")
-                recent_runs.append({
+                recent_run = {
                     "runId": str(run.get("run_id") or ""),
                     "taskKey": str(run.get("task_key") or ""),
                     "targetItemId": str(run.get("target_item_id") or ""),
@@ -445,16 +448,40 @@ class TorraReadClient:
                     "startedAt": str(run.get("started_at") or ""),
                     "finishedAt": str(run.get("finished_at") or ""),
                     "createdAt": str(run.get("created_at") or ""),
-                })
+                }
+                recent_run["failureFiles"] = parse_secupload_failure_files(
+                    result,
+                    target_item_id=recent_run["targetItemId"],
+                    batch_key=_run_batch_key(recent_run),
+                    observed_at=recent_run["finishedAt"] or recent_run["startedAt"],
+                )
+                recent_runs.append(recent_run)
 
             recent_runs.sort(
                 key=lambda run: str(run.get("startedAt") or run.get("createdAt") or ""),
                 reverse=True,
             )
             recent_batches = _run_batches(recent_runs)
+            retry_schedules = {
+                str(row.get("targetItemId") or ""): str(row.get("nextRunAt") or "")
+                for row in schedules
+                if row.get("enabled") and row.get("nextRunAt")
+            }
+            for collection in (recent_runs, recent_batches):
+                for row in collection:
+                    for failure in row.get("failureFiles") or []:
+                        planned_retry_at = retry_schedules.get(str(failure.get("targetItemId") or ""), "")
+                        if planned_retry_at:
+                            failure["plannedRetryAt"] = planned_retry_at
             active_runs = sum(run["status"] in {"queued", "pending", "running", "stopping"} for run in recent_runs)
             latest_run = recent_runs[0] if recent_runs else None
             latest_batch = recent_batches[0] if recent_batches else None
+            latest_failed_count = ((latest_batch or {}).get("counts") or {}).get("failed")
+            failure_files = (
+                list((latest_batch or {}).get("failureFiles") or [])
+                if latest_failed_count != 0
+                else []
+            )
             next_run_at = min(
                 (str(row.get("nextRunAt") or "") for row in schedules if row.get("enabled") and row.get("nextRunAt")),
                 default="",
@@ -463,6 +490,7 @@ class TorraReadClient:
                 **base,
                 "connected": True,
                 "readable": True,
+                "perFileEvidence": bool(failure_files),
                 "pluginEnabled": manifest.get("enabled") is not False,
                 "configItems": config_items,
                 "tasks": tasks,
@@ -472,6 +500,7 @@ class TorraReadClient:
                 "activeRuns": active_runs,
                 "latestRun": latest_run,
                 "latestBatch": latest_batch,
+                "failureFiles": failure_files,
                 "lastRunAt": str((latest_batch or {}).get("finishedAt") or (latest_run or {}).get("finishedAt") or ""),
                 "nextRunAt": next_run_at,
                 "lastCheckedAt": _iso_timestamp(self.clock()),

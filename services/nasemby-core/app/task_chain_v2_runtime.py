@@ -351,7 +351,7 @@ def _outcome_text(outcome: dict) -> str:
         "action_required": "当前任务需要处理",
         "in_progress": "正在处理",
         "waiting": "等待下一阶段",
-        "evidence_insufficient": "证据不足，暂不判断完成",
+        "evidence_insufficient": "暂未确认，暂不判断完成",
     }.get(state, "状态待确认"))
 
 

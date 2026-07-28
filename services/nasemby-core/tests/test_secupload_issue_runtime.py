@@ -23,7 +23,8 @@ RAW_CATEGORY_ID = "plugin_item_private_category"
 
 def summary(*, next_run_at="2026-07-26T18:00:00+08:00", schedule_enabled=True,
             allow_schedule=True, allow_manual=True, plugin_enabled=True,
-            active=False, failed=1):
+            active=False, failed=1, failure_files=None):
+    failure_files = list(failure_files or [])
     latest_status = "running" if active else "success"
     runs = [
         {
@@ -37,6 +38,7 @@ def summary(*, next_run_at="2026-07-26T18:00:00+08:00", schedule_enabled=True,
             "startedAt": "2026-07-26T12:00:00+08:00",
             "finishedAt": "2026-07-26T12:00:03+08:00",
             "createdAt": "2026-07-26T12:00:00+08:00",
+            "failureFiles": failure_files,
         },
         {
             "runId": "run-middle",
@@ -103,6 +105,7 @@ def summary(*, next_run_at="2026-07-26T18:00:00+08:00", schedule_enabled=True,
             "counts": {"success": 0, "failed": failed},
             "startedAt": "2026-07-26T12:00:00+08:00",
             "finishedAt": "2026-07-26T12:00:03+08:00",
+            "failureFiles": failure_files,
         }],
         "activeRuns": 1 if active else 0,
         "latestBatch": {
@@ -115,10 +118,12 @@ def summary(*, next_run_at="2026-07-26T18:00:00+08:00", schedule_enabled=True,
             "counts": {"success": 0, "failed": failed},
             "startedAt": "2026-07-26T12:00:00+08:00",
             "finishedAt": "2026-07-26T12:00:03+08:00",
+            "failureFiles": failure_files,
         },
         "lastRunAt": "2026-07-26T12:00:03+08:00",
         "nextRunAt": next_run_at,
         "lastCheckedAt": "2026-07-26T12:00:04+08:00",
+        "failureFiles": failure_files,
         "error": "",
     }
 
@@ -199,6 +204,66 @@ class SecuploadIssueRuntimeTests(unittest.TestCase):
     def test_zero_failures_are_normal(self):
         issue = build_secupload_issue(summary(failed=0), now=NOW)
         self.assertEqual((issue["state"], issue["failedTotal"]), ("normal", 0))
+
+    def test_file_details_create_safe_file_facts_and_current_run_wording(self):
+        from app.task_public_runtime import present_system_issue
+
+        issue = build_secupload_issue(summary(failure_files=[{
+            "fileKey": "file-key-private",
+            "batchKey": "private-batch-key",
+            "targetItemId": RAW_CATEGORY_ID,
+            "displayName": "Show.S01E03.mkv",
+            "errorCategory": "network_failed",
+            "errorLabel": "网络连接失败",
+            "retryCount": 4,
+            "observedAt": "2026-07-26T12:00:02+08:00",
+            "plannedRetryAt": "2026-07-26T18:00:00+08:00",
+        }]), now=NOW)
+
+        self.assertTrue(issue["fileEvidenceAvailable"])
+        self.assertEqual(issue["evidenceLimitText"], "")
+        self.assertEqual(issue["categories"][0]["fileEvidenceCount"], 1)
+        self.assertEqual(issue["files"][0]["displayName"], "Show.S01E03.mkv")
+        self.assertEqual(issue["files"][0]["retryCount"], 4)
+        self.assertEqual(issue["fileFacts"][0]["stage"], "cloud115")
+        self.assertEqual(issue["fileFacts"][0]["scope"], "file")
+        self.assertEqual(issue["fileFacts"][0]["state"], "failed")
+        self.assertEqual(issue["fileFacts"][0]["plannedRetryAt"], "2026-07-26T10:00:00Z")
+        public = present_system_issue(issue)
+        self.assertEqual(public["files"][0]["displayName"], "Show.S01E03.mkv")
+        self.assertEqual(public["files"][0]["errorCategory"], "network_failed")
+        self.assertEqual(public["files"][0]["retryCount"], 4)
+        self.assertEqual(public["fileFacts"][0]["scope"], "file")
+        serialized = str(issue)
+        for private_value in (RAW_CATEGORY_ID, "private-batch-key", "file-key-private"):
+            self.assertNotIn(private_value, serialized)
+
+    def test_missing_file_details_is_scoped_to_current_run(self):
+        issue = build_secupload_issue(summary(), now=NOW)
+
+        self.assertFalse(issue["fileEvidenceAvailable"])
+        self.assertEqual(issue["evidenceLimitText"], "本次运行没有文件级详情。")
+        self.assertEqual(issue["files"], [])
+        self.assertEqual(issue["fileFacts"], [])
+
+    def test_file_fact_does_not_claim_retry_when_schedule_is_invalid(self):
+        issue = build_secupload_issue(summary(
+            next_run_at="2026-07-28T18:00:00+08:00",
+            failure_files=[{
+                "fileKey": "file-key-private",
+                "batchKey": "private-batch-key",
+                "targetItemId": RAW_CATEGORY_ID,
+                "displayName": "Show.S01E03.mkv",
+                "errorCategory": "retry_failed",
+                "errorLabel": "重试后仍失败",
+                "retryCount": 4,
+                "plannedRetryAt": "2026-07-28T18:00:00+08:00",
+            }],
+        ), now=NOW)
+
+        self.assertEqual(issue["state"], "action_required")
+        self.assertFalse(issue["fileFacts"][0]["retryEligible"])
+        self.assertNotIn("plannedRetryAt", issue["fileFacts"][0])
 
     def build_service(self, client, *, write_enabled=True):
         temporary = tempfile.TemporaryDirectory()

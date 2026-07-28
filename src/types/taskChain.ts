@@ -105,6 +105,18 @@ export interface SystemIssueCategory {
   retryPolicyText: string;
   nextRunAt?: string;
   fileEvidenceAvailable: boolean;
+  fileEvidenceCount?: number;
+}
+
+export interface SecuploadFailureFile {
+  ref: string;
+  batchRef: string;
+  categoryId: string;
+  displayName: string;
+  errorCategory: string;
+  errorLabel: string;
+  retryCount: number | null;
+  observedAt: string;
 }
 
 export interface SystemIssueSummary {
@@ -119,6 +131,8 @@ export interface SystemIssueSummary {
   categories: SystemIssueCategory[];
   fileEvidenceAvailable: boolean;
   evidenceLimitText?: string;
+  files?: SecuploadFailureFile[];
+  fileFacts?: PipelineFact[];
   manualRetry?: {
     supported: boolean;
     allowed: boolean;

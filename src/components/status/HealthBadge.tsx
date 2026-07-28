@@ -6,7 +6,7 @@ const healthConfig = {
   normal: { label: '正常', icon: CheckCircle2 },
   waiting: { label: '等待', icon: Clock3 },
   protected: { label: '正常保护', icon: ShieldCheck },
-  evidence_insufficient: { label: '证据不足', icon: CircleHelp },
+  evidence_insufficient: { label: '暂未确认', icon: CircleHelp },
   action_required: { label: '需要处理', icon: TriangleAlert }
 } satisfies Record<HealthStateValue, { label: string; icon: typeof CheckCircle2 }>;
 
