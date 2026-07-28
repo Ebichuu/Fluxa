@@ -216,6 +216,41 @@ class ResourceTaskRepositoryTests(unittest.TestCase):
             self.assertEqual(fact["eventAt"], "2026-07-22T05:00:00Z")
             self.assertEqual(fact["firstConfirmedPlayableAt"], "2026-07-22T05:00:00Z")
 
+    def test_episode_history_survives_later_snapshot_without_current_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ResourceTaskRepository(Path(directory) / "media.sqlite3", clock=lambda: NOW)
+            payload = snapshot()
+            payload["items"][0]["episodeEvidence"] = [{
+                "seasonNumber": 2,
+                "episodeStart": 2,
+                "episodeEnd": 3,
+                "numberingScheme": "season_episode",
+                "stage": "library",
+                "artifactKey": "artifact:hash-1",
+                "source": "Symedia",
+                "eventAt": "2026-07-22T05:30:00Z",
+                "observedAt": "2026-07-22T05:40:00Z",
+                "matchMethod": "artifact_exact",
+                "status": "done",
+                "reasonCode": "SYMEDIA_ORGANIZED",
+                "reasonText": "Symedia 整理入库完成",
+                "ownerScope": "episode_range",
+                "ownerTargetKey": "tv:tmdb:100:season:2:episodes:2-3",
+                "parentTargetKey": "tv:tmdb:100:season:2",
+            }]
+            repository.record_snapshot(payload)
+            later = snapshot()
+            later["items"][0]["episodeEvidence"] = []
+            repository.record_snapshot(later)
+
+            events = repository.list_episode_events("chain:test")
+
+            library = next(event for event in events if event["kind"] == "episode_evidence")
+            self.assertEqual(library["artifactKey"], "artifact:hash-1")
+            self.assertEqual(library["eventAt"], "2026-07-22T05:30:00Z")
+            self.assertTrue(library["freshUntil"])
+            self.assertEqual((library["episodeStart"], library["episodeEnd"]), (2, 3))
+
     def test_migration_preview_requires_same_snapshot_symedia_anchor_and_is_read_only(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = ResourceTaskRepository(Path(directory) / "media.sqlite3", clock=lambda: NOW)

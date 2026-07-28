@@ -168,6 +168,27 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
         self.assertEqual(by_stage(episode, "emby")["state"], "succeeded")
         self.assertEqual(by_stage(episode, "emby")["firstConfirmedPlayableAt"], OBSERVED_AT)
 
+    def test_emby_range_keeps_parent_unknown_and_emits_episode_units(self):
+        facts = build_pipeline_source_facts(context(
+            episodeNumber=None,
+            episodeEvidence=[{
+                "ownerTargetKey": "tv:tmdb:100:season:1:episodes:2-3",
+                "seasonNumber": 1,
+                "episodeStart": 2,
+                "episodeEnd": 3,
+            }],
+            embyIndex={
+                "movies": set(),
+                "series": {"100"},
+                "episodes": {("100", 1, 2), ("100", 1, 3)},
+            },
+        ), observed_at=OBSERVED_AT)
+
+        emby = by_stage(facts, "emby")
+        self.assertEqual((emby["state"], emby["evidence"]), ("unknown", "missing"))
+        self.assertEqual([unit["state"] for unit in emby["units"]], ["succeeded", "succeeded"])
+        self.assertTrue(all(unit["eventAt"] == OBSERVED_AT for unit in emby["units"]))
+
 
 if __name__ == "__main__":
     unittest.main()

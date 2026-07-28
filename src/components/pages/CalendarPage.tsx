@@ -739,7 +739,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
               <div>
                 <small>当日详情</small>
                 <h2 id="calendar-detail-title">{detailDate} · {detailMode === 'live' ? selectedEntries.length + ' 条' : '读取中'}</h2>
-                <p>播出、获取和入库证据按作品分别展示。</p>
+                <p>播出与各处理阶段的集级历史按作品分别展示。</p>
               </div>
               <button aria-label="关闭当日详情" className="calendar-detail__close" title="关闭" type="button" onClick={closeDetail}><X size={16} /></button>
             </header>
@@ -759,7 +759,8 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                   <span><b>播出</b><strong>{entry.date}</strong><small>TMDB 日历</small></span>
                   <span><b>获取</b><strong>{formatEvidenceTime(entry.acquiredAt)}</strong><small>{entry.acquisitionSource || '该集暂未确认'}</small></span>
                   <span><b>入库</b><strong>{formatEvidenceTime(entry.libraryAt)}</strong><small>{entry.librarySource || '尚无该集证据'}</small></span>
-                  <span><b>可播放</b><strong>{formatEvidenceTime(entry.playableAt)}</strong><small>{entry.playableSource || '尚无 Emby 集级证据'}</small></span>
+                  <span><b>STRM</b><strong>{formatEvidenceTime(entry.strmAt)}</strong><small>{entry.strmSource || 'Symedia 未提供独立结果'}</small></span>
+                  <span><b>首次确认可播放</b><strong>{formatEvidenceTime(entry.firstConfirmedPlayableAt || entry.playableAt)}</strong><small>{entry.playableSource || '尚无 Emby 集级证据'}</small></span>
                 </div>
                 {entry.reasonText && <p className="calendar-detail-item__reason">{entry.reasonText}</p>}
                 <footer>

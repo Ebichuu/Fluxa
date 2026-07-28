@@ -22,6 +22,8 @@ export interface SubscriptionCalendarEntry {
   acquisitionSource?: string;
   libraryAt?: string;
   librarySource?: string;
+  strmAt?: string;
+  strmSource?: string;
   chainId?: string;
   targetKey?: string;
   healthState?: SubscriptionHealthState;
@@ -34,6 +36,7 @@ export interface SubscriptionCalendarEntry {
   includePastEpisodes?: boolean;
   allowedDelayHours?: number;
   playableAt?: string;
+  firstConfirmedPlayableAt?: string;
   playableSource?: string;
   outcomeState?: PipelineOutcomeState;
   pipelineOutcome?: PipelineOutcome;

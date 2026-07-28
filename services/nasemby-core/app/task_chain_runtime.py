@@ -95,6 +95,7 @@ def _pipeline_source_facts(
         "qbTasks": sources.get("qbTasks") or [],
         "cloud115": sources.get("cloud115") or {},
         "symediaRows": sources.get("symediaRows") or [],
+        "episodeEvidence": sources.get("episodeEvidence") or [],
         "embyIndex": sources.get("embyIndex"),
     }, observed_at=observed_at)
 
@@ -430,6 +431,7 @@ def _build_subscription_item(
             "qbTasks": matched_qb,
             "cloud115": upload_summary,
             "symediaRows": matched_symedia,
+            "episodeEvidence": episode_evidence,
             "embyIndex": emby_index,
         },
         now=now,
@@ -530,6 +532,7 @@ def _build_evidence_target_item(
             "qbTasks": matched_qb,
             "cloud115": upload_summary,
             "symediaRows": matched_symedia,
+            "episodeEvidence": episode_evidence,
             "embyIndex": emby_index,
         },
         now=now,
@@ -682,7 +685,7 @@ def _orphan_symedia_item(
     }
     pipeline_facts = _pipeline_source_facts(
         target_item,
-        {"symediaRows": [row], "embyIndex": emby_index},
+        {"symediaRows": [row], "episodeEvidence": episode_evidence, "embyIndex": emby_index},
         now=now,
     )
     indexed, emby_evidence_scope = _legacy_emby_projection(pipeline_facts)
@@ -745,7 +748,7 @@ def _orphan_torra_item(
     }
     pipeline_facts = _pipeline_source_facts(
         target_item,
-        {"torra": row, "cloud115": upload_summary, "embyIndex": emby_index},
+        {"torra": row, "cloud115": upload_summary, "episodeEvidence": episode_evidence, "embyIndex": emby_index},
         now=now,
     )
     indexed, emby_evidence_scope = _legacy_emby_projection(pipeline_facts)

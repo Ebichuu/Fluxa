@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 import time
 from copy import deepcopy
@@ -142,7 +143,10 @@ def _empty_task() -> dict:
         "acquisitionSource": "",
         "libraryAt": "",
         "librarySource": "",
+        "strmAt": "",
+        "strmSource": "",
         "playableAt": "",
+        "firstConfirmedPlayableAt": "",
         "playableSource": "",
         "outcomeState": "evidence_insufficient",
         "pipelineOutcome": present_pipeline_outcome(None),
@@ -160,6 +164,115 @@ def _task_matches_exact_target(entry: dict, item: dict) -> bool:
         and _integer(item.get("episodeNumber")) == _integer(entry.get("episodeNumber"))
         and _integer(entry.get("episodeNumber")) > 0
     )
+
+
+def _event_covers_entry(event: dict, entry: dict) -> bool:
+    episode = _integer(entry.get("episodeNumber"))
+    return bool(
+        episode > 0
+        and _integer(event.get("seasonNumber")) == _integer(entry.get("seasonNumber"))
+        and _integer(event.get("episodeStart")) <= episode <= _integer(event.get("episodeEnd"))
+        and (
+            event.get("kind") in {"pipeline_fact", "pipeline_fact_unit"}
+            or _text(event.get("ownerTargetKey"))
+        )
+    )
+
+
+def _snapshot_episode_events(item: dict) -> list[dict]:
+    stage_names = {"download": "qb", "library": "symedia", "strm": "strm", "emby": "emby"}
+    statuses = {"done": "succeeded", "blocked": "failed", "active": "active", "waiting": "waiting"}
+    result = []
+    for row in item.get("episodeEvidence") or []:
+        if not isinstance(row, dict) or not row.get("ownerTargetKey"):
+            continue
+        stage = stage_names.get(_text(row.get("stage")))
+        status = statuses.get(_text(row.get("status")))
+        if not stage or not status or not row.get("eventAt"):
+            continue
+        result.append({
+            **row,
+            "kind": "episode_evidence",
+            "stage": stage,
+            "status": status,
+            "eventAt": _text(row.get("eventAt")),
+        })
+    for fact in item.get("pipelineFacts") or []:
+        if not isinstance(fact, dict) or fact.get("stage") not in {"strm", "emby"}:
+            continue
+        for unit in fact.get("units") or []:
+            match = re.fullmatch(r"tv:[^:]+:s(\d+):e(\d+)", _text(unit.get("unitKey")))
+            if not match or unit.get("evidence") != "verified":
+                continue
+            episode = int(match.group(2))
+            result.append({
+                "kind": "pipeline_fact_unit",
+                "currentObservation": True,
+                "stage": fact.get("stage"),
+                "status": unit.get("state"),
+                "seasonNumber": int(match.group(1)),
+                "episodeStart": episode,
+                "episodeEnd": episode,
+                "eventAt": _text(unit.get("eventAt")),
+                "observedAt": _text(unit.get("observedAt")),
+                "freshUntil": _text(unit.get("freshUntil")),
+                "source": _text(fact.get("source")),
+                "reasonCode": _text(unit.get("reasonCode")),
+                "reasonText": _text(unit.get("reasonText")),
+            })
+    return result
+
+
+def _history_episode_events(item: dict, repository) -> list[dict]:
+    if not repository or not callable(getattr(repository, "list_episode_events", None)):
+        return []
+    try:
+        rows = repository.list_episode_events(item.get("chainId"), limit=1000)
+        if _integer(item.get("episodeNumber")) <= 0:
+            return rows
+        result = []
+        for row in rows:
+            value = dict(row)
+            if value.get("kind") == "pipeline_fact":
+                value.update({
+                    "seasonNumber": _integer(item.get("seasonNumber")),
+                    "episodeStart": _integer(item.get("episodeNumber")),
+                    "episodeEnd": _integer(item.get("episodeNumber")),
+                })
+            result.append(value)
+        return result
+    except Exception:
+        return []
+
+
+def _episode_events(item: dict, repository) -> list[dict]:
+    merged = {}
+    for row in [*_history_episode_events(item, repository), *_snapshot_episode_events(item)]:
+        if not isinstance(row, dict):
+            continue
+        key = (
+            _text(row.get("kind")), _text(row.get("stage")), _text(row.get("status")),
+            _integer(row.get("seasonNumber")), _integer(row.get("episodeStart")),
+            _integer(row.get("episodeEnd")), _text(row.get("eventAt")),
+            _text(row.get("ownerTargetKey")),
+        )
+        merged[key] = row
+    return list(merged.values())
+
+
+def _event_index_key(item: dict) -> str:
+    return _text(item.get("chainId") or item.get("targetKey"))
+
+
+def _episode_event_index(items: list[dict], repository) -> dict[str, list[dict]]:
+    result = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key = _event_index_key(item)
+        if key and key not in result:
+            result[key] = _episode_events(item, repository)
+    return result
 
 
 def _current_pipeline_facts(item: dict, current: datetime) -> list[dict]:
@@ -182,31 +295,85 @@ def _latest_fact(facts: list[dict], stages: set[str], states: set[str]) -> dict 
     return max(candidates, key=lambda row: _text(row.get("observedAt"))) if candidates else None
 
 
-def _fact_time(fact: dict | None) -> tuple[str, str]:
-    if not fact:
+def _event_time(event: dict | None) -> tuple[str, str]:
+    if not event:
         return "", ""
-    return _text(fact.get("observedAt")), _text(fact.get("source"))
+    return _text(event.get("eventAt") or event.get("observedAt")), _text(event.get("source"))
 
 
-def _public_task(entry: dict, items: list[dict], current: datetime) -> dict:
-    matches = [
+def _stage_event(events: list[dict], entry: dict, stage: str, status: str, *, first=False) -> dict | None:
+    candidates = [
+        event for event in events
+        if _text(event.get("stage")) == stage
+        and _text(event.get("status")) == status
+        and _event_covers_entry(event, entry)
+        and _text(event.get("eventAt") or event.get("observedAt"))
+    ]
+    if not candidates:
+        return None
+    selector = min if first else max
+    return selector(candidates, key=lambda row: _text(row.get("eventAt") or row.get("observedAt")))
+
+
+def _current_episode_success(events: list[dict], entry: dict, stage: str, current: datetime) -> dict | None:
+    candidates = []
+    for event in events:
+        if _text(event.get("kind")) != "pipeline_fact_unit" or not event.get("currentObservation"):
+            continue
+        if _text(event.get("stage")) != stage or _text(event.get("status")) != "succeeded":
+            continue
+        if not _event_covers_entry(event, entry):
+            continue
+        fresh_until = _as_datetime(event.get("freshUntil"))
+        if fresh_until and fresh_until >= current.astimezone(timezone.utc):
+            candidates.append(event)
+    return max(candidates, key=lambda row: _text(row.get("observedAt"))) if candidates else None
+
+
+def _public_task(entry: dict, items: list[dict], current: datetime, repository=None, event_index=None) -> dict:
+    candidates = [
         item for item in items
-        if isinstance(item, dict) and _task_matches_exact_target(entry, item)
+        if isinstance(item, dict) and _matches_identity(entry, item)
+    ]
+    event_index = event_index or {
+        _event_index_key(item): _episode_events(item, repository)
+        for item in candidates
+    }
+    matches = [
+        item for item in candidates
+        if _task_matches_exact_target(entry, item)
+        or any(_event_covers_entry(event, entry) for event in event_index.get(_event_index_key(item), []))
     ]
     if not matches:
         return _empty_task()
     item = sorted(matches, key=lambda row: _match_rank(entry, row))[0]
+    episode_events = event_index.get(_event_index_key(item), [])
     facts = _current_pipeline_facts(item, current)
-    acquired_fact = _latest_fact(facts, {"torra", "qb"}, {"active", "succeeded"})
-    library_fact = _latest_fact(facts, {"symedia"}, {"succeeded"})
-    playable_fact = _latest_fact(facts, {"emby"}, {"succeeded"})
+    acquired_event = _stage_event(episode_events, entry, "qb", "succeeded")
+    library_event = _stage_event(episode_events, entry, "symedia", "succeeded")
+    strm_event = _stage_event(episode_events, entry, "strm", "succeeded")
+    playable_event = _stage_event(episode_events, entry, "emby", "succeeded", first=True)
+    acquired_fact = _latest_fact(facts, {"qb"}, {"active", "succeeded"}) if _task_matches_exact_target(entry, item) else None
+    library_fact = _latest_fact(facts, {"symedia"}, {"succeeded"}) if _task_matches_exact_target(entry, item) else None
+    playable_fact = _latest_fact(facts, {"emby"}, {"succeeded"}) if _task_matches_exact_target(entry, item) else None
     if playable_fact and _text(entry.get("mediaType")) == "tv" and playable_fact.get("scope") != "episode":
         playable_fact = None
-    acquired_at, acquisition_source = _fact_time(acquired_fact)
-    library_at, library_source = _fact_time(library_fact)
-    playable_at, playable_source = _fact_time(playable_fact)
+    acquired_at, acquisition_source = _event_time(acquired_event or acquired_fact)
+    library_at, library_source = _event_time(library_event or library_fact)
+    strm_at, strm_source = _event_time(strm_event)
+    playable_at, playable_source = _event_time(playable_event or playable_fact)
     pipeline_outcome = present_pipeline_outcome(item.get("pipelineOutcome"))
-    if pipeline_outcome["state"] == "playable" and not playable_fact:
+    current_episode_playable = _current_episode_success(episode_events, entry, "emby", current)
+    if current_episode_playable:
+        pipeline_outcome = {
+            "state": "playable",
+            "stage": "emby",
+            "reasonCode": "EMBY_EPISODE_INDEXED",
+            "reasonText": "Emby 已收录目标集",
+            "observedAt": _text(current_episode_playable.get("observedAt")),
+            "playableAt": playable_at,
+        }
+    elif pipeline_outcome["state"] == "playable" and not playable_fact:
         pipeline_outcome = present_pipeline_outcome(None)
     outcome_state = pipeline_outcome["state"]
     health_state = {
@@ -218,6 +385,21 @@ def _public_task(entry: dict, items: list[dict], current: datetime) -> dict:
         "evidence_insufficient": "evidence_insufficient",
     }.get(outcome_state, "evidence_insufficient")
     torra = next((fact for fact in facts if fact.get("stage") == "torra"), None)
+    latest_failure = max((
+        event for event in episode_events
+        if _event_covers_entry(event, entry) and event.get("status") == "failed"
+    ), key=lambda row: _text(row.get("eventAt")), default=None)
+    recovered = bool(latest_failure and any(
+        event.get("stage") == latest_failure.get("stage")
+        and event.get("artifactKey")
+        and event.get("artifactKey") == latest_failure.get("artifactKey")
+        and event.get("status") in {"succeeded", "recovered"}
+        and _event_covers_entry(event, entry)
+        and _text(event.get("eventAt")) > _text(latest_failure.get("eventAt"))
+        for event in episode_events
+    ))
+    if latest_failure and not recovered and outcome_state != "action_required":
+        health_state = "evidence_insufficient"
     common = {
         "chainId": _text(item.get("chainId")),
         "targetKey": _text(item.get("targetKey")),
@@ -226,14 +408,25 @@ def _public_task(entry: dict, items: list[dict], current: datetime) -> dict:
     return {
         **common,
         "healthState": health_state,
-        "reasonCode": pipeline_outcome["reasonCode"],
-        "reasonText": pipeline_outcome["reasonText"],
+        "reasonCode": (
+            "HISTORICAL_FAILURE_CURRENT_UNKNOWN"
+            if latest_failure and not recovered and outcome_state != "action_required"
+            else pipeline_outcome["reasonCode"]
+        ),
+        "reasonText": (
+            f"曾于 {_text(latest_failure.get('eventAt'))} 失败 · 当前状态暂未确认"
+            if latest_failure and not recovered and outcome_state != "action_required"
+            else pipeline_outcome["reasonText"]
+        ),
         "observedAt": pipeline_outcome["observedAt"],
         "acquiredAt": acquired_at,
         "acquisitionSource": acquisition_source,
         "libraryAt": library_at,
         "librarySource": library_source,
+        "strmAt": strm_at,
+        "strmSource": strm_source,
         "playableAt": playable_at,
+        "firstConfirmedPlayableAt": playable_at,
         "playableSource": playable_source,
         "outcomeState": outcome_state,
         "pipelineOutcome": pipeline_outcome,
@@ -558,13 +751,15 @@ class CalendarTimelineService:
         calendar = self._base_calendar(year, month, media_type, start, end)
         task_service = self.app.extensions.get("mcc_task_chain_v2_service")
         task_payload = task_service.full_snapshot() if task_service else {"items": [], "version": ""}
+        repository = getattr(task_service, "repository", None) if task_service else None
         task_items = task_payload.get("items") or []
+        event_index = _episode_event_index(task_items, repository)
         raw_entries = []
         for entry in calendar.get("entries") or []:
             value = _normalize_entry_evidence({
                 **entry,
                 "airAt": f"{entry.get('date')}T00:00:00+08:00" if entry.get("date") else "",
-                **_public_task(entry, task_items, current),
+                **_public_task(entry, task_items, current, repository, event_index),
             })
             raw_entries.append({**value, "linkState": _calendar_link_state(value)})
         excluded_before_subscription = sum(_is_pre_subscription_episode(entry) for entry in raw_entries)

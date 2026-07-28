@@ -242,6 +242,14 @@ Compose 通过 `MCC_DATA_ROOT` 把三个目录映射到同一个 fnOS 根目录�
 
 ## 13. 变更历史
 
+### 2026-07-28 — 日历集级历史桥接 P1.3d
+
+**变更内容**：日历从现有 `resource_events` 与当前六阶段快照合并读取集级 qB、Symedia、STRM 和 Emby 事件；规范范围 owner 可投影到对应单集，但底层 artifact 仍只有一个 owner。成功发生时间永久保留，当前 Emby 命中单独受 `freshUntil` 约束；失败过期后保留历史，只有同一 artifact、同一阶段的后续成功或恢复才能结束历史失败提示。公开日历条目兼容增加 `strmAt/strmSource/firstConfirmedPlayableAt`。
+
+**变更理由**：日历需要同时回答处理历史和当前是否可播放，不能因观察窗口过期删除已经发生的事实，也不能用其他文件或其他阶段的成功误报恢复。
+
+**影响范围**：任务来源事实、资源事件读取、日历聚合、公开 TypeScript 类型、日历详情与定向回归测试。API 只增加可选响应字段；没有新增数据库表、外部请求或写动作，也没有从归档、路径或 Emby 反推 STRM。
+
 ### 2026-07-28 — 今日归档事件查询 P1.3c
 
 **变更内容**：任务列表新增可选 `archivedDate`，按 Asia/Shanghai 从 Symedia 成功文件单元实时筛选并用稳定内部身份去重，返回 `archivedFiles/linkedFiles/linkedTasks/unlinkedFiles`。只有唯一规范链拥有文件时才计入已关联；链别名解析后统计任务。首页归档数字和深链改用同一聚合，不再复用 Emby `playable/completedDate`。

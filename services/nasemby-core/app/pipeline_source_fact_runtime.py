@@ -430,6 +430,47 @@ def _tv_emby_fact(index, context, scope, window):
             reason_text="Emby 尚未收录目标集",
         )
 
+    episode_targets = sorted({
+        (_integer(row.get("seasonNumber")), episode_number)
+        for row in context.get("episodeEvidence") or []
+        if isinstance(row, dict)
+        and _text(row.get("ownerTargetKey"))
+        and _integer(row.get("seasonNumber")) == season
+        for episode_number in range(
+            max(1, _integer(row.get("episodeStart"))),
+            min(10000, _integer(row.get("episodeEnd"))) + 1,
+        )
+    })
+    if episode_targets:
+        units = []
+        for unit_season, unit_episode in episode_targets:
+            present = _episode_key(tmdb_id, unit_season, unit_episode) in (index.get("episodes") or set())
+            unit = {
+                "unitKey": f"tv:{tmdb_id}:s{unit_season}:e{unit_episode}",
+                "state": "succeeded" if present else "unknown",
+                "scope": "episode",
+                "evidence": "verified" if present else "missing",
+                "observedAt": window["observedAt"],
+                "freshUntil": window["freshUntil"],
+                "sourceRef": f"tv:{tmdb_id}:s{unit_season}:e{unit_episode}",
+                "reasonCode": "EMBY_EPISODE_INDEXED" if present else "EMBY_EPISODE_EVIDENCE_MISSING",
+                "reasonText": "Emby 已收录目标集" if present else "目标集当前没有明确 Emby 命中",
+            }
+            if present:
+                unit["eventAt"] = window["observedAt"]
+            units.append(unit)
+        return _unknown(
+            "emby", scope, window,
+            "EMBY_EPISODE_EVIDENCE_MISSING" if series_present else "EMBY_TARGET_RANGE_REQUIRES_EPISODE_PROJECTION",
+            reason_text=(
+                "Emby 已收录剧集作品，目标范围按集级结果单独确认"
+                if series_present
+                else "Emby 集级结果按目标范围单独确认"
+            ),
+            source="Emby",
+            units=units,
+        )
+
     if series_present:
         return _unknown(
             "emby", scope, window, "EMBY_EPISODE_EVIDENCE_MISSING",

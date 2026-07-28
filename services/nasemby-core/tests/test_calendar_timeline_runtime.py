@@ -254,6 +254,226 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
         self.assertFalse(entry["inLibrary"])
         self.assertEqual(entry["status"], "unknown")
 
+    def test_range_owner_projects_historical_library_time_after_freshness_expires(self):
+        item = FakeTaskService().full_snapshot()["items"][0]
+        item["episodeNumber"] = 0
+        item["targetKey"] = "tv:tmdb:101:season:2"
+        item["pipelineFacts"] = [pipeline_fact(
+            "symedia", "succeeded", scope="file",
+            observed_at="2026-07-22T01:30:00Z", fresh_until="2026-07-22T01:35:00Z",
+        )]
+        item["pipelineOutcome"] = {
+            "state": "evidence_insufficient", "stage": "", "reasonCode": "EVIDENCE_INSUFFICIENT",
+            "reasonText": "缺少当前目标的明确可播放证据", "observedAt": "", "playableAt": "",
+        }
+        item["episodeEvidence"] = [{
+            "seasonNumber": 2, "episodeStart": 2, "episodeEnd": 3,
+            "numberingScheme": "season_episode", "stage": "library",
+            "artifactKey": "artifact:symedia-range", "source": "Symedia",
+            "eventAt": "2026-07-22T01:20:00Z", "observedAt": "2026-07-22T01:30:00Z",
+            "matchMethod": "artifact_exact", "status": "done", "reasonCode": "SYMEDIA_ORGANIZED",
+            "reasonText": "Symedia 整理入库完成", "ownerScope": "episode_range",
+            "ownerTargetKey": "tv:tmdb:101:season:2:episodes:2-3",
+            "parentTargetKey": "tv:tmdb:101:season:2",
+        }]
+        application = Flask(f"{__name__}-range-history")
+        application.extensions["mcc_task_chain_v2_service"] = FakeTaskService([item])
+        register_calendar_timeline(
+            application,
+            calendar_loader=calendar_loader,
+            clock=lambda: datetime(2026, 7, 23, 3, 0, tzinfo=timezone.utc),
+        )
+
+        entry = application.test_client().get(
+            "/api/v2/calendar?year=2026&month=7&type=tv"
+        ).get_json()["calendar"]["entries"][0]
+
+        self.assertEqual(entry["libraryAt"], "2026-07-22T01:20:00Z")
+        self.assertTrue(entry["inLibrary"])
+
+    def test_emby_episode_history_remains_when_current_confirmation_expires(self):
+        item = FakeTaskService().full_snapshot()["items"][0]
+        item["episodeNumber"] = 0
+        item["targetKey"] = "tv:tmdb:101:season:2"
+        item["episodeEvidence"] = [{
+            "seasonNumber": 2, "episodeStart": 3, "episodeEnd": 3,
+            "numberingScheme": "season_episode", "stage": "library",
+            "artifactKey": "artifact:symedia-3", "source": "Symedia",
+            "eventAt": "2026-07-22T01:10:00Z", "observedAt": "2026-07-22T01:15:00Z",
+            "matchMethod": "artifact_exact", "status": "done", "reasonCode": "SYMEDIA_ORGANIZED",
+            "reasonText": "Symedia 整理入库完成", "ownerScope": "episode",
+            "ownerTargetKey": "tv:tmdb:101:season:2:episode:3",
+            "parentTargetKey": "tv:tmdb:101:season:2",
+        }]
+        item["pipelineFacts"] = [{
+            **pipeline_fact(
+                "emby", "unknown", scope="season", observed_at="2026-07-22T01:20:00Z",
+                fresh_until="2026-07-22T02:00:00Z",
+            ),
+            "units": [{
+                "unitKey": "tv:101:s2:e3", "state": "succeeded", "scope": "episode",
+                "evidence": "verified", "eventAt": "2026-07-22T01:20:00Z",
+                "observedAt": "2026-07-22T01:20:00Z", "freshUntil": "2026-07-22T02:00:00Z",
+                "sourceRef": "tv:101:s2:e3", "reasonCode": "EMBY_EPISODE_INDEXED",
+                "reasonText": "Emby 已收录目标集", "retryEligible": False,
+            }],
+        }]
+        item["pipelineOutcome"] = {
+            "state": "evidence_insufficient", "stage": "", "reasonCode": "EVIDENCE_INSUFFICIENT",
+            "reasonText": "缺少当前目标的明确可播放证据", "observedAt": "", "playableAt": "",
+        }
+
+        current_app = Flask(f"{__name__}-emby-current")
+        current_app.extensions["mcc_task_chain_v2_service"] = FakeTaskService([item])
+        register_calendar_timeline(
+            current_app, calendar_loader=calendar_loader,
+            clock=lambda: datetime(2026, 7, 22, 1, 31, tzinfo=timezone.utc),
+        )
+        stale_app = Flask(f"{__name__}-emby-stale")
+        stale_app.extensions["mcc_task_chain_v2_service"] = FakeTaskService([item])
+        register_calendar_timeline(
+            stale_app, calendar_loader=calendar_loader,
+            clock=lambda: datetime(2026, 7, 23, 1, 31, tzinfo=timezone.utc),
+        )
+
+        current_entry = current_app.test_client().get(
+            "/api/v2/calendar?year=2026&month=7&type=tv"
+        ).get_json()["calendar"]["entries"][0]
+        stale_entry = stale_app.test_client().get(
+            "/api/v2/calendar?year=2026&month=7&type=tv"
+        ).get_json()["calendar"]["entries"][0]
+
+        self.assertEqual(current_entry["outcomeState"], "playable")
+        self.assertEqual(stale_entry["outcomeState"], "evidence_insufficient")
+        self.assertEqual(current_entry["playableAt"], "2026-07-22T01:20:00Z")
+        self.assertEqual(stale_entry["playableAt"], "2026-07-22T01:20:00Z")
+        self.assertEqual(stale_entry["firstConfirmedPlayableAt"], "2026-07-22T01:20:00Z")
+
+    def test_historical_emby_event_does_not_replace_current_missing_snapshot(self):
+        class HistoricalRepository:
+            def list_episode_events(self, chain_id, limit=1000):
+                return [{
+                    "kind": "pipeline_fact_unit",
+                    "stage": "emby",
+                    "status": "succeeded",
+                    "seasonNumber": 2,
+                    "episodeStart": 3,
+                    "episodeEnd": 3,
+                    "eventAt": "2026-07-22T01:20:00Z",
+                    "observedAt": "2026-07-22T01:20:00Z",
+                    "freshUntil": "2026-07-22T02:00:00Z",
+                    "source": "Emby",
+                }]
+
+        item = FakeTaskService().full_snapshot()["items"][0]
+        item["pipelineFacts"] = [pipeline_fact(
+            "emby", "unknown", observed_at="2026-07-22T01:30:00Z",
+            fresh_until="2026-07-22T02:00:00Z",
+        )]
+        item["pipelineOutcome"] = {
+            "state": "evidence_insufficient", "stage": "", "reasonCode": "EVIDENCE_INSUFFICIENT",
+            "reasonText": "当前状态暂未确认", "observedAt": "2026-07-22T01:30:00Z", "playableAt": "",
+        }
+        task_service = FakeTaskService([item])
+        task_service.repository = HistoricalRepository()
+        application = Flask(f"{__name__}-emby-current-missing")
+        application.extensions["mcc_task_chain_v2_service"] = task_service
+        register_calendar_timeline(
+            application, calendar_loader=calendar_loader,
+            clock=lambda: datetime(2026, 7, 22, 1, 31, tzinfo=timezone.utc),
+        )
+
+        entry = application.test_client().get(
+            "/api/v2/calendar?year=2026&month=7&type=tv"
+        ).get_json()["calendar"]["entries"][0]
+
+        self.assertEqual(entry["outcomeState"], "evidence_insufficient")
+        self.assertEqual(entry["playableAt"], "2026-07-22T01:20:00Z")
+
+    def test_expired_failure_keeps_history_without_current_red_state(self):
+        item = FakeTaskService().full_snapshot()["items"][0]
+        item["episodeNumber"] = 0
+        item["targetKey"] = "tv:tmdb:101:season:2"
+        item["pipelineFacts"] = []
+        item["pipelineOutcome"] = {
+            "state": "evidence_insufficient", "stage": "", "reasonCode": "EVIDENCE_INSUFFICIENT",
+            "reasonText": "当前状态暂未确认", "observedAt": "", "playableAt": "",
+        }
+        item["episodeEvidence"] = [{
+            "seasonNumber": 2, "episodeStart": 3, "episodeEnd": 3,
+            "numberingScheme": "season_episode", "stage": "library",
+            "artifactKey": "artifact:failed-3", "source": "Symedia",
+            "eventAt": "2026-07-22T01:20:00Z", "observedAt": "2026-07-22T01:30:00Z",
+            "matchMethod": "artifact_exact", "status": "blocked", "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+            "reasonText": "Symedia 整理失败", "ownerScope": "episode",
+            "ownerTargetKey": "tv:tmdb:101:season:2:episode:3",
+            "parentTargetKey": "tv:tmdb:101:season:2",
+        }]
+        application = Flask(f"{__name__}-failure-history")
+        application.extensions["mcc_task_chain_v2_service"] = FakeTaskService([item])
+        register_calendar_timeline(
+            application, calendar_loader=calendar_loader,
+            clock=lambda: datetime(2026, 7, 23, 3, 0, tzinfo=timezone.utc),
+        )
+
+        entry = application.test_client().get(
+            "/api/v2/calendar?year=2026&month=7&type=tv"
+        ).get_json()["calendar"]["entries"][0]
+
+        self.assertEqual(entry["healthState"], "evidence_insufficient")
+        self.assertEqual(entry["reasonCode"], "HISTORICAL_FAILURE_CURRENT_UNKNOWN")
+        self.assertIn("曾于 2026-07-22T01:20:00Z 失败", entry["reasonText"])
+
+    def test_historical_failure_recovery_requires_same_artifact_and_stage(self):
+        item = FakeTaskService().full_snapshot()["items"][0]
+        item["episodeNumber"] = 0
+        item["targetKey"] = "tv:tmdb:101:season:2"
+        item["pipelineFacts"] = []
+        item["pipelineOutcome"] = {
+            "state": "evidence_insufficient", "stage": "", "reasonCode": "EVIDENCE_INSUFFICIENT",
+            "reasonText": "当前状态暂未确认", "observedAt": "", "playableAt": "",
+        }
+        failed = {
+            "seasonNumber": 2, "episodeStart": 3, "episodeEnd": 3,
+            "numberingScheme": "season_episode", "stage": "library",
+            "artifactKey": "artifact:failed-3", "source": "Symedia",
+            "eventAt": "2026-07-22T01:20:00Z", "observedAt": "2026-07-22T01:30:00Z",
+            "matchMethod": "artifact_exact", "status": "blocked", "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+            "reasonText": "Symedia 整理失败", "ownerScope": "episode",
+            "ownerTargetKey": "tv:tmdb:101:season:2:episode:3",
+            "parentTargetKey": "tv:tmdb:101:season:2",
+        }
+        succeeded = {
+            **failed,
+            "artifactKey": "artifact:other-3",
+            "eventAt": "2026-07-22T02:20:00Z",
+            "observedAt": "2026-07-22T02:30:00Z",
+            "status": "done",
+            "reasonCode": "SYMEDIA_ORGANIZED",
+            "reasonText": "Symedia 整理入库完成",
+        }
+        item["episodeEvidence"] = [failed, succeeded]
+        application = Flask(f"{__name__}-failure-other-artifact")
+        application.extensions["mcc_task_chain_v2_service"] = FakeTaskService([item])
+        register_calendar_timeline(application, calendar_loader=calendar_loader)
+
+        entry = application.test_client().get(
+            "/api/v2/calendar?year=2026&month=7&type=tv"
+        ).get_json()["calendar"]["entries"][0]
+
+        self.assertEqual(entry["reasonCode"], "HISTORICAL_FAILURE_CURRENT_UNKNOWN")
+
+        item["episodeEvidence"] = [failed, {**succeeded, "artifactKey": failed["artifactKey"]}]
+        recovered_app = Flask(f"{__name__}-failure-same-artifact")
+        recovered_app.extensions["mcc_task_chain_v2_service"] = FakeTaskService([item])
+        register_calendar_timeline(recovered_app, calendar_loader=calendar_loader)
+
+        recovered_entry = recovered_app.test_client().get(
+            "/api/v2/calendar?year=2026&month=7&type=tv"
+        ).get_json()["calendar"]["entries"][0]
+
+        self.assertNotEqual(recovered_entry["reasonCode"], "HISTORICAL_FAILURE_CURRENT_UNKNOWN")
+
     def test_legacy_in_library_flag_does_not_replace_exact_symedia_evidence(self):
         def legacy_library_loader(year, month, media_type):
             payload = calendar_loader(year, month, media_type)
@@ -316,6 +536,37 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
             self.assertIsNone(service.cached_snapshot(2026, 7, "tv"))
         with patch("app.calendar_timeline_runtime.time.monotonic", return_value=401.0):
             self.assertIsNone(service.cached_snapshot(2026, 7, "tv"))
+
+    def test_calendar_reads_each_task_history_once_per_snapshot(self):
+        class CountingRepository:
+            def __init__(self):
+                self.calls = 0
+
+            def list_episode_events(self, chain_id, limit=1000):
+                self.calls += 1
+                return []
+
+        def repeated_loader(year, month, media_type):
+            payload = calendar_loader(year, month, media_type)
+            source = payload["entries"][0]
+            payload["entries"] = [
+                {**source, "episode_number": episode, "episode_label": f"S02E{episode:02d}"}
+                for episode in range(1, 5)
+            ]
+            return payload
+
+        task_service = FakeTaskService()
+        task_service.repository = CountingRepository()
+        application = Flask(f"{__name__}-history-index")
+        application.extensions["mcc_task_chain_v2_service"] = task_service
+        register_calendar_timeline(application, calendar_loader=repeated_loader)
+
+        response = application.test_client().get(
+            "/api/v2/calendar?year=2026&month=7&type=tv"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(task_service.repository.calls, 1)
 
     def test_local_subscription_calendar_generation_is_bounded_concurrent_and_complete(self):
         items = [{"id": index, "title": f"测试剧 {index:02d}"} for index in range(12)]

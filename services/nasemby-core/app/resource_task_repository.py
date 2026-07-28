@@ -396,6 +396,88 @@ class ResourceTaskRepository:
                 },
                 now_text,
             )
+            if stage == "emby":
+                for unit in fact.get("units") or []:
+                    if unit.get("state") != "succeeded" or unit.get("evidence") != "verified":
+                        continue
+                    if not unit.get("eventAt"):
+                        continue
+                    unit_key_value = str(unit.get("unitKey") or "")
+                    episode_match = re.fullmatch(r"tv:[^:]+:s(\d+):e(\d+)", unit_key_value)
+                    episode_payload = {
+                        "seasonNumber": int(episode_match.group(1)),
+                        "episodeStart": int(episode_match.group(2)),
+                        "episodeEnd": int(episode_match.group(2)),
+                    } if episode_match else {}
+                    event_count += self._append_event(
+                        connection,
+                        chain_id,
+                        "",
+                        {
+                            "stage": "emby",
+                            "status": "succeeded",
+                            "healthState": "normal",
+                            "evidence": "verified",
+                            "eventAt": unit.get("eventAt"),
+                            "observedAt": unit.get("observedAt"),
+                            "freshUntil": unit.get("freshUntil"),
+                            "source": fact.get("source") or "Emby",
+                            "reasonCode": unit.get("reasonCode") or "EMBY_EPISODE_INDEXED",
+                            "reasonText": unit.get("reasonText") or "Emby 已收录目标集",
+                            "_eventPayload": {
+                                "kind": "pipeline_fact_unit",
+                                "unitKey": _opaque_ref("unit", unit_key_value),
+                                **episode_payload,
+                            },
+                        },
+                        now_text,
+                    )
+        return event_count
+
+    def _record_episode_evidence(self, connection, chain_id, item, now_text):
+        event_count = 0
+        stage_names = {"download": "qb", "library": "symedia", "strm": "strm", "emby": "emby"}
+        statuses = {"done": "succeeded", "blocked": "failed", "active": "active", "waiting": "waiting"}
+        for row in item.get("episodeEvidence") or []:
+            if not isinstance(row, dict):
+                continue
+            owner_target = _text(row.get("ownerTargetKey"), 240)
+            artifact = _text(row.get("artifactKey"), 240)
+            event_at = _text(row.get("eventAt"), 80)
+            stage = stage_names.get(str(row.get("stage") or ""))
+            status = statuses.get(str(row.get("status") or ""))
+            if not owner_target or not artifact or not event_at or not stage or not status:
+                continue
+            reason_code = _safe_code(row.get("reasonCode"), "")
+            protected = status == "failed" and reason_code.startswith("QUALITY_")
+            event_status = "protected" if protected else status
+            event_count += self._append_event(
+                connection,
+                chain_id,
+                artifact,
+                {
+                    "stage": stage,
+                    "status": event_status,
+                    "healthState": "protected" if protected else "action_required" if status == "failed" else "normal" if status == "succeeded" else "waiting",
+                    "evidence": "verified",
+                    "eventAt": event_at,
+                    "observedAt": row.get("observedAt") or now_text,
+                    "freshUntil": item.get("freshUntil") or _iso(self.clock() + timedelta(minutes=5)),
+                    "source": row.get("source"),
+                    "reasonCode": reason_code or f"{stage.upper()}_{status.upper()}",
+                    "reasonText": row.get("reasonText"),
+                    "_eventPayload": {
+                        "kind": "episode_evidence",
+                        "ownerScope": _text(row.get("ownerScope"), 40),
+                        "ownerTargetKey": owner_target,
+                        "parentTargetKey": _text(row.get("parentTargetKey"), 240),
+                        "seasonNumber": int(row.get("seasonNumber") or 0),
+                        "episodeStart": int(row.get("episodeStart") or 0),
+                        "episodeEnd": int(row.get("episodeEnd") or 0),
+                    },
+                },
+                now_text,
+            )
         return event_count
 
     @staticmethod
@@ -830,6 +912,9 @@ class ResourceTaskRepository:
                     event_count += self._record_pipeline_facts(
                         connection, chain_id_value, item, now_text
                     )
+                    event_count += self._record_episode_evidence(
+                        connection, chain_id_value, item, now_text
+                    )
         except ResourceMigrationConflict as exc:
             return {
                 "persisted": False,
@@ -892,37 +977,82 @@ class ResourceTaskRepository:
         placeholders = ",".join("?" for _ in chain_ids)
         with closing(self.runtime.connect()) as connection:
             rows = connection.execute(
-                "SELECT chain_id, MIN(COALESCE(NULLIF(event_at, ''), observed_at)) AS first_event_at "
+                "SELECT chain_id, event_at, observed_at, payload_json "
                 "FROM resource_events "
                 f"WHERE chain_id IN ({placeholders}) AND stage='emby' AND status='succeeded' "
-                "AND evidence='verified' GROUP BY chain_id",
+                "AND evidence='verified'",
                 tuple(chain_ids),
             ).fetchall()
-        first_by_chain = {
-            row["chain_id"]: str(row["first_event_at"] or "")
-            for row in rows
-            if row["first_event_at"]
-        }
+        first_by_chain = {}
+        first_by_unit = {}
+        for row in rows:
+            try:
+                event_payload = json.loads(row["payload_json"] or "{}")
+            except (TypeError, ValueError):
+                event_payload = {}
+            event_at = str(row["event_at"] or row["observed_at"] or "")
+            if not event_at:
+                continue
+            if event_payload.get("kind") == "pipeline_fact_unit":
+                key = (row["chain_id"], str(event_payload.get("unitKey") or ""))
+                if key[1]:
+                    first_by_unit[key] = min(first_by_unit.get(key, event_at), event_at)
+                continue
+            chain_id_value = row["chain_id"]
+            first_by_chain[chain_id_value] = min(first_by_chain.get(chain_id_value, event_at), event_at)
         for item in items:
             chain_id_value = self.resolve_chain_id(item.get("chainId"))
             for fact in item.get("pipelineFacts") or []:
                 if not isinstance(fact, dict) or fact.get("stage") != "emby":
                     continue
-                if fact.get("state") != "succeeded" or fact.get("evidence") != "verified":
-                    continue
-                current = str(
-                    fact.get("firstConfirmedPlayableAt")
-                    or fact.get("eventAt")
-                    or fact.get("observedAt")
-                    or ""
-                )
-                first = min(
-                    value for value in (first_by_chain.get(chain_id_value, ""), current) if value
-                ) if first_by_chain.get(chain_id_value) or current else ""
-                if first:
-                    fact["eventAt"] = first
-                    fact["firstConfirmedPlayableAt"] = first
+                if fact.get("state") == "succeeded" and fact.get("evidence") == "verified":
+                    current = str(
+                        fact.get("firstConfirmedPlayableAt")
+                        or fact.get("eventAt")
+                        or fact.get("observedAt")
+                        or ""
+                    )
+                    first = min(
+                        value for value in (first_by_chain.get(chain_id_value, ""), current) if value
+                    ) if first_by_chain.get(chain_id_value) or current else ""
+                    if first:
+                        fact["eventAt"] = first
+                        fact["firstConfirmedPlayableAt"] = first
+                for unit in fact.get("units") or []:
+                    if unit.get("state") != "succeeded" or unit.get("evidence") != "verified":
+                        continue
+                    unit_ref = _opaque_ref("unit", unit.get("unitKey"))
+                    current = str(unit.get("eventAt") or unit.get("observedAt") or "")
+                    first = min(
+                        value for value in (first_by_unit.get((chain_id_value, unit_ref), ""), current) if value
+                    ) if first_by_unit.get((chain_id_value, unit_ref)) or current else ""
+                    if first:
+                        unit["eventAt"] = first
         return payload
+
+    def list_episode_events(self, chain_id, limit=1000):
+        result = []
+        for row in self.list_events(chain_id, limit=limit):
+            try:
+                payload = json.loads(row.get("payload_json") or "{}")
+            except (TypeError, ValueError):
+                continue
+            if payload.get("kind") not in {"episode_evidence", "pipeline_fact", "pipeline_fact_unit"}:
+                continue
+            result.append({
+                "stage": row.get("stage"),
+                "status": row.get("status"),
+                "healthState": row.get("health_state"),
+                "artifactKey": row.get("artifact_key") or "",
+                "eventAt": row.get("event_at") or row.get("observed_at") or "",
+                "observedAt": row.get("observed_at") or "",
+                "freshUntil": row.get("fresh_until") or "",
+                "source": row.get("source") or "",
+                "reasonCode": row.get("reason_code") or "",
+                "reasonText": row.get("reason_text") or "",
+                **payload,
+            })
+        return result
 
     def list_events(self, chain_id, limit=100):
         chain_id = self.resolve_chain_id(chain_id)
