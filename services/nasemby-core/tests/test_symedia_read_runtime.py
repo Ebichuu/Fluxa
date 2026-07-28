@@ -176,7 +176,7 @@ class SymediaReadRuntimeContractTests(unittest.TestCase):
             "evidenceState": "partial",
             "successfulReplacements": 1,
             "lowScoreProtected": 1,
-            "cancelledOverrides": 1,
+            "cancelledOverrides": 0,
             "realFailures": 1,
             "latestTarget": {
                 "title": "替换成功",
@@ -189,6 +189,41 @@ class SymediaReadRuntimeContractTests(unittest.TestCase):
         self.assertIsNone(summary["latest"][3]["status"])
         self.assertNotIn("/media-test/", str(summary))
         self.assertEqual(summary["latest"][2]["errmsg"], "未查询到媒体信息 [已隐藏]")
+
+    def test_today_composition_deduplicates_files_and_partitions_every_record(self):
+        from app.symedia_read_runtime import SymediaReadClient, SymediaReadConfig
+
+        rows = [
+            {"id": "success-new", "src": "/downloads/show/E01.mkv", "status": True, "date": "2026-07-16 11:50:00"},
+            {"id": "success-duplicate", "src": "/downloads/show/E01.mkv", "status": True, "date": "2026-07-16 11:40:00"},
+            {"id": "low-score", "src": "/downloads/show/E02.mkv", "status": False, "errmsg": "源文件评分低于目标文件", "date": "2026-07-16 11:30:00"},
+            {"id": "cancelled", "src": "/downloads/show/E03.mkv", "status": False, "errmsg": "取消覆盖", "date": "2026-07-16 11:20:00"},
+            {"id": "failed", "src": "/downloads/show/E04.mkv", "status": False, "errmsg": "媒体识别失败", "date": "2026-07-16 11:10:00"},
+            {"id": "unknown", "src": "/downloads/show/E05.mkv", "date": "2026-07-16 11:00:00"},
+        ]
+        session = FakeSession([FakeResponse(payload={"data": {"list": rows, "total": len(rows)}})])
+        client = SymediaReadClient(
+            SymediaReadConfig(base_url="http://symedia.example.test", token="fixed-token"),
+            session=session,
+            clock=lambda: datetime(2026, 7, 16, 12, 0, tzinfo=timezone(timedelta(hours=8))),
+        )
+
+        summary = client.get_summary()
+        totals = summary["totals"]
+        wash = summary["washSummary"]
+
+        self.assertEqual(totals["processedToday"], 5)
+        self.assertEqual(totals["archivedToday"], 1)
+        self.assertEqual(totals["protectedToday"], 2)
+        self.assertEqual(totals["failedToday"], 1)
+        self.assertEqual(totals["unknownToday"], 1)
+        self.assertEqual(wash["lowScoreProtected"], 1)
+        self.assertEqual(wash["cancelledOverrides"], 1)
+        self.assertEqual(
+            totals["processedToday"],
+            totals["archivedToday"] + wash["lowScoreProtected"] + wash["cancelledOverrides"]
+            + wash["realFailures"] + totals["unknownToday"],
+        )
 
     def test_low_score_rejection_is_normal_protection_not_recent_failure(self):
         from app.symedia_read_runtime import SymediaReadClient, SymediaReadConfig

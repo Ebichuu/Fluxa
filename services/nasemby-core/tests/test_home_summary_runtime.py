@@ -314,6 +314,41 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["issueTotal"], 2)
         self.assertEqual(result["healthState"], "action_required")
 
+    def test_action_required_counts_resources_and_reliable_works_separately(self):
+        def blocked_resource(item_id, *, media_type="tv", tmdb_id="123", season=1, episode=1, title="测试剧"):
+            value = item(item_id=item_id, library_status="blocked")
+            value.update({
+                "state": "blocked",
+                "mediaType": media_type,
+                "tmdbId": tmdb_id,
+                "seasonNumber": season,
+                "episodeNumber": episode,
+                "title": title,
+            })
+            return value
+
+        resources = [
+            blocked_resource("s1e1", episode=1),
+            blocked_resource("s1e2", episode=2),
+            blocked_resource("s1e3", episode=3),
+            blocked_resource("s2e1", season=2, episode=1),
+            blocked_resource("movie", media_type="movie", tmdb_id="999", season=0, episode=None, title="测试电影"),
+            blocked_resource("unknown-e1", tmdb_id="", episode=1, title="同名未识别"),
+            blocked_resource("unknown-e2", tmdb_id="", episode=2, title="同名未识别"),
+        ]
+        app = self.build_app(resources, scheduler_enabled=True, scheduler_started=True)
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+        focus = {value["key"]: value for value in result["focusItems"]}
+
+        self.assertEqual(result["counts"]["actionRequired"], 7)
+        self.assertEqual(result["counts"]["mediaActionRequired"], 7)
+        self.assertEqual(result["counts"]["actionRequiredResources"], 7)
+        self.assertEqual(result["counts"]["actionRequiredWorks"], 5)
+        self.assertEqual(result["headline"], "5 部作品需要处理 · 涉及 7 个资源")
+        self.assertEqual(focus["action_required"]["value"], 5)
+        self.assertIn("涉及 7 个资源", focus["action_required"]["detail"])
+
     def test_collected_rss_without_matcher_run_is_neutral_diagnostic(self):
         app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)
         app.extensions["mcc_private_rss"] = FakeRssService()

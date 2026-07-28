@@ -14,6 +14,8 @@ export interface HomeSummaryCounts {
   identityPending: number;
   actionRequired: number;
   mediaActionRequired: number;
+  actionRequiredWorks?: number;
+  actionRequiredResources?: number;
   auxiliaryAlerts: number;
   inProgress: number;
   suspectedBlocked: number;

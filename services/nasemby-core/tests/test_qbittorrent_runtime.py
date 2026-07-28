@@ -123,6 +123,7 @@ class QbittorrentRuntimeContractTests(unittest.TestCase):
                 "downloaded": 300,
                 "eta": 3600,
                 "added_on": 1,
+                "last_activity": 1784192400,
             },
         ]
         session = FakeSession({
@@ -169,6 +170,7 @@ class QbittorrentRuntimeContractTests(unittest.TestCase):
         )
         self.assertEqual(summary["tasks"][0]["stateLabel"], "卡住")
         self.assertEqual(summary["tasks"][0]["savePath"], "/downloads/a")
+        self.assertEqual(summary["tasks"][0]["lastActivity"], 1784192400)
         self.assertEqual(summary["lastCheckedAt"], "2026-07-16T10:00:00.000Z")
         self.assertEqual([item[1] for item in session.requests].count("/api/v2/auth/login"), 1)
         get_requests = [item for item in session.requests if item[0] == "GET"]

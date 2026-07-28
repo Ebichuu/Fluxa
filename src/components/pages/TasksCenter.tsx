@@ -84,7 +84,9 @@ const pipelineStageLabels: Record<PipelineFact['stage'], string> = {
 function pipelineStageItems(item: TaskChainItem): TaskChainStage[] {
   return (item.pipelineFacts ?? []).map((fact) => {
     const staleFailure = fact.state === 'failed' && fact.isStale;
-    const status = staleFailure ? 'unknown' : ({
+    const staleCurrentState = fact.isStale && (fact.state === 'active' || fact.state === 'waiting');
+    const staleState = staleFailure || staleCurrentState;
+    const status = staleState ? 'unknown' : ({
       succeeded: 'done',
       active: 'active',
       failed: 'blocked',
@@ -93,7 +95,7 @@ function pipelineStageItems(item: TaskChainItem): TaskChainStage[] {
       waiting: 'waiting',
       unknown: 'unknown'
     } as const)[fact.state];
-    const healthState: TaskChainHealthState = staleFailure || fact.state === 'unknown'
+    const healthState: TaskChainHealthState = staleState || fact.state === 'unknown'
       ? 'evidence_insufficient'
       : fact.state === 'failed'
         ? fact.plannedRetryAt ? 'waiting' : 'action_required'
@@ -104,6 +106,8 @@ function pipelineStageItems(item: TaskChainItem): TaskChainStage[] {
             : 'waiting';
     const historyText = staleFailure
       ? `曾于 ${fact.eventAt || fact.observedAt || '未知时间'} 失败 · 当前状态暂未确认`
+      : staleCurrentState
+        ? '当前状态证据已过期 · 状态暂未确认'
       : fact.reasonText;
     return {
       stage: fact.stage,

@@ -133,21 +133,70 @@ def _torra_fact(context, scope, window):
     )
 
 
+def _number(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _duration_text(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return "不到 1 分钟"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} 分钟"
+    hours, remaining_minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours} 小时 {remaining_minutes} 分钟" if remaining_minutes else f"{hours} 小时"
+    days, remaining_hours = divmod(hours, 24)
+    return f"{days} 天 {remaining_hours} 小时" if remaining_hours else f"{days} 天"
+
+
+def _qb_inactive_text(task, window) -> str:
+    activity_at = _event_at(task.get("lastActivity") or task.get("last_activity"))
+    if not activity_at:
+        return ""
+    try:
+        elapsed = (_parse(window["observedAt"]) - _parse(activity_at)).total_seconds()
+    except (TypeError, ValueError):
+        return ""
+    return f"已 {_duration_text(elapsed)}无下载活动" if elapsed >= 0 else ""
+
+
+def _qb_unit_outcome(task):
+    status = _text(task.get("status")).lower()
+    raw_state = _text(task.get("state")).lower()
+    progress = _number(task.get("progress"))
+    download_speed = _number(task.get("dlspeed"))
+    if "missing" in raw_state:
+        return "failed", "verified", "QB_MISSING_FILES", "qB 文件缺失", "检查文件路径后重新校验"
+    if "error" in raw_state:
+        return "failed", "verified", "QB_DOWNLOAD_FAILED", "qB 下载发生错误", "打开 qB 查看错误状态"
+    if "checking" in raw_state:
+        return "active", "verified", "QB_CHECKING", "qB 正在校验", "等待校验完成"
+    if status == "stalled" or ("stalled" in raw_state and "stalledup" not in raw_state):
+        return "failed", "verified", "QB_DOWNLOAD_STALLED", "qB 下载卡住", "检查 Tracker、网络连接与文件状态"
+    if status == "completed" or progress >= 0.999 or "upload" in raw_state or "stalledup" in raw_state:
+        return "succeeded", "verified", "QB_SEEDING", "qB 下载完成，正在做种", "无需处理"
+    if status == "paused" or "pause" in raw_state:
+        return "waiting", "verified", "QB_DOWNLOAD_PAUSED", "qB 下载已暂停", "恢复下载后继续处理"
+    if status == "queued" and "queued" in raw_state:
+        return "waiting", "verified", "QB_DOWNLOAD_QUEUED", "qB 等待下载", "检查队列优先级和下载限额"
+    if status == "downloading" or any(marker in raw_state for marker in ("downloading", "metadl", "forceddl")):
+        if download_speed <= 0:
+            return "active", "verified", "QB_DOWNLOAD_NO_SPEED", "qB 下载中，当前无下载速度", "检查 Tracker、连接和可用做种"
+        return "active", "verified", "QB_DOWNLOAD_ACTIVE", "qB 正在下载", "等待下载完成"
+    return "unknown", "missing", "QB_STATUS_UNKNOWN", "qB 状态无法确认", "刷新 qB 状态后重新检查"
+
+
 def _qb_unit(task, window):
-    status = _text(task.get("status"))
-    if status == "completed":
-        state, evidence, code, text = "succeeded", "verified", "QB_DOWNLOAD_SUCCEEDED", "qB 下载完成"
-    elif status in {"downloading", "queued"}:
-        state, evidence, code, text = "active", "verified", "QB_DOWNLOAD_ACTIVE", "qB 正在下载或排队"
-    elif status == "stalled":
-        missing_files = "missing" in _text(task.get("state")).lower()
-        state, evidence = "failed", "verified"
-        code = "QB_MISSING_FILES" if missing_files else "QB_DOWNLOAD_FAILED"
-        text = "qB 文件缺失，任务无法继续" if missing_files else "qB 下载无法继续"
-    elif status == "paused":
-        state, evidence, code, text = "waiting", "verified", "QB_DOWNLOAD_PAUSED", "qB 下载已暂停"
-    else:
-        state, evidence, code, text = "unknown", "missing", "QB_STATUS_UNKNOWN", "qB 状态无法确认"
+    state, evidence, code, status_text, action = _qb_unit_outcome(task)
+    inactive_text = _qb_inactive_text(task, window) if code in {"QB_DOWNLOAD_STALLED", "QB_DOWNLOAD_NO_SPEED"} else ""
+    duration_text = inactive_text or "持续时间暂未确认"
+    action_text = action if action == "无需处理" else f"建议{action}"
+    text = " · ".join((status_text, duration_text, action_text))
     result = {
         "unitKey": _text(task.get("hash")) or _text(task.get("name")),
         "state": state,
@@ -182,13 +231,22 @@ def _qb_fact(context, window):
         )
     units = [_qb_unit(task, window) for task in tasks]
     state = _summary_state(units, ("failed", "active", "waiting", "unknown", "succeeded"))
-    code = {
+    relevant_units = [unit for unit in units if unit["state"] == state]
+    code = relevant_units[0]["reasonCode"] if len(relevant_units) == 1 else {
         "failed": "QB_DOWNLOAD_FAILED",
         "active": "QB_DOWNLOAD_ACTIVE",
         "waiting": "QB_DOWNLOAD_WAITING",
         "succeeded": "QB_DOWNLOAD_SUCCEEDED",
         "unknown": "QB_STATUS_UNKNOWN",
     }[state]
+    if len(relevant_units) == 1:
+        reason_text = relevant_units[0]["reasonText"]
+    else:
+        counts = {}
+        for unit in relevant_units:
+            label = unit["reasonText"].split(" · ", 1)[0]
+            counts[label] = counts.get(label, 0) + 1
+        reason_text = "；".join(f"{label} {count} 个" for label, count in sorted(counts.items()))
     return _fact(
         "qb",
         state,
@@ -197,7 +255,7 @@ def _qb_fact(context, window):
         source="qBittorrent",
         source_ref=units[0]["sourceRef"] if len(units) == 1 else "",
         reason_code=code,
-        reason_text=f"{len(units)} 个 qB 文件任务",
+        reason_text=reason_text,
         event_at=_latest_event_at(units),
         units=units,
     )

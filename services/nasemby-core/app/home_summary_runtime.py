@@ -11,7 +11,7 @@ from app.http_runtime import current_request_id
 from app.resource_identity_runtime import target_key as resource_target_key
 from app.secupload_issue_runtime import build_secupload_issue
 from app.task_chain_v2_runtime import adapt_task_chain
-from app.task_public_runtime import present_system_issue
+from app.task_public_runtime import present_system_issue, safe_public_text
 
 
 TARGET_SCOPE_PATTERN = re.compile(r":season:(\d+)(?::episode:(\d+))?$")
@@ -32,6 +32,18 @@ def _target_key(item: dict) -> str:
         item.get("seasonNumber", 0),
         item.get("episodeNumber"),
     ))
+
+
+def _action_required_work_key(item: dict, target_key: str) -> str:
+    media_type = str(item.get("mediaType") or "").strip().lower()
+    tmdb_id = str(item.get("tmdbId") or "").strip()
+    if media_type == "movie" and tmdb_id:
+        return f"movie:tmdb:{tmdb_id}"
+    season = _integer(item.get("seasonNumber"))
+    if media_type == "tv" and tmdb_id and season is not None:
+        return f"tv:tmdb:{tmdb_id}:season:{season}"
+    resource_identity = str(item.get("chainId") or target_key or item.get("id") or "").strip()
+    return f"resource:{resource_identity}"
 
 
 def _fresh_until(now: datetime, minutes: int = 5) -> str:
@@ -242,7 +254,11 @@ def _safe_issue_copy(item: dict, result: dict) -> dict:
     if result_reason_code == "TASK_IDENTITY_UNLINKED":
         return {**base, "headline": f"{label}尚未识别", "reasonText": "暂时无法确认这条记录对应的媒体作品"}
     if source == "qBittorrent" or "DOWNLOAD" in reason_code or stage.get("stage") == "qb":
-        return {**base, "headline": f"{label}下载需要检查", "reasonText": "qB 下载任务没有正常继续"}
+        return {
+            **base,
+            "headline": f"{label}下载需要检查",
+            "reasonText": safe_public_text(raw_reason or result.get("reasonText"), "qB 下载任务没有正常继续"),
+        }
     if source == "Torra":
         return {**base, "headline": f"{label}获取需要检查", "reasonText": "Torra 未能确认资源处理状态"}
     return {**base, "headline": f"{label}需要检查", "reasonText": "当前步骤没有形成可验证结果"}
@@ -523,6 +539,12 @@ class HomeSummaryService:
         # 保留在 issues 列表（各自有独立深链），不再计入该计数。
         counts["mediaActionRequired"] = len(media_issues)
         counts["actionRequired"] = counts["mediaActionRequired"]
+        counts["actionRequiredResources"] = counts["mediaActionRequired"]
+        counts["actionRequiredWorks"] = len({
+            _action_required_work_key(item, target_key)
+            for target_key, item, result in visible_item_evidence
+            if result["healthState"] == "action_required"
+        })
         counts["auxiliaryAlerts"] = len(auxiliary_issues)
 
         services = chain.get("services") or {}
@@ -667,9 +689,9 @@ class HomeSummaryService:
                 missing_episodes_detail, "/following?missingEpisodes=1",
             ),
             _focus_item(
-                "action_required", "真实异常", "项", counts["actionRequired"],
+                "action_required", "需要处理", "部作品", counts["actionRequiredWorks"],
                 "action_required" if counts["actionRequired"] > 0 else "normal",
-                f"当前有 {counts['actionRequired']} 项具备明确失败或阻塞证据",
+                f"{counts['actionRequiredWorks']} 部作品需要处理 · 涉及 {counts['actionRequiredResources']} 个资源",
                 "/tasks?outcomeState=action_required",
             ),
         ]
@@ -718,7 +740,10 @@ class HomeSummaryService:
         )
         if counts["mediaActionRequired"] > 0:
             health_state = "action_required"
-            headline = f"有 {counts['mediaActionRequired']} 项媒体任务需要处理"
+            headline = (
+                f"{counts['actionRequiredWorks']} 部作品需要处理"
+                f" · 涉及 {counts['actionRequiredResources']} 个资源"
+            )
         elif counts["auxiliaryAlerts"] > 0:
             health_state = "action_required"
             headline = f"有 {counts['auxiliaryAlerts']} 项辅助能力提醒"
@@ -738,7 +763,8 @@ class HomeSummaryService:
         active_downloads_text = counts["activeDownloadTasks"] if counts["activeDownloadTasks"] is not None else "未知"
         detail = (
             f"归档文件 {archived_today_text} · 已可播放 {counts['playableToday']} · "
-            f"qB 下载任务 {active_downloads_text} · 媒体需要处理 {counts['mediaActionRequired']} · "
+            f"qB 下载任务 {active_downloads_text} · 需处理作品 {counts['actionRequiredWorks']}"
+            f"（{counts['actionRequiredResources']} 个资源） · "
             f"辅助提醒 {counts['auxiliaryAlerts']}"
         )
         return {

@@ -8,7 +8,11 @@ LOW_SCORE_PROTECTION_CODES = {
     "QUALITY_WEIGHT_NOT_HIGHER",
     "QUALITY_HIGHER_VERSION_EXISTS",
 }
-CANCELLED_OVERRIDE_MARKERS = ("取消覆盖", "不执行覆盖", "不覆盖")
+CANCELLED_OVERRIDE_CODES = {
+    "QUALITY_OVERWRITE_CANCELLED",
+    "QUALITY_OVERWRITE_SKIPPED",
+}
+SYMEDIA_PROTECTION_CODES = LOW_SCORE_PROTECTION_CODES | CANCELLED_OVERRIDE_CODES
 
 
 def normalize_symedia_status(value):
@@ -20,7 +24,8 @@ def normalize_symedia_status(value):
 
 
 def symedia_protection_rule(row: dict) -> str:
-    return protection_rule(row.get("reasonCode"), row.get("errmsg"))
+    rule = protection_rule(row.get("reasonCode"), row.get("errmsg"))
+    return rule if rule in SYMEDIA_PROTECTION_CODES else ""
 
 
 def is_successful_replacement(row: dict) -> bool:
@@ -44,8 +49,7 @@ def is_low_score_protection(row: dict) -> bool:
 
 
 def is_cancelled_override(row: dict) -> bool:
-    text = " ".join(str(row.get(key) or "") for key in ("reasonCode", "errmsg"))
-    return any(marker in text for marker in CANCELLED_OVERRIDE_MARKERS)
+    return symedia_protection_rule(row) in CANCELLED_OVERRIDE_CODES
 
 
 def symedia_outcome(row: dict) -> str:

@@ -64,7 +64,7 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `POST /api/qbittorrent/actions/:action` | `hashes` 字段承载公开任务引用，另含 `taskId`、`title`、可选 `idempotencyKey`；旧客户端真实 hash 输入兼容但响应不回显，执行前重新读取 qB 状态，旧预览键返回 `409 QB_PREVIEW_STALE` |
 | `GET /api/subscriptions/items` | 可选 `include_progress=1` |
 | `POST /api/subscriptions/run` | 无业务正文；只刷新已配置榜单到 `discover_candidates`，返回候选新增/更新/跳过摘要；不写 `subscriptions`，不调用 Torra、qB、115、Symedia 或 Emby |
-| `GET /api/v2/home/summary` | 无参数；按新派生结果、调度器心跳和服务证据返回今日结论；`mediaActionRequired` 只统计任务中心可列出的媒体异常，`auxiliaryAlerts` 独立统计 RSS/服务/调度提醒，`inProgress` 包含媒体活动目标和自动恢复中的明确秒传失败数量，`playableToday` 只统计当日 Emby 明确可播放目标；`archiveSummary` 实时解释归档文件、已关联文件、关联任务和未关联文件；问题项返回 `issueKind/href` 和可选媒体范围；无法验证时 `archivedToday`、`activeDownloadTasks` 返回 `null` 而不是伪造 `0`，旧 `actionRequired/completedTargetsToday/ingestedToday` 保留兼容 |
+| `GET /api/v2/home/summary` | 无参数；按新派生结果、调度器心跳和服务证据返回今日结论；`mediaActionRequired/actionRequired` 继续统计任务中心可列出的资源异常，可选 `actionRequiredWorks/actionRequiredResources` 同时返回按明确媒体类型、TMDB 身份和电视剧季号聚合的作品数与资源数，缺少可靠身份的资源不按标题合并；`auxiliaryAlerts` 独立统计 RSS/服务提醒，`inProgress` 包含媒体活动目标和自动恢复中的明确秒传失败数量，`playableToday` 只统计当日 Emby 明确可播放目标；`archiveSummary` 实时解释归档文件、已关联文件、关联任务和未关联文件；问题项返回 `issueKind/href` 和可选媒体范围；无法验证时 `archivedToday`、`activeDownloadTasks` 返回 `null` 而不是伪造 `0`，旧 `completedTargetsToday/ingestedToday` 保留兼容 |
 | `GET /api/v2/subscriptions/workbench` | 可选 `limit`（1–100，默认 24）、`offset`（默认 0）、`mediaType`（`movie`/`tv`）和 `query`；返回五项能力状态、全量 `following/playable/actionRequired/inLibrary` 业务指标，以及互斥且总和等于 `total` 的 `linked/onlyTorra/onlyFluxa/attention/unclassified` 构成统计；同时返回结构化 `progress`、`torraFact/pipelineOutcome`、当前页订阅、`page.nextOffset` 和可选 `posterBackfillIds`；订阅 `torra.pushState` 可选为 `queued/submitted/linked/failed/disabled/unknown`，只有只读对账取得可靠远端 ID 且身份与范围一致才返回 `linked`；兼容 `completed/fulfillmentState/chainState` 只由新事实投影，Torra completed 不进入 `playable` |
 | `POST /api/v2/subscriptions/visual-backfills` | `ids` 为最多 100 个订阅 ID；只按明确 TMDB 身份补充空缺海报/背景，不按标题猜图；本地写入开启时可补充已有本地记录，关闭时只返回视觉结果；仅 Torra 条目始终不创建本地镜像 |
 | `GET /api/v2/subscriptions/reconciliation` | 无参数；只读对比 Fluxa 与 Torra，独立返回对账、兼容履约、健康、`torraFact` 和 `pipelineOutcome`；Torra completed 投影为“获取目标已满足”，没有 Emby 事实时结果仍为 `evidence_insufficient`；不修改或删除任一台账 |
@@ -121,6 +121,10 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 新事实契约固定为 `torra/qb/cloud115/symedia/strm/emby` 六个独立阶段，状态固定为 `unknown/waiting/active/succeeded/failed/protected/not_applicable`。`missing` 证据必须且只能搭配 `unknown`；过期事实保留并标记 `isStale`，但不进入当前结果。多个同阶段当前事实冲突时返回 `unknown + missing + EVIDENCE_CONFLICT`，不得选择一个伪造赢家。公开 `sourceRef/unitKey` 均为稳定不透明引用。
 
 新 `pipelineOutcome` 固定为 `waiting/in_progress/protected/action_required/playable/evidence_insufficient`，只有当前 `verified` 事实参与派生。Torra `succeeded` 只表示获取目标满足，Symedia `succeeded` 只表示整理完成，STRM `succeeded` 只表示播放入口生成；只有当前目标的 Emby movie 证据或明确 episode 证据可以生成 `playable`。P0.2 已接入 Torra、qB、Symedia 和 Emby 明确证据；Torra 秒传摘要没有当前媒体文件级绑定时只返回 `system-category + unknown`，STRM 没有独立来源时返回 `unknown + missing`。Emby 作品级 Series 命中只作诊断，不能替代集级证据；索引必须完整分页后才能给出未收录结论。任何阶段都不得从旧字段反推。
+
+qB 六阶段事实在兼容摘要状态之外区分下载中、等待、无速度、卡住、校验、做种和失败。卡住或无速度时只用可选 `lastActivity` 计算无活动时长；缺少可靠时间时返回“持续时间暂未确认”，不得用任务创建时间或轮询时间代替。`active/waiting` 仍只属于当前投影，不写入永久事件。
+
+Symedia `protected` 只接受低评分、取消或跳过覆盖、已有更优版本；媒体识别失败、路径不可用、重复跳过和真实执行失败均为 `failed`。同一事实混有保护和失败单元时父事实必须为 `failed`。今日摘要按稳定结果 ID 或规范文件路径去重，`archivedToday + lowScoreProtected + cancelledOverrides + failedToday + unknownToday` 与 `processedToday` 对账，其中保护子类互斥。
 
 兼容用户状态固定为 `action_required`、`in_progress`、`completed`、`no_action`。其中兼容 `completed` 只能由 `playable` 投影，兼容 `completedAt` 等于 `playableAt`；`steps/state/acquisition/embyIndexed` 先由 `pipelineFacts` 单向投影，再由唯一 legacy projector 生成兼容字段，业务来源不得同时写入新旧状态。P0.3 的任务中心、首页、顶部导航、全局搜索和作品总览只读取 `pipelineOutcome`、独立事实和新统计；旧 `userState=completed` 深链仍可读，新页面只写 `outcomeState=playable`。每条任务同时返回一句话 `resultText` 和最多一个 `primaryAction`，正常保护不得抢占异常主操作。
 

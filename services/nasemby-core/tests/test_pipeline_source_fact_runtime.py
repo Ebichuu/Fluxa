@@ -60,6 +60,45 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
         self.assertEqual(qb["units"][0]["eventAt"], "2026-07-27T03:00:00Z")
         self.assertEqual(by_stage(facts, "cloud115")["state"], "unknown")
 
+    def test_qb_single_task_explains_status_activity_age_and_action(self):
+        facts = build_pipeline_source_facts(context(qbTasks=[{
+            "hash": "hash-stalled",
+            "status": "stalled",
+            "state": "stalledDL",
+            "progress": 0.4,
+            "dlspeed": 0,
+            "lastActivity": "2026-07-27T02:00:00Z",
+        }]), observed_at=OBSERVED_AT)
+
+        qb = by_stage(facts, "qb")
+
+        self.assertEqual(qb["state"], "failed")
+        self.assertEqual(qb["reasonCode"], "QB_DOWNLOAD_STALLED")
+        self.assertIn("qB 下载卡住", qb["reasonText"])
+        self.assertIn("2 小时无下载活动", qb["reasonText"])
+        self.assertIn("建议检查 Tracker、网络连接与文件状态", qb["reasonText"])
+
+    def test_qb_facts_distinguish_waiting_no_speed_checking_seeding_and_failure(self):
+        cases = (
+            ({"status": "downloading", "state": "downloading", "progress": 0.4, "dlspeed": 0}, "active", "QB_DOWNLOAD_NO_SPEED", "当前无下载速度"),
+            ({"status": "queued", "state": "queuedDL", "progress": 0.2}, "waiting", "QB_DOWNLOAD_QUEUED", "等待下载"),
+            ({"status": "queued", "state": "checkingDL", "progress": 0.2}, "active", "QB_CHECKING", "正在校验"),
+            ({"status": "completed", "state": "uploading", "progress": 1}, "succeeded", "QB_SEEDING", "正在做种"),
+            ({"status": "stalled", "state": "error", "progress": 0.2}, "failed", "QB_DOWNLOAD_FAILED", "发生错误"),
+        )
+
+        for index, (task, state, code, text) in enumerate(cases):
+            with self.subTest(code=code):
+                facts = build_pipeline_source_facts(context(qbTasks=[{
+                    "hash": f"hash-{index}",
+                    **task,
+                }]), observed_at=OBSERVED_AT)
+                qb = by_stage(facts, "qb")
+                self.assertEqual((qb["state"], qb["reasonCode"]), (state, code))
+                self.assertIn(text, qb["reasonText"])
+                if code not in {"QB_DOWNLOAD_STALLED", "QB_DOWNLOAD_NO_SPEED"}:
+                    self.assertIn("持续时间暂未确认", qb["reasonText"])
+
     def test_cloud115_file_failure_requires_exact_qb_path_evidence(self):
         from app.torra_read_runtime import secupload_file_path_key
 
@@ -137,6 +176,28 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
         self.assertEqual(by_stage(protected, "symedia")["state"], "protected")
         self.assertEqual(by_stage(failed, "symedia")["state"], "failed")
         self.assertEqual(by_stage(failed, "symedia")["reasonText"], "media lookup failed")
+
+    def test_symedia_mixed_protection_and_real_failure_requires_action(self):
+        facts = build_pipeline_source_facts(context(symediaRows=[
+            {
+                "id": "protected",
+                "status": False,
+                "reasonCode": "QUALITY_HIGHER_VERSION_EXISTS",
+                "errmsg": "已有更高质量版本",
+            },
+            {
+                "id": "unidentified",
+                "status": False,
+                "reasonCode": "DUPLICATE_RESOURCE_SKIPPED",
+                "errmsg": "Symedia 未查询到对应媒体信息",
+            },
+        ]), observed_at=OBSERVED_AT)
+
+        symedia = by_stage(facts, "symedia")
+
+        self.assertEqual(symedia["state"], "failed")
+        self.assertEqual([unit["state"] for unit in symedia["units"]], ["protected", "failed"])
+        self.assertIn("未查询到对应媒体信息", symedia["reasonText"])
 
     def test_symedia_multiple_failures_group_real_reasons(self):
         facts = build_pipeline_source_facts(context(symediaRows=[

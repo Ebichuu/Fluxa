@@ -56,6 +56,22 @@ function washCount(value: number | null | undefined, evidenceState?: string) {
   return evidenceState === 'partial' ? `${value}（部分证据）` : String(value);
 }
 
+function symediaTodayComposition(summary: SymediaSummary | null) {
+  if (!summary?.connected) return '今日构成暂未确认';
+  const totals = summary.totals;
+  const wash = summary.washSummary;
+  const total = totals.processedToday ?? totals.today;
+  const parts = [
+    `今日记录 ${total}`,
+    `明确归档 ${totals.archivedToday ?? '暂未确认'}`,
+    `低分保护 ${washCount(wash?.lowScoreProtected, wash?.evidenceState)}`,
+    `取消覆盖 ${washCount(wash?.cancelledOverrides, wash?.evidenceState)}`,
+    `真实失败 ${washCount(wash?.realFailures, wash?.evidenceState)}`
+  ];
+  if ((totals.unknownToday ?? 0) > 0) parts.push(`状态未确认 ${totals.unknownToday}`);
+  return parts.join(' · ');
+}
+
 function sparkPoints(values: number[]) {
   const max = Math.max(1, ...values);
   return values.map((value, index) => `${index * (200 / Math.max(1, values.length - 1))},${34 - (value / max) * 30}`).join(' ');
@@ -192,10 +208,11 @@ export function ControlRoom() {
       {
         id: 'symedia', order: '03', name: 'Symedia', role: '识别、整理、STRM 与归档', state: symediaState,
         stateLabel: !symedia ? servicesLoaded ? '读取失败' : '正在读取' : symedia.connected ? (symedia.totals.failedRecent > 0 ? '历史可读 · 近期有失败' : '历史接口可读') : symedia.configured ? '历史读取失败' : '未配置',
-        metric: symedia?.connected ? String(symedia.totals.processedToday ?? symedia.totals.today) : servicesLoaded ? '—' : '…', metricLabel: `今日记录 / 累计 ${new Intl.NumberFormat('zh-CN').format(symedia?.totals.records ?? 0)}`,
+        metric: symedia?.connected ? String(symedia.totals.processedToday ?? symedia.totals.today) : servicesLoaded ? '—' : '…', metricLabel: `去重后今日记录 / 原始累计 ${new Intl.NumberFormat('zh-CN').format(symedia?.totals.records ?? 0)}`,
         checked: symedia ? formatTimeAgo(symedia.lastCheckedAt) : servicesLoaded ? '本次检查未返回' : '等待首次检查',
         facts: symedia?.connected ? [
           { label: '能力证据', value: symedia.capabilities ? `${availableCapabilities} / 7 项已验证` : '能力明细尚未返回' },
+          { label: '今日构成', value: symediaTodayComposition(symedia) },
           { label: '今日洗版', value: `替换 ${washCount(washSummary?.successfulReplacements, washSummary?.evidenceState)} · 低分保护 ${washCount(washSummary?.lowScoreProtected, washSummary?.evidenceState)} · 取消覆盖 ${washCount(washSummary?.cancelledOverrides, washSummary?.evidenceState)} · 真实失败 ${washCount(washSummary?.realFailures, washSummary?.evidenceState)}` },
           { label: '最近对象', value: latestTransfer ? `${latestTransfer.title}${latestTransfer.seasonEpisode ? ` · ${latestTransfer.seasonEpisode}` : ''}` : '暂未确认' }
         ] : [{ label: '连接说明', value: symedia?.error || (servicesLoaded ? '历史接口暂不可用' : '正在读取 Symedia 历史') }],

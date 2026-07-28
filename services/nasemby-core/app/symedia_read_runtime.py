@@ -254,6 +254,25 @@ class SymediaReadClient:
         return first_page["total"], recent_rows, today_rows, truncated
 
     @staticmethod
+    def _dedupe_rows(rows):
+        result = []
+        seen = set()
+        for index, row in enumerate(rows):
+            path = next((
+                str(row.get(key) or "").strip().replace("\\", "/").casefold()
+                for key in ("src", "dest")
+                if str(row.get(key) or "").strip()
+            ), "")
+            identity = f"path:{path}" if path else f"id:{str(row.get('id') or '').strip()}"
+            if identity == "id:":
+                identity = f"row:{index}"
+            if identity in seen:
+                continue
+            seen.add(identity)
+            result.append(row)
+        return result
+
+    @staticmethod
     def _result_counts(rows):
         counts = {"archived": 0, "protected": 0, "failed": 0, "unknown": 0}
         for row in rows:
@@ -319,6 +338,8 @@ class SymediaReadClient:
             )
         try:
             total, recent_rows, today_rows, truncated = self._history_window()
+            recent_rows = self._dedupe_rows(recent_rows)
+            today_rows = self._dedupe_rows(today_rows)
             checked_at = _iso_timestamp(self.clock())
             today_counts = self._result_counts(today_rows)
             recent_counts = self._result_counts(recent_rows)

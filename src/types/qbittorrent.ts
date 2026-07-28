@@ -17,6 +17,7 @@ export interface QbittorrentTask {
   tags: string;
   addedOn: number;
   completionOn: number;
+  lastActivity?: number;
 }
 
 export interface QbittorrentSummary {

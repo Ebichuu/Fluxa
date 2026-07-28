@@ -109,6 +109,7 @@ def normalize_task(task: dict) -> dict:
         "tags": str(task.get("tags") or ""),
         "addedOn": _integer_or_number(task.get("added_on")),
         "completionOn": _integer_or_number(task.get("completion_on")),
+        "lastActivity": _integer_or_number(task.get("last_activity")),
     }
 
 

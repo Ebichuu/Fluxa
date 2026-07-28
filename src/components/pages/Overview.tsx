@@ -29,7 +29,7 @@ const metricDefinitions = [
   { key: 'archivedToday', label: '归档文件', unit: '个文件', icon: Library, target: 'archived' },
   { key: 'playableToday', label: '已可播放', unit: '个', icon: ShieldCheck, target: 'playable' },
   { key: 'activeDownloadTasks', label: 'qB 下载任务', unit: '个', icon: Download, target: 'in_progress' },
-  { key: 'mediaActionRequired', label: '媒体需处理', unit: '项', icon: TriangleAlert, target: 'action_required' }
+  { key: 'actionRequiredWorks', label: '需处理作品', unit: '部', icon: TriangleAlert, target: 'action_required' }
 ] as const;
 
 function shanghaiDateKey(value = new Date()) {
@@ -51,7 +51,7 @@ function emptySummary(): HomeSummaryResponse {
     healthState: 'evidence_insufficient',
     headline: '正在读取影音中心状态',
     detail: '正在汇总下载、入库和调度证据',
-    counts: { ingestedToday: 0, archivedToday: null, completedTargetsToday: 0, playableToday: 0, downloading: 0, activeDownloadTasks: null, concurrentDownloadGroups: 0, pending: 0, waiting: 0, evidenceInsufficient: 0, identityPending: 0, actionRequired: 0, mediaActionRequired: 0, auxiliaryAlerts: 0, inProgress: 0, suspectedBlocked: 0, protected: 0 },
+    counts: { ingestedToday: 0, archivedToday: null, completedTargetsToday: 0, playableToday: 0, downloading: 0, activeDownloadTasks: null, concurrentDownloadGroups: 0, pending: 0, waiting: 0, evidenceInsufficient: 0, identityPending: 0, actionRequired: 0, mediaActionRequired: 0, actionRequiredWorks: 0, actionRequiredResources: 0, auxiliaryAlerts: 0, inProgress: 0, suspectedBlocked: 0, protected: 0 },
     focusItems: [
       emptyFocusItem('current_downloads', '当前下载', '个', '/tasks?outcomeState=in_progress'),
       emptyFocusItem('secupload_failures', '秒传失败', '个', '/tasks?systemIssue=secupload_failures'),
@@ -196,7 +196,9 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
 
       <section className="home-metrics" aria-label="今日媒体处理统计">
         {metricDefinitions.map(({ key, label, unit, icon: Icon, target }) => {
-          const value = summary.counts[key];
+          const value = key === 'actionRequiredWorks'
+            ? summary.counts.actionRequiredWorks ?? summary.counts.mediaActionRequired
+            : summary.counts[key];
           return (
             <button className={`home-metric home-metric--${key}`} key={key} type="button" onClick={() => openMetric(target)}>
               <span aria-hidden="true"><Icon size={17} /></span>
