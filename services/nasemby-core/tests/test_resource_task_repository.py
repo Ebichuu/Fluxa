@@ -18,6 +18,7 @@ def qb_pipeline_facts(hashes, reason_text="下载完成"):
         return []
     return [{
         "stage": "qb", "state": "succeeded", "scope": "file", "evidence": "verified",
+        "eventAt": "2026-07-22T05:58:00Z",
         "observedAt": "2026-07-22T05:59:00Z", "freshUntil": "2026-07-22T06:05:00Z",
         "source": "qBittorrent", "sourceRef": hashes[0] if len(hashes) == 1 else "",
         "reasonCode": "DOWNLOAD_DONE", "reasonText": reason_text,
@@ -26,6 +27,7 @@ def qb_pipeline_facts(hashes, reason_text="下载完成"):
             "state": "succeeded",
             "scope": "file",
             "evidence": "verified",
+            "eventAt": "2026-07-22T05:58:00Z",
             "observedAt": "2026-07-22T05:59:00Z",
             "freshUntil": "2026-07-22T06:05:00Z",
             "sourceRef": value,
@@ -174,6 +176,46 @@ def rows(repository, statement, parameters=()):
 
 
 class ResourceTaskRepositoryTests(unittest.TestCase):
+    def test_event_time_is_persisted_and_existing_database_is_upgraded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "media.sqlite3"
+            repository = ResourceTaskRepository(path, clock=lambda: NOW)
+            repository.record_snapshot(snapshot())
+
+            event = repository.list_events("chain:test")[0]
+            self.assertEqual(event["event_at"], "2026-07-22T05:58:00Z")
+            self.assertEqual(event["observed_at"], "2026-07-22T05:59:00Z")
+            self.assertIn("event_at", {
+                row["name"] for row in rows(repository, "PRAGMA table_info(resource_events)")
+            })
+
+    def test_existing_emby_success_preserves_first_confirmed_playable_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ResourceTaskRepository(Path(directory) / "media.sqlite3", clock=lambda: NOW)
+            payload = snapshot()
+            payload["items"][0]["pipelineFacts"] = [{
+                "stage": "emby", "state": "succeeded", "scope": "episode", "evidence": "verified",
+                "eventAt": "2026-07-22T05:00:00Z",
+                "firstConfirmedPlayableAt": "2026-07-22T05:00:00Z",
+                "observedAt": "2026-07-22T05:00:00Z", "freshUntil": "2026-07-22T06:05:00Z",
+                "source": "Emby", "sourceRef": "episode-private", "reasonCode": "EMBY_EPISODE_INDEXED",
+                "reasonText": "Emby 已收录目标集",
+            }]
+            repository.record_snapshot(payload)
+            refreshed = snapshot()
+            refreshed["items"][0]["pipelineFacts"] = [{
+                **payload["items"][0]["pipelineFacts"][0],
+                "eventAt": "2026-07-22T06:00:00Z",
+                "firstConfirmedPlayableAt": "2026-07-22T06:00:00Z",
+                "observedAt": "2026-07-22T06:00:00Z",
+            }]
+
+            repository.project_historical_fact_times(refreshed)
+
+            fact = refreshed["items"][0]["pipelineFacts"][0]
+            self.assertEqual(fact["eventAt"], "2026-07-22T05:00:00Z")
+            self.assertEqual(fact["firstConfirmedPlayableAt"], "2026-07-22T05:00:00Z")
+
     def test_migration_preview_requires_same_snapshot_symedia_anchor_and_is_read_only(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = ResourceTaskRepository(Path(directory) / "media.sqlite3", clock=lambda: NOW)

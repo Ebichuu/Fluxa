@@ -206,7 +206,8 @@ def _present_episode(value) -> dict:
         key: row.get(key)
         for key in (
             "seasonNumber", "episodeStart", "episodeEnd", "numberingScheme", "stage",
-            "status", "reasonCode", "observedAt", "matchMethod",
+            "status", "reasonCode", "eventAt", "observedAt", "matchMethod", "ownerScope",
+            "ownerTargetKey", "parentTargetKey",
         )
         if key in row
     } | {"artifactKey": public_artifact_ref(row.get("artifactKey"))}
@@ -219,6 +220,7 @@ def _present_pipeline_unit(value, stage: str) -> dict:
         "state": str(unit.get("state") or "unknown"),
         "scope": str(unit.get("scope") or "system-category"),
         "evidence": str(unit.get("evidence") or "missing"),
+        "eventAt": str(unit.get("eventAt") or ""),
         "observedAt": str(unit.get("observedAt") or ""),
         "freshUntil": str(unit.get("freshUntil") or ""),
         "sourceRef": public_pipeline_ref(stage, unit.get("sourceRef")),
@@ -237,6 +239,7 @@ def present_pipeline_fact(value) -> dict:
         "state": str(fact.get("state") or "unknown"),
         "scope": str(fact.get("scope") or "system-category"),
         "evidence": str(fact.get("evidence") or "missing"),
+        "eventAt": str(fact.get("eventAt") or ""),
         "observedAt": str(fact.get("observedAt") or ""),
         "freshUntil": str(fact.get("freshUntil") or ""),
         "source": safe_public_text(fact.get("source")),
@@ -247,6 +250,7 @@ def present_pipeline_fact(value) -> dict:
         "plannedRetryAt": str(fact.get("plannedRetryAt") or ""),
         "retryEligible": bool(fact.get("retryEligible")),
         "isStale": bool(fact.get("isStale")),
+        "firstConfirmedPlayableAt": str(fact.get("firstConfirmedPlayableAt") or ""),
         "units": [_present_pipeline_unit(unit, stage) for unit in fact.get("units") or []],
     }
 

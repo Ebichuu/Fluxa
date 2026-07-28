@@ -11,6 +11,7 @@ def record(source, key):
         "source": source,
         "observedAt": "2026-07-23T01:00:00Z",
         "matchMethod": "artifact_exact",
+        "ownerTargetKey": "tv:tmdb:100:season:1",
     }
 
 
@@ -100,6 +101,35 @@ class EpisodeEvidenceRuntimeTests(unittest.TestCase):
         library = values[1]
         self.assertEqual(library["reasonCode"], "QUALITY_SCORE_LOWER")
         self.assertEqual(library["artifactKey"], "artifact:symedia")
+        self.assertEqual(library["ownerScope"], "episode")
+        self.assertEqual(library["ownerTargetKey"], "tv:tmdb:100:season:1:episode:3")
+
+    def test_range_owner_is_canonical_and_multi_range_artifact_stays_unlinked(self):
+        ranged = build_episode_evidence(qb_pairs=[(
+            {"name": "Example.Show.S01E02-E03.mkv", "status": "completed"},
+            record("qBittorrent", "artifact:range"),
+        )])
+        conflicting = build_episode_evidence(torra_pairs=[(
+            {
+                "season_number": 1,
+                "downloaded_episode_files": ["Example.Show.S01E01.mkv", "Example.Show.S01E02.mkv"],
+            },
+            record("Torra", "artifact:pack"),
+        )])
+
+        self.assertEqual(ranged[0]["ownerScope"], "episode_range")
+        self.assertEqual(ranged[0]["ownerTargetKey"], "tv:tmdb:100:season:1:episodes:2-3")
+        self.assertTrue(all(item["ownerScope"] == "unlinked" for item in conflicting))
+        self.assertTrue(all(item["ownerTargetKey"] == "" for item in conflicting))
+
+    def test_cross_season_owner_is_not_linked(self):
+        values = build_episode_evidence(qb_pairs=[(
+            {"name": "Example.Show.S02E01.mkv", "status": "completed"},
+            record("qBittorrent", "artifact:wrong-season"),
+        )])
+
+        self.assertEqual(values[0]["ownerScope"], "unlinked")
+        self.assertEqual(values[0]["reasonCode"], "EPISODE_OWNER_RANGE_CONFLICT")
 
 
 if __name__ == "__main__":

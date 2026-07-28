@@ -10,11 +10,12 @@ PIPELINE_SCOPES = ("movie", "season", "episode", "file", "system-category")
 PIPELINE_EVIDENCE = ("verified", "inferred", "missing")
 
 _FACT_FIELDS = {
-    "stage", "state", "scope", "evidence", "observedAt", "freshUntil", "source", "sourceRef",
+    "stage", "state", "scope", "evidence", "eventAt", "observedAt", "freshUntil", "source", "sourceRef",
     "unitKey", "reasonCode", "reasonText", "plannedRetryAt", "retryEligible", "units",
+    "firstConfirmedPlayableAt",
 }
 _UNIT_FIELDS = {
-    "unitKey", "state", "scope", "evidence", "observedAt", "freshUntil", "sourceRef",
+    "unitKey", "state", "scope", "evidence", "eventAt", "observedAt", "freshUntil", "sourceRef",
     "reasonCode", "reasonText", "plannedRetryAt", "retryEligible",
 }
 _CODE_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
@@ -83,6 +84,14 @@ def _add_optional_fields(result: dict, value: dict):
     planned_retry = value.get("plannedRetryAt")
     if planned_retry:
         result["plannedRetryAt"] = _iso(_parse_datetime(planned_retry, "plannedRetryAt"))
+    event_at = value.get("eventAt")
+    if event_at:
+        result["eventAt"] = _iso(_parse_datetime(event_at, "eventAt"))
+    first_playable = value.get("firstConfirmedPlayableAt")
+    if first_playable:
+        result["firstConfirmedPlayableAt"] = _iso(
+            _parse_datetime(first_playable, "firstConfirmedPlayableAt")
+        )
 
 
 def _normalize_units(values, parent):
@@ -124,6 +133,9 @@ def _normalize_unit(value, *, parent: dict) -> dict:
         "reasonText": str(value.get("reasonText") or parent.get("reasonText") or "").strip()[:1000],
         "retryEligible": bool(value.get("retryEligible", parent.get("retryEligible"))),
     }
+    event_at = value.get("eventAt")
+    if event_at:
+        result["eventAt"] = _iso(_parse_datetime(event_at, "unit.eventAt"))
     planned_retry = value.get("plannedRetryAt", parent.get("plannedRetryAt"))
     if planned_retry:
         result["plannedRetryAt"] = _iso(_parse_datetime(planned_retry, "unit.plannedRetryAt"))
@@ -197,7 +209,7 @@ def _missing_fact(stage: str, scope: str, observed_at: str, fresh_until: str, re
 def _fact_signature(fact: dict) -> tuple:
     return (
         fact.get("state"), fact.get("scope"), fact.get("evidence"), fact.get("unitKey", ""),
-        fact.get("plannedRetryAt", ""), bool(fact.get("retryEligible")),
+        fact.get("eventAt", ""), fact.get("plannedRetryAt", ""), bool(fact.get("retryEligible")),
     )
 
 

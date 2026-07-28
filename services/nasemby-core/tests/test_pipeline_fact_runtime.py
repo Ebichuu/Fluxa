@@ -21,6 +21,7 @@ def fact(**updates):
         "state": "succeeded",
         "scope": "season",
         "evidence": "verified",
+        "eventAt": "2026-07-27T03:58:00Z",
         "observedAt": "2026-07-27T03:59:00Z",
         "freshUntil": "2026-07-27T04:05:00Z",
         "source": "Torra",
@@ -33,6 +34,17 @@ def fact(**updates):
 
 
 class PipelineFactRuntimeTests(unittest.TestCase):
+    def test_normalize_keeps_event_time_separate_from_observation_time(self):
+        normalized = normalize_pipeline_fact(fact(
+            stage="emby",
+            scope="episode",
+            firstConfirmedPlayableAt="2026-07-27T03:58:00Z",
+        ))
+
+        self.assertEqual(normalized["eventAt"], "2026-07-27T03:58:00Z")
+        self.assertEqual(normalized["observedAt"], "2026-07-27T03:59:00Z")
+        self.assertEqual(normalized["firstConfirmedPlayableAt"], "2026-07-27T03:58:00Z")
+
     def test_normalize_rejects_invalid_enums_and_unknown_fields(self):
         for field, value in (
             ("stage", "acquisition"),

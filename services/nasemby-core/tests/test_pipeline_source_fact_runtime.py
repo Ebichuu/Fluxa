@@ -50,13 +50,14 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
 
     def test_qb_summary_uses_file_units_and_does_not_complete_cloud115(self):
         facts = build_pipeline_source_facts(context(qbTasks=[
-            {"hash": "hash-a", "status": "completed", "state": "uploading", "progress": 1},
+            {"hash": "hash-a", "status": "completed", "state": "uploading", "progress": 1, "completionOn": 1785121200},
             {"hash": "hash-b", "status": "downloading", "state": "downloading", "progress": 0.5},
         ]), observed_at=OBSERVED_AT)
         qb = by_stage(facts, "qb")
 
         self.assertEqual(qb["state"], "active")
         self.assertEqual([unit["state"] for unit in qb["units"]], ["succeeded", "active"])
+        self.assertEqual(qb["units"][0]["eventAt"], "2026-07-27T03:00:00Z")
         self.assertEqual(by_stage(facts, "cloud115")["state"], "unknown")
 
     def test_cloud115_file_failure_requires_exact_qb_path_evidence(self):
@@ -104,13 +105,16 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
             symediaRows=[{
                 "id": "symedia-private-1",
                 "status": True,
+                "date": "2026-07-27 11:30:00",
                 "dest": "/strm/Test.Show/S01E03.strm",
             }],
             embyIndex={"movies": set(), "series": {"100"}, "episodes": set()},
         ), observed_at=OBSERVED_AT)
 
         self.assertEqual(by_stage(facts, "symedia")["state"], "succeeded")
+        self.assertEqual(by_stage(facts, "symedia")["eventAt"], "2026-07-27T03:30:00Z")
         self.assertEqual(by_stage(facts, "strm")["state"], "unknown")
+        self.assertEqual(by_stage(facts, "strm")["reasonCode"], "STRM_INDEPENDENT_RESULT_MISSING")
         self.assertEqual(by_stage(facts, "emby")["state"], "unknown")
         self.assertEqual(by_stage(facts, "emby")["reasonCode"], "EMBY_EPISODE_EVIDENCE_MISSING")
 
@@ -162,6 +166,7 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
         self.assertEqual(by_stage(movie, "emby")["state"], "succeeded")
         self.assertEqual(by_stage(episode, "emby")["scope"], "episode")
         self.assertEqual(by_stage(episode, "emby")["state"], "succeeded")
+        self.assertEqual(by_stage(episode, "emby")["firstConfirmedPlayableAt"], OBSERVED_AT)
 
 
 if __name__ == "__main__":

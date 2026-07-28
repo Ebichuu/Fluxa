@@ -7,6 +7,9 @@ from app.secupload_result_runtime import secupload_file_path_key
 from app.symedia_evidence_runtime import normalize_symedia_status, symedia_protection_rule
 
 
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+
 def _utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
@@ -33,6 +36,28 @@ def _integer(value) -> int:
         return 0
 
 
+def _event_at(value, fallback="", *, default_timezone=timezone.utc) -> str:
+    if value in (None, ""):
+        return _text(fallback)
+    try:
+        if isinstance(value, (int, float)) or str(value).strip().replace(".", "", 1).isdigit():
+            seconds = float(value)
+            if seconds <= 0:
+                return _text(fallback)
+            return _iso(datetime.fromtimestamp(seconds, timezone.utc))
+        parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=default_timezone)
+        return _iso(parsed)
+    except (TypeError, ValueError, OSError):
+        return _text(fallback)
+
+
+def _latest_event_at(units, fallback="") -> str:
+    values = [_text(unit.get("eventAt")) for unit in units or [] if _text(unit.get("eventAt"))]
+    return max(values, key=_parse) if values else _text(fallback)
+
+
 def _fact(
     stage,
     state,
@@ -52,6 +77,12 @@ def _fact(
         "reasonCode": details.get("reason_code", ""),
         "reasonText": details.get("reason_text", ""),
     }
+    event_at = _text(details.get("event_at"))
+    if event_at:
+        result["eventAt"] = event_at
+    first_playable = _text(details.get("first_confirmed_playable_at"))
+    if first_playable:
+        result["firstConfirmedPlayableAt"] = first_playable
     units = details.get("units")
     if units:
         result["units"] = units
@@ -93,6 +124,10 @@ def _torra_fact(context, scope, window):
         source_ref=_text(row.get("id")),
         reason_code=code,
         reason_text=text,
+        event_at=_event_at(
+            row.get("completedAt") or row.get("completed_at") or row.get("updated_at"),
+            window["observedAt"],
+        ) if state == "succeeded" else window["observedAt"],
     )
 
 
@@ -111,7 +146,7 @@ def _qb_unit(task, window):
         state, evidence, code, text = "waiting", "verified", "QB_DOWNLOAD_PAUSED", "qB 下载已暂停"
     else:
         state, evidence, code, text = "unknown", "missing", "QB_STATUS_UNKNOWN", "qB 状态无法确认"
-    return {
+    result = {
         "unitKey": _text(task.get("hash")) or _text(task.get("name")),
         "state": state,
         "scope": "file",
@@ -122,6 +157,12 @@ def _qb_unit(task, window):
         "reasonCode": code,
         "reasonText": text,
     }
+    if state != "unknown":
+        result["eventAt"] = _event_at(
+            task.get("completedAt") or task.get("completion_on") or task.get("completionOn"),
+            window["observedAt"],
+        ) if state == "succeeded" else window["observedAt"]
+    return result
 
 
 def _summary_state(units, priority):
@@ -154,6 +195,7 @@ def _qb_fact(context, window):
         source_ref=units[0]["sourceRef"] if len(units) == 1 else "",
         reason_code=code,
         reason_text=f"{len(units)} 个 qB 文件任务",
+        event_at=_latest_event_at(units, window["observedAt"]),
         units=units,
     )
 
@@ -225,6 +267,7 @@ def _cloud115_unit(row, window):
     }
     if planned_retry_at:
         unit["plannedRetryAt"] = planned_retry_at
+    unit["eventAt"] = _event_at(row.get("observedAt"), window["observedAt"])
     return unit
 
 
@@ -241,6 +284,7 @@ def _cloud115_failure_fact(matched, window):
         source_ref=_text(matched[0].get("batchKey")),
         reason_code="CLOUD115_FILE_FAILURE",
         reason_text=f"{len(units)} 个 115 失败文件已通过完整路径关联当前 qB 任务",
+        event_at=_latest_event_at(units, window["observedAt"]),
         retry_eligible=all_retrying,
         units=units,
     )
@@ -287,7 +331,7 @@ def _symedia_unit(row, index, window):
         text = _text(row.get("errmsg")) or ("Symedia 正常保护" if rule else "Symedia 整理失败")
     else:
         state, evidence, code, text = "unknown", "missing", "SYMEDIA_STATUS_UNKNOWN", "Symedia 结果无法确认"
-    return {
+    result = {
         "unitKey": reference,
         "state": state,
         "scope": "file",
@@ -298,6 +342,9 @@ def _symedia_unit(row, index, window):
         "reasonCode": code,
         "reasonText": text,
     }
+    if state != "unknown":
+        result["eventAt"] = _event_at(date, window["observedAt"], default_timezone=BEIJING_TZ)
+    return result
 
 
 def _symedia_fact(context, window):
@@ -324,6 +371,7 @@ def _symedia_fact(context, window):
         source_ref=units[0]["sourceRef"] if len(units) == 1 else "",
         reason_code=code,
         reason_text=f"{len(units)} 条 Symedia 文件记录",
+        event_at=_latest_event_at(units, window["observedAt"]),
         units=units,
     )
 
@@ -333,8 +381,8 @@ def _strm_fact(scope, window):
         "strm",
         scope,
         window,
-        "STRM_SERVICE_EVIDENCE_MISSING",
-        reason_text="尚未接入独立 STRM 服务结果",
+        "STRM_INDEPENDENT_RESULT_MISSING",
+        reason_text="Symedia 未提供独立结果",
     )
 
 
@@ -349,6 +397,8 @@ def _movie_emby_fact(index, tmdb_id, window):
         source_ref=f"movie:{tmdb_id}",
         reason_code="EMBY_MOVIE_INDEXED" if state == "succeeded" else "EMBY_MOVIE_NOT_INDEXED",
         reason_text="Emby 已收录电影" if state == "succeeded" else "Emby 尚未收录电影",
+        event_at=window["observedAt"],
+        first_confirmed_playable_at=window["observedAt"] if state == "succeeded" else "",
     )
 
 
@@ -366,6 +416,8 @@ def _tv_emby_fact(index, context, scope, window):
                 source_ref=reference,
                 reason_code="EMBY_EPISODE_INDEXED",
                 reason_text="Emby 已收录目标集",
+                event_at=window["observedAt"],
+                first_confirmed_playable_at=window["observedAt"],
             )
         if series_present:
             return _unknown(

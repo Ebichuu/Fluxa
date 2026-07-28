@@ -117,17 +117,41 @@ def _torra_ranges(row: dict) -> list[dict]:
 
 
 def _evidence_items(ranges, record, stage, status, reason_code="", reason_text="") -> list[dict]:
-    return [{
-        **episode_range,
-        "stage": stage,
-        "artifactKey": _text(record.get("artifactKey")),
-        "source": _text(record.get("source")),
-        "observedAt": _text(record.get("observedAt")),
-        "matchMethod": _text(record.get("matchMethod")) or "unresolved",
-        "status": status,
-        "reasonCode": reason_code,
-        "reasonText": reason_text,
-    } for episode_range in ranges]
+    artifact = _text(record.get("artifactKey"))
+    parent_owner = _text(record.get("ownerTargetKey"))
+    normalized_ranges = _dedupe_ranges(ranges)
+    unique_seasons = {value["seasonNumber"] for value in normalized_ranges}
+    owner_allowed = bool(artifact and parent_owner and len(normalized_ranges) == 1 and len(unique_seasons) == 1)
+    result = []
+    for episode_range in normalized_ranges:
+        season = episode_range["seasonNumber"]
+        start = episode_range["episodeStart"]
+        end = episode_range["episodeEnd"]
+        season_suffix = f":season:{season}"
+        parent_matches = parent_owner.endswith(season_suffix)
+        owner_scope = "episode" if start == end else "episode_range"
+        owner_target = (
+            f"{parent_owner}:episode:{start}"
+            if owner_scope == "episode"
+            else f"{parent_owner}:episodes:{start}-{end}"
+        ) if owner_allowed and parent_matches else ""
+        linked = bool(owner_target)
+        result.append({
+            **episode_range,
+            "stage": stage,
+            "artifactKey": artifact,
+            "source": _text(record.get("source")),
+            "eventAt": _text(record.get("eventAt") or record.get("observedAt")),
+            "observedAt": _text(record.get("observedAt")),
+            "matchMethod": _text(record.get("matchMethod")) if linked else "unresolved",
+            "status": status,
+            "reasonCode": reason_code if linked else "EPISODE_OWNER_RANGE_CONFLICT",
+            "reasonText": reason_text if linked else "集级范围无法唯一归属当前产物",
+            "ownerScope": owner_scope if linked else "unlinked",
+            "ownerTargetKey": owner_target,
+            "parentTargetKey": parent_owner if linked else "",
+        })
+    return result
 
 
 def _qb_status(row: dict) -> str:
@@ -185,11 +209,34 @@ def build_episode_evidence(torra_pairs=(), qb_pairs=(), symedia_pairs=()) -> lis
             item["numberingScheme"],
             item["stage"],
             item["artifactKey"],
+            item.get("ownerTargetKey") or "",
         )
         current = deduped.get(key)
         if current is None or item["observedAt"] >= current["observedAt"]:
             deduped[key] = item
-    return [
+    result = [
         deduped[key]
         for key in sorted(deduped, key=lambda row: (row[0], row[1], row[2], row[4], row[5]))
     ]
+    owners_by_artifact = {}
+    for item in result:
+        artifact = item.get("artifactKey") or ""
+        owner = item.get("ownerTargetKey") or ""
+        if artifact and owner:
+            owners_by_artifact.setdefault(artifact, set()).add(owner)
+    conflicts = {
+        artifact for artifact, owners in owners_by_artifact.items()
+        if len(owners) > 1
+    }
+    for item in result:
+        if item.get("artifactKey") not in conflicts:
+            continue
+        item.update({
+            "matchMethod": "unresolved",
+            "reasonCode": "EPISODE_OWNER_CONFLICT",
+            "reasonText": "同一产物存在多个集级所有者",
+            "ownerScope": "unlinked",
+            "ownerTargetKey": "",
+            "parentTargetKey": "",
+        })
+    return result

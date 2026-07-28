@@ -231,6 +231,7 @@ def _episode_evidence(items: list[dict]) -> list[dict]:
                 str(row.get("numberingScheme") or ""),
                 str(row.get("stage") or ""),
                 str(row.get("artifactKey") or ""),
+                str(row.get("ownerTargetKey") or ""),
             )
             current = merged.get(key)
             if current is None or str(row.get("observedAt") or "") >= str(current.get("observedAt") or ""):
@@ -583,6 +584,8 @@ def _version(payload: dict) -> str:
             "scope": fact.get("scope"),
             "evidence": fact.get("evidence"),
             "reasonCode": fact.get("reasonCode"),
+            "eventAt": fact.get("eventAt"),
+            "firstConfirmedPlayableAt": fact.get("firstConfirmedPlayableAt"),
             "plannedRetryAt": fact.get("plannedRetryAt"),
             "retryEligible": bool(fact.get("retryEligible")),
             "isStale": bool(fact.get("isStale")),
@@ -591,6 +594,7 @@ def _version(payload: dict) -> str:
                 "scope": unit.get("scope"),
                 "evidence": unit.get("evidence"),
                 "reasonCode": unit.get("reasonCode"),
+                "eventAt": unit.get("eventAt"),
                 "plannedRetryAt": unit.get("plannedRetryAt"),
                 "retryEligible": bool(unit.get("retryEligible")),
             } for unit in fact.get("units") or []],
@@ -643,6 +647,9 @@ def _version(payload: dict) -> str:
                 "status": row.get("status"),
                 "reasonCode": row.get("reasonCode"),
                 "observedAt": row.get("observedAt"),
+                "eventAt": row.get("eventAt"),
+                "ownerScope": row.get("ownerScope"),
+                "ownerTargetKey": row.get("ownerTargetKey"),
             } for row in item.get("episodeEvidence") or []],
             "stages": [{
                 "stage": stage.get("stage"),
@@ -685,6 +692,9 @@ class TaskChainV2Service:
                 except Exception:
                     payload["systemIssues"] = []
             if self.repository:
+                project_history = getattr(self.repository, "project_historical_fact_times", None)
+                if callable(project_history):
+                    project_history(payload)
                 payload["ledger"] = self.repository.record_snapshot(payload)
             payload["version"] = _version(payload)
             self._cache = payload

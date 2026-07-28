@@ -85,6 +85,7 @@ def _pipeline_fact_payload(fact) -> dict:
             "state": str(unit.get("state") or "unknown"),
             "scope": str(unit.get("scope") or "system-category"),
             "evidence": str(unit.get("evidence") or "missing"),
+            "eventAt": _text(unit.get("eventAt"), 80),
             "sourceRef": _opaque_ref(f"fact-{stage}", unit.get("sourceRef")),
             "reasonCode": _safe_code(unit.get("reasonCode"), ""),
             "plannedRetryAt": _text(unit.get("plannedRetryAt"), 80),
@@ -94,6 +95,8 @@ def _pipeline_fact_payload(fact) -> dict:
     return {
         "kind": "pipeline_fact",
         "scope": str(fact.get("scope") or "system-category"),
+        "eventAt": _text(fact.get("eventAt"), 80),
+        "firstConfirmedPlayableAt": _text(fact.get("firstConfirmedPlayableAt"), 80),
         "unitKey": _opaque_ref("unit", fact.get("unitKey")),
         "sourceRef": _opaque_ref(f"fact-{stage}", fact.get("sourceRef")),
         "plannedRetryAt": _text(fact.get("plannedRetryAt"), 80),
@@ -157,12 +160,19 @@ class ResourceTaskRepository:
                 "CREATE TABLE IF NOT EXISTS resource_events ("
                 "event_id TEXT PRIMARY KEY, chain_id TEXT NOT NULL, artifact_key TEXT NOT NULL DEFAULT '', "
                 "stage TEXT NOT NULL, status TEXT NOT NULL, health_state TEXT NOT NULL, evidence TEXT NOT NULL, "
-                "observed_at TEXT NOT NULL, fresh_until TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', "
+                "event_at TEXT NOT NULL DEFAULT '', observed_at TEXT NOT NULL, fresh_until TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', "
                 "reason_code TEXT NOT NULL DEFAULT '', reason_text TEXT NOT NULL DEFAULT '', "
                 "idempotency_key TEXT NOT NULL UNIQUE, payload_json TEXT NOT NULL DEFAULT '{}', "
                 "created_at TEXT NOT NULL, "
                 "FOREIGN KEY(chain_id) REFERENCES resource_chains(chain_id) ON DELETE CASCADE)"
             )
+            event_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(resource_events)").fetchall()
+            }
+            if "event_at" not in event_columns:
+                connection.execute(
+                    "ALTER TABLE resource_events ADD COLUMN event_at TEXT NOT NULL DEFAULT ''"
+                )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_resource_events_chain "
                 "ON resource_events(chain_id, observed_at DESC, created_at DESC)"
@@ -170,6 +180,10 @@ class ResourceTaskRepository:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_resource_events_health "
                 "ON resource_events(health_state, observed_at DESC)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_resource_events_history "
+                "ON resource_events(stage, event_at DESC, observed_at DESC)"
             )
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS resource_chain_aliases ("
@@ -192,6 +206,7 @@ class ResourceTaskRepository:
                 "status": stage.get("status") or stage.get("state"),
                 "healthState": stage.get("healthState"),
                 "evidence": stage.get("evidence"),
+                "eventAt": _text(stage.get("eventAt"), 80),
                 "source": _text(stage.get("source"), 160),
                 "reasonCode": _safe_code(stage.get("reasonCode"), ""),
                 "reasonText": _text(stage.get("reasonText")),
@@ -273,6 +288,7 @@ class ResourceTaskRepository:
         stage_name = _safe_code(stage.get("stage"), "unknown")
         event_key = self._event_key(chain_id, artifact_key_value, stage)
         observed_at = _text(stage.get("observedAt"), 80) or now_text
+        event_at = _text(stage.get("eventAt"), 80)
         fresh_until = _text(stage.get("freshUntil"), 80) or _iso(self.clock() + timedelta(minutes=5))
         values = (
             str(uuid.uuid4()),
@@ -282,6 +298,7 @@ class ResourceTaskRepository:
             _safe_code(stage.get("status") or stage.get("state"), "unknown"),
             _safe_code(stage.get("healthState"), "evidence_insufficient"),
             _safe_code(stage.get("evidence"), "missing"),
+            event_at,
             observed_at,
             fresh_until,
             _text(stage.get("source"), 160),
@@ -293,9 +310,9 @@ class ResourceTaskRepository:
         )
         cursor = connection.execute(
             "INSERT OR IGNORE INTO resource_events ("
-            "event_id, chain_id, artifact_key, stage, status, health_state, evidence, observed_at, fresh_until, "
+            "event_id, chain_id, artifact_key, stage, status, health_state, evidence, event_at, observed_at, fresh_until, "
             "source, reason_code, reason_text, idempotency_key, payload_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             values,
         )
         return int(cursor.rowcount or 0)
@@ -369,6 +386,7 @@ class ResourceTaskRepository:
                     "status": str(fact.get("state") or "unknown"),
                     "healthState": _pipeline_fact_health(fact),
                     "evidence": str(fact.get("evidence") or "missing"),
+                    "eventAt": fact.get("eventAt"),
                     "observedAt": fact.get("observedAt"),
                     "freshUntil": fact.get("freshUntil"),
                     "source": fact.get("source"),
@@ -671,6 +689,7 @@ class ResourceTaskRepository:
                 "status": event["status"],
                 "healthState": event["health_state"],
                 "evidence": event["evidence"],
+                "eventAt": event["event_at"],
                 "source": event["source"],
                 "reasonCode": event["reason_code"],
                 "reasonText": event["reason_text"],
@@ -862,6 +881,49 @@ class ResourceTaskRepository:
             row = connection.execute("SELECT * FROM resource_chains WHERE chain_id=?", (str(chain_id),)).fetchone()
         return _row(row)
 
+    def project_historical_fact_times(self, payload):
+        items = [item for item in (payload or {}).get("items") or [] if isinstance(item, dict)]
+        if not items:
+            return payload
+        chain_ids = [self.resolve_chain_id(item.get("chainId")) for item in items]
+        chain_ids = [value for value in chain_ids if value]
+        if not chain_ids:
+            return payload
+        placeholders = ",".join("?" for _ in chain_ids)
+        with closing(self.runtime.connect()) as connection:
+            rows = connection.execute(
+                "SELECT chain_id, MIN(COALESCE(NULLIF(event_at, ''), observed_at)) AS first_event_at "
+                "FROM resource_events "
+                f"WHERE chain_id IN ({placeholders}) AND stage='emby' AND status='succeeded' "
+                "AND evidence='verified' GROUP BY chain_id",
+                tuple(chain_ids),
+            ).fetchall()
+        first_by_chain = {
+            row["chain_id"]: str(row["first_event_at"] or "")
+            for row in rows
+            if row["first_event_at"]
+        }
+        for item in items:
+            chain_id_value = self.resolve_chain_id(item.get("chainId"))
+            for fact in item.get("pipelineFacts") or []:
+                if not isinstance(fact, dict) or fact.get("stage") != "emby":
+                    continue
+                if fact.get("state") != "succeeded" or fact.get("evidence") != "verified":
+                    continue
+                current = str(
+                    fact.get("firstConfirmedPlayableAt")
+                    or fact.get("eventAt")
+                    or fact.get("observedAt")
+                    or ""
+                )
+                first = min(
+                    value for value in (first_by_chain.get(chain_id_value, ""), current) if value
+                ) if first_by_chain.get(chain_id_value) or current else ""
+                if first:
+                    fact["eventAt"] = first
+                    fact["firstConfirmedPlayableAt"] = first
+        return payload
+
     def list_events(self, chain_id, limit=100):
         chain_id = self.resolve_chain_id(chain_id)
         try:
@@ -870,7 +932,8 @@ class ResourceTaskRepository:
             limit = 100
         with closing(self.runtime.connect()) as connection:
             rows = connection.execute(
-                "SELECT * FROM resource_events WHERE chain_id=? ORDER BY observed_at DESC, created_at DESC LIMIT ?",
+                "SELECT * FROM resource_events WHERE chain_id=? "
+                "ORDER BY COALESCE(NULLIF(event_at, ''), observed_at) DESC, created_at DESC LIMIT ?",
                 (str(chain_id), limit),
             ).fetchall()
         return [_row(row) for row in rows]
