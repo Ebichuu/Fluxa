@@ -10,6 +10,7 @@ from flask import Flask
 from app.resource_identity_runtime import chain_id
 from app.resource_task_repository import ResourceTaskRepository
 from app.task_chain_v2_runtime import TaskChainV2Service, adapt_task_chain, register_task_chain_v2
+from app.task_public_runtime import safe_public_text
 
 
 def pipeline_fact(stage, state, *, reason_code, reason_text, scope="file"):
@@ -640,6 +641,62 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(item["posterUrl"], "")
         self.assertEqual(detail.get_json()["services"]["qb"]["webUrl"], "")
         self.assertNotIn("href", item["primaryAction"])
+
+    def test_public_symedia_failure_hides_relative_media_path_fragments(self):
+        self.assertEqual(
+            safe_public_text("文件转移错误: S01E01/聪明镇S01E10.mkv"),
+            "文件转移错误: [已隐藏]",
+        )
+        chain = FakeTaskChain().get_chain()
+        chain["items"][0]["pipelineFacts"] = [{
+            "stage": "symedia",
+            "state": "failed",
+            "scope": "file",
+            "evidence": "verified",
+            "eventAt": "2026-07-28T02:00:00Z",
+            "observedAt": "2026-07-28T03:00:00Z",
+            "freshUntil": "2026-07-28T03:05:00Z",
+            "source": "Symedia",
+            "sourceRef": "private-symedia-row",
+            "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+            "reasonText": "文件转移错误: [已隐藏] S01E01/聪明镇S01E10.mkv 未查询到媒体信息",
+            "units": [{
+                "unitKey": "private-symedia-row",
+                "state": "failed",
+                "scope": "file",
+                "evidence": "verified",
+                "eventAt": "2026-07-28T02:00:00Z",
+                "observedAt": "2026-07-28T03:00:00Z",
+                "freshUntil": "2026-07-28T03:05:00Z",
+                "sourceRef": "private-symedia-row",
+                "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+                "reasonText": "文件转移错误: [已隐藏] S01E01/聪明镇S01E10.mkv 未查询到媒体信息",
+            }],
+        }]
+        app = Flask(f"{__name__}-symedia-relative-path")
+        fake = FakeTaskChain()
+        fake.get_chain = lambda: chain
+        app.extensions["mcc_task_chain_service"] = fake
+        register_task_chain_v2(
+            app,
+            clock=lambda: datetime(2026, 7, 28, 3, 1, tzinfo=timezone.utc),
+        )
+
+        listing = app.test_client().get("/api/v2/tasks/chains?limit=1")
+        chain_id_value = listing.get_json()["items"][0]["chainId"]
+        detail = app.test_client().get(f"/api/v2/tasks/chains/{chain_id_value}")
+        payload = detail.get_json()
+        symedia = next(
+            fact for fact in payload["item"]["pipelineFacts"]
+            if fact["stage"] == "symedia"
+        )
+        serialized = listing.get_data(as_text=True) + detail.get_data(as_text=True)
+
+        self.assertEqual((listing.status_code, detail.status_code), (200, 200))
+        self.assertEqual(symedia["reasonText"], "Symedia 未查询到对应媒体信息")
+        self.assertEqual(symedia["units"][0]["reasonText"], "Symedia 未查询到对应媒体信息")
+        self.assertNotIn("S01E01", serialized)
+        self.assertNotIn("聪明镇S01E10.mkv", serialized)
 
     def test_summary_and_conditional_list_share_cached_snapshot(self):
         app = Flask(__name__)

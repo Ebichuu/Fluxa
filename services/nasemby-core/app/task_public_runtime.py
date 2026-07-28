@@ -23,6 +23,11 @@ HOST_PATTERN = re.compile(
 WINDOWS_PATH_PATTERN = re.compile(r"\b[A-Za-z]:[\\/][^\s]+")
 UNC_PATH_PATTERN = re.compile(r"\\\\[^\\\s]+\\[^\s]+")
 UNIX_PATH_PATTERN = re.compile(r"(?<![\w:])/(?:[^/\s]+/)*[^/\s]+")
+RELATIVE_MEDIA_PATH_PATTERN = re.compile(
+    r"(?<![\w./\\])(?:[^\\/\s:]+[\\/])+[^\\/\s:]+\."
+    r"(?:mkv|mp4|avi|mov|m4v|ts|m2ts|wmv|flv|webm|strm)(?:[^\s]*)?",
+    re.IGNORECASE,
+)
 CREDENTIAL_PATTERN = re.compile(
     r"\b(?:"
     r"(?:password|passwd|passkey|token|access[_-]?token|refresh[_-]?token|api[_-]?key|api[_-]?hash|secret|cookie|authorization|sign|signature)"
@@ -89,10 +94,23 @@ def safe_public_text(value, fallback="") -> str:
     text = URL_PATTERN.sub("[已隐藏]", text)
     text = UNC_PATH_PATTERN.sub("[已隐藏]", text)
     text = WINDOWS_PATH_PATTERN.sub("[已隐藏]", text)
+    text = RELATIVE_MEDIA_PATH_PATTERN.sub("[已隐藏]", text)
     text = UNIX_PATH_PATTERN.sub("[已隐藏]", text)
     text = HOST_PATTERN.sub("[已隐藏]", text)
     text = EXTERNAL_ID_PATTERN.sub("[已隐藏]", text)
     return text[:500]
+
+
+def _public_task_reason(stage, reason_code, value, fallback="") -> str:
+    text = str(value or "").strip()
+    code = str(reason_code or "").strip().upper()
+    stage_name = str(stage or "").strip().lower()
+    is_symedia = stage_name in {"symedia", "library"} or code.startswith("SYMEDIA_")
+    if is_symedia and any(marker in text for marker in (
+        "文件转移错误", "未找到", "未查询到", "媒体信息", "识别", "TMDB",
+    )):
+        return "Symedia 未查询到对应媒体信息"
+    return safe_public_text(text, fallback)
 
 
 def safe_public_url(value) -> str:
@@ -134,20 +152,24 @@ def present_source_ids(value) -> dict:
 
 def _present_stage(value, *, legacy=False) -> dict:
     stage = value if isinstance(value, dict) else {}
+    stage_name = str(stage.get("key") or stage.get("stage") or "unknown")
+    reason_text = _public_task_reason(
+        stage_name,
+        stage.get("reasonCode"),
+        stage.get("userReasonText") or stage.get("reasonText") or stage.get("detail"),
+    )
     if legacy:
         return {
-            "key": str(stage.get("key") or stage.get("stage") or "unknown"),
+            "key": stage_name,
             "label": safe_public_text(stage.get("label"), "未命名阶段"),
             "status": str(stage.get("status") or "unknown"),
             "evidence": str(stage.get("evidence") or "missing"),
-            "detail": safe_public_text(
-                stage.get("userReasonText") or stage.get("reasonText") or stage.get("detail")
-            ),
+            "detail": reason_text,
             "timestamp": str(stage.get("timestamp") or stage.get("observedAt") or ""),
             "source": safe_public_text(stage.get("source")),
         }
     return {
-        "stage": str(stage.get("stage") or stage.get("key") or "unknown"),
+        "stage": stage_name,
         "label": safe_public_text(stage.get("label"), "未命名阶段"),
         "status": str(stage.get("status") or "unknown"),
         "healthState": str(stage.get("healthState") or "evidence_insufficient"),
@@ -156,8 +178,8 @@ def _present_stage(value, *, legacy=False) -> dict:
         "freshUntil": str(stage.get("freshUntil") or ""),
         "source": safe_public_text(stage.get("source")),
         "reasonCode": str(stage.get("reasonCode") or ""),
-        "reasonText": safe_public_text(stage.get("userReasonText") or stage.get("reasonText")),
-        "userReasonText": safe_public_text(stage.get("userReasonText") or stage.get("reasonText")),
+        "reasonText": reason_text,
+        "userReasonText": reason_text,
         "recommendedAction": safe_public_text(stage.get("recommendedAction")),
         "retryEligible": bool(stage.get("retryEligible")),
         "plannedRetryAt": str(stage.get("plannedRetryAt") or ""),
@@ -225,7 +247,9 @@ def _present_pipeline_unit(value, stage: str) -> dict:
         "freshUntil": str(unit.get("freshUntil") or ""),
         "sourceRef": public_pipeline_ref(stage, unit.get("sourceRef")),
         "reasonCode": str(unit.get("reasonCode") or ""),
-        "reasonText": safe_public_text(unit.get("reasonText")),
+        "reasonText": _public_task_reason(
+            stage, unit.get("reasonCode"), unit.get("reasonText")
+        ),
         "plannedRetryAt": str(unit.get("plannedRetryAt") or ""),
         "retryEligible": bool(unit.get("retryEligible")),
     }
@@ -246,7 +270,9 @@ def present_pipeline_fact(value) -> dict:
         "sourceRef": public_pipeline_ref(stage, fact.get("sourceRef")),
         "unitKey": public_pipeline_unit_ref(fact.get("unitKey")),
         "reasonCode": str(fact.get("reasonCode") or ""),
-        "reasonText": safe_public_text(fact.get("reasonText")),
+        "reasonText": _public_task_reason(
+            stage, fact.get("reasonCode"), fact.get("reasonText")
+        ),
         "plannedRetryAt": str(fact.get("plannedRetryAt") or ""),
         "retryEligible": bool(fact.get("retryEligible")),
         "isStale": bool(fact.get("isStale")),
@@ -261,7 +287,9 @@ def present_pipeline_outcome(value) -> dict:
         "state": str(outcome.get("state") or "evidence_insufficient"),
         "stage": str(outcome.get("stage") or ""),
         "reasonCode": str(outcome.get("reasonCode") or ""),
-        "reasonText": safe_public_text(outcome.get("reasonText")),
+        "reasonText": _public_task_reason(
+            outcome.get("stage"), outcome.get("reasonCode"), outcome.get("reasonText")
+        ),
         "observedAt": str(outcome.get("observedAt") or ""),
         "playableAt": str(outcome.get("playableAt") or ""),
     }
@@ -290,16 +318,25 @@ def present_task_item(value) -> dict:
         public_id = public_torra_ref(raw_id)
     else:
         public_id = raw_id
+    outcome = item.get("pipelineOutcome") if isinstance(item.get("pipelineOutcome"), dict) else {}
+    public_reason = _public_task_reason(
+        outcome.get("stage"),
+        item.get("reasonCode") or outcome.get("reasonCode"),
+        item.get("userReasonText") or item.get("reasonText"),
+    )
+    public_result = _public_task_reason(
+        outcome.get("stage"), outcome.get("reasonCode"), item.get("resultText")
+    )
     result.update({
         "id": public_id,
         "title": safe_public_text(item.get("title"), "未命名媒体任务"),
         "posterUrl": safe_public_url(item.get("posterUrl")),
         "currentStep": safe_public_text(item.get("currentStep")),
         "source": safe_public_text(item.get("source")),
-        "reasonText": safe_public_text(item.get("userReasonText") or item.get("reasonText")),
-        "userReasonText": safe_public_text(item.get("userReasonText") or item.get("reasonText")),
+        "reasonText": public_reason,
+        "userReasonText": public_reason,
         "recommendedAction": safe_public_text(item.get("recommendedAction")),
-        "resultText": safe_public_text(item.get("resultText")),
+        "resultText": public_result,
         "suggestion": None,
         "qbControl": {
             key: (item.get("qbControl") or {}).get(key)

@@ -2754,7 +2754,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             <span><b>{workbenchStats.actionRequired}</b>需要处理</span>
             <span><b>{workbenchStats.inLibrary}</b>已入库</span>
             <small className="subscription-workbench-summary__composition">
-              总数构成：已关联 {workbenchStats.linked} · 仅 Torra {workbenchStats.onlyTorra} · 仅 Fluxa {workbenchStats.onlyFluxa} · 对账异常 {workbenchStats.attention} · 未分类 {workbenchStats.unclassified}
+              全库构成（{workbenchStats.total}）：已关联 {workbenchStats.linked} · 仅 Torra {workbenchStats.onlyTorra} · 仅 Fluxa {workbenchStats.onlyFluxa} · 对账异常 {workbenchStats.attention} · 未分类 {workbenchStats.unclassified}
             </small>
             <small className="subscription-workbench-summary__updated">{subscriptionReadAtLabel(workbench.lastReadAt)}</small>
           </section>
