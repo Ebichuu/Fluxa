@@ -53,7 +53,7 @@ function emptySummary(): HomeSummaryResponse {
     detail: '正在汇总下载、入库和调度证据',
     counts: { ingestedToday: 0, archivedToday: null, completedTargetsToday: 0, playableToday: 0, downloading: 0, activeDownloadTasks: null, concurrentDownloadGroups: 0, pending: 0, waiting: 0, evidenceInsufficient: 0, identityPending: 0, actionRequired: 0, mediaActionRequired: 0, actionRequiredWorks: 0, actionRequiredResources: 0, actionRequiredGroups: 0, actionRequiredIdentityUnconfirmedResources: 0, auxiliaryAlerts: 0, inProgress: 0, suspectedBlocked: 0, protected: 0 },
     focusItems: [
-      emptyFocusItem('current_downloads', '当前下载', '个', '/tasks?qbActive=1'),
+      emptyFocusItem('current_downloads', 'qB 活跃任务', '个', '/tasks?qbActive=1'),
       emptyFocusItem('secupload_failures', '秒传失败', '个', '/tasks?systemIssue=secupload_failures'),
       emptyFocusItem('downloaded_not_archived', '下载完成未入库', '个', '/tasks?outcomeState=in_progress'),
       emptyFocusItem('archived_today', '今日入库', '个文件', `/tasks?archivedDate=${shanghaiDateKey()}`),
@@ -65,6 +65,14 @@ function emptySummary(): HomeSummaryResponse {
     diagnostics: [],
     diagnosticTotal: 0
   };
+}
+
+function homeQbCopy(value: string) {
+  return value
+    .replace(/qB 下载任务/g, 'qB 活跃任务')
+    .replace(/qB 当前有 (\d+) 个下载任务正在执行/g, 'qB 当前有 $1 个活跃任务')
+    .replace(/qB 已连接，当前没有正在下载的任务/g, 'qB 已连接，当前没有活跃任务')
+    .replace(/qB 当前没有提供可验证的下载任务状态/g, 'qB 活跃任务状态暂未确认');
 }
 
 export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
@@ -162,7 +170,7 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
           <p className="ops-eyebrow">首页 · 今日状态</p>
           <span className="home-summary__status-icon" aria-hidden="true"><StatusIcon size={22} /></span>
           <h1>{error ? '暂时无法确认影音中心状态' : summary.headline}</h1>
-          <p>{error || summary.detail}</p>
+          <p>{error || homeQbCopy(summary.detail)}</p>
           <small>{summary.generatedAt ? <>最近读取 <RelativeTime value={summary.generatedAt} /></> : '等待第一份状态证据'}</small>
         </div>
         <div className="home-summary__hero-actions">
@@ -238,8 +246,8 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
             >
               <span className="home-focus__marker" aria-hidden="true" />
               <span className="home-focus__copy">
-                <strong>{item.label}</strong>
-                <small>{item.detail}</small>
+                <strong>{item.key === 'current_downloads' ? 'qB 活跃任务' : item.label}</strong>
+                <small>{item.key === 'current_downloads' ? homeQbCopy(item.detail) : item.detail}</small>
               </span>
               <span className="home-focus__value">
                 <b>{item.value ?? '—'}</b>

@@ -479,7 +479,10 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     }
   };
 
-  usePolling(loadActivities, 30000, { key: `${activityCategory}:${activityView}` });
+  usePolling(loadActivities, 30000, {
+    enabled: !qbActiveView,
+    key: `${activityCategory}:${activityView}:${qbActiveView}`
+  });
 
   const changeActivityCategory = (key: string) => {
     setActivityCategory(key);
@@ -765,7 +768,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     <main className="work-page ops-page ops-page--tasks">
       <section className="ops-hero ops-hero--tasks ops-hero--compact">
         <div>
-          <p className="ops-eyebrow">处理进度</p>
+          <p className="ops-eyebrow">{qbActiveView ? '下载器快照' : '处理进度'}</p>
           <h1>{qbActiveView ? 'qB 当前活跃任务' : '任务中心'}</h1>
           <p className="ops-page-subtitle">
             {qbActiveView
@@ -775,21 +778,31 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
               : `${counts['需要处理']} 项需要处理 · ${counts['处理中']} 个处理中`}
           </p>
         </div>
-        <div className="ops-task-hero-status">
-          <span>{counts['需要处理'] > 0 ? `${counts['需要处理']} 项需要处理` : counts['处理中'] > 0 ? '任务正在处理' : chain ? '当前没有需要介入的问题' : '正在读取任务状态'}</span>
-          {chain?.services.qb.connected && chain.services.qb.downloadSpeed > 0 && <strong>{formatSpeed(chain.services.qb.downloadSpeed)}</strong>}
-          <small>{chain ? <>{counts['已可播放']} 个已可播放 · {counts['无需处理']} 个无需处理 · <RelativeTime value={chain.generatedAt} /></> : '正在汇总任务结果'}</small>
-        </div>
+        {qbActiveView ? (
+          <div className="ops-task-hero-status">
+            <span>{chain?.services.qb.connected ? 'qB 当前快照' : chain ? 'qB 活跃任务未知' : '正在读取 qB 状态'}</span>
+            {chain?.services.qb.connected && chain.services.qb.downloadSpeed > 0 && <strong>{formatSpeed(chain.services.qb.downloadSpeed)}</strong>}
+            <small>{chain ? <>最近读取 <RelativeTime value={chain.generatedAt} /></> : '正在读取下载器当前快照'}</small>
+          </div>
+        ) : (
+          <div className="ops-task-hero-status">
+            <span>{counts['需要处理'] > 0 ? `${counts['需要处理']} 项需要处理` : counts['处理中'] > 0 ? '任务正在处理' : chain ? '当前没有需要介入的问题' : '正在读取任务状态'}</span>
+            {chain?.services.qb.connected && chain.services.qb.downloadSpeed > 0 && <strong>{formatSpeed(chain.services.qb.downloadSpeed)}</strong>}
+            <small>{chain ? <>{counts['已可播放']} 个已可播放 · {counts['无需处理']} 个无需处理 · <RelativeTime value={chain.generatedAt} /></> : '正在汇总任务结果'}</small>
+          </div>
+        )}
       </section>
 
-      <section className="ops-task-summary" aria-label="任务状态摘要">
-        <div><Download size={16} /><span>处理中</span><strong>{counts['处理中']}<em>个</em></strong></div>
-        <div><AlertTriangle size={16} /><span>需要处理</span><strong>{counts['需要处理']}<em>项</em></strong></div>
-        <div><Server size={16} /><span>已可播放</span><strong>{counts['已可播放']}<em>个</em></strong></div>
-        <div><ShieldCheck size={16} /><span>无需处理</span><strong>{counts['无需处理']}<em>个</em></strong></div>
-      </section>
+      {!qbActiveView && (
+        <section className="ops-task-summary" aria-label="任务状态摘要">
+          <div><Download size={16} /><span>处理中</span><strong>{counts['处理中']}<em>个</em></strong></div>
+          <div><AlertTriangle size={16} /><span>需要处理</span><strong>{counts['需要处理']}<em>项</em></strong></div>
+          <div><Server size={16} /><span>已可播放</span><strong>{counts['已可播放']}<em>个</em></strong></div>
+          <div><ShieldCheck size={16} /><span>无需处理</span><strong>{counts['无需处理']}<em>个</em></strong></div>
+        </section>
+      )}
 
-      {(loading || snapshotDelta) && (
+      {!qbActiveView && (loading || snapshotDelta) && (
         <p className="ops-task-snapshot" role="status">
           {loading ? '数据更新中…' : snapshotDelta && <>
             {snapshotDelta.text} · 最近快照 <RelativeTime value={snapshotDelta.at} />
@@ -797,7 +810,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
         </p>
       )}
 
-      {systemIssues.length > 0 && (
+      {!qbActiveView && systemIssues.length > 0 && (
         <section aria-label="系统问题" className={target?.systemIssue ? 'ops-system-issues ops-system-issues--focused' : 'ops-system-issues'}>
           {systemIssues.map((issue) => {
             const stateLabel = issue.state === 'recovering' ? '正在自动恢复' : issue.state === 'action_required' ? '需要处理' : issue.state === 'normal' ? '正常' : '状态未知';
@@ -836,7 +849,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
         </section>
       )}
 
-      {(identityPending > 0 || (secupload?.readable && !secupload.perFileEvidence)) && (
+      {!qbActiveView && (identityPending > 0 || (secupload?.readable && !secupload.perFileEvidence)) && (
         <details
           className="ops-task-diagnostics"
           open={advancedOpen}
@@ -874,39 +887,43 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
           </div>
         )}
         <header className="ops-task-toolbar">
-          <div className="ops-mobile-filter-summary">
-            <span><small>当前筛选</small><strong>{qbActiveView ? 'qB 当前活跃任务' : archivedDate ? `归档 ${archivedDate}` : `${filter}${completedDate ? ' · 今日可播放' : ''}`}{advancedOpen ? ' · 高级诊断' : ''}</strong></span>
-            <button
-              aria-controls="task-mobile-filter-sheet"
-              aria-expanded={mobileFiltersOpen}
-              className="ops-mobile-filter-button"
-              ref={mobileFilterTriggerRef}
-              type="button"
-              onClick={() => setMobileFiltersOpen(true)}
-            >
-              <Filter aria-hidden="true" size={15} />筛选
-            </button>
-          </div>
-          <div className="ops-task-tabs" role="tablist" aria-label="任务筛选">
-            {filters.map((name) => (
+          {!qbActiveView && (
+            <div className="ops-mobile-filter-summary">
+              <span><small>当前筛选</small><strong>{archivedDate ? `归档 ${archivedDate}` : `${filter}${completedDate ? ' · 今日可播放' : ''}`}{advancedOpen ? ' · 高级诊断' : ''}</strong></span>
               <button
-                aria-selected={!qbActiveView && filter === name}
-                className={!qbActiveView && filter === name ? 'ops-task-tab ops-task-tab--active' : 'ops-task-tab'}
-                key={name}
-                role="tab"
-                tabIndex={(!qbActiveView && filter === name) || (qbActiveView && name === filters[0]) ? 0 : -1}
+                aria-controls="task-mobile-filter-sheet"
+                aria-expanded={mobileFiltersOpen}
+                className="ops-mobile-filter-button"
+                ref={mobileFilterTriggerRef}
                 type="button"
-                onClick={() => changeFilter(name)}
-                onKeyDown={handleHorizontalTabKeyDown}
+                onClick={() => setMobileFiltersOpen(true)}
               >
-                {name}<span className={name === '需要处理' && counts[name] > 0 ? 'is-alert' : undefined}>{counts[name]}</span>
+                <Filter aria-hidden="true" size={15} />筛选
               </button>
-            ))}
-          </div>
+            </div>
+          )}
+          {!qbActiveView && (
+            <div className="ops-task-tabs" role="tablist" aria-label="任务筛选">
+              {filters.map((name) => (
+                <button
+                  aria-selected={filter === name}
+                  className={filter === name ? 'ops-task-tab ops-task-tab--active' : 'ops-task-tab'}
+                  key={name}
+                  role="tab"
+                  tabIndex={filter === name ? 0 : -1}
+                  type="button"
+                  onClick={() => changeFilter(name)}
+                  onKeyDown={handleHorizontalTabKeyDown}
+                >
+                  {name}<span className={name === '需要处理' && counts[name] > 0 ? 'is-alert' : undefined}>{counts[name]}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <div className="ops-task-toolbar__actions">
-            <span>{chain ? <>已显示 {items.length} / {chain.page?.total ?? chain.counts.total} 条 · <RelativeTime value={chain.generatedAt} /></> : '正在读取统一任务链'}</span>
-            <button className="tool-link ops-task-advanced-link" type="button" onClick={() => changeAdvancedVisibility(!advancedOpenRef.current)}><Braces aria-hidden="true" size={14} />高级诊断</button>
-            <button aria-label="打开 RSS 种子库" className="ops-icon-button" title="RSS 种子库" type="button" onClick={() => onNavigate('rss-library')}><Rss aria-hidden="true" size={14} /></button>
+            <span>{chain ? <>已显示 {items.length} / {chain.page?.total ?? chain.counts.total} 条 · <RelativeTime value={chain.generatedAt} /></> : qbActiveView ? '正在读取 qB 活跃任务' : '正在读取统一任务链'}</span>
+            {!qbActiveView && <button className="tool-link ops-task-advanced-link" type="button" onClick={() => changeAdvancedVisibility(!advancedOpenRef.current)}><Braces aria-hidden="true" size={14} />高级诊断</button>}
+            {!qbActiveView && <button aria-label="打开 RSS 种子库" className="ops-icon-button" title="RSS 种子库" type="button" onClick={() => onNavigate('rss-library')}><Rss aria-hidden="true" size={14} /></button>}
             <button aria-label="刷新任务链" aria-busy={loading} className="ops-icon-button" disabled={loading} title="刷新任务链" type="button" onClick={refreshChain}><RefreshCcw aria-hidden="true" size={16} /></button>
           </div>
         </header>
@@ -920,7 +937,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
           </div>
         )}
 
-        {loading && !chain && <div className="ops-empty ops-task-empty">正在汇总下载、整理和可播放状态…</div>}
+        {loading && !chain && <div className="ops-empty ops-task-empty">{qbActiveView ? '正在读取 qB 活跃任务…' : '正在汇总下载、整理和可播放状态…'}</div>}
         {!loading && error && <div className="ops-empty ops-task-empty">{error}</div>}
         {!loading && chain && visible.length === 0 && (
           <div className="ops-empty ops-task-empty">
@@ -1108,7 +1125,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
         )}
       </section>
 
-      <section className="ops-panel ops-activity-log">
+      {!qbActiveView && <section className="ops-panel ops-activity-log">
         <header className="ops-task-toolbar">
           <div><small>操作记录</small><h2>最近活动</h2></div>
           <span className="ops-activity-view-toggle">
@@ -1155,9 +1172,9 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
             </article>
           ))}
         </div>
-      </section>
+      </section>}
 
-      {mobileFiltersOpen && (
+      {!qbActiveView && mobileFiltersOpen && (
         <div className="ops-filter-sheet-backdrop" onPointerDown={(event) => {
           if (event.target === event.currentTarget) setMobileFiltersOpen(false);
         }}>
