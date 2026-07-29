@@ -590,6 +590,11 @@ def _merge_group(items: list[dict], observed_at: str, fresh_until: str, now_valu
         "steps": _merged_steps(stages),
         "qbControl": {
             "total": len(source_ids["qbHashes"]),
+            "active": sum(
+                int(item.get("activeDownloadTasks") or (item.get("qbControl") or {}).get("active") or 0)
+                for item in items
+                if _has_current_stage(item, "download")
+            ),
             "paused": max((int((item.get("qbControl") or {}).get("paused") or 0) for item in items), default=0),
             "canPause": any(bool((item.get("qbControl") or {}).get("canPause")) for item in items),
             "canResume": any(bool((item.get("qbControl") or {}).get("canResume")) for item in items),
@@ -890,6 +895,7 @@ class TaskChainV2Service:
         user_state="",
         completed_date="",
         archived_date="",
+        qb_active=False,
         chain_id_value="",
         target_key_value="",
         subscription_id="",
@@ -908,6 +914,11 @@ class TaskChainV2Service:
             archive = _archive_projection(payload, archived_date, self.repository)
             archive_summary = archive["summary"]
             items = [item for item in items if item.get("chainId") in archive["chainIds"]]
+        if qb_active:
+            items = [
+                item for item in items
+                if int(item.get("activeDownloadTasks") or (item.get("qbControl") or {}).get("active") or 0) > 0
+            ]
         if chain_id_value and self.repository:
             chain_id_value = self.repository.resolve_chain_id(chain_id_value)
         if health_state:
@@ -1087,6 +1098,9 @@ def register_task_chain_v2(app: Flask, repository=None, clock=None):
                 datetime.strptime(archived_date, "%Y-%m-%d")
             except ValueError:
                 return _error("TASK_ARCHIVED_DATE_INVALID", "归档日期筛选无效", 400)
+        qb_active_value = request.args.get("qbActive")
+        if qb_active_value not in {None, "", "1"}:
+            return _error("TASK_QB_ACTIVE_FILTER_INVALID", "qB 活跃任务筛选无效", 400)
         try:
             offset = _integer_query("offset", 0, 0, 1_000_000)
             limit = _integer_query("limit", 20, 1, 100)
@@ -1107,6 +1121,7 @@ def register_task_chain_v2(app: Flask, repository=None, clock=None):
                 user_state=user_state,
                 completed_date=completed_date,
                 archived_date=archived_date,
+                qb_active=qb_active_value == "1",
                 chain_id_value=str(request.args.get("chainId") or "").strip(),
                 target_key_value=str(request.args.get("targetKey") or "").strip(),
                 subscription_id=str(request.args.get("subscriptionId") or "").strip(),

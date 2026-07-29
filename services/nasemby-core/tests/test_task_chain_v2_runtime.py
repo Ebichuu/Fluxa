@@ -489,6 +489,77 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         listing = app.test_client().get("/api/v2/tasks/chains?limit=1").get_json()
         self.assertEqual(listing["items"][0]["concurrentDownloadCount"], 5)
 
+    def test_qb_active_filter_is_independent_of_media_outcome_and_runs_before_pagination(self):
+        app = Flask(f"{__name__}-qb-active")
+        app.extensions["mcc_task_chain_service"] = FakeTaskChain()
+        service = register_task_chain_v2(
+            app,
+            clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+        )
+        common = {
+            "mediaType": "tv",
+            "seasonNumber": 1,
+            "state": "active",
+            "confidence": "strong",
+            "healthState": "waiting",
+            "identityState": "linked",
+            "executionState": "running",
+            "updatedAt": "2026-07-22T03:00:00Z",
+            "sourceIds": {"subscriptionId": "", "qbHashes": [], "symediaIds": []},
+            "steps": [],
+            "stages": [],
+            "pipelineFacts": [],
+        }
+        payload = {
+            "contractVersion": 2,
+            "generatedAt": "2026-07-22T03:00:00Z",
+            "version": "qb-active-test",
+            "counts": {"total": 4, "active": 1, "blocked": 1, "completed": 0, "waiting": 2, "unlinked": 1},
+            "outcomeCounts": {"in_progress": 1, "action_required": 1, "waiting": 2},
+            "services": {
+                "qb": {"connected": True, "configured": True, "total": 4, "active": 4, "downloadSpeed": 1024},
+                "torra": {}, "symedia": {}, "emby": {},
+            },
+            "items": [
+                {
+                    **common, "id": "chain-action", "chainId": "chain-action", "targetKey": "tv:1:season:1",
+                    "title": "异常但仍下载", "tmdbId": "1", "outcomeState": "action_required",
+                    "activeDownloadTasks": 2, "qbControl": {"total": 2, "active": 2},
+                },
+                {
+                    **common, "id": "chain-progress", "chainId": "chain-progress", "targetKey": "tv:2:season:1",
+                    "title": "正常下载", "tmdbId": "2", "outcomeState": "in_progress",
+                    "activeDownloadTasks": 1, "qbControl": {"total": 1, "active": 1},
+                },
+                {
+                    **common, "id": "qb:orphan", "chainId": "chain-orphan", "targetKey": "artifact:orphan",
+                    "title": "未关联 qB 任务", "mediaType": "unknown", "tmdbId": "", "confidence": "unlinked",
+                    "identityState": "unidentified", "outcomeState": "waiting",
+                    "activeDownloadTasks": 1, "qbControl": {"total": 1, "active": 1},
+                },
+                {
+                    **common, "id": "chain-inactive", "chainId": "chain-inactive", "targetKey": "tv:3:season:1",
+                    "title": "没有活动下载", "tmdbId": "3", "outcomeState": "waiting",
+                    "activeDownloadTasks": 0, "qbControl": {"total": 0, "active": 0},
+                },
+            ],
+        }
+        service.full_snapshot = lambda force=False: payload
+        client = app.test_client()
+
+        first_page = client.get("/api/v2/tasks/chains?qbActive=1&limit=1").get_json()
+        listing = client.get("/api/v2/tasks/chains?qbActive=1&limit=100").get_json()
+
+        self.assertEqual(first_page["page"]["total"], 3)
+        self.assertTrue(first_page["page"]["hasMore"])
+        self.assertEqual({row["outcomeState"] for row in listing["items"]}, {"action_required", "in_progress", "waiting"})
+        self.assertTrue(any(row["id"].startswith("qb:") for row in listing["items"]))
+        self.assertEqual(sum(row["qbControl"]["active"] for row in listing["items"]), 4)
+        self.assertTrue(all(row["qbControl"]["active"] > 0 for row in listing["items"]))
+
+        invalid = client.get("/api/v2/tasks/chains?qbActive=0")
+        self.assertEqual((invalid.status_code, invalid.get_json()["code"]), (400, "TASK_QB_ACTIVE_FILTER_INVALID"))
+
     def test_merged_progress_uses_the_whole_stage_chain(self):
         chain = FakeTaskChain().get_chain()
         chain["items"][0]["progress"] = 100

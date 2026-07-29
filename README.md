@@ -126,7 +126,7 @@ Vite 会把 `/api` 和 `/mineradio` 代理到 Python。
 ## 本地检查
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前后端 555 项；v2 机器契约 70 条
+python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前后端 561 项；v2 机器契约 70 条
 npm test
 npm run build
 docker compose config --services

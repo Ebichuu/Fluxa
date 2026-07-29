@@ -371,6 +371,7 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
 
         self.assertEqual(result["items"][0]["qbControl"], {
             "total": 2,
+            "active": 1,
             "paused": 1,
             "canPause": True,
             "canResume": False,

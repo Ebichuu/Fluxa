@@ -41,6 +41,22 @@ class FakeSession:
         return response
 
 
+class BlockingSession(FakeSession):
+    def __init__(self, responses):
+        super().__init__(responses)
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self._blocked = False
+
+    def request(self, method, url, **kwargs):
+        path = urlsplit(url).path
+        if path == "/api/v2/app/version" and not self._blocked:
+            self._blocked = True
+            self.started.set()
+            self.release.wait(timeout=2)
+        return super().request(method, url, **kwargs)
+
+
 class FakeQbClient:
     def summary(self):
         return {
@@ -63,6 +79,24 @@ class FakeQbClient:
 
 
 class QbittorrentRuntimeContractTests(unittest.TestCase):
+    @staticmethod
+    def summary_session(extra=None):
+        return FakeSession({
+            "/api/v2/app/version": FakeResponse(text="v4.3.9", content_type="text/plain"),
+            "/api/v2/transfer/info": FakeResponse(payload={
+                "dl_info_speed": 1024,
+                "up_info_speed": 512,
+            }),
+            "/api/v2/torrents/info": FakeResponse(payload=[{
+                "hash": "active",
+                "name": "测试下载",
+                "progress": 0.5,
+                "state": "downloading",
+                "dlspeed": 4096,
+            }]),
+            **(extra or {}),
+        })
+
     def test_unconfigured_summary_and_route_boundary(self):
         from app import main
 
@@ -251,6 +285,95 @@ class QbittorrentRuntimeContractTests(unittest.TestCase):
         self.assertEqual(action_request[0], "POST")
         self.assertEqual(action_request[2]["headers"]["Cookie"], "SID=action-cookie")
         self.assertEqual(action_request[2]["data"], {"hashes": f"{'a' * 40}|{'b' * 40}"})
+
+    def test_summary_reuses_snapshot_until_ttl_and_refreshes_after_expiry(self):
+        from app.qbittorrent_runtime import QbittorrentClient, QbittorrentConfig
+
+        session = self.summary_session()
+        monotonic = [100.0]
+        checked_at = [datetime(2026, 7, 29, 1, 0, tzinfo=timezone.utc)]
+        client = QbittorrentClient(
+            QbittorrentConfig(base_url="http://qb.example.test"),
+            session=session,
+            clock=lambda: checked_at[0],
+            monotonic=lambda: monotonic[0],
+        )
+
+        first = client.summary()
+        checked_at[0] = datetime(2026, 7, 29, 1, 0, 4, tzinfo=timezone.utc)
+        second = client.summary()
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(session.requests), 3)
+
+        monotonic[0] += 5.1
+        checked_at[0] = datetime(2026, 7, 29, 1, 0, 6, tzinfo=timezone.utc)
+        refreshed = client.summary()
+
+        self.assertEqual(len(session.requests), 6)
+        self.assertNotEqual(first["lastCheckedAt"], refreshed["lastCheckedAt"])
+
+    def test_summary_single_flights_concurrent_readers(self):
+        from app.qbittorrent_runtime import QbittorrentClient, QbittorrentConfig
+
+        base = self.summary_session().responses
+        session = BlockingSession(base)
+        client = QbittorrentClient(
+            QbittorrentConfig(base_url="http://qb.example.test"),
+            session=session,
+        )
+        results = []
+        workers = [threading.Thread(target=lambda: results.append(client.summary())) for _ in range(6)]
+
+        workers[0].start()
+        self.assertTrue(session.started.wait(timeout=1))
+        for worker in workers[1:]:
+            worker.start()
+        session.release.set()
+        for worker in workers:
+            worker.join(timeout=2)
+
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertEqual(len(results), 6)
+        self.assertEqual(len(session.requests), 3)
+        self.assertEqual({row["lastCheckedAt"] for row in results}, {results[0]["lastCheckedAt"]})
+
+    def test_failed_summary_is_cached_and_configuration_or_action_invalidates_cache(self):
+        import requests
+
+        from app.qbittorrent_runtime import QbittorrentClient, QbittorrentConfig
+
+        failed_session = FakeSession({
+            "/api/v2/app/version": requests.ConnectionError("offline"),
+            "/api/v2/transfer/info": requests.ConnectionError("offline"),
+            "/api/v2/torrents/info": requests.ConnectionError("offline"),
+        })
+        failed_client = QbittorrentClient(
+            QbittorrentConfig(base_url="http://qb.example.test"),
+            session=failed_session,
+        )
+
+        first_failure = failed_client.summary()
+        second_failure = failed_client.summary()
+
+        self.assertEqual(first_failure, second_failure)
+        self.assertEqual(len(failed_session.requests), 3)
+
+        session = self.summary_session({
+            "/api/v2/torrents/pause": FakeResponse(text="", content_type="text/plain"),
+        })
+        client = QbittorrentClient(
+            QbittorrentConfig(base_url="http://qb.example.test"),
+            session=session,
+        )
+        client.summary()
+        client.reconfigure(QbittorrentConfig(base_url="http://qb.example.test"))
+        client.summary()
+        self.assertEqual([row[1] for row in session.requests].count("/api/v2/torrents/info"), 2)
+
+        client.set_paused("pause", ["a" * 40])
+        client.summary()
+        self.assertEqual([row[1] for row in session.requests].count("/api/v2/torrents/info"), 3)
 
     def test_public_route_uses_injected_read_client(self):
         from app import main

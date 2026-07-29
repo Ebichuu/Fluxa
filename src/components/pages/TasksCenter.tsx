@@ -238,6 +238,7 @@ function shanghaiTodayKey() {
 }
 
 export function TasksCenter({ target, onClearTarget, onNavigate }: { target: TaskNavigationTarget | null; onClearTarget: () => void; onNavigate: AppNavigate }) {
+  const qbActiveView = target?.qbActive === true;
   const focusActive = Boolean(target && (
     target.chainId || target.targetKey || target.subscriptionId || target.tmdbId || target.title
   ));
@@ -250,7 +251,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
         ? '无需处理'
         : '处理中';
   const [filter, setFilter] = useState<FilterName>(initialFilter);
-  const [filterReady, setFilterReady] = useState(Boolean(focusActive || initialOutcome || target?.advanced || target?.archivedDate));
+  const [filterReady, setFilterReady] = useState(Boolean(qbActiveView || focusActive || initialOutcome || target?.advanced || target?.archivedDate));
   const [chain, setChain] = useState<TaskChainResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -288,9 +289,10 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     setError('');
     try {
       const payload = await getTaskChainV2({
-        outcomeStates: focusActive || archivedDate ? undefined : outcomeStatesForFilter(filter),
+        outcomeStates: focusActive || archivedDate || qbActiveView ? undefined : outcomeStatesForFilter(filter),
         completedDate: focusActive ? undefined : completedDate || undefined,
         archivedDate: focusActive ? undefined : archivedDate || undefined,
+        qbActive: qbActiveView,
         identityStates: advancedOpen ? target?.identityStates : undefined,
         chainId: target?.chainId,
         targetKey: target?.targetKey,
@@ -311,7 +313,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
           }
         }
         if (append) setPageLimit((current) => Math.max(current, offset + payload.items.length));
-        const scopeKey = `${filter}:${completedDate}:${archivedDate}:${advancedOpen}:${focusActive}`;
+        const scopeKey = `${filter}:${completedDate}:${archivedDate}:${advancedOpen}:${focusActive}:${qbActiveView}`;
         const nextVersion = payload.version ?? '';
         const nextCounts = filterCounts(payload);
         if (!append && !focusActive && nextVersion && nextCounts) {
@@ -370,7 +372,9 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
       setTechnicalChainId('');
     }
 
-    if (target?.outcomeState) {
+    if (qbActiveView) {
+      setFilterReady(true);
+    } else if (target?.outcomeState) {
       setFilter(filterForOutcome(target.outcomeState));
       setFilterReady(true);
     } else if (focusActive) {
@@ -549,6 +553,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
       title: null,
       seasonNumber: null,
       mediaType: null,
+      qbActive: null,
       outcomeState: outcomeStatesForFilter(filter),
       userState: null,
       completedDate: completedDate || null,
@@ -578,7 +583,8 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
       tmdbId: null,
       title: null,
       seasonNumber: null,
-      mediaType: null
+      mediaType: null,
+      qbActive: null
     }, 'replace');
   };
 
@@ -600,7 +606,8 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
       tmdbId: null,
       title: null,
       seasonNumber: null,
-      mediaType: null
+      mediaType: null,
+      qbActive: null
     }, 'replace');
   };
 
@@ -608,6 +615,15 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     advancedOpenRef.current = next;
     setAdvancedOpen(next);
     writeUrlQuery({ advanced: next }, 'replace');
+  };
+
+  const clearQbActiveView = () => {
+    onClearTarget();
+    writeUrlQuery({
+      qbActive: null,
+      outcomeState: outcomeStatesForFilter(filter),
+      userState: null,
+    }, 'replace');
   };
 
   const toggleDetail = (item: TaskChainListItem) => {
@@ -750,8 +766,14 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
       <section className="ops-hero ops-hero--tasks ops-hero--compact">
         <div>
           <p className="ops-eyebrow">处理进度</p>
-          <h1>任务中心</h1>
-          <p className="ops-page-subtitle">{counts['需要处理']} 项需要处理 · {counts['处理中']} 个处理中</p>
+          <h1>{qbActiveView ? 'qB 当前活跃任务' : '任务中心'}</h1>
+          <p className="ops-page-subtitle">
+            {qbActiveView
+              ? chain?.services.qb.connected
+                ? `qB 当前活跃任务 ${chain.services.qb.active} 个 · ${chain.page?.total ?? items.length} 条媒体链`
+                : 'qB 当前活跃任务未知'
+              : `${counts['需要处理']} 项需要处理 · ${counts['处理中']} 个处理中`}
+          </p>
         </div>
         <div className="ops-task-hero-status">
           <span>{counts['需要处理'] > 0 ? `${counts['需要处理']} 项需要处理` : counts['处理中'] > 0 ? '任务正在处理' : chain ? '当前没有需要介入的问题' : '正在读取任务状态'}</span>
@@ -833,6 +855,15 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
       )}
 
       <section className="ops-panel ops-task-workbench">
+        {qbActiveView && (
+          <div className="ops-task-focus" role="status">
+            <div>
+              <strong>{chain?.services.qb.connected ? `qB 当前活跃任务 ${chain.services.qb.active} 个` : 'qB 当前活跃任务未知'}</strong>
+              <span>{chain ? `已关联为 ${chain.page?.total ?? items.length} 条媒体链；同一目标的并发任务仍合并显示` : '正在读取下载器当前快照'}</span>
+            </div>
+            <button className="tool-link" type="button" onClick={clearQbActiveView}>查看全部任务</button>
+          </div>
+        )}
         {focusActive && (
           <div className="ops-task-focus" role="status">
             <div>
@@ -844,7 +875,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
         )}
         <header className="ops-task-toolbar">
           <div className="ops-mobile-filter-summary">
-            <span><small>当前筛选</small><strong>{archivedDate ? `归档 ${archivedDate}` : `${filter}${completedDate ? ' · 今日可播放' : ''}`}{advancedOpen ? ' · 高级诊断' : ''}</strong></span>
+            <span><small>当前筛选</small><strong>{qbActiveView ? 'qB 当前活跃任务' : archivedDate ? `归档 ${archivedDate}` : `${filter}${completedDate ? ' · 今日可播放' : ''}`}{advancedOpen ? ' · 高级诊断' : ''}</strong></span>
             <button
               aria-controls="task-mobile-filter-sheet"
               aria-expanded={mobileFiltersOpen}
@@ -859,11 +890,11 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
           <div className="ops-task-tabs" role="tablist" aria-label="任务筛选">
             {filters.map((name) => (
               <button
-                aria-selected={filter === name}
-                className={filter === name ? 'ops-task-tab ops-task-tab--active' : 'ops-task-tab'}
+                aria-selected={!qbActiveView && filter === name}
+                className={!qbActiveView && filter === name ? 'ops-task-tab ops-task-tab--active' : 'ops-task-tab'}
                 key={name}
                 role="tab"
-                tabIndex={filter === name ? 0 : -1}
+                tabIndex={(!qbActiveView && filter === name) || (qbActiveView && name === filters[0]) ? 0 : -1}
                 type="button"
                 onClick={() => changeFilter(name)}
                 onKeyDown={handleHorizontalTabKeyDown}
@@ -893,7 +924,9 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
         {!loading && error && <div className="ops-empty ops-task-empty">{error}</div>}
         {!loading && chain && visible.length === 0 && (
           <div className="ops-empty ops-task-empty">
-            {focusActive
+            {qbActiveView
+              ? '当前没有可验证的 qB 活跃任务。'
+              : focusActive
               ? '订阅已保存，但暂未形成关联任务。任务产生后会显示在这里。'
               : archivedDate
                 ? '这一天没有可关联到规范任务的归档文件；未关联文件仍计入上方统计。'
@@ -941,8 +974,8 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                   </p>
                   <div className="ops-task-card__identity">
                     <span>目标 <strong>{targetLabel(item)}</strong></span>
-                    {(item.concurrentDownloadCount ?? item.activeDownloadTasks ?? 0) > 1 && (
-                      <span>并发下载 <strong>同一目标有 {item.concurrentDownloadCount ?? item.activeDownloadTasks} 个 qB 任务同时下载</strong></span>
+                    {(item.qbControl.active ?? item.concurrentDownloadCount ?? item.activeDownloadTasks ?? 0) > 1 && (
+                      <span>并发下载 <strong>同一目标有 {item.qbControl.active ?? item.concurrentDownloadCount ?? item.activeDownloadTasks} 个 qB 任务同时下载</strong></span>
                     )}
                   </div>
                 </div>

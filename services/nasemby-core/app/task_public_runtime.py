@@ -340,7 +340,7 @@ def present_task_item(value) -> dict:
         "suggestion": None,
         "qbControl": {
             key: (item.get("qbControl") or {}).get(key)
-            for key in ("total", "paused", "canPause", "canResume")
+            for key in ("total", "active", "paused", "canPause", "canResume")
         },
         "sourceIds": present_source_ids(item.get("sourceIds")),
         "subscriptionId": public_subscription_ref(item.get("subscriptionId")),

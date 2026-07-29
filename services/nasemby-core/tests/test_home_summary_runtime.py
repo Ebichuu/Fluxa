@@ -32,6 +32,16 @@ class FakeTaskChainV2Service:
         return {**self.archive, "date": archived_date, "timezone": "Asia/Shanghai"}
 
 
+class FakeQbClient:
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = 0
+
+    def summary(self):
+        self.calls += 1
+        return self.payload
+
+
 class FakeRssRepository:
     def __init__(self, error_sources=0):
         self.error_sources = error_sources
@@ -550,6 +560,50 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["headline"], "有 1 项任务正在处理")
         self.assertIn("qB 下载任务 3", result["detail"])
 
+    def test_home_uses_global_qb_active_count_even_when_media_chain_needs_action(self):
+        blocked = item(library_status="blocked")
+        blocked["state"] = "blocked"
+        app = self.build_app([blocked], scheduler_enabled=False)
+        qb = FakeQbClient({
+            "configured": True,
+            "connected": True,
+            "lastCheckedAt": "2026-07-22T02:00:00.000Z",
+            "counts": {"active": 2},
+        })
+        app.extensions["mcc_qbittorrent_client"] = qb
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+
+        self.assertEqual(result["counts"]["mediaActionRequired"], 1)
+        self.assertEqual(result["counts"]["activeDownloadTasks"], 2)
+        self.assertEqual(qb.calls, 1)
+        focus = next(row for row in result["focusItems"] if row["key"] == "current_downloads")
+        self.assertEqual(focus["value"], 2)
+        self.assertEqual(focus["href"], "/tasks?qbActive=1")
+
+    def test_home_distinguishes_verified_zero_from_unreadable_qb_count(self):
+        app = self.build_app([item()], scheduler_enabled=False)
+        qb = FakeQbClient({
+            "configured": True,
+            "connected": True,
+            "lastCheckedAt": "2026-07-22T02:00:00.000Z",
+            "counts": {"active": 0},
+        })
+        app.extensions["mcc_qbittorrent_client"] = qb
+
+        verified_zero = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+        self.assertEqual(verified_zero["counts"]["activeDownloadTasks"], 0)
+
+        qb.payload = {
+            "configured": True,
+            "connected": False,
+            "lastCheckedAt": "2026-07-22T02:00:00.000Z",
+            "counts": {"active": 0},
+            "error": "qBittorrent 请求失败",
+        }
+        unreadable = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+        self.assertIsNone(unreadable["counts"]["activeDownloadTasks"])
+
     def test_focus_items_report_verified_zero_and_precise_hrefs(self):
         app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)
         services = app.extensions["mcc_task_chain_service"].payload["services"]
@@ -579,7 +633,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         ):
             self.assertEqual(focus[key]["value"], 0)
             self.assertEqual(focus[key]["state"], "normal")
-        self.assertEqual(focus["current_downloads"]["href"], "/tasks?outcomeState=in_progress")
+        self.assertEqual(focus["current_downloads"]["href"], "/tasks?qbActive=1")
         self.assertEqual(focus["archived_today"]["href"], "/tasks?archivedDate=2026-07-22")
         self.assertEqual(focus["missing_episodes"]["href"], "/following?missingEpisodes=1")
         self.assertEqual(focus["action_required"]["href"], "/tasks?outcomeState=action_required")

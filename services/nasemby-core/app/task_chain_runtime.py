@@ -115,10 +115,15 @@ def _qb_control(tasks: list[dict]) -> dict:
     paused = sum("pause" in _string(task.get("state")).lower() for task in tasks)
     return {
         "total": len(tasks),
+        "active": _qb_active_count(tasks),
         "paused": paused,
         "canPause": len(tasks) > paused,
         "canResume": bool(tasks) and paused == len(tasks),
     }
+
+
+def _qb_active_count(tasks: list[dict]) -> int:
+    return sum(str(task.get("status") or "") in {"downloading", "stalled"} for task in tasks)
 
 
 def _pipeline_fact(facts: list[dict], stage: str) -> dict:

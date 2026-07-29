@@ -34,8 +34,9 @@ Fluxa 管理工作台把关键筛选和定位上下文写入浏览器地址，�
 | `advanced` | `1` | 展开高级视图 |
 | `identityState` | `unidentified` / `linked` / `conflict`，可重复 | 身份状态筛选 |
 | `systemIssue` | `secupload_failures` | 直接打开系统问题面板（仅任务中心） |
+| `qbActive` | `1` | 查看 qB 当前活跃任务；独立于媒体结果筛选（仅任务中心） |
 
-示例：`/tasks?userState=action_required&mediaType=movie` 打开"需要处理的电影任务"；`/tasks?systemIssue=secupload_failures` 直达秒传系统问题面板。
+示例：`/tasks?userState=action_required&mediaType=movie` 打开"需要处理的电影任务"；`/tasks?systemIssue=secupload_failures` 直达秒传系统问题面板；`/tasks?qbActive=1` 查看下载器当前活跃任务，即使对应媒体链同时处于“需要处理”也不会被过滤。
 
 ## 日历（`/calendar`）
 

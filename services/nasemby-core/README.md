@@ -85,10 +85,10 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/discover/*`：发现、趋势、搜索和资源搜索。
 - `/api/subscriptions/*`：唯一台账、配置、详情、日历和受保护动作。
 - `/api/media/*`：影院大厅与 Emby。
-- `/api/qbittorrent/*`、`/api/torra/summary`、`/api/symedia/summary`；qB 摘要兼容保留原始计数，并新增可选共享 `assessment`，任务链和控制室按同一观察时间、900 秒窗口与优先级判断；Symedia 摘要兼容保留原统计并新增七项能力证据和脱敏洗版摘要，只有可证明的成功评分替换进入替换计数；缺失状态仍返回 `evidence_insufficient`，界面显示“暂未确认”。
+- `/api/qbittorrent/*`、`/api/torra/summary`、`/api/symedia/summary`；qB 摘要兼容保留原始计数，并新增可选共享 `assessment`，应用内同一客户端通过 5 秒线程安全单飞快照让首页、任务链和控制室复用相同 `lastCheckedAt/counts.active`，任务链和控制室按同一观察时间、900 秒窗口与优先级判断；Symedia 摘要兼容保留原统计并新增七项能力证据和脱敏洗版摘要，只有可证明的成功评分替换进入替换计数；缺失状态仍返回 `evidence_insufficient`，界面显示“暂未确认”。
 - `/api/tasks/chain`：订阅到入库的统一证据链。
 - `/api/v2/tasks/summary`：返回唯一任务链、健康/身份/执行三维状态、兼容 `userCounts`、新 `outcomeCounts`、阶段和服务轻量摘要，支持 ETag 条件读取。
-- `/api/v2/tasks/chains`：按 `chainId/targetKey` 合并重复来源，默认分页返回 20 条摘要；支持可重复 `outcomeState`、兼容 `userState`、可播放日期、健康状态、身份和增量时间筛选，顶层返回 `outcomeState/playableAt`；任务中心按“需要处理 / 处理中 / 已可播放 / 无需处理”消费新结果。
+- `/api/v2/tasks/chains`：按 `chainId/targetKey` 合并重复来源，默认分页返回 20 条摘要；支持可重复 `outcomeState`、兼容 `userState`、可播放日期、健康状态、身份、增量时间及独立 `qbActive=1` 筛选，后者按 `qbControl.active` 在分页前保留所有当前下载器活跃链和 orphan qB 任务，不受媒体结果影响；顶层返回 `outcomeState/playableAt`，任务中心按“需要处理 / 处理中 / 已可播放 / 无需处理”消费新结果。
 - `/api/v2/tasks/chains/:chainId`：按需返回单链阶段证据、artifact、原因、动作资格及可选 `pipelineFacts/pipelineOutcome`；完整聚合快照幂等写入本地资源事件账本，但不执行外部动作。
 - `/api/v2/system-issues/secupload-failures`：从 Torra `recent_runs.result` 读取结构化成功/失败计数和可选 `failure_details`；公开响应只增加脱敏文件显示名、错误分类、可空重试次数、批次引用和 file-scope 115 事实。没有详情时只说明“本次运行没有文件级详情”，路径、错误原文和内部 ID 不返回。
 - `/api/v2/calendar`：只读聚合追更播出日期与精确目标的六阶段事实，使用 `Asia/Shanghai` 并支持 ETag；默认排除未关联、自动来源和范围不明记录，显式 `includeUnlinked=1` 才读取高级项；规范范围 owner 可投影集级 qB、Symedia、STRM 和 Emby 历史时间，成功历史不因当前新鲜度过期而消失，只有当前 Emby 集级证据生成 `playable`；月摘要与完整轻量搜索索引共用 300 秒完整快照。
@@ -138,7 +138,7 @@ python -m unittest discover -s tests -t . -v
 
 测试使用临时台账、隔离的临时活动日志和模拟客户端，不连接真实服务执行写操作。保留接口只在模拟测试中显式开启；Mineradio 注入片段继续使用冻结的 SHA-256 快照保护视觉桥接基线。
 
-当前共 555 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘、日历时间线、全局作品搜索和系统指标测试全部使用临时台账、临时活动日志和模拟函数，不连接真实外部服务；覆盖默认闸门、脱敏、原子迁移、候选刷新与追更隔离、候选只读预览与幂等确认加入、历史污染四类预览、备份失败与并发变化回滚、Torra 镜像幂等与公开哈希 ID、旧 Torra 冲突键公开投影、六阶段任务事实、六来源适配、单向兼容投影、Symedia `0/1` 状态归一化、能力证据和洗版摘要、Emby 集级分页索引与结果派生、任务公开引用与 qB 动作反解、qB 共享评估与 900 秒观察边界、任务用户状态、无 TMDB 任务深链、首页关注项、北京时间自然日、日历完整索引、RSS 单条安全匹配与匹配级下载确认、追更海报补齐、qB 安全动作、自动化窗口、租约回收终态和完整幂等请求绑定。
+当前共 561 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘、日历时间线、全局作品搜索和系统指标测试全部使用临时台账、临时活动日志和模拟函数，不连接真实外部服务；覆盖默认闸门、脱敏、原子迁移、候选刷新与追更隔离、候选只读预览与幂等确认加入、历史污染四类预览、备份失败与并发变化回滚、Torra 镜像幂等与公开哈希 ID、旧 Torra 冲突键公开投影、六阶段任务事实、六来源适配、单向兼容投影、Symedia `0/1` 状态归一化、能力证据和洗版摘要、Emby 集级分页索引与结果派生、任务公开引用与 qB 动作反解、qB 共享评估与 900 秒观察边界、5 秒单飞快照、全局活跃计数与 `qbActive` 深链、任务用户状态、无 TMDB 任务深链、首页关注项、北京时间自然日、日历完整索引、RSS 单条安全匹配与匹配级下载确认、追更海报补齐、qB 安全动作、自动化窗口、租约回收终态和完整幂等请求绑定。
 
 RSS 身份端到端验收使用临时 SQLite 覆盖结构化 TMDB、简介 IMDb 链接、唯一追更匹配和多候选冲突四类固定样本，不写入正式 RSS 台账。
 

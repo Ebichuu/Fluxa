@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import math
 import os
+import threading
+import time
+from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -13,6 +16,7 @@ from app.qbittorrent_assessment_runtime import assess_qb_task, summarize_qb_asse
 
 
 REQUEST_TIMEOUT_SECONDS = 10
+SUMMARY_CACHE_SECONDS = 5
 STATUS_PRIORITY = {
     "stalled": 0,
     "downloading": 1,
@@ -125,15 +129,30 @@ def _task_sort_key(task: dict):
 
 
 class QbittorrentClient:
-    def __init__(self, config: QbittorrentConfig, session=None, clock=None):
+    def __init__(self, config: QbittorrentConfig, session=None, clock=None, monotonic=None):
         self.config = config
         self.base_url = config.base_url.strip().rstrip("/")
         self.http = session or requests
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.monotonic = monotonic or time.monotonic
+        self._summary_condition = threading.Condition(threading.RLock())
+        self._summary_cache = None
+        self._summary_cache_at = 0.0
+        self._summary_refreshing = False
+        self._summary_generation = 0
+
+    def _invalidate_summary_cache(self) -> None:
+        with self._summary_condition:
+            self._summary_generation += 1
+            self._summary_cache = None
+            self._summary_cache_at = 0.0
+            self._summary_condition.notify_all()
 
     def reconfigure(self, config: QbittorrentConfig) -> None:
-        self.config = config
-        self.base_url = config.base_url.strip().rstrip("/")
+        with self._summary_condition:
+            self.config = config
+            self.base_url = config.base_url.strip().rstrip("/")
+        self._invalidate_summary_cache()
 
     def _empty_summary(self, error=None, observed_at=None):
         return {
@@ -227,8 +246,9 @@ class QbittorrentClient:
             raise RuntimeError(
                 f"qBittorrent {'暂停' if action == 'pause' else '恢复'}失败：{response.status_code}"
             )
+        self._invalidate_summary_cache()
 
-    def summary(self) -> dict:
+    def _read_summary(self) -> dict:
         checked_at = self.clock()
         if not self.base_url:
             return self._empty_summary("未配置 QB_BASE_URL", checked_at)
@@ -276,6 +296,30 @@ class QbittorrentClient:
             }
         except Exception as exc:
             return self._empty_summary(str(exc) or "qBittorrent 读取失败", checked_at)
+
+    def summary(self) -> dict:
+        while True:
+            with self._summary_condition:
+                cache_age = self.monotonic() - self._summary_cache_at
+                if self._summary_cache is not None and cache_age < SUMMARY_CACHE_SECONDS:
+                    return deepcopy(self._summary_cache)
+                if self._summary_refreshing:
+                    self._summary_condition.wait()
+                    continue
+                self._summary_refreshing = True
+                generation = self._summary_generation
+                break
+
+        try:
+            snapshot = self._read_summary()
+        finally:
+            with self._summary_condition:
+                if 'snapshot' in locals() and generation == self._summary_generation:
+                    self._summary_cache = deepcopy(snapshot)
+                    self._summary_cache_at = self.monotonic()
+                self._summary_refreshing = False
+                self._summary_condition.notify_all()
+        return deepcopy(snapshot)
 
 
 def register_qbittorrent_read(app: Flask, environment=None, client_factory=None, clock=None):

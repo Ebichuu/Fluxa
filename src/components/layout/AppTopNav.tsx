@@ -21,6 +21,7 @@ export interface TaskNavigationTarget {
   userState?: 'action_required' | 'in_progress' | 'completed' | 'no_action';
   completedDate?: string;
   archivedDate?: string;
+  qbActive?: boolean;
   advanced?: boolean;
   identityStates?: Array<'unidentified' | 'linked' | 'conflict'>;
   systemIssue?: string;
@@ -53,12 +54,14 @@ interface AppTopNavProps {
 
 export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, showThemeToggle, theme }: AppTopNavProps) {
   const healthState = homeSummary?.healthState ?? 'evidence_insufficient';
-  const actionRequiredCount = homeSummary?.counts.mediaActionRequired ?? 0;
+  const actionRequiredCount = homeSummary?.counts.actionRequiredResources
+    ?? homeSummary?.counts.mediaActionRequired
+    ?? 0;
   const actionRequiredBadge = actionRequiredCount > 99 ? '99+' : String(actionRequiredCount);
   const healthLabel = !homeSummary
     ? '状态读取中'
     : actionRequiredCount > 0
-      ? `${actionRequiredCount} 项需要处理`
+      ? `${actionRequiredCount} 个资源需要处理`
       : homeSummary.counts.inProgress > 0
         ? '任务处理中'
         : homeSummary.counts.auxiliaryAlerts > 0
@@ -233,7 +236,7 @@ export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, 
                 <Icon aria-hidden="true" size={15} strokeWidth={1.8} />
                 <span>{item.label}</span>
                 {showTaskBadge && (
-                  <span aria-label={`${actionRequiredCount} 项需要处理`} className="nav-item__badge">{actionRequiredBadge}</span>
+                  <span aria-label={`${actionRequiredCount} 个资源需要处理`} className="nav-item__badge">{actionRequiredBadge}</span>
                 )}
               </button>
             );

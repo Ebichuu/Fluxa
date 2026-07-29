@@ -287,6 +287,7 @@ export function getTaskChainV2(query: TaskChainQuery | TaskChainHealthState = {}
   if (input.userState) params.set('userState', input.userState);
   if (input.completedDate) params.set('completedDate', input.completedDate);
   if (input.archivedDate) params.set('archivedDate', input.archivedDate);
+  if (input.qbActive) params.set('qbActive', '1');
   if (input.chainId) params.set('chainId', input.chainId);
   if (input.targetKey) params.set('targetKey', input.targetKey);
   if (input.subscriptionId) params.set('subscriptionId', input.subscriptionId);

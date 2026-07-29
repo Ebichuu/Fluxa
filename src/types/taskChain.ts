@@ -204,6 +204,7 @@ export interface TaskChainItem {
   suggestion: { label: string; url: string } | null;
   qbControl: {
     total: number;
+    active?: number;
     paused: number;
     canPause: boolean;
     canResume: boolean;
@@ -357,6 +358,7 @@ export interface TaskChainQuery {
   userState?: TaskChainUserState;
   completedDate?: string;
   archivedDate?: string;
+  qbActive?: boolean;
   chainId?: string;
   targetKey?: string;
   subscriptionId?: string;

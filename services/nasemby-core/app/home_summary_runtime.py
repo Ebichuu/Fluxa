@@ -338,6 +338,26 @@ class HomeSummaryService:
                 key = _target_key(item)
                 unique_items[key] = _latest_item(unique_items.get(key), item)
 
+        services = chain.get("services") or {}
+        qb_status = services.get("qb") if isinstance(services.get("qb"), dict) else {}
+        qb_client = self.app.extensions.get("mcc_qbittorrent_client")
+        has_shared_qb_client = bool(qb_client and callable(getattr(qb_client, "summary", None)))
+        if has_shared_qb_client:
+            try:
+                qb_status = qb_client.summary()
+            except Exception:
+                qb_status = {}
+        qb_active_downloads = None
+        if qb_status.get("connected") is True:
+            raw_active = (qb_status.get("counts") or {}).get("active")
+            if raw_active is None:
+                raw_active = qb_status.get("active")
+            parsed_active = _integer(raw_active)
+            if parsed_active is not None and parsed_active >= 0:
+                qb_active_downloads = parsed_active
+            elif not has_shared_qb_client:
+                qb_active_downloads = sum(_active_download_count(item) for item in unique_items.values())
+
         item_evidence = [(_target_key(item), item, _item_evidence(item, now)) for item in unique_items.values()]
         identity_only = [row for row in item_evidence if _identity_only_issue(row[2])]
         visible_item_evidence = [row for row in item_evidence if not _identity_only_issue(row[2])]
@@ -385,7 +405,7 @@ class HomeSummaryService:
                 _active_download_count(item) > 0
                 for item in unique_items.values()
             ),
-            "activeDownloadTasks": sum(_active_download_count(item) for item in unique_items.values()),
+            "activeDownloadTasks": qb_active_downloads,
             "concurrentDownloadGroups": sum(_active_download_count(item) > 1 for item in unique_items.values()),
             "pending": sum(
                 str((item.get("pipelineOutcome") or {}).get("state") or "") == "waiting"
@@ -603,11 +623,9 @@ class HomeSummaryService:
         )
         counts["auxiliaryAlerts"] = len(auxiliary_issues)
 
-        services = chain.get("services") or {}
-        qb_status = services.get("qb") if isinstance(services.get("qb"), dict) else {}
         symedia_status = services.get("symedia") if isinstance(services.get("symedia"), dict) else {}
         torra_status = services.get("torra") if isinstance(services.get("torra"), dict) else {}
-        if qb_status.get("connected") is True:
+        if counts["activeDownloadTasks"] is not None:
             current_downloads_value = counts["activeDownloadTasks"]
             current_downloads_state = "processing" if current_downloads_value > 0 else "normal"
             current_downloads_detail = (
@@ -726,7 +744,7 @@ class HomeSummaryService:
         focus_items = [
             _focus_item(
                 "current_downloads", "当前下载", "个", current_downloads_value, current_downloads_state,
-                current_downloads_detail, "/tasks?outcomeState=in_progress",
+                current_downloads_detail, "/tasks?qbActive=1",
             ),
             _focus_item(
                 "secupload_failures", secupload_label, "个", secupload_failures, focus_secupload_state,

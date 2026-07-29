@@ -72,7 +72,7 @@ export function readNavigation(location: Location = window.location): Navigation
   } : ['tasks', 'subscriptions'].includes(page) && (
     query.has('chainId') || query.has('targetKey') || query.has('subscriptionId') || query.has('tmdbId') || query.has('title')
     || query.has('outcomeState') || query.has('userState') || query.has('completedDate') || query.has('advanced') || query.has('identityState')
-    || query.has('systemIssue') || query.has('archivedDate')
+    || query.has('systemIssue') || query.has('archivedDate') || query.get('qbActive') === '1'
   ) ? {
     mediaType: query.get('mediaType') === 'movie' ? 'movie' : query.get('mediaType') === 'tv' ? 'tv' : undefined,
     chainId: optionalString(query.get('chainId')),
@@ -88,6 +88,7 @@ export function readNavigation(location: Location = window.location): Navigation
       : undefined,
     completedDate: optionalString(query.get('completedDate')),
     archivedDate: optionalString(query.get('archivedDate')),
+    qbActive: query.get('qbActive') === '1',
     advanced: query.get('advanced') === '1',
     identityStates: query.getAll('identityState').filter((value): value is 'unidentified' | 'linked' | 'conflict' => (
       ['unidentified', 'linked', 'conflict'].includes(value)
@@ -126,6 +127,7 @@ export function pathForNavigation(page: PageId, target?: TaskNavigationTarget | 
     outcomeStates.forEach((value) => query.append('outcomeState', value));
     if (target.completedDate) query.set('completedDate', target.completedDate);
     if (target.archivedDate) query.set('archivedDate', target.archivedDate);
+    if (target.qbActive) query.set('qbActive', '1');
     if (target.advanced) query.set('advanced', '1');
     target.identityStates?.forEach((value) => query.append('identityState', value));
     if (target.systemIssue) query.set('systemIssue', target.systemIssue);
