@@ -11,7 +11,7 @@ import { usePolling } from '../../hooks/usePolling';
 import { formatSpeed, formatTimeAgo } from '../../utils/formatters';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
 
-type ServiceState = 'ok' | 'warn' | 'down' | 'idle' | 'loading';
+type ServiceState = 'ok' | 'neutral' | 'warn' | 'down' | 'idle' | 'loading';
 
 interface ServiceFact {
   label: string;
@@ -29,6 +29,8 @@ interface ServiceModel {
   metricLabel: string;
   checked: string;
   facts: ServiceFact[];
+  diagnostics?: ServiceFact[];
+  impactText?: string;
   icon: ReactNode;
   toolUrl: string;
   spark?: boolean;
@@ -172,7 +174,16 @@ export function ControlRoom() {
 
   const services = useMemo<ServiceModel[]>(() => {
     const torraState: ServiceState = !torra ? servicesLoaded ? 'down' : 'loading' : torra.connected ? 'ok' : torra.configured ? 'down' : 'idle';
-    const qbState: ServiceState = !qb ? servicesLoaded ? 'down' : 'loading' : qb.connected ? (qb.counts.stalled > 0 ? 'warn' : 'ok') : qb.configured ? 'down' : 'idle';
+    const qbAssessment = qb?.assessment;
+    const qbState: ServiceState = !qb
+      ? servicesLoaded ? 'down' : 'loading'
+      : !qb.connected
+        ? qb.configured ? 'down' : 'idle'
+        : qbAssessment?.state === 'action_required'
+          ? 'warn'
+          : qbAssessment?.state === 'normal'
+            ? 'ok'
+            : 'neutral';
     const symediaState: ServiceState = !symedia ? servicesLoaded ? 'down' : 'loading' : symedia.connected
       ? symedia.totals.failedRecent > 0 ? 'warn' : 'ok'
       : symedia.configured ? 'down' : 'idle';
@@ -196,13 +207,49 @@ export function ControlRoom() {
       },
       {
         id: 'qb', order: '02', name: 'qBittorrent', role: 'PT 下载、做种与任务状态', state: qbState,
-        stateLabel: !qb ? servicesLoaded ? '读取失败' : '正在读取' : qb.connected ? (qb.counts.stalled > 0 ? '有卡住任务' : '在线') : qb.configured ? '连接失败' : '未配置',
+        stateLabel: !qb
+          ? servicesLoaded ? '读取失败' : '正在读取'
+          : !qb.connected
+            ? qb.configured ? '连接失败' : '未配置'
+            : qbAssessment?.state === 'action_required'
+              ? qbAssessment.reasonText
+              : qbAssessment?.state === 'observing'
+                ? '短暂无下载活动 · 观察中'
+                : qbAssessment?.state === 'unknown'
+                  ? '部分任务状态暂未确认'
+                  : qbAssessment?.state === 'normal'
+                    ? '在线'
+                    : '在线 · 任务评估暂未提供',
         metric: qb?.connected ? formatSpeed(qb.transfer.downloadSpeed) : servicesLoaded ? '—' : '…', metricLabel: `${qb?.counts.active ?? 0} 活跃 / ${qb?.counts.total ?? 0} 总任务`,
         checked: qb ? formatTimeAgo(qb.lastCheckedAt) : servicesLoaded ? '本次检查未返回' : '等待首次检查',
         facts: qb?.connected ? [
           { label: '上传速度', value: formatSpeed(qb.transfer.uploadSpeed) },
-          { label: '卡住任务', value: `${qb.counts.stalled} 个` }
+          qbAssessment?.state === 'action_required'
+            ? { label: '需要处理', value: `${qbAssessment.counts.actionRequired} 个任务` }
+            : qbAssessment?.state === 'observing'
+              ? { label: '观察中', value: `${qbAssessment.counts.observing} 个任务短暂无下载活动` }
+              : qbAssessment?.state === 'unknown'
+                ? { label: '状态确认', value: `${qbAssessment.counts.unknown} 个任务暂未确认` }
+                : qbAssessment?.state === 'normal'
+                  ? { label: '任务评估', value: `处理中 ${qbAssessment.counts.processing} · 等待 ${qbAssessment.counts.waiting}` }
+                  : { label: '任务评估', value: '当前后端尚未返回' }
         ] : [{ label: '连接说明', value: qb?.error || (servicesLoaded ? '服务状态接口暂不可用' : '正在读取 qB 状态') }],
+        diagnostics: qb ? [
+          { label: 'qB 原始 stalled', value: `${qb.counts.stalled} 个` },
+          { label: '评估原因码', value: qbAssessment?.reasonCode || 'ASSESSMENT_NOT_AVAILABLE' },
+          { label: '评估时间', value: qbAssessment?.observedAt ? formatTimeAgo(qbAssessment.observedAt) : '暂未提供' }
+        ] : undefined,
+        impactText: qb?.connected
+          ? qbAssessment?.state === 'action_required'
+            ? 'qB 有下载任务需要处理'
+            : qbAssessment?.state === 'observing'
+              ? '短暂无下载活动，仍在 15 分钟观察期'
+              : qbAssessment?.state === 'unknown'
+                ? '部分任务状态无法确认，未计入异常'
+                : qbAssessment?.state === 'normal'
+                  ? '当前未发现服务级异常'
+                  : 'qB 可读，但任务评估尚未提供'
+          : undefined,
         icon: <Download aria-hidden="true" size={20} />, toolUrl: qb?.webUrl || '', spark: true
       },
       {
@@ -233,7 +280,7 @@ export function ControlRoom() {
   }, [qb, emby, servicesLoaded, torra, symedia]);
 
   const selected = services.find((service) => service.id === focusedService) ?? services[0];
-  const readableCount = services.filter((service) => service.state === 'ok' || service.state === 'warn').length;
+  const readableCount = services.filter((service) => service.state === 'ok' || service.state === 'neutral' || service.state === 'warn').length;
   const warningCount = services.filter((service) => service.state === 'warn' || service.state === 'down').length;
   const configuredCount = services.filter((service) => service.state !== 'idle' && service.state !== 'loading').length;
   const unconfiguredCount = services.length - configuredCount;
@@ -366,8 +413,9 @@ export function ControlRoom() {
             <dl>
               <div><dt>证据来源</dt><dd>{selected.name}</dd></div>
               <div><dt>配置状态</dt><dd>{selected.state === 'loading' ? '正在读取' : selected.state === 'idle' ? '未配置' : '已配置'}</dd></div>
-              <div><dt>连接证据</dt><dd>{selected.state === 'loading' ? '正在读取' : selected.state === 'ok' || selected.state === 'warn' ? '已获取' : '不可用'}</dd></div>
-              <div><dt>业务影响</dt><dd>{selected.state === 'loading' ? '正在汇总服务证据' : selected.state === 'ok' ? '当前未发现服务级异常' : selected.state === 'warn' ? '部分任务需继续观察' : selected.state === 'down' ? '相关任务可能无法继续' : '相关能力不可验证'}</dd></div>
+              <div><dt>连接证据</dt><dd>{selected.state === 'loading' ? '正在读取' : selected.state === 'ok' || selected.state === 'neutral' || selected.state === 'warn' ? '已获取' : '不可用'}</dd></div>
+              <div><dt>业务影响</dt><dd>{selected.impactText || (selected.state === 'loading' ? '正在汇总服务证据' : selected.state === 'ok' ? '当前未发现服务级异常' : selected.state === 'neutral' ? '当前状态保持中性' : selected.state === 'warn' ? '部分任务需要处理' : selected.state === 'down' ? '相关任务可能无法继续' : '相关能力不可验证')}</dd></div>
+              {selected.diagnostics?.map((item) => <div key={`${selected.id}-diagnostic-${item.label}`}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}
             </dl>
             <p>服务地址和凭据只在设置页编辑；这里不回显 Token、Cookie 或密码。</p>
           </details>

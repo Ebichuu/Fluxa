@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 import requests
 from flask import Flask, jsonify
 
+from app.qbittorrent_assessment_runtime import assess_qb_task, summarize_qb_assessments
+
 
 REQUEST_TIMEOUT_SECONDS = 10
 STATUS_PRIORITY = {
@@ -133,12 +135,12 @@ class QbittorrentClient:
         self.config = config
         self.base_url = config.base_url.strip().rstrip("/")
 
-    def _empty_summary(self, error=None):
+    def _empty_summary(self, error=None, observed_at=None):
         return {
             "configured": bool(self.base_url),
             "connected": False,
             "webUrl": self.base_url,
-            "lastCheckedAt": _iso_timestamp(self.clock()),
+            "lastCheckedAt": _iso_timestamp(observed_at or self.clock()),
             "version": "",
             "transfer": {"downloadSpeed": 0, "uploadSpeed": 0},
             "counts": {
@@ -227,8 +229,9 @@ class QbittorrentClient:
             )
 
     def summary(self) -> dict:
+        checked_at = self.clock()
         if not self.base_url:
-            return self._empty_summary("未配置 QB_BASE_URL")
+            return self._empty_summary("未配置 QB_BASE_URL", checked_at)
         try:
             cookie = self._login()
             with ThreadPoolExecutor(max_workers=3) as executor:
@@ -253,11 +256,15 @@ class QbittorrentClient:
                 "completed": sum(item["status"] == "completed" for item in tasks),
                 "paused": sum(item["status"] == "paused" for item in tasks),
             }
+            assessment = summarize_qb_assessments(
+                [assess_qb_task(task, checked_at) for task in tasks],
+                checked_at,
+            )
             return {
                 "configured": True,
                 "connected": True,
                 "webUrl": self.base_url,
-                "lastCheckedAt": _iso_timestamp(self.clock()),
+                "lastCheckedAt": _iso_timestamp(checked_at),
                 "version": version,
                 "transfer": {
                     "downloadSpeed": _integer_or_number(transfer.get("dl_info_speed")),
@@ -265,9 +272,10 @@ class QbittorrentClient:
                 },
                 "counts": counts,
                 "tasks": tasks,
+                "assessment": assessment,
             }
         except Exception as exc:
-            return self._empty_summary(str(exc) or "qBittorrent 读取失败")
+            return self._empty_summary(str(exc) or "qBittorrent 读取失败", checked_at)
 
 
 def register_qbittorrent_read(app: Flask, environment=None, client_factory=None, clock=None):

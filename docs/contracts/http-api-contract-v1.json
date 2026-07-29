@@ -20,7 +20,7 @@
     { "method": "GET", "path": "/api/media/external-image", "audience": "browser", "auth": "session", "effect": "read", "response": "binary-or-empty", "success": [200, 204], "migrationGroup": "media", "client": true },
     { "method": "GET", "path": "/api/media/image/:itemId/:imageType", "audience": "browser", "auth": "session", "effect": "read", "response": "binary-or-empty", "success": [200, 204], "migrationGroup": "media", "client": true },
 
-    { "method": "GET", "path": "/api/qbittorrent/summary", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "qbittorrent", "client": true },
+    { "method": "GET", "path": "/api/qbittorrent/summary", "audience": "browser", "auth": "session", "effect": "read", "response": "json", "success": [200], "migrationGroup": "qbittorrent", "client": true, "optionalResponseFields": ["assessment"] },
     { "method": "POST", "path": "/api/qbittorrent/actions/pause", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200, 202], "migrationGroup": "qbittorrent", "client": true },
     { "method": "POST", "path": "/api/qbittorrent/actions/resume", "audience": "browser", "auth": "session", "effect": "write", "response": "json", "success": [200, 202], "migrationGroup": "qbittorrent", "client": true },
 

@@ -20,6 +20,22 @@ export interface QbittorrentTask {
   lastActivity?: number;
 }
 
+export type QbittorrentAssessmentState = 'normal' | 'observing' | 'action_required' | 'unknown';
+
+export interface QbittorrentAssessment {
+  state: QbittorrentAssessmentState;
+  counts: {
+    processing: number;
+    waiting: number;
+    observing: number;
+    actionRequired: number;
+    unknown: number;
+  };
+  reasonCode: string;
+  reasonText: string;
+  observedAt: string;
+}
+
 export interface QbittorrentSummary {
   configured: boolean;
   connected: boolean;
@@ -39,6 +55,7 @@ export interface QbittorrentSummary {
     paused: number;
   };
   tasks: QbittorrentTask[];
+  assessment?: QbittorrentAssessment;
   error?: string;
 }
 

@@ -172,6 +172,19 @@ class QbittorrentRuntimeContractTests(unittest.TestCase):
         self.assertEqual(summary["tasks"][0]["savePath"], "/downloads/a")
         self.assertEqual(summary["tasks"][0]["lastActivity"], 1784192400)
         self.assertEqual(summary["lastCheckedAt"], "2026-07-16T10:00:00.000Z")
+        self.assertEqual(summary["assessment"], {
+            "state": "action_required",
+            "counts": {
+                "processing": 1,
+                "waiting": 2,
+                "observing": 0,
+                "actionRequired": 1,
+                "unknown": 0,
+            },
+            "reasonCode": "QB_DOWNLOAD_STALLED",
+            "reasonText": "qB 下载持续无活动",
+            "observedAt": "2026-07-16T10:00:00.000Z",
+        })
         self.assertEqual([item[1] for item in session.requests].count("/api/v2/auth/login"), 1)
         get_requests = [item for item in session.requests if item[0] == "GET"]
         self.assertEqual(len(get_requests), 3)

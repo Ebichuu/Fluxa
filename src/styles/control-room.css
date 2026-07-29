@@ -220,6 +220,10 @@
   border-color: rgba(157, 184, 207, 0.12);
 }
 
+.ops-service-card--neutral {
+  border-color: rgba(157, 184, 207, 0.16);
+}
+
 .ops-service-card__order {
   color: rgba(157, 184, 207, 0.55);
   font-family: var(--font-ui);
@@ -255,6 +259,11 @@
 .ops-service-card--ok .ops-service-card__state i {
   background: var(--ops-steel);
   box-shadow: 0 0 12px rgba(157, 184, 207, 0.34);
+}
+
+.ops-service-card--neutral .ops-service-card__state i,
+.ops-inspector__signal--neutral {
+  background: var(--ops-muted);
 }
 
 .ops-service-card--loading .ops-service-card__state i,
@@ -523,13 +532,13 @@
 .ops-inspector__diagnostics dd,
 .ops-inspector__diagnostics p {
   margin: 0;
-  color: rgba(255, 255, 255, 0.72);
+  color: var(--ops-muted);
   font-size: 12px;
   line-height: 1.5;
 }
 
 .ops-inspector__diagnostics dd {
-  color: rgba(255, 255, 255, 0.92);
+  color: var(--ops-ink-strong);
   text-align: right;
 }
 

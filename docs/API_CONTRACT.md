@@ -124,6 +124,8 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 
 qB 六阶段事实在兼容摘要状态之外区分下载中、等待、无速度、卡住、校验、做种和失败。`missing/error` 立即失败；普通 `stalled` 或零速度按 `observedAt - lastActivity` 进入 900 秒观察窗，小于阈值或时间无效时等待，达到阈值才需要处理，恢复正速度立即回到处理中。不得用任务创建时间或轮询时间代替活动时间；观察窗的 waiting/failed 均只属于当前投影，不写入永久事件。
 
+`GET /api/qbittorrent/summary` 在保留原始 `counts` 和 `tasks` 的基础上增加可选 `assessment`。其 `state` 固定为 `normal/observing/action_required/unknown`，`counts` 固定包含 `processing/waiting/observing/actionRequired/unknown`，并返回脱敏的 `reasonCode/reasonText` 与本次评估 `observedAt`。单任务与聚合评估都使用调用方传入的同一个观察时间；控制室只用 `assessment` 派生普通健康状态，原始 `counts.stalled` 仅供高级诊断。旧后端缺少 `assessment` 时保持中性，不得回退把原始 stalled 标红。
+
 Symedia `protected` 只接受低评分、取消或跳过覆盖、已有更优版本；媒体识别失败、路径不可用、重复跳过和真实执行失败均为 `failed`。同一事实混有保护和失败单元时父事实必须为 `failed`。今日摘要按稳定结果 ID 或规范文件路径去重，`archivedToday + lowScoreProtected + cancelledOverrides + failedToday + unknownToday` 与 `processedToday` 对账，其中保护子类互斥。
 
 兼容用户状态固定为 `action_required`、`in_progress`、`completed`、`no_action`。其中兼容 `completed` 只能由 `playable` 投影，兼容 `completedAt` 等于 `playableAt`；`steps/state/acquisition/embyIndexed` 先由 `pipelineFacts` 单向投影，再由唯一 legacy projector 生成兼容字段，业务来源不得同时写入新旧状态。P0.3 的任务中心、首页、顶部导航、全局搜索和作品总览只读取 `pipelineOutcome`、独立事实和新统计；旧 `userState=completed` 深链仍可读，新页面只写 `outcomeState=playable`。每条任务同时返回一句话 `resultText` 和最多一个 `primaryAction`，正常保护不得抢占异常主操作。

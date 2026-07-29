@@ -3,12 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from app.pipeline_fact_runtime import PIPELINE_STAGES, target_scope_for_item
+from app.qbittorrent_assessment_runtime import assess_qb_task
 from app.secupload_result_runtime import secupload_file_path_key
 from app.symedia_evidence_runtime import normalize_symedia_status, symedia_protection_rule
 
 
 BEIJING_TZ = timezone(timedelta(hours=8))
-QB_STALL_OBSERVATION_SECONDS = 15 * 60
 
 
 def _utc(value: datetime) -> datetime:
@@ -134,85 +134,14 @@ def _torra_fact(context, scope, window):
     )
 
 
-def _number(value) -> float:
-    try:
-        return float(value or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _duration_text(seconds: float) -> str:
-    seconds = max(0, int(seconds))
-    if seconds < 60:
-        return "不到 1 分钟"
-    minutes = seconds // 60
-    if minutes < 60:
-        return f"{minutes} 分钟"
-    hours, remaining_minutes = divmod(minutes, 60)
-    if hours < 24:
-        return f"{hours} 小时 {remaining_minutes} 分钟" if remaining_minutes else f"{hours} 小时"
-    days, remaining_hours = divmod(hours, 24)
-    return f"{days} 天 {remaining_hours} 小时" if remaining_hours else f"{days} 天"
-
-
-def _qb_inactive_seconds(task, window):
-    activity_at = _event_at(task.get("lastActivity") or task.get("last_activity"))
-    if not activity_at:
-        return None
-    try:
-        elapsed = (_parse(window["observedAt"]) - _parse(activity_at)).total_seconds()
-    except (TypeError, ValueError):
-        return None
-    return elapsed if elapsed >= 0 else None
-
-
-def _qb_inactive_text(task, window) -> str:
-    elapsed = _qb_inactive_seconds(task, window)
-    return f"已 {_duration_text(elapsed)}无下载活动" if elapsed is not None else ""
-
-
-def _qb_unit_outcome(task, window):
-    status = _text(task.get("status")).lower()
-    raw_state = _text(task.get("state")).lower()
-    progress = _number(task.get("progress"))
-    download_speed = _number(task.get("dlspeed"))
-    if "missing" in raw_state:
-        return "failed", "verified", "QB_MISSING_FILES", "qB 文件缺失", "检查文件路径后重新校验"
-    if "error" in raw_state:
-        return "failed", "verified", "QB_DOWNLOAD_FAILED", "qB 下载发生错误", "打开 qB 查看错误状态"
-    if "checking" in raw_state:
-        return "active", "verified", "QB_CHECKING", "qB 正在校验", "等待校验完成"
-    if status == "completed" or progress >= 0.999 or "upload" in raw_state or "stalledup" in raw_state:
-        return "succeeded", "verified", "QB_SEEDING", "qB 下载完成，正在做种", "无需处理"
-    if status == "paused" or "pause" in raw_state:
-        return "waiting", "verified", "QB_DOWNLOAD_PAUSED", "qB 下载已暂停", "恢复下载后继续处理"
-    if status == "queued" and "queued" in raw_state:
-        return "waiting", "verified", "QB_DOWNLOAD_QUEUED", "qB 等待下载", "检查队列优先级和下载限额"
-    if download_speed > 0:
-        return "active", "verified", "QB_DOWNLOAD_ACTIVE", "qB 正在下载", "等待下载完成"
-    observing = (
-        status == "stalled"
-        or ("stalled" in raw_state and "stalledup" not in raw_state)
-        or status == "downloading"
-        or any(marker in raw_state for marker in ("downloading", "metadl", "forceddl"))
-    )
-    if observing:
-        elapsed = _qb_inactive_seconds(task, window)
-        if elapsed is None or elapsed < QB_STALL_OBSERVATION_SECONDS:
-            return (
-                "waiting", "verified", "QB_DOWNLOAD_STALLED_OBSERVING",
-                "qB 短暂无下载活动", "继续观察",
-            )
-        return (
-            "failed", "verified", "QB_DOWNLOAD_STALLED",
-            "qB 下载持续无活动", "检查 Tracker、网络和可用做种",
-        )
-    return "unknown", "missing", "QB_STATUS_UNKNOWN", "qB 状态无法确认", "刷新 qB 状态后重新检查"
-
-
 def _qb_unit(task, window):
-    state, evidence, code, status_text, action = _qb_unit_outcome(task, window)
-    inactive_text = _qb_inactive_text(task, window) if code in {
+    assessment = assess_qb_task(task, window["observedAt"])
+    state = assessment["factState"]
+    evidence = assessment["evidence"]
+    code = assessment["reasonCode"]
+    status_text = assessment["reasonText"]
+    action = assessment["actionText"]
+    inactive_text = assessment["durationText"] if code in {
         "QB_DOWNLOAD_STALLED", "QB_DOWNLOAD_STALLED_OBSERVING",
     } else ""
     duration_text = inactive_text or "持续时间暂未确认"
