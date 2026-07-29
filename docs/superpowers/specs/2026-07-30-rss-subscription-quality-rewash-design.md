@@ -6,6 +6,8 @@
 
 实施边界：只修改 Fluxa，不修改 Torra 源码
 
+上位路线图：[Fluxa 可信媒体控制中心整体收口路线图](./2026-07-30-trustworthy-media-control-center-roadmap-design.md)
+
 ## 一、核心边界
 
 ### Torra 继续负责
