@@ -242,6 +242,14 @@ Compose 通过 `MCC_DATA_ROOT` 把三个目录映射到同一个 fnOS 根目录�
 
 ## 13. 变更历史
 
+### 2026-07-30 — 日历统一去重与来源合并
+
+**变更内容**：`calendar_timeline_runtime.py` 在本地追更、自动来源和 Torra 只读条目全部加载后，按 `日期 + 媒体类型 + TMDB + 季 + 集` 执行一次全局归并。电视剧必须具有明确季号和正集号，电影固定使用零季集；缺少可靠身份的条目保持独立。归并结果兼容增加 `sourceLabels/sourceKeys/sourceOrigins/sourceCount`，汇总、日期详情、完整搜索索引和缓存版本只消费归并后的记录。
+
+**变更理由**：旧逻辑只在追加 Torra-only 条目时排除一次重复，无法消除两个本地来源或三来源同时命中的同集记录，导致日历详情和汇总数字放大。
+
+**影响范围**：日历只读聚合、公开可选响应字段、React 日历来源说明和回归测试。旧字段、URL、查询参数、ETag、HTTP 状态码、事件台账和外部写权限均保持不变；无 TMDB、跨季或集号不明记录不会被模糊合并。
+
 ### 2026-07-29 — qB 全局活跃事实与资源口径收口
 
 **变更内容**：`QbittorrentClient.summary()` 增加 5 秒线程安全单飞快照，成功、失败、任务链、首页和控制室复用同一 `lastCheckedAt/counts.active`，配置变化及成功暂停/恢复后立即失效。首页 `activeDownloadTasks` 改为直接读取 qB 全局 `counts.active`，媒体链异常不再过滤仍活跃的下载器任务；任务列表新增可选 `qbActive=1`，按公开 `qbControl.active` 在分页前保留不同媒体结果和 orphan qB 链。顶部异常文案明确使用资源单位。

@@ -10,7 +10,7 @@ from unittest.mock import patch
 from flask import Flask
 
 from app import discover_runtime
-from app.calendar_timeline_runtime import _entry_status, register_calendar_timeline
+from app.calendar_timeline_runtime import _entry_status, _merge_calendar_entries, register_calendar_timeline
 
 
 def pipeline_fact(
@@ -699,7 +699,13 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
             payload = calendar_loader(year, month, media_type)
             source = payload["entries"][0]
             payload["entries"] = [
-                {**source, "key": f"sub-{index}", "title": f"测试剧 {index + 1}"}
+                {
+                    **source,
+                    "key": f"sub-{index}",
+                    "title": f"测试剧 {index + 1}",
+                    "episode_number": index + 1,
+                    "episode_label": f"S02E{index + 1:02d}",
+                }
                 for index in range(4)
             ]
             return payload
@@ -755,6 +761,129 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
         self.assertEqual(remote["sourceLabel"], "Torra 只读追更")
         self.assertEqual(remote["subscriptionCreatedAt"], "2026-07-23T00:00:00Z")
         self.assertEqual(reconciliation.calls, 1)
+
+    def test_calendar_merges_duplicate_episode_sources_before_all_stats(self):
+        def duplicate_loader(year, month, media_type):
+            payload = calendar_loader(year, month, media_type)
+            source = payload["entries"][0]
+            payload["entries"] = [
+                {
+                    **source,
+                    "key": "sub-auto",
+                    "source_label": "Fluxa 自动追更",
+                    "subscription_origin": "auto",
+                    "subscription_created_at": "2026-07-10T00:00:00Z",
+                },
+                {
+                    **source,
+                    "key": "sub-manual",
+                    "source_label": "Fluxa 手动追更",
+                    "subscription_origin": "manual",
+                    "subscription_created_at": "2026-07-12T00:00:00Z",
+                },
+            ]
+            return payload
+
+        reconciliation = FakeReconciliationService([{
+            "id": "torra:duplicate-ref",
+            "remoteRef": "duplicate-ref",
+            "title": "测试剧",
+            "mediaType": "tv",
+            "tmdbId": "101",
+            "seasonNumber": 2,
+            "reconciliationState": "only_torra",
+            "observedAt": "2026-07-20T00:00:00Z",
+        }])
+        application = Flask(f"{__name__}-calendar-dedup")
+        application.extensions["mcc_task_chain_v2_service"] = FakeTaskService()
+        application.extensions["mcc_subscription_reconciliation"] = reconciliation
+        register_calendar_timeline(
+            application,
+            calendar_loader=duplicate_loader,
+            clock=lambda: datetime(2026, 7, 22, 1, 31, tzinfo=timezone.utc),
+        )
+
+        def remote_entries(item, year, month, media_type):
+            return ([{
+                "date": "2026-07-22",
+                "key": item["subscription_key"],
+                "title": item["title"],
+                "media_type": "tv",
+                "tmdb_id": "101",
+                "source_label": item["source_label"],
+                "season_number": 2,
+                "episode_number": 3,
+                "episode_label": "S02E03",
+                "subscription_origin": "torra",
+                "torra_linked": True,
+                "follow_scope_explicit": True,
+                "subscription_created_at": item["subscribed_at"],
+            }], "")
+
+        with patch("app.calendar_timeline_runtime.discover_runtime.build_subscription_calendar_entries_for_item", remote_entries):
+            client = application.test_client()
+            calendar = client.get("/api/v2/calendar?year=2026&month=7&type=tv").get_json()["calendar"]
+            summary = client.get(
+                "/api/v2/calendar?year=2026&month=7&type=tv&view=summary"
+            ).get_json()["calendar"]
+
+        self.assertEqual(len(calendar["entries"]), 1)
+        entry = calendar["entries"][0]
+        self.assertEqual(entry["key"], "sub-manual")
+        self.assertEqual(entry["sourceCount"], 3)
+        self.assertEqual(
+            entry["sourceLabels"],
+            ["Fluxa 手动追更", "Fluxa 自动追更", "Torra 只读追更"],
+        )
+        self.assertEqual(entry["subscriptionCreatedAt"], "2026-07-10T00:00:00Z")
+        self.assertTrue(entry["torraLinked"])
+        self.assertEqual(
+            {key: calendar["stats"][key] for key in ("entries", "linkedEntries", "unlinkedEntries", "totalEntries")},
+            {"entries": 1, "linkedEntries": 1, "unlinkedEntries": 0, "totalEntries": 1},
+        )
+        self.assertEqual(summary["days"][0]["total"], 1)
+        self.assertEqual(len(summary["searchIndex"]), 1)
+
+    def test_calendar_does_not_merge_entries_without_reliable_tmdb_identity(self):
+        def unidentified_loader(year, month, media_type):
+            payload = calendar_loader(year, month, media_type)
+            source = payload["entries"][0]
+            payload["entries"] = [
+                {**source, "key": "unknown-1", "tmdb_id": "", "subscription_origin": "manual"},
+                {**source, "key": "unknown-2", "tmdb_id": "", "subscription_origin": "manual"},
+            ]
+            return payload
+
+        application = Flask(f"{__name__}-calendar-unidentified-dedup")
+        application.extensions["mcc_task_chain_v2_service"] = FakeTaskService([])
+        register_calendar_timeline(application, calendar_loader=unidentified_loader)
+        calendar = application.test_client().get(
+            "/api/v2/calendar?year=2026&month=7&type=tv&includeUnlinked=1"
+        ).get_json()["calendar"]
+
+        self.assertEqual(len(calendar["entries"]), 2)
+        self.assertEqual(calendar["stats"]["totalEntries"], 2)
+        self.assertTrue(all(entry["sourceCount"] == 1 for entry in calendar["entries"]))
+
+    def test_calendar_source_order_does_not_change_primary_entry(self):
+        entries = [
+            {
+                "date": "2026-07-22", "key": "torra:public", "title": "测试剧", "mediaType": "tv",
+                "tmdbId": "101", "seasonNumber": 2, "episodeNumber": 3, "sourceLabel": "Torra 只读追更",
+                "subscriptionOrigin": "torra", "followScopeExplicit": True,
+            },
+            {
+                "date": "2026-07-22", "key": "sub-manual", "title": "测试剧", "mediaType": "tv",
+                "tmdbId": "101", "seasonNumber": 2, "episodeNumber": 3, "sourceLabel": "Fluxa 手动追更",
+                "subscriptionOrigin": "manual", "followScopeExplicit": True,
+            },
+        ]
+
+        forward = _merge_calendar_entries(entries)[0]
+        reverse = _merge_calendar_entries(list(reversed(entries)))[0]
+
+        self.assertEqual(forward, reverse)
+        self.assertEqual(forward["key"], "sub-manual")
 
     def test_default_calendar_hides_unlinked_rows_and_explicit_query_can_read_them(self):
         def unlinked_loader(year, month, media_type):

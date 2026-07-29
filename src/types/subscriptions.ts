@@ -15,6 +15,10 @@ export interface SubscriptionCalendarEntry {
   inLibrary: boolean;
   mediaType: string;
   sourceLabel: string;
+  sourceLabels?: string[];
+  sourceKeys?: string[];
+  sourceOrigins?: string[];
+  sourceCount?: number;
   progressText?: string;
   libraryPaths?: string[];
   airAt?: string;

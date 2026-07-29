@@ -78,6 +78,11 @@ function shiftDateKey(key: string, days: number) {
   return toDateKey(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
 }
 
+function entrySourceText(entry: SubscriptionCalendarEntry) {
+  const labels = Array.from(new Set((entry.sourceLabels ?? [entry.sourceLabel]).filter(Boolean)));
+  return labels.length > 0 ? `来源：${labels.join('、')}` : 'TMDB 日历';
+}
+
 function weekStart(key: string) {
   const { year, month, day } = dateParts(key);
   const date = new Date(Date.UTC(year, month - 1, day));
@@ -760,7 +765,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                   <HealthBadge state={['missing', 'unknown', 'protected', 'unlinked'].includes(currentStatus) ? statusHealth[currentStatus] : entry.healthState || statusHealth[currentStatus]} />
                 </header>
                 <div className="calendar-evidence-times">
-                  <span><b>播出</b><strong>{entry.date}</strong><small>TMDB 日历</small></span>
+                  <span><b>播出</b><strong>{entry.date}</strong><small>{entrySourceText(entry)}</small></span>
                   <span><b>获取</b><strong>{formatEvidenceTime(entry.acquiredAt)}</strong><small>{entry.acquisitionSource || '该集暂未确认'}</small></span>
                   <span><b>入库</b><strong>{formatEvidenceTime(entry.libraryAt)}</strong><small>{entry.librarySource || '尚无该集证据'}</small></span>
                   <span><b>STRM</b><strong>{formatEvidenceTime(entry.strmAt)}</strong><small>{entry.strmSource || 'Symedia 未提供独立结果'}</small></span>

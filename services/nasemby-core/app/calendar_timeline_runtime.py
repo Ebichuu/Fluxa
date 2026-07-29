@@ -586,14 +586,125 @@ def _torra_calendar_source_item(row: dict) -> dict | None:
     }
 
 
-def _calendar_entry_identity(entry: dict) -> tuple:
+def _calendar_entry_identity(entry: dict) -> tuple | None:
+    date_key = _text(entry.get("date"))
+    media_type = _text(entry.get("mediaType"))
+    tmdb_id = _text(entry.get("tmdbId"))
+    if not _parse_date(date_key) or media_type not in {"movie", "tv"}:
+        return None
+    if not tmdb_id.isdigit() or int(tmdb_id) <= 0:
+        return None
+    season_number = _integer(entry.get("seasonNumber"))
+    episode_number = _integer(entry.get("episodeNumber"))
+    if media_type == "tv" and (season_number < 0 or episode_number <= 0):
+        return None
     return (
-        _text(entry.get("date")),
-        _text(entry.get("mediaType")),
-        _text(entry.get("tmdbId")),
-        _integer(entry.get("seasonNumber")),
-        _integer(entry.get("episodeNumber")),
+        date_key,
+        media_type,
+        tmdb_id,
+        season_number if media_type == "tv" else 0,
+        episode_number if media_type == "tv" else 0,
     )
+
+
+def _calendar_entry_priority(entry: dict) -> tuple:
+    origin = _text(entry.get("subscriptionOrigin"))
+    source_label = _text(entry.get("sourceLabel"))
+    if origin == "manual":
+        origin_rank = 0
+    elif origin == "torra" or source_label == "Torra 只读追更":
+        origin_rank = 2
+    else:
+        origin_rank = 1
+    completeness = sum(bool(entry.get(field)) for field in (
+        "key", "title", "posterUrl", "seasonName", "episodeLabel", "episodeTitle", "subscriptionCreatedAt",
+    ))
+    return (
+        origin_rank,
+        -completeness,
+        _text(entry.get("key")),
+        source_label,
+        _text(entry.get("title")),
+    )
+
+
+def _ordered_unique(values) -> list[str]:
+    result = []
+    seen = set()
+    for value in values:
+        text = _text(value)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _earliest_calendar_time(entries: list[dict], field: str) -> str:
+    values = []
+    for entry in entries:
+        raw = _text(entry.get(field))
+        parsed = _as_datetime(raw)
+        if raw and parsed:
+            values.append((parsed, raw))
+    return min(values, key=lambda row: row[0])[1] if values else ""
+
+
+def _merge_calendar_group(entries: list[dict]) -> dict:
+    ordered = sorted(entries, key=_calendar_entry_priority)
+    merged = dict(ordered[0])
+    for field in (
+        "key", "title", "posterUrl", "seasonName", "episodeLabel", "episodeTitle", "progressText",
+    ):
+        if not merged.get(field):
+            merged[field] = next((_text(entry.get(field)) for entry in ordered if _text(entry.get(field))), "")
+    merged["torraLinked"] = any(bool(entry.get("torraLinked")) for entry in ordered)
+    merged["followScopeExplicit"] = any(bool(entry.get("followScopeExplicit")) for entry in ordered)
+    merged["includePastEpisodes"] = any(bool(entry.get("includePastEpisodes")) for entry in ordered)
+    merged["inLibrary"] = any(bool(entry.get("inLibrary")) for entry in ordered)
+    merged["migrationReview"] = all(bool(entry.get("migrationReview")) for entry in ordered)
+    merged["allowedDelayHours"] = max((_integer(entry.get("allowedDelayHours"), 24) for entry in ordered), default=24)
+    merged["subscriptionCreatedAt"] = _earliest_calendar_time(ordered, "subscriptionCreatedAt")
+    merged["libraryPaths"] = _ordered_unique(
+        path for entry in ordered for path in (entry.get("libraryPaths") or [])
+    )
+    source_records = []
+    seen_sources = set()
+    for entry in ordered:
+        record = (
+            _text(entry.get("key")),
+            _text(entry.get("sourceLabel")),
+            _text(entry.get("subscriptionOrigin")),
+        )
+        if not any(record) or record in seen_sources:
+            continue
+        seen_sources.add(record)
+        source_records.append(record)
+    merged["sourceKeys"] = _ordered_unique(record[0] for record in source_records)
+    merged["sourceLabels"] = _ordered_unique(record[1] for record in source_records)
+    merged["sourceOrigins"] = _ordered_unique(record[2] for record in source_records)
+    merged["sourceCount"] = max(1, len(source_records))
+    if not merged.get("sourceLabel") and merged["sourceLabels"]:
+        merged["sourceLabel"] = merged["sourceLabels"][0]
+    if not merged.get("subscriptionOrigin") and merged["sourceOrigins"]:
+        merged["subscriptionOrigin"] = merged["sourceOrigins"][0]
+    return merged
+
+
+def _merge_calendar_entries(entries: list[dict]) -> list[dict]:
+    grouped = {}
+    unlinked = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        identity = _calendar_entry_identity(entry)
+        if identity is None:
+            unlinked.append(_merge_calendar_group([entry]))
+            continue
+        grouped.setdefault(identity, []).append(entry)
+    merged = [_merge_calendar_group(group) for _, group in sorted(grouped.items())]
+    merged.extend(unlinked)
+    return merged
 
 
 class CalendarTimelineService:
@@ -703,13 +814,12 @@ class CalendarTimelineService:
                 current_month,
                 media_type,
             )
-            existing = {_calendar_entry_identity(entry) for entry in entries}
             entries.extend(
                 entry for entry in torra_entries
-                if _calendar_entry_identity(entry) not in existing
-                and range_start.isoformat() <= _text(entry.get("date")) <= range_end.isoformat()
+                if range_start.isoformat() <= _text(entry.get("date")) <= range_end.isoformat()
             )
             errors.extend(torra_errors)
+        entries = _merge_calendar_entries(entries)
         entries.sort(key=lambda entry: (
             _text(entry.get("date")),
             _text(entry.get("title")),
