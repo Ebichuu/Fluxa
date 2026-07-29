@@ -63,6 +63,49 @@ X 个问题组 · 涉及 Y 个资源 · 其中 Z 条身份未确认
 
 观察期的 `active/waiting` 只存在于当前事实投影。由轮询状态生成的观察中或超时失败不得写入永久事件；只有既有永久事件白名单和稳定失败证据规则可以入账。
 
+## qB 共享评估器与控制室
+
+qB 当前状态判定抽为无副作用的共享模块，任务链和 qB 只读摘要不得分别实现阈值与优先级。模块固定提供两层函数：
+
+- `assess_qb_task(task, observed_at)`：返回单任务的事实状态、聚合状态、原因码、公开原因、无活动秒数和建议动作。
+- `summarize_qb_assessments(results, observed_at)`：生成 `/api/qbittorrent/summary.assessment`。
+
+两个函数都必须接收明确的 `observedAt`，不得读取系统时间。相同任务与相同观察时间在首页、任务链和控制室必须得到相同结论。
+
+### Assessment 契约
+
+`assessment` 及其所有子字段均为可选增量：
+
+```text
+state: normal | observing | action_required | unknown
+counts:
+  processing
+  waiting
+  observing
+  actionRequired
+  unknown
+reasonCode
+reasonText
+observedAt
+```
+
+聚合优先级固定为 `action_required -> unknown -> observing -> normal`。只要存在真实错误或达到 900 秒的无活动任务，服务就进入 `action_required`；没有真实错误但存在无法判断的任务时进入 `unknown`；只有短暂断流时进入 `observing`。
+
+所有公开原因必须通过现有公开脱敏边界。`counts.stalled` 保持 qB 上游原始口径，不参与普通服务健康派生。
+
+### 控制室投影
+
+控制室普通状态只读取 `assessment`：
+
+- `action_required`：显示真实下载异常或“下载持续无活动”，qB 服务计入一项“需检查”。
+- `unknown`：显示“部分任务状态暂未确认”，保持中性，不计入“需检查”。
+- `observing`：显示“短暂无下载活动 · 观察中”，保持中性，不计入“需检查”。
+- `normal`：显示在线。
+
+顶部“需检查”按服务计数；无论 qB 有多少条异常，qB 最多增加一项。原始 `counts.stalled` 只在 qB 高级诊断显示为“qB 原始 stalled”。旧后端未返回 `assessment` 时，普通控制室不得回退使用原始 stalled 生成警告。
+
+观察中、等待和处理中不进入永久事件。达到 900 秒后的 stalled 仍是当前事实失败，不因控制室接入而改变既有历史白名单；只有最终结果按原有稳定证据规则进入历史。
+
 ## 首页未知态
 
 首页统计卡片由请求状态决定是否展示数值：
@@ -75,7 +118,7 @@ X 个问题组 · 涉及 Y 个资源 · 其中 Z 条身份未确认
 
 ## API 兼容性
 
-只在 `GET /api/v2/home/summary` 响应的 `counts` 中增加两个可选字段，不改 URL、方法、状态码、请求参数和旧字段类型。前端在新字段缺失时回退到旧资源级计数，但使用中性“问题”文案，不重新解释旧字段为可靠作品数。
+只在 `GET /api/v2/home/summary` 响应的 `counts` 中增加两个可选字段，并在 `GET /api/qbittorrent/summary` 增加可选 `assessment`；不改 URL、方法、状态码、请求参数和旧字段类型。前端在首页新字段缺失时回退到旧资源级计数，但使用中性“问题”文案，不重新解释旧字段为可靠作品数。控制室在 `assessment` 缺失时不从原始 stalled 反推异常。
 
 ## 验收
 
@@ -91,6 +134,10 @@ X 个问题组 · 涉及 Y 个资源 · 其中 Z 条身份未确认
 - qB `missing/error` 立即失败；无可靠活动时间为等待；正速度从普通 `stalled` 立即恢复；校验为处理中；暂停和排队为等待。
 - qB 活动时间来自未来时为等待并显示持续时间暂未确认。
 - 观察状态不生成永久历史事件。
+- 单任务评估器和聚合器在相同 `observedAt` 下产生稳定结果，不读取系统时间。
+- 混合任务同时包含观察中、未知和真实失败时，summary、任务链和控制室都按 `action_required` 处理；移除真实失败后按 `unknown`，再移除未知后按 `observing`。
+- 控制室观察期内不增加顶部“需检查”；达到 900 秒或出现 missing/error 后，qB 服务只增加一项。
+- qB 原始 stalled 数量只出现在高级诊断，普通卡片不再显示“有卡住任务”或“卡住任务”。
 - 首页首次加载、超时和请求失败显示未知，成功响应中的零显示为零。
 
 实机验收目标为：
