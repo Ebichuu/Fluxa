@@ -119,7 +119,7 @@ def _torra_fact(context, scope, window):
         state, code, text = "not_applicable", "TORRA_SUBSCRIPTION_DISABLED", "Torra 订阅已停用"
     else:
         state, code, text = "waiting", "TORRA_TARGET_WAITING", "Torra 已接收目标，等待获取"
-    completed_at = row.get("completedAt") or row.get("completed_at") or row.get("updated_at")
+    completed_at = row.get("completedAt") or row.get("completed_at")
     return _fact(
         "torra",
         state,
