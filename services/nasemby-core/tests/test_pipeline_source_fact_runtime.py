@@ -33,11 +33,17 @@ def by_stage(facts, stage):
 class PipelineSourceFactRuntimeTests(unittest.TestCase):
     def test_torra_completed_means_target_satisfied_only(self):
         facts = build_pipeline_source_facts(context(
-            torra={"id": "torra-private-1", "completed": True, "is_running": False},
+            torra={
+                "id": "torra-private-1",
+                "completed": True,
+                "is_running": False,
+                "updated_at": "2026-07-27T03:30:00Z",
+            },
         ), observed_at=OBSERVED_AT)
 
         self.assertEqual(by_stage(facts, "torra")["state"], "succeeded")
         self.assertEqual(by_stage(facts, "torra")["reasonCode"], "TORRA_TARGET_SATISFIED")
+        self.assertNotIn("eventAt", by_stage(facts, "torra"))
         self.assertEqual(by_stage(facts, "qb")["state"], "unknown")
         self.assertEqual(by_stage(facts, "cloud115")["state"], "unknown")
         outcome = derive_pipeline_outcome(
@@ -47,6 +53,21 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(outcome["state"], "waiting")
         self.assertEqual(outcome["stage"], "emby")
+
+    def test_torra_completed_uses_only_explicit_completion_time(self):
+        facts = build_pipeline_source_facts(context(
+            torra={
+                "id": "torra-private-1",
+                "completed": True,
+                "completedAt": "2026-07-27T03:30:00Z",
+                "updated_at": "2026-07-27T03:45:00Z",
+            },
+        ), observed_at=OBSERVED_AT)
+
+        self.assertEqual(
+            by_stage(facts, "torra")["eventAt"],
+            "2026-07-27T03:30:00Z",
+        )
 
     def test_qb_summary_uses_file_units_and_does_not_complete_cloud115(self):
         facts = build_pipeline_source_facts(context(qbTasks=[
