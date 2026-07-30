@@ -70,7 +70,10 @@ class QualityWatchRuntimeTests(unittest.TestCase):
         )
         self.runtime = QualityWatchRuntime(
             self.repository,
-            config_loader=lambda: {"torra_quality_default_window_hours": 48},
+            config_loader=lambda: {
+                "torra_quality_lifecycle_mode": "fixed_window",
+                "torra_quality_default_window_hours": 48,
+            },
             clock=lambda: self.now[0],
         )
 

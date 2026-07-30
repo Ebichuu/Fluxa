@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from app.quality_watch_repository import DEFAULT_LIFECYCLE_MODE, WATCH_LIFECYCLE_MODES
 from app.quality_watch_runtime import DEFAULT_OFFSETS, resolve_watch_policy
 from app.subscription_automation_api_runtime import AutomationApiError
 from app.subscription_automation_preflight import require_rewash_provider_ready
@@ -31,6 +32,7 @@ PERMANENT_RECLAIM_ERRORS = {
 }
 SETTINGS_FIELDS = {
     "enabled",
+    "lifecycleMode",
     "defaultWindowHours",
     "scheduleMinutes",
     "minIntervalMinutes",
@@ -38,7 +40,7 @@ SETTINGS_FIELDS = {
     "dailyLimit",
     "batchSize",
 }
-QUALITY_PATCH_FIELDS = {"paused", "windowHours", "scheduleMinutes"}
+QUALITY_PATCH_FIELDS = {"paused", "lifecycleMode", "windowHours", "scheduleMinutes"}
 
 
 def _text(value):
@@ -258,15 +260,15 @@ class SubscriptionAutomationService:
 
     def present_settings(self, config=None):
         config = self._config() if config is None else config
-        window = int(config.get("torra_quality_default_window_hours") or 48)
-        raw_schedule = config.get("torra_quality_schedule_json")
-        schedule = self._schedule(window, raw_schedule) if raw_schedule is not None else list(DEFAULT_OFFSETS[window])
+        policy = resolve_watch_policy({}, config)
+        window = policy["window_hours"]
         return {
             "enabled": _truthy(config.get("torra_quality_watch_enabled")),
             "environmentEnabled": _truthy(self.environment.get("MCC_TORRA_QUALITY_WATCH_ENABLED")),
             "downloadEnvironmentEnabled": _truthy(self.environment.get("MCC_TORRA_REWASH_DOWNLOAD_ENABLED")),
+            "lifecycleMode": policy["lifecycle_mode"],
             "defaultWindowHours": window,
-            "scheduleMinutes": schedule,
+            "scheduleMinutes": policy["offsets_minutes"],
             "minIntervalMinutes": int(config.get("torra_quality_min_interval_minutes") or 60),
             "hourlyLimit": int(config.get("torra_quality_hourly_limit") or 4),
             "dailyLimit": int(config.get("torra_quality_daily_limit") or 30),
@@ -290,10 +292,18 @@ class SubscriptionAutomationService:
         elif schedule_value is None:
             schedule_value = current["scheduleMinutes"]
         schedule = self._schedule(window, schedule_value)
+        lifecycle_mode = _text(body.get("lifecycleMode", current["lifecycleMode"])).lower()
+        if lifecycle_mode not in WATCH_LIFECYCLE_MODES:
+            raise AutomationApiError(
+                "SUBSCRIPTION_AUTOMATION_LIFECYCLE_INVALID",
+                "lifecycleMode 只允许 follow_rss 或 fixed_window",
+                422,
+            )
         if "enabled" in body and not isinstance(body["enabled"], bool):
             raise AutomationApiError("SUBSCRIPTION_AUTOMATION_SETTINGS_INVALID", "enabled 必须是布尔值", 422)
         config.update({
             "torra_quality_watch_enabled": body.get("enabled", current["enabled"]),
+            "torra_quality_lifecycle_mode": lifecycle_mode,
             "torra_quality_default_window_hours": window,
             "torra_quality_schedule_json": schedule,
             "torra_quality_min_interval_minutes": _integer(
@@ -321,6 +331,7 @@ class SubscriptionAutomationService:
             "seasonNumber": unit.get("season_number"),
             "episodeNumber": unit.get("episode_number"),
             "windowHours": int(unit.get("window_hours") or 0),
+            "lifecycleMode": _text(unit.get("lifecycle_mode")) or DEFAULT_LIFECYCLE_MODE,
             "baselineReadyAt": _text(unit.get("baseline_ready_at")),
             "nextCheckAt": _text(unit.get("next_check_at")),
             "observationEndsAt": _text(unit.get("observation_ends_at")),
@@ -347,6 +358,7 @@ class SubscriptionAutomationService:
             "subscriptionId": context["publicKey"],
             "readOnly": context["readOnly"],
             "policy": {
+                "lifecycleMode": policy["lifecycle_mode"],
                 "windowHours": policy["window_hours"],
                 "scheduleMinutes": policy["offsets_minutes"],
             },
@@ -357,23 +369,48 @@ class SubscriptionAutomationService:
             ],
         }
 
-    def _update_pause(self, key, paused):
+    @staticmethod
+    def _lifecycle_changes(unit, lifecycle_mode):
+        changes = {}
+        state = unit["state"]
+        if unit.get("lifecycle_mode") != lifecycle_mode:
+            changes["lifecycle_mode"] = lifecycle_mode
+        if lifecycle_mode != DEFAULT_LIFECYCLE_MODE:
+            return changes
+        if state == "search_due":
+            changes.update(state="observing_upgrade", last_result_json={"reason": "following_rss"})
+        ends_at = _text(unit.get("observation_ends_at"))
+        if state != "search_running" and ends_at:
+            changes["next_check_at"] = ends_at
+        return changes
+
+    @staticmethod
+    def _pause_changes(unit, lifecycle_mode, paused, now):
+        state = unit["state"]
+        if paused is True:
+            return (
+                {"state": "paused", "last_result_json": {"reason": "manual_pause"}}
+                if state in ACTIVE_STATES else {}
+            )
+        if paused is not False or state != "paused":
+            return {}
+        ends_at = _as_utc(unit.get("observation_ends_at"))
+        if not ends_at or ends_at < now:
+            next_state = "observation_expired"
+        elif lifecycle_mode == "fixed_window":
+            next_at = _as_utc(unit.get("next_check_at"))
+            next_state = "search_due" if next_at and next_at <= now else "observing_upgrade"
+        else:
+            next_state = "observing_upgrade"
+        return {"state": next_state, "last_result_json": {"reason": "manual_resume"}}
+
+    def _update_units(self, key, lifecycle_mode, paused=None):
         now = _as_utc(self.clock())
         for unit in self.repository.list_watch_units(key):
-            state = unit["state"]
-            if paused and state in ACTIVE_STATES:
-                self.repository.update_watch_unit(
-                    unit["unit_key"], unit["version"], state="paused", last_result_json={"reason": "manual_pause"}
-                )
-            elif not paused and state == "paused":
-                ends_at = _as_utc(unit.get("observation_ends_at"))
-                next_at = _as_utc(unit.get("next_check_at"))
-                next_state = "observation_expired" if not ends_at or ends_at < now else (
-                    "search_due" if next_at and next_at <= now else "observing_upgrade"
-                )
-                self.repository.update_watch_unit(
-                    unit["unit_key"], unit["version"], state=next_state, last_result_json={"reason": "manual_resume"}
-                )
+            changes = self._lifecycle_changes(unit, lifecycle_mode)
+            changes.update(self._pause_changes(unit, lifecycle_mode, paused, now))
+            if changes:
+                self.repository.update_watch_unit(unit["unit_key"], unit["version"], **changes)
 
     def update_quality_watch(self, key, body):
         self._require_write()
@@ -393,6 +430,13 @@ class SubscriptionAutomationService:
         if "paused" in body and not isinstance(body["paused"], bool):
             raise AutomationApiError("SUBSCRIPTION_QUALITY_WATCH_INVALID", "paused 必须是布尔值", 422)
         current = resolve_watch_policy(item, self._config())
+        lifecycle_mode = _text(body.get("lifecycleMode", current["lifecycle_mode"])).lower()
+        if lifecycle_mode not in WATCH_LIFECYCLE_MODES:
+            raise AutomationApiError(
+                "SUBSCRIPTION_AUTOMATION_LIFECYCLE_INVALID",
+                "lifecycleMode 只允许 follow_rss 或 fixed_window",
+                422,
+            )
         window = _integer(body.get("windowHours", current["window_hours"]), "windowHours")
         if window not in {24, 48}:
             raise AutomationApiError("SUBSCRIPTION_AUTOMATION_WINDOW_INVALID", "窗口只允许 24 或 48 小时", 422)
@@ -402,13 +446,16 @@ class SubscriptionAutomationService:
         def updater(row):
             nested = row.get("torra_quality_watch")
             nested = dict(nested) if isinstance(nested, dict) else {}
-            nested.update({"window_hours": window, "offsets_minutes": schedule})
+            nested.update({
+                "lifecycle_mode": lifecycle_mode,
+                "window_hours": window,
+                "offsets_minutes": schedule,
+            })
             row["torra_quality_watch"] = nested
 
         if not self.subscription_updater(internal_key, updater):
             raise AutomationApiError("SUBSCRIPTION_NOT_FOUND", "订阅不存在", 404)
-        if "paused" in body:
-            self._update_pause(internal_key, body["paused"])
+        self._update_units(internal_key, lifecycle_mode, body.get("paused"))
         return self.get_quality_watch(context["publicKey"])
 
     def _manual_unit(self, key, unit_id="", public_key=""):

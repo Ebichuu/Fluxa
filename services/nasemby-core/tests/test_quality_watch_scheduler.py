@@ -106,6 +106,7 @@ class QualityWatchSchedulerTests(unittest.TestCase):
         self.subscriptions = []
         self.config = {
             "torra_quality_watch_enabled": True,
+            "torra_quality_lifecycle_mode": "fixed_window",
             "torra_quality_default_window_hours": 24,
             "torra_quality_schedule_json": [30, 1440],
             "torra_quality_min_interval_minutes": 60,
@@ -316,12 +317,87 @@ class QualityWatchSchedulerTests(unittest.TestCase):
         }])
         self.assertEqual(self.torra.submissions, [])
 
+    def test_follow_rss_default_keeps_observing_without_scheduled_torra_analysis(self):
+        self.config.pop("torra_quality_lifecycle_mode")
+        unit = self._unit("tv:101", 1, "torra-101")
+        unit = self.repository.update_watch_unit(
+            unit["unit_key"],
+            unit["version"],
+            lifecycle_mode="fixed_window",
+            state="search_due",
+            next_check_at="2026-07-18T01:30:00.000Z",
+        )
+        self._make_due()
+
+        result = self.scheduler.run_once()
+
+        self.assertEqual((result["selected"], result["processed"]), (0, []))
+        self.assertEqual(self.torra.submissions, [])
+        updated = self.repository.get_watch_unit(unit["unit_key"])
+        self.assertEqual(updated["lifecycle_mode"], "follow_rss")
+        self.assertEqual(updated["state"], "observing_upgrade")
+        self.assertEqual(updated["next_check_at"], updated["observation_ends_at"])
+
+    def test_follow_rss_expires_after_grace_window_without_provider_calls(self):
+        self.config.pop("torra_quality_lifecycle_mode")
+        unit = self._unit("tv:101", 1, "torra-101")
+        self.now[0] += timedelta(hours=25)
+
+        result = self.scheduler.run_once()
+
+        self.assertEqual((result["selected"], result["processed"]), (0, []))
+        self.assertEqual(self.torra.submissions, [])
+        updated = self.repository.get_watch_unit(unit["unit_key"])
+        self.assertEqual(updated["state"], "observation_expired")
+        self.assertEqual(updated["next_check_at"], "")
+
+    def test_follow_rss_resumes_existing_scheduled_external_job(self):
+        self.config.pop("torra_quality_lifecycle_mode")
+        unit = self._unit("tv:101", 1, "torra-101")
+        claim = self.repository.claim_action(
+            f"scheduled-rewash-analysis:{unit['unit_key']}:0",
+            unit["subscription_key"],
+            "torra",
+            "rewash-analysis",
+            unit_key=unit["unit_key"],
+            request_summary={"source": "quality-watch-scheduler", "offsetIndex": 0},
+        )
+        self.repository.save_external_job(claim["action"]["action_id"], "scheduled-existing-job")
+        self.torra.jobs["scheduled-existing-job"] = {"status": "pending", "result": None}
+        self.now[0] += timedelta(seconds=61)
+
+        result = self.scheduler.run_once()["processed"][0]
+
+        self.assertEqual(result["status"], "polling")
+        self.assertEqual(self.torra.polls, ["scheduled-existing-job"])
+        self.assertEqual(self.torra.submissions, [])
+
+    def test_follow_rss_cancels_unsubmitted_scheduled_action(self):
+        self.config.pop("torra_quality_lifecycle_mode")
+        unit = self._unit("tv:101", 1, "torra-101")
+        claim = self.repository.claim_action(
+            f"scheduled-rewash-analysis:{unit['unit_key']}:0",
+            unit["subscription_key"],
+            "torra",
+            "rewash-analysis",
+            unit_key=unit["unit_key"],
+            request_summary={"source": "quality-watch-scheduler", "offsetIndex": 0},
+        )
+
+        result = self.scheduler.run_once()["processed"][0]
+
+        self.assertEqual((result["status"], result["reason"]), ("cancelled", "follow_rss_mode"))
+        self.assertEqual(self.torra.submissions, [])
+        action = self.repository.get_action(claim["action"]["action_id"])
+        self.assertEqual(action["status"], "cancelled")
+
     def test_custom_offsets_validate_and_always_keep_the_window_deadline(self):
         policy = resolve_watch_policy(
             {"torra_quality_window_hours": 24, "torra_quality_schedule_json": [30, 120]},
             {},
         )
         self.assertEqual(policy["offsets_minutes"], [30, 120, 1440])
+        self.assertEqual(policy["lifecycle_mode"], "follow_rss")
         for invalid in ([120, 30], [30, 30], [29, 120], [30, 1441]):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 resolve_watch_policy(

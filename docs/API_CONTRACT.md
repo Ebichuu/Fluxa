@@ -88,8 +88,8 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `GET /api/subscriptions/calendar` | `year`、`month`、`type` |
 | `GET /api/v2/subscriptions/:id/torra-push-preview` | 路径中的订阅 ID，只读预检 |
 | `POST /api/v2/subscriptions/:id/torra-pushes` | `confirm=true`、12–128 字符幂等键；成功仅返回 `torraPushState=submitted`，兼容 `subscriptionId` 固定为空且不得依据 POST 响应 ID 建立 linked；后续只读对账确认后由 workbench 投影 `linked` |
-| `PATCH /api/v2/subscription-automation/settings` | camelCase 设置字段；窗口只允许 24/48 小时，时间点严格递增且最早 30 分钟 |
-| `PATCH /api/v2/subscriptions/:id/quality-watch` | 可选 `paused`、`windowHours`、`scheduleMinutes` |
+| `PATCH /api/v2/subscription-automation/settings` | camelCase 设置字段；可选 `lifecycleMode=follow_rss/fixed_window`，窗口只允许 24/48 小时，固定窗口时间点严格递增且最早 30 分钟 |
+| `PATCH /api/v2/subscriptions/:id/quality-watch` | 可选 `paused`、`lifecycleMode`、`windowHours`、`scheduleMinutes` |
 | `POST /api/v2/subscriptions/:id/torra-rewash-analyses` | `idempotencyKey`、可选 `unitId` |
 | `POST /api/v2/subscriptions/:id/torra-rewashes` | `confirm=true`、`idempotencyKey`、`analysisActionId`、可选 `unitId` |
 | `POST /api/v2/rss-matches/:id/torra-rewash-analyses` | `idempotencyKey`；不接受 Torra ID 或候选映射 |
@@ -250,11 +250,11 @@ v2 新增响应字段允许向后兼容扩展；删除字段、改变类型或�
 - `POST /api/v2/rss-matches/:id/torra-rewashes`
 - `POST /api/v2/rss-matches/:id/exact-download-previews`
 
-后台 RSS 即时分析与有限主动兜底已经实现，但它们不是 HTTP 接口：可靠 `candidate` 只有在 RSS 与追更洗版双闸门、SQLite 设置、观察窗口、Torra/qB 空闲、冷却和小时/每日限额全部通过时，才创建固定幂等的一次性分析动作；RSS 无命中时，协调器按 SQLite 时间表、批量 2、公平游标和全局并发 1 做有限检查。动作保存外部 job 后仅续查原任务，分析结果不会自动下载。人工接口只允许从服务端已完成分析动作读取分析 ID 与候选映射，下载还必须通过独立下载闸门。
+默认生命周期为 `follow_rss`：RSS 候选到达后只在 Fluxa 本地完成订阅绑定、规则评分和冠军选择，协调器不会按旧检查时间点调用 Torra 整订阅分析。观察单元保留到 24/48 小时宽限期结束后转为 `observation_expired`；已有外部 job 继续轮询，尚未提交的旧调度动作会取消。`fixed_window` 仅作为显式高级兼容模式保留原时间表、批量、公平游标和限额；人工 Torra 分析仍是独立兜底。`lifecycleMode` 是既有响应和 PATCH 请求的可选增量字段，旧字段、状态码和旧消费者保持兼容。
 
 追更洗版分析会触发 PT 站点搜索，因此不是无副作用 GET，必须使用独立分析闸门、冷却和幂等。分析和候选下载都创建异步动作，返回 `202 Accepted`、动作 ID 和 `Location` 轮询地址；不能用 200 表示 Torra 已经完成。候选下载还必须满足管理员会话、下载闸门、确认和服务端复查。这里的“追更洗版”只指更新期间的高质量版本追踪，不包含 Torra 自身的完结洗版。
 
-动作查询需要同时表达媒体控制中心本地状态和 Torra 外部 job 状态。服务重启后如果动作已经保存 Torra job ID，只能继续轮询原 job，不能重复提交。全局和单条设置中的 `window_hours` 只接受 `24` 或 `48`；时间点不得超过窗口，否则返回 `422`。当前集窗口到期不再自动搜索，下一集建立新窗口。计划状态码为：读取和 PATCH 成功 `200`、异步动作已创建 `202`、并发或幂等冲突 `409`、语义不合法 `422`、限频 `429`、上游失败 `502`、功能闸门关闭 `503`；错误不能包装在 `200` 中。以上约束已固化在 `docs/contracts/http-api-contract-v2.json`，并由契约测试逐条校验。
+动作查询需要同时表达媒体控制中心本地状态和 Torra 外部 job 状态。服务重启后如果动作已经保存 Torra job ID，只能继续轮询原 job，不能重复提交。全局和单条设置中的 `window_hours` 只接受 `24` 或 `48`；`fixed_window` 时间点不得超过窗口，否则返回 `422`。计划状态码为：读取和 PATCH 成功 `200`、异步动作已创建 `202`、并发或幂等冲突 `409`、语义不合法 `422`、限频 `429`、上游失败 `502`、功能闸门关闭 `503`；错误不能包装在 `200` 中。以上约束已固化在 `docs/contracts/http-api-contract-v2.json`，并由契约测试逐条校验。
 
 `POST /api/v2/rss-matches/:id/exact-download-previews` 是阶段 C0 的无写入预检。请求必须是 JSON 空对象；服务端重新读取匹配、冠军、严格分差、订阅绑定、当前 Torra 规则、候选评分、基线、qB 活动任务和 Torra 忙碌状态，只返回公开匹配 ID、规范目标、脱敏版本摘要、分数和稳定阻断码。预检不创建动作、不调用 Torra 分析或下载，也不返回 RSS 下载地址、目录、下载器 ID、Torra 原始 ID、Cookie 或 Passkey。当前 Torra 正式接口只能下载其自身分析会话候选，没有订阅绑定的指定 RSS 资源入口，因此成功读取的预检固定以 `200` 返回业务结果 `status=blocked / ready=false / capabilityState=unsupported`，并包含 `TORRA_EXACT_RESOURCE_ENDPOINT_UNAVAILABLE`；这不是 HTTP 错误。匹配不存在返回 `404`，请求体不是空对象返回 `422`，运行时不可用返回 `503`。在 Torra 提供正式订阅绑定入口前，不开放精准下发和自动洗版。
 

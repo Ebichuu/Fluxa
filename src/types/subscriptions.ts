@@ -809,6 +809,7 @@ export interface QualityWatchUnit {
   seasonNumber: number | null;
   episodeNumber: number | null;
   windowHours: number;
+  lifecycleMode?: 'follow_rss' | 'fixed_window';
   baselineReadyAt: string;
   nextCheckAt: string;
   observationEndsAt: string;
@@ -828,6 +829,7 @@ export interface QualityWatchResponse {
   subscriptionId: string;
   readOnly?: boolean;
   policy: {
+    lifecycleMode?: 'follow_rss' | 'fixed_window';
     windowHours: 24 | 48;
     scheduleMinutes: number[];
   };
@@ -859,6 +861,7 @@ export interface SubscriptionAutomationSettings {
   enabled: boolean;
   environmentEnabled: boolean;
   downloadEnvironmentEnabled: boolean;
+  lifecycleMode: 'follow_rss' | 'fixed_window';
   defaultWindowHours: 24 | 48;
   scheduleMinutes: number[];
   minIntervalMinutes: number;

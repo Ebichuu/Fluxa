@@ -4,7 +4,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from app.quality_watch_repository import QualityWatchVersionConflict
+from app.quality_watch_repository import DEFAULT_LIFECYCLE_MODE, QualityWatchVersionConflict
 from app.quality_watch_runtime import resolve_watch_policy
 from app.rss_subscription_match_runtime import qb_task_matches
 
@@ -158,6 +158,25 @@ class QualityWatchScheduler:
         except QualityWatchVersionConflict:
             return self.repository.get_watch_unit(unit["unit_key"])
 
+    def _follow_rss_projection(self, context):
+        unit = self.repository.get_watch_unit(context["unit"]["unit_key"]) or context["unit"]
+        expired = context["now"] >= context["ends_at"]
+        state = "observation_expired" if expired else "observing_upgrade"
+        next_check_at = "" if expired else _iso(context["ends_at"])
+        changes = {}
+        if unit.get("lifecycle_mode") != DEFAULT_LIFECYCLE_MODE:
+            changes["lifecycle_mode"] = DEFAULT_LIFECYCLE_MODE
+        if unit.get("state") != state:
+            changes["state"] = state
+        if _text(unit.get("next_check_at")) != next_check_at:
+            changes["next_check_at"] = next_check_at
+        if changes:
+            changes["last_result_json"] = {
+                "reason": "follow_rss_window_expired" if expired else "following_rss"
+            }
+            unit = self._update_unit(unit, **changes)
+        return unit
+
     def _block_unit(self, unit, reason):
         self._update_unit(unit, state="blocked", last_result_json={"reason": reason})
         return {"status": "blocked", "reason": reason, "unitId": unit["unit_key"]}
@@ -184,8 +203,18 @@ class QualityWatchScheduler:
         changes = {
             "last_result_json": {"offsetIndex": index, **result},
             "attempt_count": int(unit.get("attempt_count") or 0) + (1 if increment_attempt else 0),
+            "lifecycle_mode": context["policy"]["lifecycle_mode"],
         }
-        if context["now"] >= context["ends_at"] or index >= len(offsets) - 1:
+        if context["policy"]["lifecycle_mode"] == DEFAULT_LIFECYCLE_MODE:
+            if context["now"] >= context["ends_at"]:
+                changes.update(state="observation_expired", next_check_at="", current_offset_index=index)
+            else:
+                changes.update(
+                    state="observing_upgrade",
+                    next_check_at=_iso(context["ends_at"]),
+                    current_offset_index=index,
+                )
+        elif context["now"] >= context["ends_at"] or index >= len(offsets) - 1:
             changes.update(state="observation_expired", next_check_at="", current_offset_index=index)
         else:
             next_index = index + 1
@@ -210,6 +239,7 @@ class QualityWatchScheduler:
             current_offset_index=context["offset_index"],
             next_check_at=_iso(context["due_at"]),
             attempt_count=int(unit.get("attempt_count") or 0) + (1 if increment_attempt else 0),
+            lifecycle_mode=context["policy"]["lifecycle_mode"],
             last_result_json={"reason": reason, "actionId": action_id, "offsetIndex": context["offset_index"]},
         )
 
@@ -428,20 +458,27 @@ class QualityWatchScheduler:
             if not subscription:
                 self._block_unit(unit, "subscription_missing")
                 continue
-            if not _text(unit.get("torra_subscription_id")):
-                self._block_unit(unit, "torra_subscription_missing")
-                continue
             context, reason = self._context(unit, subscription, config)
             if reason:
                 self._block_unit(unit, reason)
-            elif context["now"] >= context["due_at"]:
-                contexts.append(context)
-            elif unit.get("next_check_at") != _iso(context["due_at"]):
-                self._update_unit(
-                    unit,
-                    current_offset_index=context["offset_index"],
-                    next_check_at=_iso(context["due_at"]),
-                )
+            elif context["policy"]["lifecycle_mode"] == DEFAULT_LIFECYCLE_MODE:
+                self._follow_rss_projection(context)
+            elif not _text(unit.get("torra_subscription_id")):
+                self._block_unit(unit, "torra_subscription_missing")
+            else:
+                if (
+                    unit.get("lifecycle_mode") != context["policy"]["lifecycle_mode"]
+                    or unit.get("next_check_at") != _iso(context["due_at"])
+                ):
+                    unit = self._update_unit(
+                        unit,
+                        current_offset_index=context["offset_index"],
+                        next_check_at=_iso(context["due_at"]),
+                        lifecycle_mode=context["policy"]["lifecycle_mode"],
+                    )
+                    context["unit"] = unit
+                if context["now"] >= context["due_at"]:
+                    contexts.append(context)
         return contexts
 
     def _scheduler_state(self):
@@ -508,6 +545,22 @@ class QualityWatchScheduler:
         )
         if reason:
             return self._block_unit(unit, reason)
+        if (
+            context["policy"]["lifecycle_mode"] == DEFAULT_LIFECYCLE_MODE
+            and not action.get("external_job_id")
+        ):
+            self.repository.complete_action(
+                action["action_id"],
+                "cancelled",
+                {"reason": "follow_rss_mode"},
+            )
+            self._follow_rss_projection(context)
+            return {
+                "status": "cancelled",
+                "reason": "follow_rss_mode",
+                "actionId": action["action_id"],
+                "unitId": unit["unit_key"],
+            }
         result = self._handle_claim(context, self._claim(context, config), config)
         self._record_cursor(context)
         return result

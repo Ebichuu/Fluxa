@@ -18,7 +18,7 @@ class QualityWatchRepositoryTests(unittest.TestCase):
             now = [datetime(2026, 7, 18, 1, 0, tzinfo=timezone.utc)]
             repository = QualityWatchRepository(Path(directory) / "media_control_center.sqlite3", clock=lambda: now[0])
             first = repository.ensure_watch_unit("tv:202", "tv", 1, 1, window_hours=48)
-            ready = repository.mark_baseline_ready(first["unit_key"])
+            ready = repository.mark_baseline_ready(first["unit_key"], lifecycle_mode="fixed_window")
             self.assertEqual(ready["lifecycle_mode"], "fixed_window")
             self.assertEqual(ready["baseline_artifact_key"], "")
             self.assertIsNone(ready["baseline_score"])
@@ -31,7 +31,7 @@ class QualityWatchRepositoryTests(unittest.TestCase):
             unchanged = repository.mark_baseline_ready(first["unit_key"])
             self.assertEqual(unchanged["observation_ends_at"], ready["observation_ends_at"])
             second = repository.ensure_watch_unit("tv:202", "tv", 1, 2, window_hours=24)
-            second_ready = repository.mark_baseline_ready(second["unit_key"])
+            second_ready = repository.mark_baseline_ready(second["unit_key"], lifecycle_mode="fixed_window")
             self.assertNotEqual(first["unit_key"], second["unit_key"])
             self.assertEqual(second_ready["observation_ends_at"], "2026-07-19T07:00:00.000Z")
             self.assertEqual(repository.get_watch_unit(first["unit_key"])["observation_ends_at"], ready["observation_ends_at"])

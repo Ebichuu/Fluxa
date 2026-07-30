@@ -202,6 +202,7 @@ DEFAULT_SUBSCRIPTION_SOURCES = [
 DEFAULT_SUBSCRIPTION_CONFIG = {
     "mode": "torra",
     "torra_quality_watch_enabled": False,
+    "torra_quality_lifecycle_mode": "follow_rss",
     "torra_quality_default_window_hours": 48,
     "torra_quality_schedule_json": None,
     "torra_quality_min_interval_minutes": 60,

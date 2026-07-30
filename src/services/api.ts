@@ -738,7 +738,12 @@ export function getSubscriptionQualityWatch(id: string, options?: RequestOptions
 
 export function updateSubscriptionQualityWatch(
   id: string,
-  input: { paused?: boolean; windowHours?: 24 | 48; scheduleMinutes?: number[] },
+  input: {
+    paused?: boolean;
+    lifecycleMode?: 'follow_rss' | 'fixed_window';
+    windowHours?: 24 | 48;
+    scheduleMinutes?: number[];
+  },
   options?: RequestOptions
 ): Promise<QualityWatchResponse> {
   return patchJson<QualityWatchResponse>(`/api/v2/subscriptions/${encodeURIComponent(id)}/quality-watch`, input, options);
@@ -749,7 +754,9 @@ export function getSubscriptionAutomationSettings(options?: RequestOptions): Pro
 }
 
 export function updateSubscriptionAutomationSettings(
-  input: Partial<Pick<SubscriptionAutomationSettings, 'enabled' | 'defaultWindowHours' | 'scheduleMinutes' | 'minIntervalMinutes' | 'hourlyLimit' | 'dailyLimit' | 'batchSize'>>,
+  input: Partial<Pick<SubscriptionAutomationSettings,
+    'enabled' | 'lifecycleMode' | 'defaultWindowHours' | 'scheduleMinutes'
+    | 'minIntervalMinutes' | 'hourlyLimit' | 'dailyLimit' | 'batchSize'>>,
   options?: RequestOptions
 ): Promise<SubscriptionAutomationSettings> {
   return patchJson<SubscriptionAutomationSettings>('/api/v2/subscription-automation/settings', input, options);

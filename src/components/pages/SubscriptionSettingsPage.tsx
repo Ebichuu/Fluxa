@@ -22,13 +22,13 @@ interface SubscriptionSettingsPageProps {
 }
 
 function qualitySettingsError(settings: SubscriptionAutomationSettings, scheduleMinutes: number[]) {
-  if (scheduleMinutes.length === 0 || scheduleMinutes.some((value) => !Number.isInteger(value))) {
+  if (settings.lifecycleMode === 'fixed_window' && (scheduleMinutes.length === 0 || scheduleMinutes.some((value) => !Number.isInteger(value)))) {
     return '检查时间点必须填写整数分钟';
   }
-  if (scheduleMinutes.some((value) => value < 30 || value > settings.defaultWindowHours * 60)) {
+  if (settings.lifecycleMode === 'fixed_window' && scheduleMinutes.some((value) => value < 30 || value > settings.defaultWindowHours * 60)) {
     return `检查时间点必须在 30 到 ${settings.defaultWindowHours * 60} 分钟之间`;
   }
-  if (scheduleMinutes.some((value, index) => index > 0 && value <= scheduleMinutes[index - 1])) {
+  if (settings.lifecycleMode === 'fixed_window' && scheduleMinutes.some((value, index) => index > 0 && value <= scheduleMinutes[index - 1])) {
     return '检查时间点必须严格递增且不能重复';
   }
   if (!Number.isInteger(settings.minIntervalMinutes) || settings.minIntervalMinutes < 60 || settings.minIntervalMinutes > 1440) {
@@ -79,6 +79,7 @@ function QualityWatchSettings() {
     setMessage('');
     updateSubscriptionAutomationSettings({
       enabled: settings.enabled,
+      lifecycleMode: settings.lifecycleMode,
       defaultWindowHours: settings.defaultWindowHours,
       scheduleMinutes,
       minIntervalMinutes: settings.minIntervalMinutes,
@@ -99,30 +100,38 @@ function QualityWatchSettings() {
     <section className="ops-settings-card ops-settings-card--wide sub-config quality-settings">
       <header className="ops-settings-card__head">
         <div><span><SlidersHorizontal size={16} /></span><div><small>阶段 6 · 质量观察</small><h2>追更洗版策略</h2></div></div>
-        <strong>{settings.environmentEnabled ? '服务端闸门已开启' : '服务端闸门未开启'}</strong>
+        <strong>{settings.environmentEnabled ? (settings.lifecycleMode === 'follow_rss' ? '跟随 RSS' : '固定窗口') : '服务端闸门未开启'}</strong>
       </header>
       <div className="sub-config__toggles">
         <label><input checked={settings.enabled} disabled={saving} type="checkbox" onChange={(event) => setSettings({ ...settings, enabled: event.target.checked })} />启用质量观察</label>
         <span className="quality-settings__readonly">下载闸门：{settings.downloadEnvironmentEnabled ? '已开启' : '未开启'}</span>
       </div>
       <div className="sub-config__row sub-config__row--pair">
-        <label>默认观察窗口<select disabled={saving} value={settings.defaultWindowHours} onChange={(event) => {
+        <label>观察模式<select disabled={saving} value={settings.lifecycleMode} onChange={(event) => setSettings({
+          ...settings,
+          lifecycleMode: event.target.value as SubscriptionAutomationSettings['lifecycleMode']
+        })}><option value="follow_rss">跟随 RSS</option><option value="fixed_window">高级固定窗口</option></select></label>
+        <label>{settings.lifecycleMode === 'follow_rss' ? '观察宽限期' : '固定观察窗口'}<select disabled={saving} value={settings.defaultWindowHours} onChange={(event) => {
           const defaultWindowHours = Number(event.target.value) as 24 | 48;
           setSettings({ ...settings, defaultWindowHours });
           setScheduleText(defaultWindowHours === 24 ? '720, 1440' : '720, 1440, 2880');
         }}><option value={24}>24 小时</option><option value={48}>48 小时</option></select></label>
-        <label>检查时间点（分钟）<input disabled={saving} value={scheduleText} onChange={(event) => setScheduleText(event.target.value)} placeholder="720, 1440, 2880" /></label>
       </div>
-      <div className="sub-config__row sub-config__row--pair">
-        <label>最小间隔（分钟）<input disabled={saving} min={60} max={1440} type="number" value={settings.minIntervalMinutes} onChange={(event) => setSettings({ ...settings, minIntervalMinutes: Number(event.target.value) })} /></label>
-        <label>每小时限额<input disabled={saving} min={1} max={1000} type="number" value={settings.hourlyLimit} onChange={(event) => setSettings({ ...settings, hourlyLimit: Number(event.target.value) })} /></label>
-      </div>
-      <div className="sub-config__row sub-config__row--pair">
-        <label>每日限额<input disabled={saving} min={1} max={1000} type="number" value={settings.dailyLimit} onChange={(event) => setSettings({ ...settings, dailyLimit: Number(event.target.value) })} /></label>
-        <label>每轮批量<input disabled={saving} min={2} max={3} type="number" value={settings.batchSize} onChange={(event) => setSettings({ ...settings, batchSize: Number(event.target.value) })} /></label>
-      </div>
+      {settings.lifecycleMode === 'fixed_window' && <>
+        <div className="sub-config__row sub-config__row--pair">
+          <label>检查时间点（分钟）<input disabled={saving} value={scheduleText} onChange={(event) => setScheduleText(event.target.value)} placeholder="720, 1440, 2880" /></label>
+          <label>最小间隔（分钟）<input disabled={saving} min={60} max={1440} type="number" value={settings.minIntervalMinutes} onChange={(event) => setSettings({ ...settings, minIntervalMinutes: Number(event.target.value) })} /></label>
+        </div>
+        <div className="sub-config__row sub-config__row--pair">
+          <label>每小时限额<input disabled={saving} min={1} max={1000} type="number" value={settings.hourlyLimit} onChange={(event) => setSettings({ ...settings, hourlyLimit: Number(event.target.value) })} /></label>
+          <label>每日限额<input disabled={saving} min={1} max={1000} type="number" value={settings.dailyLimit} onChange={(event) => setSettings({ ...settings, dailyLimit: Number(event.target.value) })} /></label>
+        </div>
+        <div className="sub-config__row">
+          <label>每轮批量<input disabled={saving} min={2} max={3} type="number" value={settings.batchSize} onChange={(event) => setSettings({ ...settings, batchSize: Number(event.target.value) })} /></label>
+        </div>
+      </>}
       <div className="sub-config__foot">
-        <small>真实分析和下载仍由服务端闸门、Torra/qB 状态及幂等策略共同决定。</small>
+        <small>{settings.lifecycleMode === 'follow_rss' ? '候选即时评分 · 定时整订阅搜索未启用' : '高级兼容模式 · 按固定检查点分析'}</small>
         <button className="tool-link" disabled={saving} type="button" onClick={save}><Save size={14} />{saving ? '保存中…' : '保存质量观察设置'}</button>
         {message && <small role="status">{message}</small>}
       </div>

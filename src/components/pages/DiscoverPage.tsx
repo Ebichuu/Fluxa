@@ -1652,7 +1652,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     }
   };
 
-  const updateQualityWatch = (item: SubscriptionItem, input: { paused?: boolean; windowHours?: 24 | 48; scheduleMinutes?: number[] }) => {
+  const updateQualityWatch = (item: SubscriptionItem, input: { paused?: boolean; lifecycleMode?: 'follow_rss' | 'fixed_window'; windowHours?: 24 | 48; scheduleMinutes?: number[] }) => {
     if (!item.id) return;
     setQualityWatchBusy(`update:${item.id}`);
     setQualityWatchMessage('');
@@ -3256,7 +3256,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                   )}
                   <section className="sub-detail__section quality-watch-panel">
                     <div className="quality-watch-panel__head">
-                      <div><strong>质量观察与人工追更</strong><small>{qualityWatch ? `${qualityWatch.policy.windowHours} 小时观察窗口` : '读取中'}</small></div>
+                      <div><strong>质量观察与人工追更</strong><small>{qualityWatch ? (qualityWatch.policy.lifecycleMode === 'fixed_window' ? `${qualityWatch.policy.windowHours} 小时固定窗口` : `跟随 RSS · ${qualityWatch.policy.windowHours} 小时宽限期`) : '读取中'}</small></div>
                       {qualityWatch && (
                         <span className={qualityWatch.paused || qualityWatch.units.length === 0 ? 'state-chip' : 'state-chip state-chip--ok'}>
                           {qualityWatch.paused ? '已暂停' : qualityWatch.units.length > 0 ? '观察中' : '等待基线'}
@@ -3299,7 +3299,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                                   updateQualityWatch(item, { windowHours, scheduleMinutes: windowHours === 24 ? [720, 1440] : [720, 1440, 2880] });
                                 }}
                               >
-                                <RotateCcw size={13} />切换 {qualityWatch.policy.windowHours === 24 ? '48' : '24'} 小时窗口
+                                <RotateCcw size={13} />切换 {qualityWatch.policy.windowHours === 24 ? '48' : '24'} 小时{qualityWatch.policy.lifecycleMode === 'fixed_window' ? '窗口' : '宽限期'}
                               </button>
                             </>
                           )}

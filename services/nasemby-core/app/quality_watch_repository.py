@@ -19,6 +19,8 @@ WATCH_STATES = {
     "paused",
     "blocked",
 }
+DEFAULT_LIFECYCLE_MODE = "follow_rss"
+WATCH_LIFECYCLE_MODES = {DEFAULT_LIFECYCLE_MODE, "fixed_window"}
 ACTION_STATUSES = {
     "claimed",
     "submitted",
@@ -37,7 +39,7 @@ WATCH_CANDIDATE_COLUMNS = {
     "best_candidate_score": "REAL",
     "upgrade_count": "INTEGER NOT NULL DEFAULT 0",
     "last_candidate_at": "TEXT NOT NULL DEFAULT ''",
-    "lifecycle_mode": "TEXT NOT NULL DEFAULT 'fixed_window'",
+    "lifecycle_mode": "TEXT NOT NULL DEFAULT 'follow_rss'",
 }
 
 
@@ -85,6 +87,13 @@ def _json_load(value):
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _lifecycle_mode(value):
+    mode = str(value or "").strip().lower()
+    if mode not in WATCH_LIFECYCLE_MODES:
+        raise ValueError("观察模式只允许 follow_rss 或 fixed_window")
+    return mode
+
+
 def make_unit_key(subscription_key, media_type, season_number=None, episode_number=None):
     subscription_key = str(subscription_key or "").strip()
     media_type = str(media_type or "").strip().lower()
@@ -126,7 +135,7 @@ class QualityWatchRepository:
                 "baseline_artifact_key TEXT NOT NULL DEFAULT '', baseline_score REAL, "
                 "baseline_rule_hash TEXT NOT NULL DEFAULT '', best_match_id TEXT NOT NULL DEFAULT '', "
                 "best_candidate_score REAL, upgrade_count INTEGER NOT NULL DEFAULT 0, "
-                "last_candidate_at TEXT NOT NULL DEFAULT '', lifecycle_mode TEXT NOT NULL DEFAULT 'fixed_window', "
+                "last_candidate_at TEXT NOT NULL DEFAULT '', lifecycle_mode TEXT NOT NULL DEFAULT 'follow_rss', "
                 "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1)"
             )
             watch_columns = {
@@ -241,10 +250,12 @@ class QualityWatchRepository:
         first_success_at=None,
         window_hours=48,
         torra_subscription_id="",
+        lifecycle_mode=DEFAULT_LIFECYCLE_MODE,
     ):
         window_hours = int(window_hours)
         if window_hours not in {24, 48}:
             raise ValueError("追更洗版窗口只允许 24 或 48 小时")
+        lifecycle_mode = _lifecycle_mode(lifecycle_mode)
         unit_key = make_unit_key(subscription_key, media_type, season_number, episode_number)
         blocked = str(media_type).lower() == "tv" and unit_key.endswith(":blocked")
         now = _as_utc(self.clock())
@@ -253,7 +264,8 @@ class QualityWatchRepository:
             connection.execute(
                 "INSERT INTO quality_watch_units ("
                 "unit_key, subscription_key, season_number, episode_number, torra_subscription_id, state, "
-                "first_success_at, window_hours, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "first_success_at, window_hours, lifecycle_mode, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(unit_key) DO NOTHING",
                 (
                     unit_key,
@@ -264,14 +276,22 @@ class QualityWatchRepository:
                     "blocked" if blocked else "waiting_library_baseline",
                     _iso(first_success),
                     window_hours,
+                    lifecycle_mode,
                     _iso(now),
                     _iso(now),
                 ),
             )
         return self.get_watch_unit(unit_key)
 
-    def mark_baseline_ready(self, unit_key, baseline_ready_at=None, offsets_minutes=None):
+    def mark_baseline_ready(
+        self,
+        unit_key,
+        baseline_ready_at=None,
+        offsets_minutes=None,
+        lifecycle_mode=DEFAULT_LIFECYCLE_MODE,
+    ):
         now = _as_utc(baseline_ready_at or self.clock())
+        lifecycle_mode = _lifecycle_mode(lifecycle_mode)
         with self.runtime.transaction(immediate=True) as connection:
             row = connection.execute("SELECT * FROM quality_watch_units WHERE unit_key=?", (str(unit_key),)).fetchone()
             if not row:
@@ -286,11 +306,21 @@ class QualityWatchRepository:
             if not offsets:
                 raise ValueError("观察计划至少需要一个有效检查时间点")
             observation_ends = now + timedelta(minutes=window_minutes)
-            next_check = now + timedelta(minutes=offsets[0])
+            next_check = observation_ends if lifecycle_mode == DEFAULT_LIFECYCLE_MODE else (
+                now + timedelta(minutes=offsets[0])
+            )
             connection.execute(
                 "UPDATE quality_watch_units SET baseline_ready_at=?, state='observing_upgrade', next_check_at=?, "
-                "observation_ends_at=?, current_offset_index=0, updated_at=?, version=version+1 WHERE unit_key=?",
-                (_iso(now), _iso(next_check), _iso(observation_ends), _iso(self.clock()), str(unit_key)),
+                "observation_ends_at=?, current_offset_index=0, lifecycle_mode=?, "
+                "updated_at=?, version=version+1 WHERE unit_key=?",
+                (
+                    _iso(now),
+                    _iso(next_check),
+                    _iso(observation_ends),
+                    lifecycle_mode,
+                    _iso(self.clock()),
+                    str(unit_key),
+                ),
             )
         return self.get_watch_unit(unit_key)
 
@@ -311,7 +341,7 @@ class QualityWatchRepository:
             "best_candidate_score": float,
             "upgrade_count": int,
             "last_candidate_at": str,
-            "lifecycle_mode": str,
+            "lifecycle_mode": _lifecycle_mode,
         }
         assignments = []
         values = []

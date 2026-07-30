@@ -190,8 +190,10 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
     def test_settings_validate_and_persist_effective_deadline_schedule(self):
         current = self.client.get("/api/v2/subscription-automation/settings")
         self.assertEqual(current.status_code, 200)
+        self.assertEqual(current.get_json()["lifecycleMode"], "follow_rss")
         updated = self.client.patch("/api/v2/subscription-automation/settings", json={
             "enabled": True,
+            "lifecycleMode": "fixed_window",
             "defaultWindowHours": 24,
             "scheduleMinutes": [30, 120],
             "minIntervalMinutes": 60,
@@ -200,6 +202,7 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
             "batchSize": 2,
         })
         self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.get_json()["lifecycleMode"], "fixed_window")
         self.assertEqual(updated.get_json()["scheduleMinutes"], [30, 120, 1440])
         invalid = self.client.patch(
             "/api/v2/subscription-automation/settings",
@@ -207,6 +210,11 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(invalid.status_code, 422)
         self.assertIn("request_id", invalid.get_json())
+        invalid_mode = self.client.patch(
+            "/api/v2/subscription-automation/settings",
+            json={"lifecycleMode": "legacy"},
+        )
+        self.assertEqual(invalid_mode.status_code, 422)
 
     def test_get_routes_do_not_change_settings_units_or_call_providers(self):
         config_before = copy.deepcopy(self.config)
@@ -226,7 +234,12 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
         self.assertEqual(status.get_json()["units"][0]["id"], self.unit["unit_key"])
         paused = self.client.patch(
             "/api/v2/subscriptions/tv:202/quality-watch",
-            json={"paused": True, "windowHours": 24, "scheduleMinutes": [30, 1440]},
+            json={
+                "paused": True,
+                "lifecycleMode": "fixed_window",
+                "windowHours": 24,
+                "scheduleMinutes": [30, 1440],
+            },
         )
         self.assertEqual(paused.status_code, 200)
         self.assertEqual(self.repository.get_watch_unit(self.unit["unit_key"])["state"], "paused")
@@ -234,6 +247,7 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
         self.assertEqual(resumed.status_code, 200)
         self.assertEqual(self.repository.get_watch_unit(self.unit["unit_key"])["state"], "observing_upgrade")
         self.assertEqual(self.subscriptions[0]["torra_quality_watch"]["window_hours"], 24)
+        self.assertEqual(self.subscriptions[0]["torra_quality_watch"]["lifecycle_mode"], "fixed_window")
 
     def test_torra_only_quality_watch_is_readable_without_local_subscription(self):
         torra_unit = self.repository.ensure_watch_unit(

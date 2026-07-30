@@ -4,7 +4,7 @@ import json
 import re
 from datetime import datetime, timezone
 
-from app.quality_watch_repository import make_unit_key
+from app.quality_watch_repository import DEFAULT_LIFECYCLE_MODE, WATCH_LIFECYCLE_MODES, make_unit_key
 
 
 DEFAULT_WINDOW_HOURS = 48
@@ -133,25 +133,29 @@ def _policy_value(subscription, global_config, field):
     subscription_key = {
         "window_hours": "torra_quality_window_hours",
         "offsets_minutes": "torra_quality_schedule_json",
+        "lifecycle_mode": "torra_quality_lifecycle_mode",
     }[field]
     if subscription_key in subscription:
         return subscription[subscription_key]
     global_key = {
         "window_hours": "torra_quality_default_window_hours",
         "offsets_minutes": "torra_quality_schedule_json",
+        "lifecycle_mode": "torra_quality_lifecycle_mode",
     }[field]
     return global_config.get(global_key)
 
 
-def resolve_watch_policy(subscription, global_config=None):
-    global_config = global_config if isinstance(global_config, dict) else {}
-    window_value = _policy_value(subscription, global_config, "window_hours")
-    window_hours = _integer(window_value, DEFAULT_WINDOW_HOURS)
-    if window_hours not in {24, 48}:
-        raise ValueError("追更洗版窗口只允许 24 或 48 小时")
-    offsets_value = _policy_value(subscription, global_config, "offsets_minutes")
+def _resolve_lifecycle_mode(subscription, global_config):
+    lifecycle_mode = _text(_policy_value(subscription, global_config, "lifecycle_mode")).lower()
+    lifecycle_mode = lifecycle_mode or DEFAULT_LIFECYCLE_MODE
+    if lifecycle_mode not in WATCH_LIFECYCLE_MODES:
+        raise ValueError("观察模式只允许 follow_rss 或 fixed_window")
+    return lifecycle_mode
+
+
+def _resolve_offsets(offsets_value, window_hours):
     if offsets_value is None:
-        return {"window_hours": window_hours, "offsets_minutes": list(DEFAULT_OFFSETS[window_hours])}
+        return list(DEFAULT_OFFSETS[window_hours])
     offsets = [_integer(value) for value in _parse_schedule(offsets_value)]
     window_minutes = window_hours * 60
     if not offsets or offsets != sorted(set(offsets)):
@@ -160,7 +164,24 @@ def resolve_watch_policy(subscription, global_config=None):
         raise ValueError("追更洗版检查时间点必须在观察窗口内且不少于 30 分钟")
     if offsets[-1] != window_minutes:
         offsets.append(window_minutes)
-    return {"window_hours": window_hours, "offsets_minutes": offsets}
+    return offsets
+
+
+def resolve_watch_policy(subscription, global_config=None):
+    global_config = global_config if isinstance(global_config, dict) else {}
+    lifecycle_mode = _resolve_lifecycle_mode(subscription, global_config)
+    window_value = _policy_value(subscription, global_config, "window_hours")
+    window_hours = _integer(window_value, DEFAULT_WINDOW_HOURS)
+    if window_hours not in {24, 48}:
+        raise ValueError("追更洗版窗口只允许 24 或 48 小时")
+    return {
+        "lifecycle_mode": lifecycle_mode,
+        "window_hours": window_hours,
+        "offsets_minutes": _resolve_offsets(
+            _policy_value(subscription, global_config, "offsets_minutes"),
+            window_hours,
+        ),
+    }
 
 
 def _media_type_from(mapping):
@@ -356,6 +377,7 @@ class QualityWatchRuntime:
             episode_number,
             window_hours=policy["window_hours"],
             torra_subscription_id=context["torra_subscription_id"],
+            lifecycle_mode=policy["lifecycle_mode"],
         )
         return self._set_blocked(unit, reason)
 
@@ -377,6 +399,7 @@ class QualityWatchRuntime:
             first_success_at=creation["first_download_at"],
             window_hours=policy["window_hours"],
             torra_subscription_id=context["torra_subscription_id"],
+            lifecycle_mode=policy["lifecycle_mode"],
         )
         if existing:
             return unit
@@ -451,7 +474,15 @@ class QualityWatchRuntime:
             unit["unit_key"],
             baseline_ready_at=baseline["ready_at"],
             offsets_minutes=baseline["policy"]["offsets_minutes"],
+            lifecycle_mode=baseline["policy"]["lifecycle_mode"],
         )
+        if unit.get("lifecycle_mode") != baseline["policy"]["lifecycle_mode"]:
+            changes = {"lifecycle_mode": baseline["policy"]["lifecycle_mode"]}
+            if baseline["policy"]["lifecycle_mode"] == DEFAULT_LIFECYCLE_MODE:
+                changes["next_check_at"] = _text(unit.get("observation_ends_at"))
+                if unit.get("state") == "search_due":
+                    changes["state"] = "observing_upgrade"
+            unit = self.repository.update_watch_unit(unit["unit_key"], unit["version"], **changes)
         self._backfill_candidates(unit)
         if not _target_reached_for_unit(context, baseline["evidence"], unit):
             return unit
@@ -516,7 +547,11 @@ class QualityWatchRuntime:
             return {"status": "ignored", "reason": "download_not_complete", "units": []}
         policy, policy_error = self._resolve_policy(subscription)
         if policy_error:
-            fallback = {"window_hours": DEFAULT_WINDOW_HOURS, "offsets_minutes": DEFAULT_OFFSETS[48]}
+            fallback = {
+                "lifecycle_mode": DEFAULT_LIFECYCLE_MODE,
+                "window_hours": DEFAULT_WINDOW_HOURS,
+                "offsets_minutes": DEFAULT_OFFSETS[48],
+            }
             return self._blocked_result(context, existing, policy_error, fallback)
         if not context["valid"]:
             return self._blocked_result(context, existing, "identity_conflict", policy, evidence)
