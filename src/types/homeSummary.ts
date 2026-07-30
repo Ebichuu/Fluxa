@@ -36,13 +36,20 @@ export interface HomeSummaryIssue {
   targetKey: string;
   chainId: string;
   title: string;
-  issueKind?: 'media' | 'auxiliary';
+  issueKind?: 'media' | 'media_group' | 'auxiliary';
   href?: string;
   seasonNumber?: number;
   episodeNumber?: number;
   secondaryReasonText?: string;
   identityState?: 'unidentified' | 'linked' | 'conflict';
   executionState?: 'normal' | 'waiting' | 'protected' | 'suspected_blocked' | 'action_required' | 'confirmed_failed';
+}
+
+export interface HomeProblemGroup extends HomeSummaryIssue {
+  groupId: string;
+  resourceCount: number;
+  identityUnconfirmedResources: number;
+  episodeNumbers: number[];
 }
 
 export type HomeSummaryFocusKey = 'current_downloads' | 'secupload_failures' | 'downloaded_not_archived' | 'archived_today' | 'missing_episodes' | 'action_required';
@@ -74,6 +81,15 @@ export interface HomeSummaryResponse {
     unlinkedFiles: number;
   } | null;
   focusItems: HomeSummaryFocusItem[];
+  problemGroupSummary?: {
+    actionRequiredGroups: number;
+    actionRequiredResources: number;
+    actionRequiredIdentityUnconfirmedResources: number;
+  };
+  problemGroupTotal?: number;
+  problemGroups?: HomeProblemGroup[];
+  auxiliaryIssueTotal?: number;
+  auxiliaryIssues?: HomeSummaryIssue[];
   issueTotal?: number;
   issues: HomeSummaryIssue[];
   diagnosticTotal?: number;

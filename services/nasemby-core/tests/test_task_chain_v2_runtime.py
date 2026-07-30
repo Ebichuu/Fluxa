@@ -177,6 +177,64 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(item["completedAt"], "")
         self.assertEqual(item["confirmedStageCount"], 0)
 
+    def test_list_exposes_shared_problem_groups_before_resource_pagination(self):
+        app = Flask(f"{__name__}-problem-groups")
+        service = TaskChainV2Service(app)
+        items = [{
+            "id": f"task-{episode}",
+            "chainId": f"chain-{episode}",
+            "targetKey": f"tv:tmdb:101:season:2:episode:{episode}",
+            "title": "测试剧",
+            "mediaType": "tv",
+            "tmdbId": "101",
+            "seasonNumber": 2,
+            "episodeNumber": episode,
+            "identityState": "linked",
+            "outcomeState": "action_required",
+            "pipelineOutcome": {
+                "state": "action_required",
+                "stage": "symedia",
+                "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+                "reasonText": "Symedia 未完成媒体入库",
+            },
+            "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+            "reasonText": "Symedia 未完成媒体入库",
+            "userReasonText": "Symedia 未完成媒体入库",
+            "resultText": "Symedia 未完成媒体入库",
+            "primaryAction": {
+                "kind": "view_details", "label": "查看原因", "available": True, "reason": "查看证据",
+            },
+        } for episode in (2, 3, 4)]
+        payload = {
+            "contractVersion": 2,
+            "generatedAt": "2026-07-30T02:00:00Z",
+            "version": "snapshot-1",
+            "items": items,
+            "counts": {"total": 3},
+            "services": {},
+            "outcomeCounts": {"action_required": 3},
+            "problemGroupSummary": {
+                "actionRequiredGroups": 1,
+                "actionRequiredResources": 3,
+                "actionRequiredIdentityUnconfirmedResources": 0,
+            },
+        }
+        service.full_snapshot = lambda force=False: payload
+
+        result = service.list_items(outcome_states=["action_required"], offset=0, limit=1)
+
+        self.assertEqual(result["page"]["total"], 3)
+        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(result["problemGroupSummary"], {
+            "actionRequiredGroups": 1,
+            "actionRequiredResources": 3,
+            "actionRequiredIdentityUnconfirmedResources": 0,
+        })
+        self.assertEqual(len(result["problemGroups"]), 1)
+        self.assertEqual(result["problemGroups"][0]["resourceCount"], 3)
+        self.assertEqual(result["problemGroups"][0]["episodeNumbers"], [2, 3, 4])
+        self.assertEqual(len(result["problemGroups"][0]["members"]), 3)
+
     def test_verified_emby_episode_projects_playable_to_legacy_completed(self):
         chain = FakeTaskChain().get_chain()
         chain["items"][0]["episodeNumber"] = 3

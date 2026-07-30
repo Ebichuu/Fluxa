@@ -103,10 +103,20 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
 
   const status = error ? 'evidence_insufficient' : summary.healthState;
   const summaryUnavailable = Boolean(error) || !summary.ok;
-  const issues = showAllIssues ? summary.issues : summary.issues.slice(0, 4);
+  const groupedIssueRows = summary.problemGroups !== undefined
+    ? [
+        ...summary.problemGroups,
+        ...(summary.auxiliaryIssues ?? summary.issues.filter((issue) => issue.issueKind === 'auxiliary'))
+      ]
+    : summary.issues;
+  const issues = showAllIssues ? groupedIssueRows : groupedIssueRows.slice(0, 4);
   const diagnostics = summary.diagnostics ?? [];
-  const loadedHiddenIssueCount = Math.max(0, summary.issues.length - 4);
-  const unloadedIssueCount = Math.max(0, (summary.issueTotal ?? summary.issues.length) - summary.issues.length);
+  const loadedHiddenIssueCount = Math.max(0, groupedIssueRows.length - 4);
+  const groupedIssueTotal = summary.problemGroups !== undefined
+    ? (summary.problemGroupTotal ?? summary.problemGroups.length)
+      + (summary.auxiliaryIssueTotal ?? summary.auxiliaryIssues?.length ?? 0)
+    : (summary.issueTotal ?? summary.issues.length);
+  const unloadedIssueCount = Math.max(0, groupedIssueTotal - groupedIssueRows.length);
   const StatusIcon = status === 'normal' ? CheckCircle2 : status === 'action_required' ? TriangleAlert : Clock3;
 
   const openMetric = (target: typeof metricDefinitions[number]['target']) => {
@@ -283,7 +293,7 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
               <button
                 className={`home-issue home-issue--${issue.healthState}`}
                 type="button"
-                key={`${issue.source}:${issue.reasonCode}:${issue.chainId || index}`}
+                key={`${issue.source}:${issue.reasonCode}:${'groupId' in issue ? issue.groupId : issue.chainId || index}`}
                 onClick={() => openIssue(issue)}
               >
                 <span className="home-issue__marker" aria-hidden="true" />
@@ -291,6 +301,7 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
                   <strong>{issue.headline || issue.displayTitle || issue.title}</strong>
                   <small>
                     {issue.reasonText || '查看任务详情'}
+                    {'resourceCount' in issue && typeof issue.resourceCount === 'number' && issue.resourceCount > 1 && ` · 涉及 ${issue.resourceCount} 个资源`}
                     {issue.secondaryReasonText && ` · ${issue.secondaryReasonText}`}
                     {' · '}<RelativeTime interactive={false} value={issue.observedAt} />
                   </small>

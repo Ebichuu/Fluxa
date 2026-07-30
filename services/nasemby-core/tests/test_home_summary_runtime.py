@@ -374,6 +374,13 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["counts"]["actionRequiredWorks"], 6)
         self.assertEqual(result["counts"]["actionRequiredGroups"], 5)
         self.assertEqual(result["counts"]["actionRequiredIdentityUnconfirmedResources"], 3)
+        self.assertEqual(result["problemGroupSummary"], {
+            "actionRequiredGroups": 5,
+            "actionRequiredResources": 8,
+            "actionRequiredIdentityUnconfirmedResources": 3,
+        })
+        self.assertEqual(result["problemGroupTotal"], 5)
+        self.assertEqual(sum(group["resourceCount"] for group in result["problemGroups"]), 8)
         self.assertEqual(result["headline"], "5 个问题组 · 涉及 8 个资源 · 其中 3 条身份未确认")
         self.assertEqual(focus["action_required"]["value"], 5)
         self.assertIn("涉及 8 个资源", focus["action_required"]["detail"])
@@ -424,6 +431,8 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["counts"]["actionRequired"], 11)
         self.assertEqual(result["counts"]["actionRequiredGroups"], 3)
         self.assertEqual(result["counts"]["actionRequiredIdentityUnconfirmedResources"], 11)
+        self.assertEqual(result["problemGroupSummary"]["actionRequiredResources"], 11)
+        self.assertEqual(result["problemGroupTotal"], 3)
 
     def test_collected_rss_without_matcher_run_is_neutral_diagnostic(self):
         app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)

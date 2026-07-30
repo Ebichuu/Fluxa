@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, Braces, CheckCircle2, CircleHelp, Clock3, Copy, Download, ExternalLink, Filter, Pause, Play, RefreshCcw, Rss, Server, ShieldCheck, X } from 'lucide-react';
+import { Activity, AlertTriangle, Braces, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Clock3, Copy, Download, ExternalLink, Filter, Pause, Play, RefreshCcw, Rss, Server, ShieldCheck, X } from 'lucide-react';
 import { getActivityLogs, getTaskChainDetailV2, getTaskChainV2, getTaskSummaryV2, previewQbittorrentAction, runQbittorrentAction } from '../../services/api';
 import type { QbittorrentAction, QbittorrentActionPreview } from '../../types/qbittorrent';
-import type { PipelineFact, PipelineOutcomeState, TaskChainHealthState, TaskChainItem, TaskChainListItem, TaskChainResponse, TaskChainStage } from '../../types/taskChain';
+import type { PipelineFact, PipelineOutcomeState, TaskChainHealthState, TaskChainItem, TaskChainListItem, TaskChainResponse, TaskChainStage, TaskProblemGroup } from '../../types/taskChain';
 import type { ActivityLogItem } from '../../types/operations';
 import { usePolling } from '../../hooks/usePolling';
 import { currentHistoryEntryIs, writeUrlQuery } from '../../app/urlState';
@@ -173,6 +173,36 @@ function targetLabel(item: TaskChainListItem | TaskChainItem) {
   return item.mediaType === 'movie' ? '整部电影' : '整部剧集';
 }
 
+function problemGroupTarget(group: TaskProblemGroup) {
+  if (group.mediaType === 'movie') return '整部电影';
+  return group.seasonNumber > 0 ? `第 ${group.seasonNumber} 季` : '剧集范围未确认';
+}
+
+function episodeRangeText(values: number[]) {
+  const episodes = Array.from(new Set(values.filter((value) => value > 0))).sort((a, b) => a - b);
+  if (episodes.length === 0) return '集数范围未确认';
+  const ranges: Array<[number, number]> = [];
+  for (const episode of episodes) {
+    const latest = ranges[ranges.length - 1];
+    if (latest && episode === latest[1] + 1) latest[1] = episode;
+    else ranges.push([episode, episode]);
+  }
+  return ranges.map(([start, end]) => (
+    start === end ? `E${String(start).padStart(2, '0')}` : `E${String(start).padStart(2, '0')}-E${String(end).padStart(2, '0')}`
+  )).join('、');
+}
+
+function problemStageLabel(stage: string) {
+  return ({
+    torra: 'Torra 获取',
+    qb: 'qB 下载',
+    cloud115: '115 秒传',
+    symedia: 'Symedia 入库',
+    strm: 'STRM',
+    emby: 'Emby'
+  } as Record<string, string>)[stage] ?? '处理阶段';
+}
+
 function stageStatusIcon(stage: TaskChainStage) {
   if (stage.healthState === 'action_required' || stage.status === 'blocked') return <AlertTriangle aria-hidden="true" size={14} />;
   if (isUnknownStage(stage)) return <CircleHelp aria-hidden="true" size={14} />;
@@ -257,6 +287,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   const [error, setError] = useState('');
   const [pageLimit, setPageLimit] = useState(20);
   const [details, setDetails] = useState<Record<string, { snapshotVersion: string; item: TaskChainItem }>>({});
+  const [expandedProblemGroupId, setExpandedProblemGroupId] = useState('');
   const [expandedChainId, setExpandedChainId] = useState('');
   const [technicalChainId, setTechnicalChainId] = useState('');
   const [detailLoading, setDetailLoading] = useState('');
@@ -368,6 +399,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     setCompletedDate(target?.completedDate ?? '');
     setArchivedDate(target?.archivedDate ?? '');
     if (!(target?.chainId || target?.targetKey || target?.subscriptionId || target?.tmdbId || target?.title)) {
+      setExpandedProblemGroupId('');
       setExpandedChainId('');
       setTechnicalChainId('');
     }
@@ -496,6 +528,10 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
 
   const items = chain?.items ?? [];
   const visible = items;
+  const problemGroups = chain?.problemGroups ?? [];
+  const groupedProblemView = Boolean(
+    !qbActiveView && !focusActive && !archivedDate && filter === '需要处理' && problemGroups.length > 0
+  );
   const focusedTaskId = focusActive ? items[0]?.chainId || items[0]?.id || null : null;
   const counts = useMemo<Record<FilterName, number>>(() => ({
     ...filterCounts(chain ?? {})
@@ -567,6 +603,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   const changeFilter = (name: FilterName) => {
     if (target) onClearTarget();
     setFilter(name);
+    setExpandedProblemGroupId('');
     setExpandedChainId('');
     setTechnicalChainId('');
     setCompletedDate('');
@@ -921,7 +958,10 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
             </div>
           )}
           <div className="ops-task-toolbar__actions">
-            <span>{chain ? <>已显示 {items.length} / {chain.page?.total ?? chain.counts.total} 条 · <RelativeTime value={chain.generatedAt} /></> : qbActiveView ? '正在读取 qB 活跃任务' : '正在读取统一任务链'}</span>
+            <span>{chain ? groupedProblemView
+              ? <>{problemGroups.length} 个问题组 · 涉及 {chain.problemGroupSummary?.actionRequiredResources ?? chain.page?.total ?? items.length} 个资源 · <RelativeTime value={chain.generatedAt} /></>
+              : <>已显示 {items.length} / {chain.page?.total ?? chain.counts.total} 条 · <RelativeTime value={chain.generatedAt} /></>
+              : qbActiveView ? '正在读取 qB 活跃任务' : '正在读取统一任务链'}</span>
             {!qbActiveView && <button className="tool-link ops-task-advanced-link" type="button" onClick={() => changeAdvancedVisibility(!advancedOpenRef.current)}><Braces aria-hidden="true" size={14} />高级诊断</button>}
             {!qbActiveView && <button aria-label="打开 RSS 种子库" className="ops-icon-button" title="RSS 种子库" type="button" onClick={() => onNavigate('rss-library')}><Rss aria-hidden="true" size={14} /></button>}
             <button aria-label="刷新任务链" aria-busy={loading} className="ops-icon-button" disabled={loading} title="刷新任务链" type="button" onClick={refreshChain}><RefreshCcw aria-hidden="true" size={16} /></button>
@@ -939,7 +979,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
 
         {loading && !chain && <div className="ops-empty ops-task-empty">{qbActiveView ? '正在读取 qB 活跃任务…' : '正在汇总下载、整理和可播放状态…'}</div>}
         {!loading && error && <div className="ops-empty ops-task-empty">{error}</div>}
-        {!loading && chain && visible.length === 0 && (
+        {!loading && chain && visible.length === 0 && problemGroups.length === 0 && (
           <div className="ops-empty ops-task-empty">
             {qbActiveView
               ? '当前没有可验证的 qB 活跃任务。'
@@ -956,7 +996,61 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
           </div>
         )}
 
-        <div className="ops-task-list">
+        {groupedProblemView && (
+          <div className="ops-problem-group-list" aria-label="需要处理的问题组">
+            {problemGroups.map((group) => {
+              const expanded = expandedProblemGroupId === group.groupId;
+              return (
+                <article className="ops-problem-group" key={group.groupId}>
+                  <button
+                    aria-expanded={expanded}
+                    className="ops-problem-group__toggle"
+                    type="button"
+                    onClick={() => setExpandedProblemGroupId((current) => current === group.groupId ? '' : group.groupId)}
+                  >
+                    <span className="ops-problem-group__signal" aria-hidden="true"><AlertTriangle size={16} /></span>
+                    <span className="ops-problem-group__copy">
+                      <strong>{group.title}{group.mediaType === 'tv' && group.seasonNumber > 0 ? ` · S${String(group.seasonNumber).padStart(2, '0')}` : ''}</strong>
+                      <small>{group.reasonText || '当前任务需要处理'}</small>
+                      <em>{problemStageLabel(group.stage)} · {problemGroupTarget(group)} · {episodeRangeText(group.episodeNumbers)}</em>
+                    </span>
+                    <span className="ops-problem-group__counts">
+                      <strong>{group.resourceCount}</strong><small>个资源</small>
+                      {group.identityUnconfirmedResources > 0 && <em>{group.identityUnconfirmedResources} 条身份未确认</em>}
+                    </span>
+                    {expanded ? <ChevronDown aria-hidden="true" size={17} /> : <ChevronRight aria-hidden="true" size={17} />}
+                  </button>
+                  {expanded && (
+                    <div className="ops-problem-group__members">
+                      {group.members.map((member) => (
+                        <div className="ops-problem-group__member" key={member.chainId}>
+                          <span>
+                            <strong>{member.mediaType === 'movie' ? '整部电影' : member.episodeNumber > 0 ? `S${String(member.seasonNumber).padStart(2, '0')}E${String(member.episodeNumber).padStart(2, '0')}` : problemGroupTarget(group)}</strong>
+                            <small>{member.resultText || member.userReasonText || member.reasonText || group.reasonText}</small>
+                          </span>
+                          <button
+                            className="ops-action-button"
+                            type="button"
+                            onClick={() => onNavigate('tasks', {
+                              chainId: member.chainId,
+                              targetKey: member.targetKey,
+                              title: member.title,
+                              outcomeState: 'action_required'
+                            })}
+                          >
+                            查看任务<ChevronRight aria-hidden="true" size={14} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        )}
+
+        {!groupedProblemView && <div className="ops-task-list">
           {visible.map((item) => {
             const chainId = item.chainId || item.id;
             const cachedDetail = details[chainId];
@@ -1116,8 +1210,8 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
               </article>
             );
           })}
-        </div>
-        {chain?.page?.hasMore && (
+        </div>}
+        {!groupedProblemView && chain?.page?.hasMore && (
           <div className="ops-task-more">
             <span>已显示 {items.length} / {chain.page.total} 条</span>
             <button className="ops-action-button" disabled={loading} type="button" onClick={loadMore}>{loading ? '读取中' : '加载更多'}</button>

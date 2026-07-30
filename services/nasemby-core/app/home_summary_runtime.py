@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
@@ -9,6 +8,7 @@ from flask import Flask, jsonify
 
 from app.health_state_runtime import evidence
 from app.http_runtime import current_request_id
+from app.problem_group_runtime import derive_problem_groups
 from app.resource_identity_runtime import target_key as resource_target_key
 from app.secupload_issue_runtime import build_secupload_issue
 from app.task_chain_v2_runtime import adapt_task_chain
@@ -45,49 +45,6 @@ def _action_required_work_key(item: dict, target_key: str) -> str:
         return f"tv:tmdb:{tmdb_id}:season:{season}"
     resource_identity = str(item.get("chainId") or target_key or item.get("id") or "").strip()
     return f"resource:{resource_identity}"
-
-
-def _positive_integer(value):
-    parsed = _integer(value)
-    return parsed if parsed is not None and parsed > 0 else None
-
-
-def _reliable_media_identity(item: dict) -> bool:
-    if str(item.get("identityState") or "") != "linked":
-        return False
-    media_type = str(item.get("mediaType") or "").strip().lower()
-    if media_type not in {"movie", "tv"} or _positive_integer(item.get("tmdbId")) is None:
-        return False
-    return media_type == "movie" or _positive_integer(item.get("seasonNumber")) is not None
-
-
-def _mechanical_title_key(value) -> str:
-    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
-    return "".join(
-        character
-        for character in normalized
-        if not character.isspace() and not unicodedata.category(character).startswith("P")
-    )
-
-
-def _action_required_group_key(item: dict, target_key: str) -> str:
-    media_type = str(item.get("mediaType") or "").strip().lower()
-    tmdb_id = _positive_integer(item.get("tmdbId"))
-    season = _positive_integer(item.get("seasonNumber"))
-    if _reliable_media_identity(item):
-        return (
-            f"identity:movie:tmdb:{tmdb_id}"
-            if media_type == "movie"
-            else f"identity:tv:tmdb:{tmdb_id}:season:{season}"
-        )
-    resource_identity = str(item.get("chainId") or target_key or item.get("id") or "").strip()
-    resource_key = f"resource:{resource_identity}"
-    if str(item.get("identityState") or "") == "conflict" or media_type not in {"movie", "tv"}:
-        return resource_key
-    title = _mechanical_title_key(item.get("title"))
-    if not title or (media_type == "tv" and season is None):
-        return resource_key
-    return f"display:{media_type}:{title}" + (f":season:{season}" if media_type == "tv" else "")
 
 
 def _fresh_until(now: datetime, minutes: int = 5) -> str:
@@ -606,6 +563,43 @@ class HomeSummaryService:
             for target_key, item, result in visible_item_evidence
             if result["healthState"] == "action_required"
         ]
+        problem_group_projection = derive_problem_groups(item for _, item in action_required_evidence)
+        problem_group_summary = problem_group_projection["summary"]
+        evidence_by_chain = {
+            str(item.get("chainId") or target_key): (target_key, item, result)
+            for target_key, item, result in visible_item_evidence
+            if result["healthState"] == "action_required"
+        }
+        media_problem_groups = []
+        for group in problem_group_projection["groups"]:
+            primary_row = next((
+                evidence_by_chain.get(chain_id)
+                for chain_id in group.get("memberChainIds") or []
+                if evidence_by_chain.get(chain_id)
+            ), None)
+            if primary_row is None:
+                continue
+            target_key, item, result = primary_row
+            issue_copy = _safe_issue_copy(item, result)
+            resource_count = int(group.get("resourceCount") or 0)
+            media_problem_groups.append({
+                **result,
+                **issue_copy,
+                "groupId": str(group.get("groupId") or ""),
+                "issueKind": "media_group",
+                "resourceCount": resource_count,
+                "identityUnconfirmedResources": int(group.get("identityUnconfirmedResources") or 0),
+                "episodeNumbers": list(group.get("episodeNumbers") or []),
+                "targetKey": target_key,
+                "chainId": str(item.get("chainId") or item.get("id") or ""),
+                "title": str(item.get("title") or "未命名媒体"),
+                "headline": (
+                    f"《{str(item.get('title') or '未命名媒体')}》{_episode_label(int(group.get('seasonNumber') or 0), None, None)}"
+                    f" · {resource_count} 个资源"
+                    if resource_count > 1 else issue_copy.get("headline")
+                ),
+                "href": "/tasks?outcomeState=action_required",
+            })
         counts["mediaActionRequired"] = len(media_issues)
         counts["actionRequired"] = counts["mediaActionRequired"]
         counts["actionRequiredResources"] = counts["mediaActionRequired"]
@@ -613,14 +607,10 @@ class HomeSummaryService:
             _action_required_work_key(item, target_key)
             for target_key, item in action_required_evidence
         })
-        counts["actionRequiredGroups"] = len({
-            _action_required_group_key(item, target_key)
-            for target_key, item in action_required_evidence
-        })
-        counts["actionRequiredIdentityUnconfirmedResources"] = sum(
-            not _reliable_media_identity(item)
-            for _, item in action_required_evidence
-        )
+        counts["actionRequiredGroups"] = problem_group_summary["actionRequiredGroups"]
+        counts["actionRequiredIdentityUnconfirmedResources"] = problem_group_summary[
+            "actionRequiredIdentityUnconfirmedResources"
+        ]
         counts["auxiliaryAlerts"] = len(auxiliary_issues)
 
         symedia_status = services.get("symedia") if isinstance(services.get("symedia"), dict) else {}
@@ -852,6 +842,11 @@ class HomeSummaryService:
             "detail": detail,
             "counts": counts,
             "archiveSummary": archive_summary,
+            "problemGroupSummary": problem_group_summary,
+            "problemGroupTotal": len(media_problem_groups),
+            "problemGroups": media_problem_groups[:8],
+            "auxiliaryIssueTotal": len(auxiliary_issues),
+            "auxiliaryIssues": auxiliary_issues[:8],
             "focusItems": focus_items,
             "issueTotal": len(issues),
             "issues": issues[:8],

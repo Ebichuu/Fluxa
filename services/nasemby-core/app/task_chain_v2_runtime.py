@@ -15,6 +15,7 @@ from app.pipeline_fact_runtime import (
     target_scope_for_item,
 )
 from app.pipeline_outcome_runtime import PIPELINE_OUTCOMES, derive_outcome_counts, derive_pipeline_outcome
+from app.problem_group_runtime import derive_problem_groups
 from app.resource_identity_runtime import artifact_key, chain_id, media_key, target_key
 from app.resource_task_repository import pipeline_source_ref, pipeline_unit_ref
 from app.task_exception_runtime import classify_stage, classify_task
@@ -676,6 +677,7 @@ def adapt_task_chain(chain: dict, *, now: datetime | None = None, health_filter:
         for state in EXECUTION_STATES
     }
     outcome_counts = derive_outcome_counts(all_items)
+    problem_group_projection = derive_problem_groups(all_items)
     items = [
         item for item in all_items
         if not health_filter or item.get("healthState") == health_filter
@@ -694,6 +696,7 @@ def adapt_task_chain(chain: dict, *, now: datetime | None = None, health_filter:
         "executionCounts": execution_counts,
         "userCounts": user_counts,
         "outcomeCounts": outcome_counts,
+        "problemGroupSummary": problem_group_projection["summary"],
         "generatedAt": str(chain.get("generatedAt") or observed_at),
         "contractVersion": 2,
     }
@@ -719,6 +722,39 @@ def _summary_item(item: dict) -> dict:
         "status": stage.get("status"),
         "healthState": stage.get("healthState"),
     } for stage in item.get("stages") or []]
+    return result
+
+
+def _present_problem_groups(projection: dict) -> list[dict]:
+    result = []
+    for group in projection.get("groups") or []:
+        public_members = []
+        for member in group.get("members") or []:
+            public = present_task_item(member)
+            public_members.append({
+                key: public.get(key)
+                for key in (
+                    "chainId", "targetKey", "title", "mediaType", "tmdbId", "seasonNumber",
+                    "episodeNumber", "identityState", "reasonCode", "reasonText", "userReasonText",
+                    "resultText", "primaryAction",
+                )
+                if key in public
+            })
+        primary = public_members[0] if public_members else {}
+        result.append({
+            "groupId": str(group.get("groupId") or ""),
+            "title": str(primary.get("title") or "未命名媒体"),
+            "mediaType": str(group.get("mediaType") or "unknown"),
+            "tmdbId": str(group.get("tmdbId") or ""),
+            "seasonNumber": int(group.get("seasonNumber") or 0),
+            "stage": str(group.get("stage") or ""),
+            "reasonCode": str(group.get("reasonCode") or ""),
+            "reasonText": str(primary.get("userReasonText") or primary.get("reasonText") or "当前任务需要处理"),
+            "resourceCount": int(group.get("resourceCount") or 0),
+            "identityUnconfirmedResources": int(group.get("identityUnconfirmedResources") or 0),
+            "episodeNumbers": list(group.get("episodeNumbers") or []),
+            "members": public_members,
+        })
     return result
 
 
@@ -761,6 +797,7 @@ def _version(payload: dict) -> str:
         "executionCounts": payload.get("executionCounts") or {},
         "userCounts": payload.get("userCounts") or {},
         "outcomeCounts": payload.get("outcomeCounts") or {},
+        "problemGroupSummary": payload.get("problemGroupSummary") or {},
         "originCounts": payload.get("originCounts") or {},
         "stageCounts": payload.get("stageCounts") or {},
         "services": payload.get("services") or {},
@@ -868,7 +905,7 @@ class TaskChainV2Service:
             for key in (
                 "contractVersion", "generatedAt", "version", "counts", "healthCounts",
                 "identityCounts", "executionCounts", "originCounts", "stageCounts",
-                "userCounts", "outcomeCounts", "services", "ledger", "systemIssues",
+                "userCounts", "outcomeCounts", "problemGroupSummary", "services", "ledger", "systemIssues",
             )
             if key in payload
         }
@@ -971,6 +1008,7 @@ class TaskChainV2Service:
                 item for item in items
                 if (parsed := _parse_datetime(item.get("updatedAt"))) and parsed > updated_after
             ]
+        problem_group_projection = derive_problem_groups(items)
         total = len(items)
         page = items[offset:offset + limit]
         result = {
@@ -983,6 +1021,8 @@ class TaskChainV2Service:
                 "nextOffset": offset + len(page) if offset + len(page) < total else None,
                 "hasMore": offset + len(page) < total,
             },
+            "problemGroups": _present_problem_groups(problem_group_projection),
+            "problemGroupSummary": problem_group_projection["summary"],
         }
         if archive_summary is not None:
             result["archiveSummary"] = archive_summary

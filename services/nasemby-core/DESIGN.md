@@ -250,6 +250,14 @@ Compose 通过 `MCC_DATA_ROOT` 把三个目录映射到同一个 fnOS 根目录�
 
 **影响范围**：日历只读聚合、公开可选响应字段、React 日历来源说明和回归测试。旧字段、URL、查询参数、ETag、HTTP 状态码、事件台账和外部写权限均保持不变；无 TMDB、跨季或集号不明记录不会被模糊合并。
 
+### 2026-07-30 — 首页与任务中心共享问题组
+
+**变更内容**：新增无副作用的 `problem_group_runtime.py`，从全部 `action_required` 任务链按媒体身份、季、阶段和原因码派生问题组。可靠组要求 `identityState=linked`、有效 TMDB ID、明确媒体类型和电视剧正季号；无可靠身份时只允许 NFKC、大小写、空格和常规标点机械规范化标题，冲突、无标题、类型/季冲突均逐资源成组。任务 summary 兼容增加 `problemGroupSummary`，列表在资源分页前增加 `problemGroups`；首页用同一投影增加分组问题和独立辅助提醒字段。
+
+**变更理由**：首页已能显示问题组数量，但任务中心仍按分集资源重复平铺，且两处分别维护分组规则会再次产生统计漂移。
+
+**影响范围**：任务只读派生、首页摘要、v2 可选响应、React 任务中心和回归测试。旧 `actionRequired/actionRequiredWorks/actionRequiredResources/issues/issueTotal`、资源分页、过滤参数、HTTP 状态码、任务身份、事件台账和外部写权限均保持不变；分组键和组 ID 不写入数据库。
+
 ### 2026-07-29 — qB 全局活跃事实与资源口径收口
 
 **变更内容**：`QbittorrentClient.summary()` 增加 5 秒线程安全单飞快照，成功、失败、任务链、首页和控制室复用同一 `lastCheckedAt/counts.active`，配置变化及成功暂停/恢复后立即失效。首页 `activeDownloadTasks` 改为直接读取 qB 全局 `counts.active`，媒体链异常不再过滤仍活跃的下载器任务；任务列表新增可选 `qbActive=1`，按公开 `qbControl.active` 在分页前保留不同媒体结果和 orphan qB 链。顶部异常文案明确使用资源单位。

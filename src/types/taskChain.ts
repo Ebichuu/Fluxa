@@ -276,10 +276,49 @@ export type TaskChainListItem = Omit<TaskChainItem, 'steps' | 'sourceIds' | 'sug
   stageSummary: TaskChainStageSummary[];
 };
 
+export interface TaskProblemGroupSummary {
+  actionRequiredGroups: number;
+  actionRequiredResources: number;
+  actionRequiredIdentityUnconfirmedResources: number;
+}
+
+export interface TaskProblemGroupMember {
+  chainId: string;
+  targetKey?: string;
+  title: string;
+  mediaType: 'movie' | 'tv' | 'unknown';
+  tmdbId: string;
+  seasonNumber: number;
+  episodeNumber: number;
+  identityState?: TaskChainIdentityState;
+  reasonCode?: string;
+  reasonText?: string;
+  userReasonText?: string;
+  resultText?: string;
+  primaryAction?: TaskChainItem['primaryAction'];
+}
+
+export interface TaskProblemGroup {
+  groupId: string;
+  title: string;
+  mediaType: 'movie' | 'tv' | 'unknown';
+  tmdbId: string;
+  seasonNumber: number;
+  stage: PipelineStage | string;
+  reasonCode: string;
+  reasonText: string;
+  resourceCount: number;
+  identityUnconfirmedResources: number;
+  episodeNumbers: number[];
+  members: TaskProblemGroupMember[];
+}
+
 export interface TaskChainResponse {
   contractVersion?: number;
   generatedAt: string;
   items: TaskChainListItem[];
+  problemGroups?: TaskProblemGroup[];
+  problemGroupSummary?: TaskProblemGroupSummary;
   archiveSummary?: ArchiveSummary;
   version?: string;
   page?: {
