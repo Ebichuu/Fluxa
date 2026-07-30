@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 
 from app.quality_watch_repository import DEFAULT_LIFECYCLE_MODE, WATCH_LIFECYCLE_MODES, make_unit_key
 
@@ -341,6 +342,198 @@ def _target_reached_for_unit(context, evidence, unit):
     return int(unit.get("episode_number") or 0) in episodes
 
 
+RELIABLE_TIME_SOURCES = {"torra_completed", "qb_completed", "symedia_completed"}
+
+
+def _utc(value):
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    parsed = _observed_at(value, None)
+    return parsed.astimezone(timezone.utc) if parsed else None
+
+
+def _iso(value):
+    return _utc(value).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _planned_unit(context, episode, policy, first_success_at, task_item, evidence):
+    unit_key = make_unit_key(
+        context["subscription_key"], context["media_type"], context["season_number"] or None, episode
+    )
+    return {
+        "unit_key": unit_key,
+        "subscription_key": context["subscription_key"],
+        "season_number": context["season_number"] or None,
+        "episode_number": episode,
+        "torra_subscription_id": context["torra_subscription_id"],
+        "state": "blocked" if unit_key.endswith(":blocked") else "waiting_library_baseline",
+        "first_success_at": _iso(first_success_at),
+        "baseline_ready_at": "",
+        "window_hours": policy["window_hours"],
+        "next_check_at": "",
+        "observation_ends_at": "",
+        "current_evidence": _new_evidence_summary(task_item, evidence, context["torra_subscription_id"]),
+        "last_result": {},
+        "target_reached_at": "",
+        "lifecycle_mode": policy["lifecycle_mode"],
+        "version": 0,
+        "_new": True,
+    }
+
+
+def _strict_time_error(now, evidence):
+    if evidence.get("require_reliable_times") is not True:
+        return ""
+    if _text(evidence.get("time_source")) not in RELIABLE_TIME_SOURCES:
+        return "time_source_untrusted"
+    first = _utc(evidence.get("first_download_at") or evidence.get("upstream_occurred_at"))
+    baseline = _utc(evidence.get("baseline_ready_at"))
+    if first is None:
+        return "success_time_missing"
+    if first > now or (baseline and baseline > now):
+        return "future_success_time"
+    if baseline and baseline < first:
+        return "success_time_inverted"
+    return ""
+
+
+def _baseline_ready_for_unit(context, torra_row, evidence, unit):
+    if evidence.get("baseline_success") is True:
+        if context["media_type"] == "movie":
+            return True
+        return int(unit.get("episode_number") or 0) in _positive_integers(
+            evidence.get("baseline_episode_numbers") or evidence.get("episode_numbers")
+        )
+    if context["media_type"] == "movie":
+        return _movie_library_ready(torra_row)
+    return int(unit.get("episode_number") or 0) in _library_episode_numbers(context, torra_row)
+
+
+def plan_reconcile(*, now, subscription, task_item, torra_row, evidence, policy, existing_units, policy_error=""):
+    now = _utc(now)
+    if now is None:
+        raise ValueError("reconcile now must be a UTC-compatible datetime")
+    subscription = subscription if isinstance(subscription, dict) else {}
+    task_item = task_item if isinstance(task_item, dict) else {}
+    torra_row = torra_row if isinstance(torra_row, dict) else {}
+    evidence = evidence if isinstance(evidence, dict) else {}
+    existing_units = [deepcopy(unit) for unit in existing_units if isinstance(unit, dict)]
+    context = _task_identity(subscription, task_item, torra_row)
+    relevant = [
+        unit for unit in existing_units
+        if context["media_type"] == "movie" or int(unit.get("season_number") or 0) == context["season_number"]
+    ]
+    original = {unit["unit_key"]: deepcopy(unit) for unit in relevant}
+    if not relevant and not evidence.get("is_new"):
+        return {"status": "ignored", "reason": "historical_evidence", "writes": [], "unitKeys": [], "backfillUnitKeys": []}
+    if not relevant and not _download_is_complete(task_item):
+        return {"status": "ignored", "reason": "download_not_complete", "writes": [], "unitKeys": [], "backfillUnitKeys": []}
+    time_error = _strict_time_error(now, evidence)
+    if time_error:
+        return {"status": "needs_review", "reason": time_error, "writes": [], "unitKeys": [], "backfillUnitKeys": []}
+
+    units = {unit["unit_key"]: unit for unit in relevant}
+    created_keys = []
+    if not context["valid"] or policy_error:
+        block_reason = policy_error or "identity_conflict"
+        if not units:
+            if not context["subscription_key"] or context["media_type"] not in {"movie", "tv"}:
+                return {"status": "blocked", "reason": block_reason, "writes": [], "unitKeys": [], "backfillUnitKeys": []}
+            episode = next(iter(_positive_integers(evidence.get("episode_numbers"))), None)
+            blocked = _planned_unit(context, episode, policy, now, task_item, evidence)
+            blocked["state"] = "blocked"
+            blocked["last_result"] = {"reason": block_reason}
+            units[blocked["unit_key"]] = blocked
+            created_keys.append(blocked["unit_key"])
+        else:
+            for unit in units.values():
+                unit["state"] = "blocked"
+                unit["last_result"] = {"reason": block_reason}
+        reason = block_reason
+    else:
+        reason = ""
+        if evidence.get("is_new") and _download_is_complete(task_item):
+            episodes = _episodes_to_create(context, torra_row, evidence)
+            if episodes is None:
+                episodes = [None]
+                reason = "episode_identity_missing"
+            first_success = _utc(
+                evidence.get("first_download_at") or evidence.get("upstream_occurred_at")
+            ) or _first_download_at(task_item, evidence, now)
+            for episode in episodes:
+                unit_key = make_unit_key(
+                    context["subscription_key"], context["media_type"], context["season_number"] or None, episode
+                )
+                if unit_key in units:
+                    continue
+                unit = _planned_unit(context, episode, policy, first_success, task_item, evidence)
+                if reason:
+                    unit["state"] = "blocked"
+                    unit["last_result"] = {"reason": reason}
+                units[unit_key] = unit
+                created_keys.append(unit_key)
+
+        baseline_at = _utc(evidence.get("baseline_ready_at")) or now
+        for unit in units.values():
+            stored_torra = _text(unit.get("torra_subscription_id"))
+            if stored_torra and context["torra_subscription_id"] and stored_torra != context["torra_subscription_id"]:
+                unit["state"] = "blocked"
+                unit["last_result"] = {"reason": "torra_subscription_conflict"}
+                reason = reason or "torra_subscription_conflict"
+                continue
+            if context["torra_subscription_id"] and not stored_torra:
+                unit["torra_subscription_id"] = context["torra_subscription_id"]
+            if (
+                unit.get("state") == "waiting_library_baseline"
+                and context["torra_subscription_id"]
+                and _baseline_ready_for_unit(context, torra_row, evidence, unit)
+            ):
+                observation_ends = baseline_at + timedelta(hours=int(unit.get("window_hours") or policy["window_hours"]))
+                unit["baseline_ready_at"] = _iso(baseline_at)
+                unit["observation_ends_at"] = _iso(observation_ends)
+                unit["lifecycle_mode"] = policy["lifecycle_mode"]
+                unit["state"] = "observation_expired" if observation_ends <= now else "observing_upgrade"
+                unit["next_check_at"] = "" if observation_ends <= now else (
+                    _iso(observation_ends) if policy["lifecycle_mode"] == DEFAULT_LIFECYCLE_MODE
+                    else _iso(baseline_at + timedelta(minutes=policy["offsets_minutes"][0]))
+                )
+                if _target_reached_for_unit(context, evidence, unit):
+                    unit["state"] = "target_reached"
+                    unit["target_reached_at"] = unit["baseline_ready_at"]
+                    unit["last_result"] = {"reason": "version_target_reached"}
+
+    writes = []
+    compared = (
+        "torra_subscription_id", "state", "baseline_ready_at", "next_check_at",
+        "observation_ends_at", "current_evidence", "last_result",
+        "target_reached_at", "lifecycle_mode",
+    )
+    for unit_key, unit in sorted(units.items()):
+        if unit.get("_new"):
+            values = {key: value for key, value in unit.items() if not key.startswith("_") and key != "version"}
+            writes.append({"operation": "insert", "unitKey": unit_key, "values": values})
+            continue
+        before = original.get(unit_key) or {}
+        changes = {key: unit.get(key) for key in compared if unit.get(key) != before.get(key)}
+        if changes:
+            writes.append({
+                "operation": "update", "unitKey": unit_key,
+                "expectedVersion": int(before.get("version") or 0), "values": changes,
+            })
+    blocked = [unit for unit in units.values() if unit.get("state") == "blocked"]
+    status = "blocked" if blocked else ("created" if created_keys else "updated")
+    return {
+        "status": status,
+        "reason": reason or (blocked[0].get("last_result") or {}).get("reason", "") if blocked else reason,
+        "writes": writes,
+        "unitKeys": sorted(units),
+        "backfillUnitKeys": sorted({
+            *created_keys,
+            *(unit["unit_key"] for unit in units.values() if unit.get("baseline_ready_at")),
+        }),
+    }
+
+
 class QualityWatchRuntime:
     def __init__(self, repository, config_loader=None, clock=None, candidate_backfill=None):
         self.repository = repository
@@ -359,205 +552,46 @@ class QualityWatchRuntime:
         except Exception:
             return
 
-    def _set_blocked(self, unit, reason):
-        if unit["state"] == "blocked" and unit["last_result"].get("reason") == reason:
-            return unit
-        return self.repository.update_watch_unit(
-            unit["unit_key"],
-            unit["version"],
-            state="blocked",
-            last_result_json={"reason": reason},
-        )
-
-    def _block(self, context, episode_number, reason, policy):
-        unit = self.repository.ensure_watch_unit(
-            context["subscription_key"],
-            context["media_type"],
-            context["season_number"] or None,
-            episode_number,
-            window_hours=policy["window_hours"],
-            torra_subscription_id=context["torra_subscription_id"],
-            lifecycle_mode=policy["lifecycle_mode"],
-        )
-        return self._set_blocked(unit, reason)
-
-    def _ensure_new_unit(self, context, task_item, creation, episode):
-        evidence = creation["evidence"]
-        policy = creation["policy"]
-        unit_key = make_unit_key(
-            context["subscription_key"],
-            context["media_type"],
-            context["season_number"] or None,
-            episode,
-        )
-        existing = self.repository.get_watch_unit(unit_key)
-        unit = self.repository.ensure_watch_unit(
-            context["subscription_key"],
-            context["media_type"],
-            context["season_number"] or None,
-            episode,
-            first_success_at=creation["first_download_at"],
-            window_hours=policy["window_hours"],
-            torra_subscription_id=context["torra_subscription_id"],
-            lifecycle_mode=policy["lifecycle_mode"],
-        )
-        if existing:
-            return unit
-        unit = self.repository.update_watch_unit(
-            unit["unit_key"],
-            unit["version"],
-            current_evidence_json=_new_evidence_summary(
-                task_item,
-                evidence,
-                context["torra_subscription_id"],
-            ),
-        )
-        self._backfill_candidates(unit)
-        return unit
-
-    def _create_units(self, context, task_item, torra_row, evidence, policy):
-        if not evidence.get("is_new"):
-            return []
-        if not _download_is_complete(task_item):
-            return []
-        observed_at = _observed_at(evidence.get("observed_at"), self.clock())
-        first_download_at = _first_download_at(task_item, evidence, observed_at)
-        episodes = _episodes_to_create(context, torra_row, evidence)
-        if episodes is None:
-            return [self._block(context, None, "episode_identity_missing", policy)]
-        creation = {
-            "evidence": evidence,
-            "policy": policy,
-            "observed_at": observed_at,
-            "first_download_at": first_download_at,
-        }
-        return [
-            self._ensure_new_unit(context, task_item, creation, episode)
-            for episode in episodes
-        ]
-
-    def _context_units(self, context):
-        units = self.repository.list_watch_units(context["subscription_key"])
-        if context["media_type"] == "movie":
-            return [unit for unit in units if unit.get("season_number") is None]
-        season = int(context.get("season_number") or 0)
-        return [unit for unit in units if int(unit.get("season_number") or 0) == season]
-
-    def _link_torra(self, unit, torra_subscription_id):
-        stored_torra_id = _text(unit.get("torra_subscription_id"))
-        if stored_torra_id and torra_subscription_id and stored_torra_id != torra_subscription_id:
-            return self._set_blocked(unit, "torra_subscription_conflict"), False
-        if torra_subscription_id and not stored_torra_id:
-            unit = self.repository.update_watch_unit(
-                unit["unit_key"],
-                unit["version"],
-                torra_subscription_id=torra_subscription_id,
-            )
-        return unit, True
-
-    def _baseline_ready(self, context, torra_row, unit, library_episodes):
-        if context["media_type"] == "movie":
-            return _movie_library_ready(torra_row)
-        return int(unit.get("episode_number") or 0) in library_episodes
-
-    def _mark_baseline(self, context, unit, baseline):
-        if unit["state"] != "waiting_library_baseline":
-            return unit
-        unit, linked = self._link_torra(unit, context["torra_subscription_id"])
-        if not linked:
-            return unit
-        if not context["torra_subscription_id"]:
-            return unit
-        if not self._baseline_ready(context, baseline["torra_row"], unit, baseline["library_episodes"]):
-            return unit
-        unit = self.repository.mark_baseline_ready(
-            unit["unit_key"],
-            baseline_ready_at=baseline["ready_at"],
-            offsets_minutes=baseline["policy"]["offsets_minutes"],
-            lifecycle_mode=baseline["policy"]["lifecycle_mode"],
-        )
-        if unit.get("lifecycle_mode") != baseline["policy"]["lifecycle_mode"]:
-            changes = {"lifecycle_mode": baseline["policy"]["lifecycle_mode"]}
-            if baseline["policy"]["lifecycle_mode"] == DEFAULT_LIFECYCLE_MODE:
-                changes["next_check_at"] = _text(unit.get("observation_ends_at"))
-                if unit.get("state") == "search_due":
-                    changes["state"] = "observing_upgrade"
-            unit = self.repository.update_watch_unit(unit["unit_key"], unit["version"], **changes)
-        self._backfill_candidates(unit)
-        if not _target_reached_for_unit(context, baseline["evidence"], unit):
-            return unit
-        return self.repository.update_watch_unit(
-            unit["unit_key"],
-            unit["version"],
-            state="target_reached",
-            target_reached_at=unit["baseline_ready_at"],
-            last_result_json={"reason": "version_target_reached"},
-        )
-
-    def _mark_baselines(self, context, torra_row, evidence, policy):
-        units = self._context_units(context)
-        library_episodes = set()
-        if context["media_type"] == "tv":
-            library_episodes = _library_episode_numbers(context, torra_row)
-        baseline_at = _observed_at(evidence.get("baseline_ready_at"), self.clock())
-        baseline = {
-            "torra_row": torra_row,
-            "evidence": evidence,
-            "policy": policy,
-            "library_episodes": library_episodes,
-            "ready_at": baseline_at,
-        }
-        return [
-            self._mark_baseline(context, unit, baseline)
-            for unit in units
-        ]
-
     def _resolve_policy(self, subscription):
         try:
             return resolve_watch_policy(subscription, self.config_loader()), ""
         except ValueError:
             return None, "invalid_watch_policy"
 
-    def _blocked_result(self, context, existing, reason, policy, evidence=None):
-        units = [self._set_blocked(unit, reason) for unit in existing]
-        can_create = bool(context["subscription_key"] and context["media_type"])
-        if not units and can_create:
-            evidence = evidence if isinstance(evidence, dict) else {}
-            episode = next(iter(_positive_integers(evidence.get("episode_numbers"))), None)
-            units = [self._block(context, episode, reason, policy)]
-        return {"status": "blocked", "reason": reason, "units": units}
-
-    @staticmethod
-    def _result(created, units):
-        blocked_units = [unit for unit in units if unit["state"] == "blocked"]
-        reason = blocked_units[0]["last_result"].get("reason", "") if blocked_units else ""
-        status = "blocked" if blocked_units else ("created" if created else "updated")
-        return {"status": status, "reason": reason, "units": units}
-
     def reconcile(self, subscription, task_item, torra_row=None, evidence=None):
         subscription = subscription if isinstance(subscription, dict) else {}
         task_item = task_item if isinstance(task_item, dict) else {}
         torra_row = torra_row if isinstance(torra_row, dict) else {}
         evidence = evidence if isinstance(evidence, dict) else {}
-        context = _task_identity(subscription, task_item, torra_row)
-        existing = self._context_units(context)
-        if not existing and not evidence.get("is_new"):
-            return {"status": "ignored", "reason": "historical_evidence", "units": []}
-        if not existing and not _download_is_complete(task_item):
-            return {"status": "ignored", "reason": "download_not_complete", "units": []}
         policy, policy_error = self._resolve_policy(subscription)
         if policy_error:
-            fallback = {
+            policy = {
                 "lifecycle_mode": DEFAULT_LIFECYCLE_MODE,
                 "window_hours": DEFAULT_WINDOW_HOURS,
                 "offsets_minutes": DEFAULT_OFFSETS[48],
             }
-            return self._blocked_result(context, existing, policy_error, fallback)
-        if not context["valid"]:
-            return self._blocked_result(context, existing, "identity_conflict", policy, evidence)
-        created = self._create_units(context, task_item, torra_row, evidence, policy)
-        units = self._mark_baselines(context, torra_row, evidence, policy)
-        return self._result(created, units)
+        subscription_key = _subscription_key(subscription)
+        now = self.clock()
+        with self.repository.runtime.transaction(immediate=True) as connection:
+            existing = self.repository.list_watch_units_in_connection(connection, subscription_key)
+            plan = plan_reconcile(
+                now=now,
+                subscription=subscription,
+                task_item=task_item,
+                torra_row=torra_row,
+                evidence=evidence,
+                policy=policy,
+                existing_units=existing,
+                policy_error=policy_error,
+            )
+            self.repository.apply_reconcile_plan(connection, plan, now=now)
+        units = [
+            unit for unit in (self.repository.get_watch_unit(key) for key in plan["unitKeys"])
+            if unit
+        ]
+        for unit_key in plan["backfillUnitKeys"]:
+            self._backfill_candidates(self.repository.get_watch_unit(unit_key))
+        return {"status": plan["status"], "reason": plan["reason"], "units": units}
 
 
 def register_quality_watch(app, repository, config_loader=None, clock=None):

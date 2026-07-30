@@ -12,7 +12,7 @@ if str(MODULE_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE_ROOT))
 
 from app.quality_watch_repository import QualityWatchRepository
-from app.quality_watch_runtime import QualityWatchRuntime
+from app.quality_watch_runtime import QualityWatchRuntime, plan_reconcile, resolve_watch_policy
 
 
 def subscription(key="tv:202", media_type="tv", tmdb_id=202, season=1, **overrides):
@@ -76,6 +76,61 @@ class QualityWatchRuntimeTests(unittest.TestCase):
             },
             clock=lambda: self.now[0],
         )
+
+    def test_plan_reconcile_is_pure_and_expires_historical_baseline(self):
+        policy = resolve_watch_policy(subscription(), {
+            "torra_quality_lifecycle_mode": "follow_rss",
+            "torra_quality_default_window_hours": 48,
+        })
+        arguments = {
+            "now": self.now[0],
+            "subscription": subscription(),
+            "task_item": task_item(),
+            "torra_row": torra_row(
+                library_episode_files={"1": ["one.mkv"]},
+                available_episode_numbers=[1],
+            ),
+            "evidence": {
+                "is_new": True,
+                "episode_numbers": [1],
+                "first_download_at": "2026-07-14T00:00:00Z",
+                "baseline_ready_at": "2026-07-14T01:00:00Z",
+                "time_source": "symedia_completed",
+                "require_reliable_times": True,
+            },
+            "policy": policy,
+            "existing_units": [],
+        }
+
+        first = plan_reconcile(**arguments)
+        second = plan_reconcile(**arguments)
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["status"], "created")
+        self.assertEqual(first["writes"][0]["values"]["state"], "observation_expired")
+        self.assertEqual(first["writes"][0]["values"]["first_success_at"], "2026-07-14T00:00:00.000Z")
+        self.assertEqual(first["writes"][0]["values"]["baseline_ready_at"], "2026-07-14T01:00:00.000Z")
+
+    def test_plan_reconcile_rejects_future_reliable_time_for_review(self):
+        result = plan_reconcile(
+            now=self.now[0],
+            subscription=subscription(),
+            task_item=task_item(),
+            torra_row=torra_row(),
+            evidence={
+                "is_new": True,
+                "episode_numbers": [1],
+                "first_download_at": "2026-07-18T02:00:00Z",
+                "time_source": "qb_completed",
+                "require_reliable_times": True,
+            },
+            policy=resolve_watch_policy(subscription(), {}),
+            existing_units=[],
+        )
+
+        self.assertEqual(result["status"], "needs_review")
+        self.assertEqual(result["reason"], "future_success_time")
+        self.assertEqual(result["writes"], [])
 
     def test_first_download_waits_for_torra_visible_emby_baseline_then_keeps_fixed_window(self):
         first = self.runtime.reconcile(

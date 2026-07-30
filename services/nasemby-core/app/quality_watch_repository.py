@@ -203,12 +203,86 @@ class QualityWatchRepository:
 
     def list_watch_units(self, subscription_key):
         with closing(self.runtime.connect()) as connection:
-            rows = connection.execute(
-                "SELECT * FROM quality_watch_units WHERE subscription_key=? "
-                "ORDER BY season_number, episode_number, created_at",
-                (str(subscription_key),),
-            ).fetchall()
+            return self.list_watch_units_in_connection(connection, subscription_key)
+        return []
+
+    def list_watch_units_in_connection(self, connection, subscription_key):
+        rows = connection.execute(
+            "SELECT * FROM quality_watch_units WHERE subscription_key=? "
+            "ORDER BY season_number, episode_number, created_at",
+            (str(subscription_key),),
+        ).fetchall()
         return [self._watch_unit(row) for row in rows]
+
+    def apply_reconcile_plan(self, connection, plan, *, now=None):
+        now_text = _iso(_as_utc(now or self.clock()))
+        touched = []
+        for write in plan.get("writes") or []:
+            unit_key = str(write.get("unitKey") or "")
+            values = dict(write.get("values") or {})
+            if not unit_key:
+                raise ValueError("reconcile plan missing unit key")
+            if write.get("operation") == "insert":
+                cursor = connection.execute(
+                    "INSERT INTO quality_watch_units ("
+                    "unit_key, subscription_key, season_number, episode_number, torra_subscription_id, state, "
+                    "first_success_at, baseline_ready_at, window_hours, next_check_at, observation_ends_at, "
+                    "current_evidence_json, last_result_json, target_reached_at, lifecycle_mode, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        unit_key,
+                        str(values.get("subscription_key") or ""),
+                        values.get("season_number"),
+                        values.get("episode_number"),
+                        str(values.get("torra_subscription_id") or ""),
+                        str(values.get("state") or "waiting_library_baseline"),
+                        str(values.get("first_success_at") or ""),
+                        str(values.get("baseline_ready_at") or ""),
+                        int(values.get("window_hours") or 48),
+                        str(values.get("next_check_at") or ""),
+                        str(values.get("observation_ends_at") or ""),
+                        _json_dump(values.get("current_evidence") or {}),
+                        _json_dump(values.get("last_result") or {}),
+                        str(values.get("target_reached_at") or ""),
+                        _lifecycle_mode(values.get("lifecycle_mode") or DEFAULT_LIFECYCLE_MODE),
+                        now_text,
+                        now_text,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise QualityWatchVersionConflict("quality watch unit already exists")
+            elif write.get("operation") == "update":
+                allowed = {
+                    "torra_subscription_id": str,
+                    "state": str,
+                    "baseline_ready_at": str,
+                    "next_check_at": str,
+                    "observation_ends_at": str,
+                    "current_evidence": _json_dump,
+                    "last_result": _json_dump,
+                    "target_reached_at": str,
+                    "lifecycle_mode": _lifecycle_mode,
+                }
+                assignments = []
+                parameters = []
+                for key, mapper in allowed.items():
+                    if key not in values:
+                        continue
+                    column = f"{key}_json" if key in {"current_evidence", "last_result"} else key
+                    assignments.append(f"{column}=?")
+                    parameters.append(mapper(values[key]))
+                if assignments:
+                    cursor = connection.execute(
+                        f"UPDATE quality_watch_units SET {', '.join(assignments)}, updated_at=?, version=version+1 "
+                        "WHERE unit_key=? AND version=?",
+                        (*parameters, now_text, unit_key, int(write.get("expectedVersion") or 0)),
+                    )
+                    if cursor.rowcount != 1:
+                        raise QualityWatchVersionConflict("quality watch unit version changed")
+            else:
+                raise ValueError("unsupported reconcile plan operation")
+            touched.append(unit_key)
+        return touched
 
     def list_active_watch_units(self, at=None):
         current = _iso(_as_utc(at or self.clock()))
