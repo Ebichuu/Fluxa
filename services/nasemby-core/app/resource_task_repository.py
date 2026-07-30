@@ -1339,6 +1339,48 @@ class ResourceTaskRepository:
             ).fetchall()
         return [_row(row) for row in rows]
 
+    def list_quality_watch_success_evidence(self, limit=5000):
+        try:
+            limit = max(1, min(int(limit or 5000), 10000))
+        except (TypeError, ValueError):
+            limit = 5000
+        with closing(self.runtime.connect()) as connection:
+            rows = connection.execute(
+                "SELECT e.*, c.target_key, c.subscription_id, c.media_type, c.tmdb_id, "
+                "c.identity_state, c.version AS ownership_version "
+                "FROM resource_events e JOIN resource_chains c ON c.chain_id=e.chain_id "
+                "WHERE e.stage IN ('torra', 'qb', 'symedia') AND e.status='succeeded' "
+                "AND e.evidence='verified' AND e.event_at<>'' "
+                "ORDER BY e.event_at, e.event_id LIMIT ?",
+                (limit,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            try:
+                payload = json.loads(value.get("payload_json") or "{}")
+            except (TypeError, ValueError):
+                payload = {}
+            target = _text(payload.get("ownerTargetKey") or value.get("target_key"), 240)
+            match = re.search(r":season:(\d+):episode:(\d+)$", target)
+            result.append({
+                "stage": value.get("stage") or "",
+                "factType": "archive_succeeded" if value.get("stage") == "symedia" else "download_completed",
+                "ownerTargetKey": target,
+                "artifactKey": value.get("artifact_key") or payload.get("unitKey") or "",
+                "sourceResultId": value.get("event_id") or "",
+                "upstreamOccurredAt": value.get("event_at") or "",
+                "subscriptionId": value.get("subscription_id") or "",
+                "mediaType": value.get("media_type") or "",
+                "tmdbId": value.get("tmdb_id") or "",
+                "seasonNumber": int(match.group(1)) if match else 0,
+                "episodeNumber": int(match.group(2)) if match else 0,
+                "identityState": value.get("identity_state") or "",
+                "evidenceVersion": value.get("idempotency_key") or "",
+                "ownershipVersion": str(value.get("ownership_version") or ""),
+            })
+        return result
+
     def record_identity_alias(
         self,
         chain_id,

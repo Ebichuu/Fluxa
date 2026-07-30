@@ -201,6 +201,27 @@ class QualityWatchRepository:
                 "CREATE INDEX IF NOT EXISTS idx_quality_watch_bridge_receipts_status "
                 "ON quality_watch_bridge_receipts(bridge_version, status, updated_at)"
             )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS quality_watch_baseline_init_runs ("
+                "run_id TEXT PRIMARY KEY, status TEXT NOT NULL, preview_fingerprint TEXT NOT NULL, "
+                "bridge_version TEXT NOT NULL, policy_version TEXT NOT NULL, idempotency_key TEXT NOT NULL DEFAULT '', "
+                "selected_target_count INTEGER NOT NULL DEFAULT 0, preview_json TEXT NOT NULL DEFAULT '{}', "
+                "response_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, "
+                "completed_at TEXT NOT NULL DEFAULT '')"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_quality_watch_baseline_init_idempotency "
+                "ON quality_watch_baseline_init_runs(idempotency_key) WHERE idempotency_key<>''"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS quality_watch_baseline_init_items ("
+                "run_id TEXT NOT NULL, public_target_id TEXT NOT NULL, owner_target_key TEXT NOT NULL, "
+                "artifact_ref TEXT NOT NULL, season_number INTEGER NOT NULL, episode_number INTEGER NOT NULL, "
+                "evidence_source TEXT NOT NULL, first_success_at TEXT NOT NULL, baseline_ready_at TEXT NOT NULL, "
+                "result TEXT NOT NULL, reason_code TEXT NOT NULL DEFAULT '', "
+                "PRIMARY KEY(run_id, public_target_id), "
+                "FOREIGN KEY(run_id) REFERENCES quality_watch_baseline_init_runs(run_id) ON DELETE CASCADE)"
+            )
 
     @staticmethod
     def _watch_unit(row):
@@ -335,6 +356,97 @@ class QualityWatchRepository:
                 params,
             ).fetchall()
         return [self._bridge_receipt(row) for row in rows]
+
+    @staticmethod
+    def _baseline_init_run(row):
+        if not row:
+            return None
+        value = dict(row)
+        value["preview"] = _json_load(value.pop("preview_json"))
+        value["response"] = _json_load(value.pop("response_json"))
+        return value
+
+    def create_baseline_init_preview(
+        self, run_id, preview_fingerprint, bridge_version, policy_version, preview
+    ):
+        now_text = _iso(_as_utc(self.clock()))
+        with self.runtime.transaction(immediate=True) as connection:
+            connection.execute(
+                "INSERT INTO quality_watch_baseline_init_runs ("
+                "run_id, status, preview_fingerprint, bridge_version, policy_version, preview_json, "
+                "created_at, updated_at) VALUES (?, 'previewed', ?, ?, ?, ?, ?, ?)",
+                (
+                    str(run_id), str(preview_fingerprint), str(bridge_version), str(policy_version),
+                    _json_dump(preview), now_text, now_text,
+                ),
+            )
+        return self.get_baseline_init_run(run_id)
+
+    def get_baseline_init_run(self, run_id="", *, idempotency_key=""):
+        column, value = (
+            ("idempotency_key", idempotency_key) if idempotency_key else ("run_id", run_id)
+        )
+        with closing(self.runtime.connect()) as connection:
+            row = connection.execute(
+                f"SELECT * FROM quality_watch_baseline_init_runs WHERE {column}=?",
+                (str(value),),
+            ).fetchone()
+        return self._baseline_init_run(row)
+
+    def list_baseline_init_items(self, run_id):
+        with closing(self.runtime.connect()) as connection:
+            rows = connection.execute(
+                "SELECT public_target_id, artifact_ref, season_number, episode_number, "
+                "evidence_source, first_success_at, baseline_ready_at, result, reason_code "
+                "FROM quality_watch_baseline_init_items WHERE run_id=? "
+                "ORDER BY season_number, episode_number, public_target_id",
+                (str(run_id),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_baseline_init_run(self, run_id, status, response=None):
+        if status not in {"previewed", "applied", "stale", "failed"}:
+            raise ValueError("baseline initialization status invalid")
+        now_text = _iso(_as_utc(self.clock()))
+        with self.runtime.transaction(immediate=True) as connection:
+            connection.execute(
+                "UPDATE quality_watch_baseline_init_runs SET status=?, response_json=?, updated_at=?, "
+                "completed_at=CASE WHEN ?='previewed' THEN '' ELSE ? END WHERE run_id=?",
+                (status, _json_dump(response or {}), now_text, status, now_text, str(run_id)),
+            )
+        return self.get_baseline_init_run(run_id)
+
+    def apply_baseline_init_run(
+        self, connection, run_id, idempotency_key, selected_target_ids, plan_items, response, *, now=None
+    ):
+        now_text = _iso(_as_utc(now or self.clock()))
+        run = connection.execute(
+            "SELECT * FROM quality_watch_baseline_init_runs WHERE run_id=?",
+            (str(run_id),),
+        ).fetchone()
+        if not run or run["status"] != "previewed":
+            raise QualityWatchVersionConflict("baseline initialization run changed")
+        connection.execute(
+            "UPDATE quality_watch_baseline_init_runs SET status='applied', idempotency_key=?, "
+            "selected_target_count=?, response_json=?, updated_at=?, completed_at=? WHERE run_id=?",
+            (
+                str(idempotency_key), len(selected_target_ids), _json_dump(response),
+                now_text, now_text, str(run_id),
+            ),
+        )
+        for item in plan_items:
+            connection.execute(
+                "INSERT INTO quality_watch_baseline_init_items ("
+                "run_id, public_target_id, owner_target_key, artifact_ref, season_number, episode_number, "
+                "evidence_source, first_success_at, baseline_ready_at, result, reason_code) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(run_id), item["publicTargetId"], item["ownerTargetKey"], item["artifactRef"],
+                    int(item["seasonNumber"]), int(item["episodeNumber"]), item["evidenceSource"],
+                    item["firstSuccessAt"], item["baselineReadyAt"], item["result"],
+                    item.get("reasonCode", ""),
+                ),
+            )
 
     def get_watch_unit(self, unit_key):
         with closing(self.runtime.connect()) as connection:
