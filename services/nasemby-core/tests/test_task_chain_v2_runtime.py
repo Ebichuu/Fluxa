@@ -54,6 +54,29 @@ class FakeTaskChain:
 
 
 class TaskChainV2RuntimeTests(unittest.TestCase):
+    def test_bridge_failure_does_not_break_persisted_task_snapshot(self):
+        class Repository:
+            def record_snapshot(self, _payload):
+                return {"persisted": True}
+
+        class BrokenBridge:
+            def process_snapshot(self, _payload):
+                raise RuntimeError("bridge failed")
+
+        app = Flask(f"{__name__}-bridge-failure")
+        app.extensions["mcc_task_chain_service"] = FakeTaskChain()
+        service = TaskChainV2Service(
+            app,
+            repository=Repository(),
+            quality_watch_bridge=BrokenBridge(),
+            clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+        )
+
+        payload = service.full_snapshot(force=True)
+
+        self.assertTrue(payload["ledger"]["persisted"])
+        self.assertEqual(len(payload["items"]), 1)
+
     @staticmethod
     def _archive_fact(*refs):
         units = [{

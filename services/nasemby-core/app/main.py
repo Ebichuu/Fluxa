@@ -52,6 +52,7 @@ from app.private_rss_api_runtime import register_private_rss
 from app.automation_action_runtime import register_automation_actions
 from app.health_state_runtime import SchedulerStatusRegistry
 from app.quality_watch_repository import QualityWatchRepository
+from app.quality_watch_bridge_runtime import QualityWatchBridgeRuntime
 from app.resource_task_repository import ResourceTaskRepository
 from app.quality_watch_runtime import register_quality_watch
 from app.quality_watch_scheduler import (
@@ -1476,6 +1477,17 @@ def create_app(
         config_loader=discover_runtime.load_subscription_config,
     )
     quality_runtime.set_candidate_backfill(private_rss_service.match_runtime.backfill_watch_unit)
+    quality_watch_bridge = QualityWatchBridgeRuntime(
+        quality_repository,
+        quality_runtime,
+        subscription_loader=lambda: discover_runtime.load_subscription_items(remove_completed=False),
+        config_loader=discover_runtime.load_subscription_config,
+        clock=quality_repository.clock,
+    )
+    application.extensions["mcc_quality_watch_bridge"] = quality_watch_bridge
+    task_chain_v2_service = application.extensions.get("mcc_task_chain_v2_service")
+    if task_chain_v2_service:
+        task_chain_v2_service.set_quality_watch_bridge(quality_watch_bridge)
     register_subscription_workbench(application, environment)
     register_discover_candidates(application, environment)
     register_candidate_migrations(application, environment)

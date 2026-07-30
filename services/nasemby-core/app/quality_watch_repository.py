@@ -31,6 +31,10 @@ ACTION_STATUSES = {
     "expired",
 }
 TERMINAL_ACTION_STATUSES = {"succeeded", "failed", "cancelled"}
+BRIDGE_MODES = {"off", "shadow", "apply"}
+BRIDGE_RECEIPT_STATUSES = {
+    "pending", "applied", "historical", "needs_review", "rejected", "retryable_failed",
+}
 WATCH_CANDIDATE_COLUMNS = {
     "baseline_artifact_key": "TEXT NOT NULL DEFAULT ''",
     "baseline_score": "REAL",
@@ -177,6 +181,26 @@ class QualityWatchRepository:
                 "state_key TEXT PRIMARY KEY, payload_json TEXT NOT NULL DEFAULT '{}', "
                 "updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1)"
             )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS quality_watch_bridge_state ("
+                "singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1), bridge_version TEXT NOT NULL, "
+                "mode TEXT NOT NULL, activated_at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, "
+                "updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1)"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS quality_watch_bridge_receipts ("
+                "receipt_id TEXT PRIMARY KEY, receipt_key TEXT NOT NULL UNIQUE, bridge_version TEXT NOT NULL, "
+                "stage TEXT NOT NULL, fact_type TEXT NOT NULL, owner_target_key TEXT NOT NULL, "
+                "artifact_key TEXT NOT NULL, source_result_ref TEXT NOT NULL DEFAULT '', "
+                "upstream_occurred_at TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, reason_code TEXT NOT NULL DEFAULT '', "
+                "attempt_count INTEGER NOT NULL DEFAULT 0, last_attempt_at TEXT NOT NULL DEFAULT '', "
+                "next_retry_at TEXT NOT NULL DEFAULT '', evidence_version TEXT NOT NULL DEFAULT '', "
+                "ownership_version TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_quality_watch_bridge_receipts_status "
+                "ON quality_watch_bridge_receipts(bridge_version, status, updated_at)"
+            )
 
     @staticmethod
     def _watch_unit(row):
@@ -195,6 +219,122 @@ class QualityWatchRepository:
         result["request_summary"] = _json_load(result.pop("request_summary_json"))
         result["response_summary"] = _json_load(result.pop("response_summary_json"))
         return result
+
+    @staticmethod
+    def _bridge_state(row):
+        if not row:
+            return {
+                "bridgeVersion": "1", "mode": "off", "activatedAt": "",
+                "createdAt": "", "updatedAt": "", "version": 0,
+            }
+        value = dict(row)
+        return {
+            "bridgeVersion": value["bridge_version"],
+            "mode": value["mode"],
+            "activatedAt": value["activated_at"],
+            "createdAt": value["created_at"],
+            "updatedAt": value["updated_at"],
+            "version": int(value["version"]),
+        }
+
+    @staticmethod
+    def _bridge_receipt(row):
+        if not row:
+            return None
+        return dict(row)
+
+    def get_bridge_state(self):
+        with closing(self.runtime.connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM quality_watch_bridge_state WHERE singleton_id=1"
+            ).fetchone()
+        return self._bridge_state(row)
+
+    def set_bridge_mode(self, mode, *, bridge_version="1"):
+        mode = str(mode or "").strip().lower()
+        if mode not in BRIDGE_MODES:
+            raise ValueError("bridge mode must be off, shadow, or apply")
+        now_text = _iso(_as_utc(self.clock()))
+        with self.runtime.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM quality_watch_bridge_state WHERE singleton_id=1"
+            ).fetchone()
+            if not row:
+                if mode == "apply":
+                    raise ValueError("shadow mode must be enabled before apply")
+                activated_at = now_text if mode == "shadow" else ""
+                connection.execute(
+                    "INSERT INTO quality_watch_bridge_state ("
+                    "singleton_id, bridge_version, mode, activated_at, created_at, updated_at) "
+                    "VALUES (1, ?, ?, ?, ?, ?)",
+                    (str(bridge_version), mode, activated_at, now_text, now_text),
+                )
+            else:
+                activated_at = row["activated_at"] or (now_text if mode == "shadow" else "")
+                if mode == "apply" and not activated_at:
+                    raise ValueError("shadow mode must be enabled before apply")
+                connection.execute(
+                    "UPDATE quality_watch_bridge_state SET mode=?, activated_at=?, updated_at=?, "
+                    "version=version+1 WHERE singleton_id=1",
+                    (mode, activated_at, now_text),
+                )
+            current = connection.execute(
+                "SELECT * FROM quality_watch_bridge_state WHERE singleton_id=1"
+            ).fetchone()
+        return self._bridge_state(current)
+
+    def get_bridge_receipt_in_connection(self, connection, receipt_key):
+        return self._bridge_receipt(connection.execute(
+            "SELECT * FROM quality_watch_bridge_receipts WHERE receipt_key=?",
+            (str(receipt_key),),
+        ).fetchone())
+
+    def upsert_bridge_receipt(self, connection, receipt, status, reason_code="", *, retry=False):
+        status = str(status or "")
+        if status not in BRIDGE_RECEIPT_STATUSES:
+            raise ValueError("bridge receipt status invalid")
+        now_text = _iso(_as_utc(self.clock()))
+        existing = self.get_bridge_receipt_in_connection(connection, receipt["receipt_key"])
+        if existing and existing["status"] in {"applied", "historical", "rejected"}:
+            return existing
+        attempts = int(existing["attempt_count"] if existing else 0) + (1 if retry else 0)
+        connection.execute(
+            "INSERT INTO quality_watch_bridge_receipts ("
+            "receipt_id, receipt_key, bridge_version, stage, fact_type, owner_target_key, artifact_key, "
+            "source_result_ref, upstream_occurred_at, status, reason_code, attempt_count, last_attempt_at, "
+            "next_retry_at, evidence_version, ownership_version, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(receipt_key) DO UPDATE SET status=excluded.status, reason_code=excluded.reason_code, "
+            "attempt_count=excluded.attempt_count, last_attempt_at=excluded.last_attempt_at, "
+            "next_retry_at=excluded.next_retry_at, evidence_version=excluded.evidence_version, "
+            "ownership_version=excluded.ownership_version, updated_at=excluded.updated_at",
+            (
+                receipt["receipt_id"], receipt["receipt_key"], receipt["bridge_version"],
+                receipt["stage"], receipt["fact_type"], receipt["owner_target_key"],
+                receipt["artifact_key"], receipt.get("source_result_ref", ""),
+                receipt.get("upstream_occurred_at", ""), status, str(reason_code or ""), attempts,
+                now_text, receipt.get("next_retry_at", ""), receipt.get("evidence_version", ""),
+                receipt.get("ownership_version", ""), existing["created_at"] if existing else now_text, now_text,
+            ),
+        )
+        return self.get_bridge_receipt_in_connection(connection, receipt["receipt_key"])
+
+    def record_bridge_retryable_failure(self, receipt, reason_code, *, next_retry_at=""):
+        value = {**receipt, "next_retry_at": str(next_retry_at or "")}
+        with self.runtime.transaction(immediate=True) as connection:
+            return self.upsert_bridge_receipt(
+                connection, value, "retryable_failed", reason_code, retry=True
+            )
+
+    def list_bridge_receipts(self, *, status="", limit=1000):
+        where = " WHERE status=?" if status else ""
+        params = (str(status), max(1, min(int(limit), 5000))) if status else (max(1, min(int(limit), 5000)),)
+        with closing(self.runtime.connect()) as connection:
+            rows = connection.execute(
+                f"SELECT * FROM quality_watch_bridge_receipts{where} ORDER BY created_at, receipt_id LIMIT ?",
+                params,
+            ).fetchall()
+        return [self._bridge_receipt(row) for row in rows]
 
     def get_watch_unit(self, unit_key):
         with closing(self.runtime.connect()) as connection:

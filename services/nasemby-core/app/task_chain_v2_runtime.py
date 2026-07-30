@@ -923,14 +923,18 @@ def _version(payload: dict) -> str:
 
 
 class TaskChainV2Service:
-    def __init__(self, app: Flask, repository=None, clock=None, cache_seconds=45):
+    def __init__(self, app: Flask, repository=None, clock=None, cache_seconds=45, quality_watch_bridge=None):
         self.app = app
         self.repository = repository
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.cache_seconds = max(1, int(cache_seconds))
+        self.quality_watch_bridge = quality_watch_bridge
         self._cache = None
         self._cache_at = 0.0
         self._lock = threading.RLock()
+
+    def set_quality_watch_bridge(self, bridge):
+        self.quality_watch_bridge = bridge
 
     def full_snapshot(self, *, force=False):
         with self._lock:
@@ -954,6 +958,14 @@ class TaskChainV2Service:
                     project_history(payload)
                     _refresh_pipeline_projections(payload, now_value)
                 payload["ledger"] = self.repository.record_snapshot(payload)
+            if (
+                self.quality_watch_bridge
+                and (not self.repository or (payload.get("ledger") or {}).get("persisted") is True)
+            ):
+                try:
+                    self.quality_watch_bridge.process_snapshot(payload)
+                except Exception:
+                    pass
             payload["version"] = _version(payload)
             self._cache = payload
             self._cache_at = time.monotonic()
