@@ -8,6 +8,7 @@ from pathlib import Path
 from app.quality_watch_bridge_runtime import QualityWatchBridgeRuntime
 from app.quality_watch_repository import QualityWatchRepository
 from app.quality_watch_runtime import QualityWatchRuntime
+from app.task_chain_v2_runtime import adapt_task_chain
 
 
 NOW = datetime(2026, 7, 31, 1, 0, tzinfo=timezone.utc)
@@ -66,6 +67,78 @@ def snapshot(stage="qb", occurred_at="2026-07-31T01:01:00Z"):
             }],
         }],
     }
+
+
+def production_season_snapshot(stage="qb", occurred_at="2026-07-31T01:01:00Z"):
+    raw_identity = "hash-1" if stage == "qb" else "symedia-1"
+    artifact = (
+        "artifact:hash-1"
+        if stage == "qb"
+        else "artifact:symedia:symedia-1"
+    )
+    target = "tv:tmdb:202:season:1"
+    return adapt_task_chain({
+        "generatedAt": "2026-07-31T01:02:00Z",
+        "services": {},
+        "items": [{
+            "id": "subscription:tv:202",
+            "title": "测试剧",
+            "mediaType": "tv",
+            "tmdbId": "202",
+            "seasonNumber": 1,
+            "confidence": "strong",
+            "origin": "subscription",
+            "steps": [],
+            "sourceIds": {
+                "subscriptionId": "tv:202",
+                "torraId": "torra-202",
+                "qbHashes": ["hash-1"] if stage == "qb" else [],
+                "symediaIds": ["symedia-1"] if stage == "symedia" else [],
+            },
+            "evidenceOwnership": [{
+                "artifactKey": artifact,
+                "ownerTargetKey": target,
+                "matchMethod": "artifact_exact",
+                "confidence": "strong",
+            }],
+            "episodeEvidence": [{
+                "seasonNumber": 1,
+                "episodeStart": 2,
+                "episodeEnd": 3,
+                "numberingScheme": "season_episode",
+                "stage": "download" if stage == "qb" else "library",
+                "artifactKey": artifact,
+                "status": "done",
+                "ownerTargetKey": f"{target}:episodes:2-3",
+                "parentTargetKey": target,
+            }],
+            "pipelineFacts": [{
+                "stage": stage,
+                "state": "succeeded",
+                "scope": "file",
+                "evidence": "verified",
+                "observedAt": "2026-07-31T01:02:00Z",
+                "freshUntil": "2026-07-31T01:07:00Z",
+                "source": "qBittorrent" if stage == "qb" else "Symedia",
+                "sourceRef": raw_identity,
+                "reasonCode": "QB_DOWNLOAD_SUCCEEDED" if stage == "qb" else "SYMEDIA_ORGANIZED",
+                "reasonText": "",
+                "eventAt": occurred_at,
+                "units": [{
+                    "unitKey": raw_identity,
+                    "state": "succeeded",
+                    "scope": "file",
+                    "evidence": "verified",
+                    "observedAt": "2026-07-31T01:02:00Z",
+                    "freshUntil": "2026-07-31T01:07:00Z",
+                    "sourceRef": raw_identity,
+                    "reasonCode": "QB_DOWNLOAD_SUCCEEDED" if stage == "qb" else "SYMEDIA_ORGANIZED",
+                    "reasonText": "",
+                    "eventAt": occurred_at,
+                }],
+            }],
+        }],
+    }, now=datetime(2026, 7, 31, 1, 2, tzinfo=timezone.utc))
 
 
 class QualityWatchBridgeRuntimeTests(unittest.TestCase):
@@ -148,6 +221,37 @@ class QualityWatchBridgeRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result["historical"], 1)
         self.assertEqual(self.repository.list_bridge_receipts()[0]["status"], "historical")
+
+    def test_production_season_snapshot_resolves_artifact_and_projects_each_episode(self):
+        self.bridge.set_mode("shadow")
+        self.now[0] += timedelta(minutes=2)
+
+        shadow = self.bridge.process_snapshot(production_season_snapshot("qb"))
+        receipts = self.repository.list_bridge_receipts()
+
+        self.assertEqual((shadow["processed"], shadow["pending"]), (2, 2))
+        self.assertEqual(len(receipts), 2)
+        self.assertEqual({row["artifact_key"] for row in receipts}, {"artifact:hash-1"})
+
+        self.bridge.set_mode("apply")
+        applied = self.bridge.process_snapshot(production_season_snapshot("qb"))
+        units = self.repository.list_watch_units("tv:202")
+
+        self.assertEqual(applied["applied"], 2)
+        self.assertEqual(
+            {(unit["season_number"], unit["episode_number"]) for unit in units},
+            {(1, 2), (1, 3)},
+        )
+        self.assertEqual({unit["state"] for unit in units}, {"waiting_library_baseline"})
+
+        self.now[0] += timedelta(minutes=3)
+        advanced = self.bridge.process_snapshot(
+            production_season_snapshot("symedia", "2026-07-31T01:03:00Z")
+        )
+        units = self.repository.list_watch_units("tv:202")
+
+        self.assertEqual(advanced["applied"], 2)
+        self.assertEqual({unit["state"] for unit in units}, {"observing_upgrade"})
 
     def test_apply_failure_rolls_back_unit_and_retries_after_backoff(self):
         self.bridge.set_mode("shadow")

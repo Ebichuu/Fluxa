@@ -6,10 +6,16 @@ from datetime import datetime, timedelta, timezone
 
 from app.quality_watch_repository import make_unit_key
 from app.quality_watch_runtime import plan_reconcile, resolve_watch_policy
+from app.resource_identity_runtime import artifact_key as canonical_artifact_key
 
 
-BRIDGE_VERSION = "1"
+BRIDGE_VERSION = "2"
 SUCCESS_STAGES = {"torra", "qb", "symedia"}
+EPISODE_EVIDENCE_STAGES = {
+    "torra": "download",
+    "qb": "download",
+    "symedia": "library",
+}
 
 
 def _text(value):
@@ -67,6 +73,109 @@ def _fact_units(fact):
     return units or [fact]
 
 
+def _artifact_candidates(stage, value):
+    value = _text(value)
+    if not value:
+        return []
+    result = [value] if value.startswith("artifact:") else []
+    if stage == "qb":
+        result.append(canonical_artifact_key(qb_hash=value))
+    elif stage == "symedia":
+        result.extend((
+            canonical_artifact_key(remote_file_id=f"symedia:{value}"),
+            canonical_artifact_key(remote_file_id=value),
+        ))
+    elif stage == "torra":
+        result.append(canonical_artifact_key(remote_file_id=f"torra:{value}"))
+    return list(dict.fromkeys(result))
+
+
+def _artifact_for_fact(item, fact, unit, ownership):
+    stage = _text(fact.get("stage"))
+    source_ids = item.get("sourceIds") if isinstance(item.get("sourceIds"), dict) else {}
+    allowed_source_ids = {
+        "qb": {_text(value) for value in source_ids.get("qbHashes") or [] if _text(value)},
+        "symedia": {_text(value) for value in source_ids.get("symediaIds") or [] if _text(value)},
+        "torra": {_text(source_ids.get("torraId"))} if _text(source_ids.get("torraId")) else set(),
+    }.get(stage, set())
+    ownership_artifacts = {
+        _text(row.get("artifactKey"))
+        for row in ownership
+        if _text(row.get("artifactKey"))
+    }
+    item_artifacts = {
+        _text(value) for value in item.get("artifactKeys") or [] if _text(value)
+    }
+    identities = list(dict.fromkeys(
+        _text(value)
+        for value in (
+            unit.get("unitKey"),
+            unit.get("sourceRef"),
+            unit.get("resultRef"),
+            fact.get("unitKey"),
+            fact.get("sourceRef"),
+            fact.get("resultRef"),
+        )
+        if _text(value)
+    ))
+    ownership_candidates = {
+        candidate
+        for identity in identities
+        for candidate in _artifact_candidates(stage, identity)
+        if candidate in ownership_artifacts
+        and (identity.startswith("artifact:") or identity in allowed_source_ids)
+    }
+    if len(ownership_candidates) == 1:
+        return next(iter(ownership_candidates))
+    if len(ownership_candidates) > 1:
+        return ""
+    item_candidates = {
+        candidate
+        for identity in identities
+        for candidate in _artifact_candidates(stage, identity)
+        if candidate in item_artifacts
+        and (identity.startswith("artifact:") or identity in allowed_source_ids)
+    }
+    if len(item_candidates) == 1:
+        return next(iter(item_candidates))
+    return ""
+
+
+def _episode_targets(item, artifact_key, stage):
+    item_season = _integer(item.get("seasonNumber"))
+    item_episode = _integer(item.get("episodeNumber"))
+    target_key = _text(item.get("targetKey") or item.get("ownerTargetKey"))
+    targets = set()
+    if item_season > 0 and item_episode > 0:
+        return [(item_season, item_episode)]
+    expected_stage = EPISODE_EVIDENCE_STAGES.get(stage)
+    for row in item.get("episodeEvidence") or []:
+        if (
+            not isinstance(row, dict)
+            or _text(row.get("artifactKey")) != artifact_key
+            or _text(row.get("stage")) != expected_stage
+            or _text(row.get("status")) != "done"
+        ):
+            continue
+        parent_target = _text(row.get("parentTargetKey"))
+        owner_target = _text(row.get("ownerTargetKey"))
+        if not owner_target or (parent_target and parent_target != target_key):
+            continue
+        season = _integer(row.get("seasonNumber"))
+        start = _integer(row.get("episodeStart"))
+        end = _integer(row.get("episodeEnd"))
+        if (
+            season <= 0
+            or (item_season > 0 and season != item_season)
+            or start <= 0
+            or end < start
+            or end - start > 200
+        ):
+            continue
+        targets.update((season, episode) for episode in range(start, end + 1))
+    return sorted(targets) or [(item_season, item_episode)]
+
+
 def _project_facts(payload):
     projected = []
     for item in payload.get("items") or []:
@@ -85,9 +194,7 @@ def _project_facts(payload):
             ):
                 continue
             for unit in _fact_units(fact):
-                artifact_key = _text(unit.get("unitKey") or fact.get("sourceRef"))
-                if not artifact_key and len(item.get("artifactKeys") or []) == 1:
-                    artifact_key = _text(item["artifactKeys"][0])
+                artifact_key = _artifact_for_fact(item, fact, unit, ownership)
                 occurred_at = _text(unit.get("eventAt") or fact.get("eventAt"))
                 source_result_id = _text(unit.get("sourceRef") or fact.get("sourceRef"))
                 target_key = _text(item.get("targetKey") or item.get("ownerTargetKey"))
@@ -96,28 +203,30 @@ def _project_facts(payload):
                     for row in ownership
                     if _text(row.get("artifactKey")) == artifact_key and _text(row.get("ownerTargetKey"))
                 })
-                projected.append({
-                    "stage": stage,
-                    "fact_type": "archive_succeeded" if stage == "symedia" else "download_completed",
-                    "owner_target_key": target_key,
-                    "artifact_key": artifact_key,
-                    "source_result_id": source_result_id,
-                    "upstream_occurred_at": occurred_at,
-                    "media_type": _text(item.get("mediaType")),
-                    "tmdb_id": _text(item.get("tmdbId")),
-                    "season_number": _integer(item.get("seasonNumber")),
-                    "episode_number": _integer(item.get("episodeNumber")),
-                    "identity_state": _text(item.get("identityState")),
-                    "subscription_key": _text(item.get("subscriptionId") or source_ids.get("subscriptionId")),
-                    "torra_subscription_id": _text(source_ids.get("torraId")),
-                    "owners": owners,
-                    "item": item,
-                    "evidence_version": _stable_hash({
-                        "stage": stage, "state": fact.get("state"), "evidence": fact.get("evidence"),
-                        "eventAt": occurred_at, "reasonCode": fact.get("reasonCode"),
-                    }),
-                    "ownership_version": _stable_hash(ownership),
-                })
+                for season_number, episode_number in _episode_targets(item, artifact_key, stage):
+                    projected.append({
+                        "stage": stage,
+                        "fact_type": "archive_succeeded" if stage == "symedia" else "download_completed",
+                        "owner_target_key": target_key,
+                        "artifact_key": artifact_key,
+                        "source_result_id": source_result_id,
+                        "upstream_occurred_at": occurred_at,
+                        "media_type": _text(item.get("mediaType")),
+                        "tmdb_id": _text(item.get("tmdbId")),
+                        "season_number": season_number,
+                        "episode_number": episode_number,
+                        "identity_state": _text(item.get("identityState")),
+                        "subscription_key": _text(item.get("subscriptionId") or source_ids.get("subscriptionId")),
+                        "torra_subscription_id": _text(source_ids.get("torraId")),
+                        "owners": owners,
+                        "item": item,
+                        "evidence_version": _stable_hash({
+                            "stage": stage, "state": fact.get("state"), "evidence": fact.get("evidence"),
+                            "eventAt": occurred_at, "reasonCode": fact.get("reasonCode"),
+                            "seasonNumber": season_number, "episodeNumber": episode_number,
+                        }),
+                        "ownership_version": _stable_hash(ownership),
+                    })
     return projected
 
 
@@ -151,9 +260,13 @@ class QualityWatchBridgeRuntime:
             "bridgeVersion": BRIDGE_VERSION,
             "stage": fact["stage"],
             "factType": fact["fact_type"],
+            "subscriptionKey": fact["subscription_key"],
             "ownerTargetKey": fact["owner_target_key"],
             "artifactKey": fact["artifact_key"],
+            "seasonNumber": fact["season_number"],
+            "episodeNumber": fact["episode_number"],
             "sourceIdentity": source_identity,
+            "upstreamOccurredAt": _iso(fact["upstream_occurred_at"]),
         }
         key = _stable_hash(components)
         return {
