@@ -15,6 +15,7 @@ from app.torra_quality_runtime import TorraQualityClient
 class FakeTorra:
     def __init__(self):
         self.rows = [{"id": "torra-202", "is_running": False, "is_mutating": False}]
+        self.rules = []
         self.jobs = []
         self.submissions = []
         self.polls = []
@@ -24,6 +25,9 @@ class FakeTorra:
 
     def list_subscriptions(self):
         return list(self.rows)
+
+    def list_meta_weight_rules(self):
+        return list(self.rules)
 
     def submit_analysis(self, subscription_id):
         self.submissions.append(subscription_id)
@@ -109,7 +113,70 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.runtime.analysis = RssAnalysisDependencies(environment, torra, qb, lambda: config)
         return torra, qb
 
-    def _insert(self, title, media_type="tv", season=1, start=1, end=1, published_at=""):
+    def _configure_shadow_torra(self, torra, rules=None):
+        torra.rows = [{
+            "id": "torra-202",
+            "name": "Test Show",
+            "media_type": "tv",
+            "tmdb_id": "202",
+            "season_number": 1,
+            "category": "anime",
+            "is_running": False,
+            "is_mutating": False,
+        }]
+        torra.rules = list(rules if rules is not None else [self._shadow_rule()])
+
+    @staticmethod
+    def _shadow_rule():
+        return {
+            "id": "anime-rule",
+            "name": "Anime rule",
+            "media_type": "tv",
+            "category": ["tv::anime"],
+            "videoFormat": {
+                "blacklist": [],
+                "whitelist": [],
+                "screen_2160p": {"name": "2160p", "pattern": "2160p", "score": 10},
+            },
+            "videoFormat_weight": 2,
+            "file_extension": {
+                "blacklist": [],
+                "whitelist": [],
+                "mkv": {"name": "MKV", "pattern": r"\.mkv$", "score": 2},
+            },
+            "file_extension_weight": 1,
+            "custom_attributes": [
+                {"name": "WEB-DL", "pattern": "WEB[ ._-]*DL", "score": 3},
+            ],
+            "custom_weight": 1,
+            "file_size_score": 5,
+            "file_size_weight": 1,
+            "always_override_weight": 0,
+            "version_control_enabled": True,
+            "version_control_entries": [{
+                "kind": "local",
+                "version": {
+                    "name": "MKV version",
+                    "include_conditions": [{
+                        "attribute": "file_extension",
+                        "values": ["mkv"],
+                        "match_mode": "any",
+                    }],
+                    "exclude_conditions": [],
+                },
+            }],
+        }
+
+    def _insert(
+        self,
+        title,
+        media_type="tv",
+        season=1,
+        start=1,
+        end=1,
+        published_at="",
+        size_bytes=0,
+    ):
         return self.rss.upsert_items(
             self.source["id"],
             [{
@@ -120,6 +187,7 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
                 "season_number": season if media_type == "tv" else None,
                 "episode_start": start if media_type == "tv" else None,
                 "episode_end": end if media_type == "tv" else None,
+                "size_bytes": size_bytes,
             }],
             on_insert=self.runtime.match_inserted_rows,
         )
@@ -948,6 +1016,183 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(first["status"], "submitted")
         self.assertEqual(second["status"], "global_busy")
         self.assertEqual(torra.submissions, ["torra-202"])
+
+    def test_range_candidate_shares_one_artifact_and_one_shadow_action(self):
+        self._watch(
+            "tv:202:s1",
+            episode=2,
+            title="Test Show",
+            media_category="anime",
+        )
+        self._watch(
+            "tv:202:s1",
+            episode=3,
+            title="Test Show",
+            media_category="anime",
+        )
+        torra, _qb = self._enable_analysis()
+        self._configure_shadow_torra(torra)
+
+        inserted = self._insert(
+            "Test Show S01E02-E03 2160p WEB-DL.mkv",
+            start=2,
+            end=3,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=2_000_000_000,
+        )
+        results = self.runtime.wake_matches(inserted["_match_ids"])
+        matches = self.rss.list_matches()["items"]
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual(torra.submissions, [])
+        self.assertEqual(len({match["artifactKey"] for match in matches}), 1)
+        self.assertEqual(
+            {match["targetKey"] for match in matches},
+            {"tv:tmdb:202:season:1:episodes:2-3"},
+        )
+        self.assertEqual(len({match["evaluationActionId"] for match in matches}), 1)
+        self.assertEqual({match["evaluationStatus"] for match in matches}, {"scored"})
+        self.assertEqual({match["decision"] for match in matches}, {"waiting_baseline"})
+        self.assertEqual({match["candidateScore"] for match in matches}, {30.0})
+
+    def test_shadow_scoring_does_not_guess_ambiguous_rules_or_missing_fields(self):
+        self._watch(
+            "tv:202:s1",
+            episode=1,
+            title="Test Show",
+            media_category="anime",
+        )
+        torra, _qb = self._enable_analysis()
+        duplicate = {**self._shadow_rule(), "id": "anime-rule-duplicate"}
+        self._configure_shadow_torra(torra, [self._shadow_rule(), duplicate])
+        ambiguous = self._insert(
+            "Test Show S01E01 2160p WEB-DL.mkv",
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=2_000_000_000,
+        )
+        self.runtime.wake_matches(ambiguous["_match_ids"])
+        ambiguous_match = self.rss.list_matches()["items"][0]
+        self.assertEqual(ambiguous_match["evaluationStatus"], "blocked")
+        self.assertEqual(ambiguous_match["evaluationReason"], "rule_ambiguous")
+        self.assertIsNone(ambiguous_match["candidateScore"])
+
+        self.now[0] += timedelta(minutes=1)
+        self._configure_shadow_torra(torra)
+        missing_size = self._insert(
+            "Test Show S01E01 2160p WEB-DL.mkv missing size",
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+        )
+        self.runtime.wake_matches(missing_size["_match_ids"])
+        missing_match = next(
+            match
+            for match in self.rss.list_matches()["items"]
+            if match["id"] in missing_size["_match_ids"]
+        )
+        self.assertEqual(missing_match["evaluationStatus"], "blocked")
+        self.assertEqual(missing_match["evaluationReason"], "candidate_size_unconfirmed")
+        self.assertIsNone(missing_match["candidateScore"])
+
+    def test_watch_unit_backfill_uses_first_download_time_and_is_idempotent(self):
+        download_started = self.now[0] - timedelta(hours=1)
+        self.subscriptions.append({
+            "key": "tv:202:s1",
+            "title": "Test Show",
+            "media_type": "tv",
+            "tmdb_id": "202",
+            "target_season": 1,
+            "media_category": "anime",
+        })
+        before = (download_started - timedelta(minutes=1)).isoformat().replace("+00:00", "Z")
+        during = (download_started + timedelta(minutes=10)).isoformat().replace("+00:00", "Z")
+        self.rss.upsert_items(self.source["id"], [{
+            "fingerprint": "before-first-download",
+            "title": "Test Show S01E01 2160p WEB-DL.mkv",
+            "published_at": before,
+            "media_type": "tv",
+            "season_number": 1,
+            "episode_start": 1,
+            "episode_end": 1,
+            "size_bytes": 2_000_000_000,
+        }, {
+            "fingerprint": "during-first-download",
+            "title": "Test Show S01E01 2160p WEB-DL.mkv",
+            "published_at": during,
+            "media_type": "tv",
+            "season_number": 1,
+            "episode_start": 1,
+            "episode_end": 1,
+            "size_bytes": 2_000_000_000,
+        }])
+        unit = self.watch.ensure_watch_unit(
+            "tv:202:s1",
+            "tv",
+            1,
+            1,
+            first_success_at=download_started,
+            torra_subscription_id="torra-202",
+        )
+        torra, _qb = self._enable_analysis()
+        self._configure_shadow_torra(torra)
+
+        first = self.runtime.backfill_watch_unit(unit["unit_key"])
+        repeated = self.runtime.backfill_watch_unit(unit["unit_key"])
+        matches = self.rss.list_matches()["items"]
+
+        self.assertEqual(first["created"], 1)
+        self.assertEqual(first["evaluated"], 1)
+        self.assertEqual(repeated["created"], 0)
+        self.assertEqual(len(matches), 1)
+        matched_item = self.rss.get_item(matches[0]["itemId"], public=False)
+        self.assertEqual(matched_item["fingerprint"], "during-first-download")
+
+    def test_artifact_with_multiple_torra_owners_is_blocked(self):
+        first = self._watch(
+            "tv:202:first",
+            episode=1,
+            title="Test Show",
+            media_category="anime",
+            torra_id="torra-202",
+        )
+        second = self._watch(
+            "tv:202:second",
+            episode=1,
+            title="Test Show",
+            media_category="anime",
+            torra_id="torra-203",
+        )
+        torra, _qb = self._enable_analysis()
+        self._configure_shadow_torra(torra)
+        torra.rows.append({**torra.rows[0], "id": "torra-203"})
+        self.rss.upsert_items(self.source["id"], [{
+            "fingerprint": "owner-conflict",
+            "title": "Test Show S01E01 2160p WEB-DL.mkv",
+            "published_at": self.now[0].isoformat().replace("+00:00", "Z"),
+            "media_type": "tv",
+            "season_number": 1,
+            "episode_start": 1,
+            "episode_end": 1,
+            "tmdb_id": "202",
+            "identity_status": "identified",
+            "size_bytes": 2_000_000_000,
+        }])
+        item = self.rss.search_items(query="Test Show")["items"][0]
+        matches = [
+            self.rss.create_match(
+                item["id"],
+                unit["subscription_key"],
+                unit["unit_key"],
+                {"identity": {"basis": "tmdb", "tmdbId": "202"}},
+            )
+            for unit in (first, second)
+        ]
+
+        self.runtime.evaluate_matches([match["id"] for match in matches])
+        stored = self.rss.list_matches()["items"]
+
+        self.assertEqual({match["decision"] for match in stored}, {"ownership_conflict"})
+        self.assertEqual({match["evaluationReason"] for match in stored}, {"artifact_owner_conflict"})
+        self.assertEqual({match["candidateScore"] for match in stored}, {None})
+        self.assertEqual(torra.submissions, [])
 
 
 if __name__ == "__main__":

@@ -1125,9 +1125,10 @@
 .rss-diagnostics,
 .rss-source-disclosure {
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.075);
+  border: 1px solid var(--theme-border);
   border-radius: 16px;
-  background: rgba(20, 24, 32, 0.5);
+  background: var(--theme-surface-strong);
+  color: var(--theme-text);
 }
 
 .rss-diagnostics {
@@ -1158,13 +1159,13 @@
 
 .rss-diagnostics > summary strong,
 .rss-source-disclosure > summary strong {
-  color: rgba(255, 255, 255, 0.92);
+  color: var(--theme-text-strong);
   font-size: 13px;
 }
 
 .rss-diagnostics > summary small,
 .rss-source-disclosure > summary small {
-  color: rgba(255, 255, 255, 0.56);
+  color: var(--theme-muted);
   font-size: 11px;
 }
 
@@ -1175,6 +1176,7 @@
 
 .rss-diagnostics__body {
   padding: 13px 14px;
+  color: var(--theme-text);
 }
 
 .rss-diagnostics__actions {

@@ -304,6 +304,23 @@ class TorraReadClient:
             raise RuntimeError(f"Torra 响应异常：{status}")
         return extract_subscription_rows(data)
 
+    def list_meta_weight_rules(self) -> list[dict]:
+        """Read Torra's rule source without mutating its configuration."""
+        if not self.is_configured():
+            raise RuntimeError("Torra is not configured")
+        status, payload = self._fetch_json("/api/v1/meta_weight/rules")
+        if status in {401, 403}:
+            raise RuntimeError("Torra authentication failed")
+        if status >= 400:
+            raise RuntimeError(f"Torra rule read failed: {status}")
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict) or payload.get("success") is not True or not isinstance(data, list):
+            raise RuntimeError("Torra rule response is invalid")
+        rules = [dict(rule) for rule in data if isinstance(rule, dict)]
+        if len(rules) != len(data):
+            raise RuntimeError("Torra rule response is invalid")
+        return rules
+
     def inspect_duplicate(self, target: dict) -> dict:
         if not self.is_configured():
             return {

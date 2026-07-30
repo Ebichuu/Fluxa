@@ -94,8 +94,8 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `POST /api/v2/subscriptions/:id/torra-rewashes` | `confirm=true`、`idempotencyKey`、`analysisActionId`、可选 `unitId` |
 | `POST /api/v2/rss-matches/:id/torra-rewash-analyses` | `idempotencyKey`；不接受 Torra ID 或候选映射 |
 | `POST /api/v2/rss-matches/:id/torra-rewashes` | `confirm=true`、`idempotencyKey`、`analysisActionId`；严格绑定同一 RSS 匹配、追更和观察单元 |
-| `GET /api/v2/rss-matches/:id` | 读取单条本地 RSS 匹配；不存在返回 `404 RSS_MATCH_NOT_FOUND`；响应不包含下载地址、详情地址或 Passkey |
-| `POST /api/v2/rss-matches` | `rssItemId`、`subscriptionId`、`unitId`；服务端重新验证种子身份、媒体类型、季集、观察窗口与 Torra 归属；新建返回 `201 + Location`，已存在返回 `200`；只写本地运行证据，不依赖订阅配置写闸门，也不触发 Torra |
+| `GET /api/v2/rss-matches/:id` | 读取单条本地 RSS 匹配及可选订阅绑定、规范范围和影子评分；不存在返回 `404 RSS_MATCH_NOT_FOUND`；响应不包含 Torra 原始订阅 ID、下载地址、详情地址或 Passkey |
+| `POST /api/v2/rss-matches` | `rssItemId`、`subscriptionId`、`unitId`；服务端重新验证种子身份、媒体类型、季集、观察窗口与 Torra 归属，并只读当前 Torra 订阅与权重规则完成影子评分；新建返回 `201 + Location`，已存在返回 `200`；不触发 Torra 搜索或下载 |
 | `POST /api/v2/subscriptions/:id/moviepilot-previews` | 空对象；服务端复核观察单元、Torra、qB 和 MoviePilot 查重 |
 | `POST /api/v2/subscriptions/:id/moviepilot-pushes` | `confirm=true`、12–128 字符幂等键；不接受外部订阅 ID、Token 或 URL |
 | `GET /api/v2/torra/subscription-sync/preview` | 无参数；只读取 Torra 与本地台账，不调用 Torra 写接口 |
@@ -115,6 +115,10 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 ## 5. 响应与字段边界
 
 公开订阅、详情、日历、发现和资源响应通过 `contract_mapping.py` 白名单映射。浏览器不会收到原始上游包络、未知内部字段、Cookie、Token 或异常正文。
+
+RSS 匹配响应可选增加 `torraLinked/targetKey/artifactKey/ruleId/ruleHash/candidateScore/baselineScore/evaluationStatus/decision/evaluationReason/evaluationActionId/downloadActionId/evaluatedAt`。`torraLinked` 只表达是否具有可靠远端绑定，不返回远端订阅 ID；`artifactKey`、动作 ID 和规则哈希均为不透明公开引用。`candidateScore` 或 `baselineScore` 缺失时必须为 `null`，不得返回零；`evaluationStatus=blocked` 表示规则、身份、范围或字段暂未确认。该增量不改变旧 `status/triggerActionId`，也不授权浏览器提交规则、目录、下载器、分类或 RSS 下载地址。
+
+自动 RSS 收集、历史匹配和观察单元回扫只执行本地候选评分，读取 Torra 正式只读规则接口，不调用 Torra 订阅分析或下载。人工 `POST /api/v2/rss-matches/:id/torra-rewash-analyses` 仍是显式的整订阅搜索兜底；它与影子评分是两条独立动作，不能把人工搜索结果冒充为当前 RSS 候选评分。
 
 首页、任务、追更和日历响应可以增加可选 `statisticsMeta`。每个统计键对应 `{scope, unit, observedAt, confirmation}`；`confirmation` 固定为 `confirmed/partial/unknown`。该对象只描述旧数值字段的统计口径，不改变原数值和状态码；`unknown` 表示当前不能可靠解释数值，前端不得把兼容默认零显示为真实零，`partial` 保留可确认的数值并明确其证据不完整。不同 `scope` 的同名指标无需相等。
 

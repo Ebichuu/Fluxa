@@ -285,8 +285,28 @@ def _new_evidence_summary(task_item, evidence, torra_subscription_id):
     return {
         "source": source or _text(step.get("source")),
         "downloadedAt": downloaded_at or _text(step.get("timestamp")),
+        "firstDownloadAt": _text(evidence.get("first_download_at")),
         "torraSubscriptionId": torra_subscription_id,
     }
+
+
+def _first_download_at(task_item, evidence, fallback):
+    step = _download_step(task_item)
+    for value in (
+        evidence.get("first_download_at"),
+        evidence.get("download_started_at"),
+        task_item.get("downloadStartedAt"),
+        task_item.get("createdAt"),
+        step.get("startedAt"),
+        step.get("createdAt"),
+        step.get("addedAt"),
+        step.get("timestamp"),
+        evidence.get("observed_at"),
+    ):
+        parsed = _observed_at(value, None)
+        if parsed is not None:
+            return parsed
+    return fallback
 
 
 def _target_reached_for_unit(context, evidence, unit):
@@ -301,10 +321,22 @@ def _target_reached_for_unit(context, evidence, unit):
 
 
 class QualityWatchRuntime:
-    def __init__(self, repository, config_loader=None, clock=None):
+    def __init__(self, repository, config_loader=None, clock=None, candidate_backfill=None):
         self.repository = repository
         self.config_loader = config_loader or (lambda: {})
         self.clock = clock or _utc_now
+        self.candidate_backfill = candidate_backfill
+
+    def set_candidate_backfill(self, callback):
+        self.candidate_backfill = callback
+
+    def _backfill_candidates(self, unit):
+        if not self.candidate_backfill or not unit:
+            return
+        try:
+            self.candidate_backfill(unit["unit_key"])
+        except Exception:
+            return
 
     def _set_blocked(self, unit, reason):
         if unit["state"] == "blocked" and unit["last_result"].get("reason") == reason:
@@ -342,13 +374,13 @@ class QualityWatchRuntime:
             context["media_type"],
             context["season_number"] or None,
             episode,
-            first_success_at=creation["observed_at"],
+            first_success_at=creation["first_download_at"],
             window_hours=policy["window_hours"],
             torra_subscription_id=context["torra_subscription_id"],
         )
         if existing:
             return unit
-        return self.repository.update_watch_unit(
+        unit = self.repository.update_watch_unit(
             unit["unit_key"],
             unit["version"],
             current_evidence_json=_new_evidence_summary(
@@ -357,6 +389,8 @@ class QualityWatchRuntime:
                 context["torra_subscription_id"],
             ),
         )
+        self._backfill_candidates(unit)
+        return unit
 
     def _create_units(self, context, task_item, torra_row, evidence, policy):
         if not evidence.get("is_new"):
@@ -364,10 +398,16 @@ class QualityWatchRuntime:
         if not _download_is_complete(task_item):
             return []
         observed_at = _observed_at(evidence.get("observed_at"), self.clock())
+        first_download_at = _first_download_at(task_item, evidence, observed_at)
         episodes = _episodes_to_create(context, torra_row, evidence)
         if episodes is None:
             return [self._block(context, None, "episode_identity_missing", policy)]
-        creation = {"evidence": evidence, "policy": policy, "observed_at": observed_at}
+        creation = {
+            "evidence": evidence,
+            "policy": policy,
+            "observed_at": observed_at,
+            "first_download_at": first_download_at,
+        }
         return [
             self._ensure_new_unit(context, task_item, creation, episode)
             for episode in episodes
@@ -412,6 +452,7 @@ class QualityWatchRuntime:
             baseline_ready_at=baseline["ready_at"],
             offsets_minutes=baseline["policy"]["offsets_minutes"],
         )
+        self._backfill_candidates(unit)
         if not _target_reached_for_unit(context, baseline["evidence"], unit):
             return unit
         return self.repository.update_watch_unit(

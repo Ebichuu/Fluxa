@@ -15,6 +15,21 @@ from app.sqlite_runtime import SQLiteRuntime
 
 MATCH_STATUSES = {"candidate", "ignored", "triggered", "confirmed", "expired"}
 IDENTITY_STATUSES = {"identified", "conflict", "unidentified"}
+MATCH_EVALUATION_COLUMNS = {
+    "torra_subscription_id": "TEXT NOT NULL DEFAULT ''",
+    "target_key": "TEXT NOT NULL DEFAULT ''",
+    "artifact_key": "TEXT NOT NULL DEFAULT ''",
+    "rule_id": "TEXT NOT NULL DEFAULT ''",
+    "rule_hash": "TEXT NOT NULL DEFAULT ''",
+    "candidate_score": "REAL",
+    "baseline_score": "REAL",
+    "evaluation_status": "TEXT NOT NULL DEFAULT 'pending'",
+    "decision": "TEXT NOT NULL DEFAULT ''",
+    "evaluation_reason": "TEXT NOT NULL DEFAULT ''",
+    "evaluation_action_id": "TEXT NOT NULL DEFAULT ''",
+    "download_action_id": "TEXT NOT NULL DEFAULT ''",
+    "evaluated_at": "TEXT NOT NULL DEFAULT ''",
+}
 
 
 def _now():
@@ -147,12 +162,35 @@ def _create_match_table(connection):
         "id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES rss_items(id) ON DELETE CASCADE, "
         "subscription_key TEXT NOT NULL, unit_key TEXT NOT NULL, match_status TEXT NOT NULL DEFAULT 'candidate', "
         "match_reason_json TEXT NOT NULL DEFAULT '{}', trigger_action_id TEXT NOT NULL DEFAULT '', "
+        "torra_subscription_id TEXT NOT NULL DEFAULT '', target_key TEXT NOT NULL DEFAULT '', "
+        "artifact_key TEXT NOT NULL DEFAULT '', rule_id TEXT NOT NULL DEFAULT '', rule_hash TEXT NOT NULL DEFAULT '', "
+        "candidate_score REAL, baseline_score REAL, evaluation_status TEXT NOT NULL DEFAULT 'pending', "
+        "decision TEXT NOT NULL DEFAULT '', evaluation_reason TEXT NOT NULL DEFAULT '', "
+        "evaluation_action_id TEXT NOT NULL DEFAULT '', download_action_id TEXT NOT NULL DEFAULT '', "
+        "evaluated_at TEXT NOT NULL DEFAULT '', "
         "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(item_id, unit_key))"
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_rss_matches_status "
         "ON rss_subscription_matches(match_status, created_at DESC)"
     )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rss_matches_artifact "
+        "ON rss_subscription_matches(artifact_key, subscription_key, created_at DESC)"
+    )
+
+
+def _ensure_match_columns(connection):
+    columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(rss_subscription_matches)").fetchall()
+    }
+    for name, definition in MATCH_EVALUATION_COLUMNS.items():
+        if name not in columns:
+            connection.execute(
+                f"ALTER TABLE rss_subscription_matches ADD COLUMN {name} {definition}"
+            )
+    _create_match_table(connection)
 
 
 def _legacy_match_values(row):
@@ -192,9 +230,22 @@ def _initialize_match_table(connection):
         return
     columns = {row["name"] for row in connection.execute("PRAGMA table_info(rss_subscription_matches)").fetchall()}
     if {"unit_key", "match_status", "match_reason_json", "trigger_action_id", "updated_at"} <= columns:
-        _create_match_table(connection)
+        _ensure_match_columns(connection)
         return
     _migrate_legacy_match_table(connection)
+    _ensure_match_columns(connection)
+
+
+def _initialize_rule_snapshot_table(connection):
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS torra_rule_snapshots ("
+        "rule_id TEXT NOT NULL, rule_hash TEXT NOT NULL, rule_json TEXT NOT NULL, "
+        "observed_at TEXT NOT NULL, PRIMARY KEY(rule_id, rule_hash))"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_torra_rule_snapshots_observed "
+        "ON torra_rule_snapshots(observed_at DESC, rule_id)"
+    )
 
 
 @dataclass(frozen=True)
@@ -287,6 +338,7 @@ class PrivateRssRepository:
                 "ON rss_items(identity_status, published_at DESC, created_at DESC)"
             )
             _initialize_match_table(connection)
+            _initialize_rule_snapshot_table(connection)
 
     @staticmethod
     def _public_source(row):
@@ -775,6 +827,19 @@ class PrivateRssRepository:
             "status": result["match_status"],
             "reason": _json_load(result["match_reason_json"]),
             "triggerActionId": result["trigger_action_id"],
+            "torraLinked": bool(result.get("torra_subscription_id")),
+            "targetKey": result.get("target_key") or "",
+            "artifactKey": result.get("artifact_key") or "",
+            "ruleId": result.get("rule_id") or "",
+            "ruleHash": result.get("rule_hash") or "",
+            "candidateScore": result.get("candidate_score"),
+            "baselineScore": result.get("baseline_score"),
+            "evaluationStatus": result.get("evaluation_status") or "pending",
+            "decision": result.get("decision") or "",
+            "evaluationReason": result.get("evaluation_reason") or "",
+            "evaluationActionId": result.get("evaluation_action_id") or "",
+            "downloadActionId": result.get("download_action_id") or "",
+            "evaluatedAt": result.get("evaluated_at") or "",
             "createdAt": result["created_at"],
             "updatedAt": result["updated_at"],
         }
@@ -785,6 +850,150 @@ class PrivateRssRepository:
                 "SELECT * FROM rss_subscription_matches WHERE id=?", (str(match_id),)
             ).fetchone()
         return self._match(row)
+
+    def get_match_internal(self, match_id):
+        with closing(self.runtime.connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM rss_subscription_matches WHERE id=?", (str(match_id),)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def set_match_binding(
+        self,
+        match_id,
+        *,
+        torra_subscription_id,
+        target_key,
+        artifact_key,
+        connection=None,
+    ):
+        values = (
+            str(torra_subscription_id or ""),
+            str(target_key or ""),
+            str(artifact_key or ""),
+            _iso(),
+            str(match_id),
+        )
+
+        def update(target):
+            target.execute(
+                "UPDATE rss_subscription_matches SET torra_subscription_id=?, target_key=?, "
+                "artifact_key=?, updated_at=? WHERE id=?",
+                values,
+            )
+
+        if connection is not None:
+            update(connection)
+        else:
+            with self.runtime.transaction(immediate=True) as target:
+                update(target)
+        return self.get_match(match_id)
+
+    def list_internal_matches_for_artifact(self, artifact_key):
+        artifact_key = str(artifact_key or "").strip()
+        if not artifact_key:
+            return []
+        with closing(self.runtime.connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM rss_subscription_matches WHERE artifact_key=? "
+                "ORDER BY created_at, id",
+                (artifact_key,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_match_evaluation(self, match_ids, evaluation):
+        ids = sorted({str(value or "").strip() for value in match_ids if str(value or "").strip()})
+        if not ids:
+            return []
+        evaluation = evaluation if isinstance(evaluation, dict) else {}
+        candidate_score = evaluation.get("candidateScore")
+        baseline_score = evaluation.get("baselineScore")
+        if isinstance(candidate_score, bool) or (
+            candidate_score is not None and not isinstance(candidate_score, (int, float))
+        ):
+            raise ValueError("candidateScore must be numeric or null")
+        if isinstance(baseline_score, bool) or (
+            baseline_score is not None and not isinstance(baseline_score, (int, float))
+        ):
+            raise ValueError("baselineScore must be numeric or null")
+        now = str(evaluation.get("evaluatedAt") or _iso())
+        values = (
+            str(evaluation.get("ruleId") or ""),
+            str(evaluation.get("ruleHash") or ""),
+            float(candidate_score) if candidate_score is not None else None,
+            float(baseline_score) if baseline_score is not None else None,
+            str(evaluation.get("status") or "pending"),
+            str(evaluation.get("decision") or ""),
+            str(evaluation.get("reason") or ""),
+            str(evaluation.get("actionId") or ""),
+            now,
+            now,
+        )
+        placeholders = ",".join("?" for _ in ids)
+        with self.runtime.transaction(immediate=True) as connection:
+            connection.execute(
+                "UPDATE rss_subscription_matches SET rule_id=?, rule_hash=?, candidate_score=?, "
+                "baseline_score=?, evaluation_status=?, decision=?, evaluation_reason=?, "
+                f"evaluation_action_id=?, evaluated_at=?, updated_at=? WHERE id IN ({placeholders})",
+                (*values, *ids),
+            )
+        return [match for match in (self.get_match(match_id) for match_id in ids) if match]
+
+    def save_rule_snapshots(self, snapshots, observed_at=None):
+        observed_at = str(observed_at or _iso())
+        rows = []
+        for snapshot in snapshots if isinstance(snapshots, list) else []:
+            if not isinstance(snapshot, dict):
+                continue
+            rule_id = str(snapshot.get("ruleId") or "").strip()
+            rule_hash = str(snapshot.get("ruleHash") or "").strip()
+            rule = snapshot.get("rule")
+            if not rule_id or not rule_hash or not isinstance(rule, dict):
+                continue
+            rows.append((rule_id, rule_hash, _json_dump(rule), observed_at))
+        if not rows:
+            return 0
+        with self.runtime.transaction(immediate=True) as connection:
+            before = connection.total_changes
+            connection.executemany(
+                "INSERT INTO torra_rule_snapshots (rule_id, rule_hash, rule_json, observed_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(rule_id, rule_hash) DO UPDATE SET observed_at=excluded.observed_at",
+                rows,
+            )
+            return connection.total_changes - before
+
+    def list_items_for_watch_backfill(self, unit, unit_keys, limit=200):
+        unit = unit if isinstance(unit, dict) else {}
+        first_success_at = str(unit.get("first_success_at") or "").strip()
+        if not first_success_at:
+            return []
+        keys = sorted({str(value or "").strip() for value in unit_keys if str(value or "").strip()})
+        if not keys:
+            return []
+        limit = max(1, min(int(limit or 200), 200))
+        placeholders = ",".join("?" for _ in keys)
+        clauses = [
+            "i.identity_status<>'conflict'",
+            "COALESCE(NULLIF(i.published_at, ''), i.created_at)>=?",
+            f"NOT EXISTS (SELECT 1 FROM rss_subscription_matches m WHERE m.item_id=i.id AND m.unit_key IN ({placeholders}))",
+        ]
+        params = [first_success_at, *keys]
+        season = unit.get("season_number")
+        if season is None:
+            clauses.append("i.media_type IN ('', 'movie')")
+        else:
+            clauses.append("i.media_type IN ('', 'tv')")
+            clauses.append("(i.season_number IS NULL OR i.season_number=?)")
+            params.append(int(season))
+        with closing(self.runtime.connect()) as connection:
+            rows = connection.execute(
+                "SELECT i.*, s.name AS source_name, s.domain AS source_domain "
+                "FROM rss_items i JOIN rss_sources s ON s.id=i.source_id "
+                f"WHERE {' AND '.join(clauses)} "
+                "ORDER BY COALESCE(NULLIF(i.published_at, ''), i.created_at) DESC, i.id DESC LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_match_for_item_unit(self, item_id, unit_key):
         with closing(self.runtime.connect()) as connection:
@@ -870,6 +1079,17 @@ class PrivateRssRepository:
                 (*params, limit, offset),
             ).fetchall()
         return {"items": [self._match(row) for row in rows], "total": total, "limit": limit, "offset": offset}
+
+    def list_pending_evaluation_matches(self, limit=20):
+        limit = max(1, min(int(limit or 20), 50))
+        with closing(self.runtime.connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM rss_subscription_matches "
+                "WHERE match_status='candidate' AND evaluation_status='pending' "
+                "ORDER BY created_at, id LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._match(row) for row in rows]
 
     def record_fetch(self, source_id, status, record=None):
         source = self.get_source(source_id, public=False)

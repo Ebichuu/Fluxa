@@ -7,6 +7,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from app.private_rss_parser import extract_media_identity, extract_release_scope
+from app.rss_shadow_scoring_runtime import (
+    ShadowScoringUnsupported,
+    rss_artifact_key,
+    rss_target_key,
+    score_rss_candidate,
+    select_subscription_rule,
+    stable_payload_hash,
+)
 from app.torra_subscription_keys import (
     resolve_torra_subscription_key,
     torra_internal_unit_key,
@@ -22,6 +30,7 @@ LATIN_BOUNDARY = re.compile(r"(?<![a-z0-9]){}(?![a-z0-9])", re.IGNORECASE)
 QB_EPISODE_PATTERN = re.compile(r"S0*(\d{1,2})E0*(\d{1,4})(?:[-~]E?0*(\d{1,4}))?", re.IGNORECASE)
 ANALYSIS_ACTION_TYPE = "rewash-analysis"
 DOWNLOAD_ACTION_TYPE = "rewash-download"
+SHADOW_EVALUATION_ACTION_TYPE = "rss-candidate-evaluation"
 MANUAL_SUBSCRIPTION_SOURCE = "manual-subscription"
 PERMANENT_RECLAIM_CONTEXT_CODES = {
     "window_expired": "RSS_REWASH_WINDOW_EXPIRED",
@@ -234,10 +243,10 @@ def _episode_match(item, unit, item_type):
     }
 
 
-def _is_after_baseline(item, unit):
+def _is_after_first_download(item, unit):
     published_at = _as_utc(item.get("published_at")) or _as_utc(item.get("created_at"))
-    baseline_at = _as_utc(unit.get("baseline_ready_at"))
-    return not published_at or not baseline_at or published_at >= baseline_at
+    first_success_at = _as_utc(unit.get("first_success_at"))
+    return bool(published_at and first_success_at and published_at >= first_success_at)
 
 
 class RssSubscriptionMatchRuntime:
@@ -281,7 +290,7 @@ class RssSubscriptionMatchRuntime:
         local = self._local_subscriptions()
         return {**self._torra_subscriptions(), **local}
 
-    def _subscription_context(self, subscription_id):
+    def _subscription_context(self, subscription_id, torra_rows=None):
         subscription_id = _text(subscription_id)
         local_subscriptions = self._local_subscriptions()
         if not subscription_id.startswith("torra:"):
@@ -301,7 +310,7 @@ class RssSubscriptionMatchRuntime:
         try:
             if hasattr(torra, "is_configured") and not torra.is_configured():
                 return None, "torra_unavailable"
-            rows = torra.list_subscriptions()
+            rows = torra_rows if isinstance(torra_rows, list) else torra.list_subscriptions()
         except Exception:
             return None, "torra_unavailable"
         resolved = resolve_torra_subscription_key(subscription_id, rows)
@@ -594,9 +603,11 @@ class RssSubscriptionMatchRuntime:
         rows = self.rss_repository.list_items_for_match(limit)
         with self.rss_repository.runtime.transaction(immediate=True) as connection:
             created = self.match_inserted_rows(connection, rows)
+        evaluated = self.evaluate_matches([match["id"] for match in created])
         return {
             "scanned": len(rows),
             "created": len(created),
+            "evaluated": len(evaluated),
             "remaining": self.rss_repository.count_items_for_match(),
             "limit": limit,
         }
@@ -619,7 +630,7 @@ class RssSubscriptionMatchRuntime:
         identity = _identity_match(item, subscription)
         years = _year_match(item, subscription)
         episode = _episode_match(item, unit, item_type)
-        if identity is None or years is None or episode is None or not _is_after_baseline(item, unit):
+        if identity is None or years is None or episode is None or not _is_after_first_download(item, unit):
             return None
         basis, matched_alias, subscription_tmdb = identity
         item_year, subscription_year = years
@@ -655,10 +666,7 @@ class RssSubscriptionMatchRuntime:
 
     def match_inserted_rows(self, connection, rows):
         subscriptions = self._subscriptions()
-        active_units = [
-            unit for unit in self.watch_repository.list_active_watch_units(self.clock())
-            if unit.get("state") in ACTIVE_WATCH_STATES
-        ]
+        active_units = self.watch_repository.list_candidate_watch_units(self.clock())
         created = []
         rows = rows if isinstance(rows, list) else []
         for item in rows:
@@ -791,7 +799,325 @@ class RssSubscriptionMatchRuntime:
             public_unit_id,
             {**candidate["reason"], "matchSource": "manual"},
         )
-        return {"status": "created", "match": match}
+        self.evaluate_matches([match["id"]])
+        return {"status": "created", "match": self.rss_repository.get_match(match["id"])}
+
+    def _evaluation_unit(self, internal_match, context, torra_rows):
+        internal_unit_id = torra_internal_unit_key(
+            internal_match.get("unit_key"),
+            context["internalKey"],
+            context["publicKey"],
+        )
+        unit = self.watch_repository.get_watch_unit(internal_unit_id)
+        if not unit or _text(unit.get("subscription_key")) != context["internalKey"]:
+            return None, None, "watch_unit_missing"
+        torra_id = _text(unit.get("torra_subscription_id"))
+        torra_row = next(
+            (
+                row for row in torra_rows
+                if isinstance(row, dict) and _text(row.get("id")) == torra_id
+            ),
+            None,
+        )
+        if not torra_id or not torra_row:
+            return None, None, "torra_subscription_missing"
+        return unit, torra_row, ""
+
+    @staticmethod
+    def _evaluation_identity_valid(item, subscription, torra_row):
+        item_type = _media_type(item.get("media_type") or item.get("mediaType"))
+        item_tmdb = _tmdb_id(item)
+        subscription_tmdb = _tmdb_id(subscription)
+        torra_tmdb = _tmdb_id(torra_row)
+        return not (
+            _text(item.get("identity_status") or item.get("identityStatus")) != "identified"
+            or item_type not in {"movie", "tv"}
+            or not item_tmdb
+            or not subscription_tmdb
+            or not torra_tmdb
+            or len({item_tmdb, subscription_tmdb, torra_tmdb}) != 1
+        )
+
+    def _evaluation_context(self, match, torra_rows):
+        internal_match = self.rss_repository.get_match_internal(match.get("id"))
+        item = self.rss_repository.get_item(match.get("itemId"), public=False)
+        if not internal_match or not item:
+            return None, "match_context_missing"
+        context, context_error = self._subscription_context(
+            internal_match.get("subscription_key"),
+            torra_rows=torra_rows,
+        )
+        if context_error or not context:
+            return None, context_error or "subscription_missing"
+        unit, torra_row, unit_error = self._evaluation_unit(
+            internal_match,
+            context,
+            torra_rows,
+        )
+        if unit_error:
+            return None, unit_error
+        subscription = context["subscription"]
+        torra_id = _text(unit.get("torra_subscription_id"))
+        if not self._evaluation_identity_valid(item, subscription, torra_row):
+            return None, "identity_unconfirmed"
+        if not self._torra_owner_matches(subscription, unit, torra_row):
+            return None, "torra_subscription_owner_mismatch"
+        if not self._candidate(item, subscription, unit):
+            return None, "candidate_scope_mismatch"
+        artifact_key = rss_artifact_key(item)
+        target_key = rss_target_key(item)
+        if not artifact_key or not target_key:
+            return None, "artifact_scope_unconfirmed"
+        self.rss_repository.set_match_binding(
+            match["id"],
+            torra_subscription_id=torra_id,
+            target_key=target_key,
+            artifact_key=artifact_key,
+        )
+        return {
+            "match": self.rss_repository.get_match(match["id"]),
+            "item": item,
+            "subscription": subscription,
+            "torraRow": torra_row,
+            "torraSubscriptionId": torra_id,
+            "unit": unit,
+            "artifactKey": artifact_key,
+            "targetKey": target_key,
+        }, ""
+
+    def _record_shadow_action(self, context, result):
+        artifact_key = context["artifactKey"]
+        rule_hash = _text(result.get("ruleHash"))
+        reason = _text(result.get("reason"))
+        revision = rule_hash or stable_payload_hash({
+            "artifactKey": artifact_key,
+            "reason": reason,
+        })
+        claim = self.watch_repository.claim_action(
+            f"rss-candidate-evaluation:{artifact_key}:{revision[:20]}",
+            context["match"]["subscriptionId"],
+            "fluxa",
+            SHADOW_EVALUATION_ACTION_TYPE,
+            unit_key=context["targetKey"],
+            request_summary={
+                "matchId": context["match"]["id"],
+                "artifactKey": artifact_key,
+                "targetKey": context["targetKey"],
+                "source": "private-rss-shadow",
+            },
+        )
+        action = claim.get("action") or {}
+        if claim.get("disposition") in {"claimed", "reclaimed"}:
+            action = self.watch_repository.complete_action(
+                action["action_id"],
+                "succeeded",
+                {
+                    "evaluationStatus": result.get("status"),
+                    "decision": result.get("decision"),
+                    "reason": reason,
+                    "candidateScore": result.get("candidateScore"),
+                    "ruleHash": rule_hash,
+                },
+            )
+        return _text(action.get("action_id"))
+
+    def _save_shadow_result(self, contexts, result):
+        contexts = [context for context in contexts if isinstance(context, dict)]
+        if not contexts:
+            return []
+        action_id = self._record_shadow_action(contexts[0], result)
+        evaluated_at = _as_utc(self.clock())
+        if isinstance(evaluated_at, datetime):
+            evaluated_at = evaluated_at.isoformat().replace("+00:00", "Z")
+        return self.rss_repository.save_match_evaluation(
+            [context["match"]["id"] for context in contexts],
+            {
+                **result,
+                "actionId": action_id,
+                "evaluatedAt": _text(evaluated_at),
+            },
+        )
+
+    def _blocked_shadow_result(self, matches, reason):
+        results = []
+        for match in matches:
+            action_context = {
+                "match": match,
+                "artifactKey": match.get("artifactKey") or f"match:{match['id']}",
+                "targetKey": match.get("targetKey") or match.get("unitId") or match["id"],
+            }
+            results.extend(self._save_shadow_result([action_context], {
+                "status": "blocked",
+                "decision": "temporarily_unconfirmed",
+                "reason": reason,
+                "candidateScore": None,
+                "baselineScore": None,
+                "ruleId": "",
+                "ruleHash": "",
+            }))
+        return results
+
+    @staticmethod
+    def _unconfirmed_shadow_result(
+        reason,
+        *,
+        baseline_score=None,
+        rule_id="",
+        rule_hash="",
+    ):
+        return {
+            "status": "blocked",
+            "decision": "temporarily_unconfirmed",
+            "reason": reason,
+            "candidateScore": None,
+            "baselineScore": baseline_score,
+            "ruleId": rule_id,
+            "ruleHash": rule_hash,
+        }
+
+    def _read_shadow_inputs(self, torra):
+        try:
+            if hasattr(torra, "is_configured") and not torra.is_configured():
+                raise RuntimeError("torra unavailable")
+            torra_rows = torra.list_subscriptions()
+            rules = torra.list_meta_weight_rules()
+        except Exception:
+            return None
+
+        snapshots = []
+        rule_hashes = {}
+        for rule in rules:
+            rule_id = _text(rule.get("id"))
+            if not rule_id:
+                continue
+            rule_hash = stable_payload_hash(rule)
+            rule_hashes[rule_id] = rule_hash
+            snapshots.append({"ruleId": rule_id, "ruleHash": rule_hash, "rule": rule})
+        self.rss_repository.save_rule_snapshots(snapshots)
+        return torra_rows, rules, rule_hashes
+
+    def _score_artifact_contexts(self, rules, rule_hashes, contexts):
+        primary = contexts[0]
+        rule, reason = select_subscription_rule(
+            rules,
+            {**primary["subscription"], **primary["torraRow"]},
+        )
+        if not rule:
+            return self._unconfirmed_shadow_result(reason)
+        rule_id = _text(rule.get("id"))
+        rule_hash = rule_hashes.get(rule_id) or stable_payload_hash(rule)
+        baseline_score = primary["unit"].get("baseline_score")
+        try:
+            score = score_rss_candidate(rule, primary["item"])
+        except ShadowScoringUnsupported as exc:
+            return self._unconfirmed_shadow_result(
+                exc.code,
+                baseline_score=baseline_score,
+                rule_id=rule_id,
+                rule_hash=rule_hash,
+            )
+        if score["versionState"] == "rejected":
+            decision = "rule_rejected"
+        elif baseline_score is None:
+            decision = "waiting_baseline"
+        elif score["score"] > float(baseline_score):
+            decision = "upgrade_available"
+        elif score["score"] == float(baseline_score):
+            decision = "same_score"
+        else:
+            decision = "lower_score"
+        return {
+            "status": "scored",
+            "decision": decision,
+            "reason": "shadow_only_no_download",
+            "candidateScore": score["score"],
+            "baselineScore": baseline_score,
+            "ruleId": rule_id,
+            "ruleHash": rule_hash,
+        }
+
+    def _evaluate_artifact_contexts(self, rules, rule_hashes, artifact_key, contexts):
+        stored_rows = self.rss_repository.list_internal_matches_for_artifact(artifact_key)
+        owners = {
+            (_text(row.get("torra_subscription_id")), _text(row.get("target_key")))
+            for row in stored_rows
+            if _text(row.get("torra_subscription_id")) or _text(row.get("target_key"))
+        }
+        if len(owners) != 1:
+            result = {
+                **self._unconfirmed_shadow_result("artifact_owner_conflict"),
+                "decision": "ownership_conflict",
+            }
+        else:
+            result = self._score_artifact_contexts(rules, rule_hashes, contexts)
+        return self._save_shadow_result(contexts, result)
+
+    def evaluate_matches(self, match_ids):
+        matches = self.rss_repository.list_matches_by_ids(match_ids)
+        if not matches:
+            return []
+        torra = getattr(self.analysis, "torra", None) if self.analysis else None
+        if torra is None:
+            return self._blocked_shadow_result(matches, "torra_unavailable")
+        shadow_inputs = self._read_shadow_inputs(torra)
+        if shadow_inputs is None:
+            return self._blocked_shadow_result(matches, "torra_rule_read_failed")
+        torra_rows, rules, rule_hashes = shadow_inputs
+
+        contexts = []
+        blocked = []
+        for match in matches:
+            context, reason = self._evaluation_context(match, torra_rows)
+            if context:
+                contexts.append(context)
+            else:
+                blocked.extend(self._blocked_shadow_result([match], reason))
+
+        grouped = {}
+        for context in contexts:
+            grouped.setdefault(context["artifactKey"], []).append(context)
+        evaluated = list(blocked)
+        for artifact_key, artifact_contexts in grouped.items():
+            evaluated.extend(self._evaluate_artifact_contexts(
+                rules,
+                rule_hashes,
+                artifact_key,
+                artifact_contexts,
+            ))
+        return evaluated
+
+    def backfill_watch_unit(self, unit_key, limit=200):
+        unit = self.watch_repository.get_watch_unit(unit_key)
+        if not unit:
+            return {"scanned": 0, "created": 0, "evaluated": 0}
+        subscription_key, public_unit_key = self._public_match_keys(unit)
+        rows = self.rss_repository.list_items_for_watch_backfill(
+            unit,
+            {unit["unit_key"], public_unit_key},
+            limit=limit,
+        )
+        subscriptions = self._subscriptions()
+        subscription = subscriptions.get(_text(unit.get("subscription_key")))
+        if not subscription:
+            return {"scanned": len(rows), "created": 0, "evaluated": 0}
+        created = []
+        with self.rss_repository.runtime.transaction(immediate=True) as connection:
+            for item in rows:
+                item = self._supplement_item_from_subscriptions(connection, item, subscriptions)
+                candidate = self._candidate(item, subscription, unit)
+                if not candidate:
+                    continue
+                match = self.rss_repository.create_match(
+                    item["id"],
+                    subscription_key,
+                    public_unit_key,
+                    candidate["reason"],
+                    connection=connection,
+                )
+                if match:
+                    created.append(match)
+        evaluated = self.evaluate_matches([match["id"] for match in created])
+        return {"scanned": len(rows), "created": len(created), "evaluated": len(evaluated)}
 
     def _analysis_config(self, require_rss_gate=True):
         if not self.analysis:
@@ -1165,28 +1491,29 @@ class RssSubscriptionMatchRuntime:
         }
 
     def wake_pending_candidates(self, limit=2):
-        results = []
-        matches = self.rss_repository.list_matches(status="candidate", limit=max(1, int(limit))).get("items") or []
-        for match in matches:
-            action = self.watch_repository.get_action_by_idempotency(
-                f"rss-rewash-analysis:{match['id']}"
-            )
-            if action and action["status"] in {"succeeded", "failed", "cancelled"}:
-                continue
-            result = {"matchId": match["id"], **self.start_analysis(match["id"])}
-            results.append(result)
-            if result["status"] in {"submitted", "polling", "in_progress", "global_busy"}:
-                break
-        return results
+        matches = self.rss_repository.list_pending_evaluation_matches(
+            max(1, min(int(limit or 2), 50))
+        )
+        evaluated = self.evaluate_matches([match["id"] for match in matches])
+        return [
+            {
+                "matchId": match.get("id"),
+                "status": "evaluated" if match.get("evaluationStatus") == "scored" else "blocked",
+                "reason": match.get("evaluationReason") or "",
+            }
+            for match in evaluated
+        ]
 
     def wake_matches(self, match_ids):
-        results = []
-        for match in self.rss_repository.list_matches_by_ids(match_ids):
-            try:
-                results.append({"matchId": match["id"], **self.start_analysis(match["id"])})
-            except Exception:
-                results.append({"matchId": match["id"], "status": "failed", "reason": "analysis_runtime_failed"})
-        return results
+        evaluated = self.evaluate_matches(match_ids)
+        return [
+            {
+                "matchId": match.get("id"),
+                "status": "evaluated" if match.get("evaluationStatus") == "scored" else "blocked",
+                "reason": match.get("evaluationReason") or "",
+            }
+            for match in evaluated
+        ]
 
 
 def register_rss_subscription_match(app, runtime):

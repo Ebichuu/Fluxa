@@ -104,6 +104,24 @@ class QualityWatchRuntimeTests(unittest.TestCase):
         )["units"][0]
         self.assertEqual(repeated["observation_ends_at"], ready["observation_ends_at"])
 
+    def test_first_download_time_prefers_upstream_start_over_completion_observation(self):
+        task = task_item()
+        task["createdAt"] = "2026-07-18T00:10:00Z"
+        self.now[0] = datetime(2026, 7, 18, 2, 0, tzinfo=timezone.utc)
+
+        unit = self.runtime.reconcile(
+            subscription(),
+            task,
+            torra_row(),
+            {
+                "is_new": True,
+                "episode_numbers": [1],
+                "observed_at": self.now[0],
+            },
+        )["units"][0]
+
+        self.assertEqual(unit["first_success_at"], "2026-07-18T00:10:00.000Z")
+
     def test_new_episodes_are_independent_and_subscription_window_overrides_global_default(self):
         first = self.runtime.reconcile(
             subscription(torra_quality_window_hours=24),

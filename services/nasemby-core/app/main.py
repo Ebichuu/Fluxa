@@ -1454,7 +1454,7 @@ def create_app(
             clock=torra_clock,
         ),
     )
-    register_quality_watch(
+    quality_runtime = register_quality_watch(
         application,
         quality_repository,
         config_loader=discover_runtime.load_subscription_config,
@@ -1466,7 +1466,7 @@ def create_app(
         environment=environment,
         action_repository=quality_repository,
     )
-    register_private_rss(
+    private_rss_service = register_private_rss(
         application,
         discover_runtime.subscription_database_path(),
         environment=environment,
@@ -1475,6 +1475,7 @@ def create_app(
         subscription_loader=lambda: discover_runtime.load_subscription_items(remove_completed=False),
         config_loader=discover_runtime.load_subscription_config,
     )
+    quality_runtime.set_candidate_backfill(private_rss_service.match_runtime.backfill_watch_unit)
     register_subscription_workbench(application, environment)
     register_discover_candidates(application, environment)
     register_candidate_migrations(application, environment)

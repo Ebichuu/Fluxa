@@ -29,6 +29,16 @@ ACTION_STATUSES = {
     "expired",
 }
 TERMINAL_ACTION_STATUSES = {"succeeded", "failed", "cancelled"}
+WATCH_CANDIDATE_COLUMNS = {
+    "baseline_artifact_key": "TEXT NOT NULL DEFAULT ''",
+    "baseline_score": "REAL",
+    "baseline_rule_hash": "TEXT NOT NULL DEFAULT ''",
+    "best_match_id": "TEXT NOT NULL DEFAULT ''",
+    "best_candidate_score": "REAL",
+    "upgrade_count": "INTEGER NOT NULL DEFAULT 0",
+    "last_candidate_at": "TEXT NOT NULL DEFAULT ''",
+    "lifecycle_mode": "TEXT NOT NULL DEFAULT 'fixed_window'",
+}
 
 
 class QualityWatchVersionConflict(RuntimeError):
@@ -113,8 +123,21 @@ class QualityWatchRepository:
                 "observation_ends_at TEXT NOT NULL DEFAULT '', attempt_count INTEGER NOT NULL DEFAULT 0, "
                 "current_offset_index INTEGER NOT NULL DEFAULT 0, current_evidence_json TEXT NOT NULL DEFAULT '{}', "
                 "last_result_json TEXT NOT NULL DEFAULT '{}', target_reached_at TEXT NOT NULL DEFAULT '', "
+                "baseline_artifact_key TEXT NOT NULL DEFAULT '', baseline_score REAL, "
+                "baseline_rule_hash TEXT NOT NULL DEFAULT '', best_match_id TEXT NOT NULL DEFAULT '', "
+                "best_candidate_score REAL, upgrade_count INTEGER NOT NULL DEFAULT 0, "
+                "last_candidate_at TEXT NOT NULL DEFAULT '', lifecycle_mode TEXT NOT NULL DEFAULT 'fixed_window', "
                 "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1)"
             )
+            watch_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(quality_watch_units)").fetchall()
+            }
+            for name, definition in WATCH_CANDIDATE_COLUMNS.items():
+                if name not in watch_columns:
+                    connection.execute(
+                        f"ALTER TABLE quality_watch_units ADD COLUMN {name} {definition}"
+                    )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_quality_watch_subscription "
                 "ON quality_watch_units(subscription_key, season_number, episode_number)"
@@ -184,6 +207,19 @@ class QualityWatchRepository:
             rows = connection.execute(
                 "SELECT * FROM quality_watch_units WHERE state IN ('observing_upgrade', 'search_due', 'search_running') "
                 "AND baseline_ready_at<>'' AND observation_ends_at>=? ORDER BY subscription_key, season_number, episode_number",
+                (current,),
+            ).fetchall()
+        return [self._watch_unit(row) for row in rows]
+
+    def list_candidate_watch_units(self, at=None):
+        current = _iso(_as_utc(at or self.clock()))
+        with closing(self.runtime.connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM quality_watch_units WHERE first_success_at<>'' AND ("
+                "state='waiting_library_baseline' OR ("
+                "state IN ('observing_upgrade', 'search_due', 'search_running') "
+                "AND observation_ends_at>=?)) "
+                "ORDER BY subscription_key, season_number, episode_number",
                 (current,),
             ).fetchall()
         return [self._watch_unit(row) for row in rows]
@@ -268,6 +304,14 @@ class QualityWatchRepository:
             "last_result_json": _json_dump,
             "target_reached_at": str,
             "torra_subscription_id": str,
+            "baseline_artifact_key": str,
+            "baseline_score": float,
+            "baseline_rule_hash": str,
+            "best_match_id": str,
+            "best_candidate_score": float,
+            "upgrade_count": int,
+            "last_candidate_at": str,
+            "lifecycle_mode": str,
         }
         assignments = []
         values = []

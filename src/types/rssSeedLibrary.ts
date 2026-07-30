@@ -146,6 +146,7 @@ export interface RssMatchRunResponse {
   ok: boolean;
   scanned: number;
   created: number;
+  evaluated?: number;
   remaining: number;
   limit: number;
 }
@@ -195,6 +196,19 @@ export interface RssMatch {
   status: 'candidate' | 'ignored' | 'triggered' | 'confirmed' | 'expired' | string;
   reason?: Record<string, unknown>;
   triggerActionId?: string;
+  torraLinked?: boolean;
+  targetKey?: string;
+  artifactKey?: string;
+  ruleId?: string;
+  ruleHash?: string;
+  candidateScore?: number | null;
+  baselineScore?: number | null;
+  evaluationStatus?: 'pending' | 'scored' | 'blocked' | string;
+  decision?: string;
+  evaluationReason?: string;
+  evaluationActionId?: string;
+  downloadActionId?: string;
+  evaluatedAt?: string;
   itemTitle?: string;
   subscriptionTitle?: string;
   episodeLabel?: string;

@@ -126,6 +126,29 @@ class TorraReadRuntimeContractTests(unittest.TestCase):
         self.assertEqual(session.requests[1][2]["headers"]["Authorization"], "Bearer token-one")
         self.assertEqual(session.requests[3][2]["headers"]["Authorization"], "Bearer token-two")
 
+    def test_meta_weight_rules_use_only_the_official_read_endpoint(self):
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        rules = [{"id": "rule-1", "media_type": "tv", "category": ["tv::anime"]}]
+        session = FakeSession([FakeResponse(payload={"success": True, "data": rules})])
+        client = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+        )
+
+        self.assertEqual(client.list_meta_weight_rules(), rules)
+        self.assertEqual(
+            [(request[0], request[1]) for request in session.requests],
+            [("GET", "/api/v1/meta_weight/rules")],
+        )
+
+        invalid = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=FakeSession([FakeResponse(payload={"success": True, "data": {}})]),
+        )
+        with self.assertRaisesRegex(RuntimeError, "rule response is invalid"):
+            invalid.list_meta_weight_rules()
+
     def test_secupload_summary_exposes_only_readable_plugin_evidence(self):
         from app.torra_read_runtime import TorraReadClient, TorraReadConfig
 

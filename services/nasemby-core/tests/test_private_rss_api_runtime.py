@@ -111,7 +111,11 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             self.assertEqual(detail.get_json(), repository.get_match(created.get_json()["id"]))
             self.assertEqual(set(detail.get_json()), {
                 "id", "itemId", "subscriptionId", "unitId", "status", "reason",
-                "triggerActionId", "createdAt", "updatedAt",
+                "triggerActionId", "torraLinked", "targetKey", "artifactKey",
+                "ruleId", "ruleHash", "candidateScore", "baselineScore",
+                "evaluationStatus", "decision", "evaluationReason",
+                "evaluationActionId", "downloadActionId", "evaluatedAt",
+                "createdAt", "updatedAt",
             })
             response_text = detail.get_data(as_text=True)
             for forbidden in (

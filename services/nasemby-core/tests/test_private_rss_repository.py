@@ -10,6 +10,57 @@ from app.private_rss_repository import FetchRunRecord, PrivateRssRepository
 
 
 class PrivateRssRepositoryTests(unittest.TestCase):
+    def test_match_shadow_fields_and_rule_snapshots_are_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({
+                "name": "Rules",
+                "feedUrl": "https://tracker.example/rss",
+            })
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "candidate-one",
+                "title": "Show.S01E02.2160p.mkv",
+            }])
+            item_id = repository.search_items()["items"][0]["id"]
+            match = repository.create_match(item_id, "tv:123:s1", "tv:123:s1:s1:e2", {})
+
+            repository.set_match_binding(
+                match["id"],
+                torra_subscription_id="raw-remote-id",
+                target_key="tv:tmdb:123:season:1:episodes:2-2",
+                artifact_key="rss:artifact-one",
+            )
+            updated = repository.save_match_evaluation([match["id"]], {
+                "ruleId": "rule-1",
+                "ruleHash": "hash-1",
+                "candidateScore": 88.5,
+                "baselineScore": None,
+                "status": "scored",
+                "decision": "waiting_baseline",
+                "reason": "shadow_only_no_download",
+                "actionId": "action-1",
+                "evaluatedAt": "2026-07-30T01:00:00Z",
+            })[0]
+
+            self.assertTrue(updated["torraLinked"])
+            self.assertEqual(updated["candidateScore"], 88.5)
+            self.assertIsNone(updated["baselineScore"])
+            self.assertEqual(updated["evaluationStatus"], "scored")
+            self.assertNotIn("raw-remote-id", str(updated))
+
+            snapshots = [{
+                "ruleId": "rule-1",
+                "ruleHash": "hash-1",
+                "rule": {"id": "rule-1", "name": "Rule"},
+            }]
+            repository.save_rule_snapshots(snapshots, "2026-07-30T01:00:00Z")
+            repository.save_rule_snapshots(snapshots, "2026-07-30T02:00:00Z")
+            with closing(repository.runtime.connect()) as connection:
+                count = connection.execute(
+                    "SELECT COUNT(*) AS count FROM torra_rule_snapshots"
+                ).fetchone()["count"]
+            self.assertEqual(count, 1)
+
     def test_summary_distinguishes_matcher_not_run_from_zero_matches(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")

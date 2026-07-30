@@ -220,11 +220,77 @@ function matchActionLabel(action: AutomationAction | undefined, matchStatus: Rss
   return selectedCount > 0 ? `检查完成，发现 ${selectedCount} 个更合适的版本` : '检查完成，当前没有更合适的版本';
 }
 
+const shadowReasonLabels: Record<string, string> = {
+  torra_unavailable: 'Torra 当前不可读',
+  torra_rule_read_failed: 'Torra 规则当前不可读',
+  match_context_missing: '候选上下文不完整',
+  subscription_missing: '关联订阅不存在',
+  watch_unit_missing: '季集观察目标不存在',
+  torra_subscription_missing: 'Torra 订阅绑定暂未确认',
+  identity_unconfirmed: '作品或季集身份暂未确认',
+  torra_subscription_owner_mismatch: '订阅所有权不一致',
+  candidate_scope_mismatch: '候选季集范围不兼容',
+  artifact_scope_unconfirmed: '候选范围暂未确认',
+  artifact_owner_conflict: '同一候选存在所有权冲突',
+  subscription_media_type_unconfirmed: '订阅媒体类型暂未确认',
+  subscription_category_unconfirmed: '订阅分类暂未确认',
+  rule_not_found: '没有找到唯一适用规则',
+  rule_ambiguous: '适用规则不唯一',
+  candidate_title_missing: '候选标题不完整',
+  candidate_size_invalid: '候选大小无效',
+  candidate_size_unconfirmed: '候选大小暂未确认',
+  rule_pattern_missing: '规则字段不完整',
+  rule_pattern_invalid: '规则表达式无法安全解析',
+  rule_group_invalid: '规则分组无法安全解析',
+  rule_filter_invalid: '规则筛选条件无法安全解析',
+  rule_weight_invalid: '规则权重无法安全解析',
+  rule_score_invalid: '规则分值无法安全解析',
+  version_entries_missing: '版本控制条件不完整',
+  version_entry_unsupported: '版本控制条件暂不支持影子评分',
+  version_entry_invalid: '版本控制条件无效',
+  version_attribute_unsupported: '版本字段暂不支持影子评分',
+  version_match_mode_unsupported: '版本匹配方式暂不支持影子评分',
+  version_condition_values_missing: '版本条件值不完整',
+  version_condition_values_invalid: '版本条件值无效',
+  version_fields_unconfirmed: '候选版本字段暂未确认',
+  always_override_unsupported: '强制覆盖规则不参与影子评分'
+};
+
+function scoreLabel(value: number | null | undefined) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '暂未确认';
+  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function shadowEvaluationLabel(match: RssMatch) {
+  if (match.evaluationStatus === 'scored' && typeof match.candidateScore === 'number') {
+    const candidate = `候选 ${scoreLabel(match.candidateScore)} 分`;
+    if (match.decision === 'waiting_baseline') return `${candidate} · 等待当前版本基线`;
+    if (match.decision === 'rule_rejected') return `${candidate} · Torra 规则未接受`;
+    if (typeof match.baselineScore !== 'number') return candidate;
+    const baseline = `当前版本 ${scoreLabel(match.baselineScore)} 分`;
+    if (match.decision === 'upgrade_available') {
+      return `${candidate} · ${baseline} · 提升 ${scoreLabel(match.candidateScore - match.baselineScore)} 分`;
+    }
+    if (match.decision === 'same_score') return `${candidate} · 与当前版本同分`;
+    if (match.decision === 'lower_score') return `${candidate} · 低于${baseline}`;
+    return `${candidate} · ${baseline}`;
+  }
+  if (match.evaluationStatus === 'blocked') {
+    const reason = shadowReasonLabels[match.evaluationReason || ''] || '评分条件暂未确认';
+    return `评分暂未确认 · ${reason}`;
+  }
+  return '等待 Torra 规则影子评分';
+}
+
 function seedProcessingStateLabel(match: RssMatch | undefined, action: AutomationAction | undefined) {
   if (!match) return '未处理';
   if (action?.type === 'rewash-download' || match.status === 'confirmed') return 'Torra 已接收';
   if (action && !['succeeded', 'failed', 'cancelled'].includes(action.status)) return 'Torra 分析中';
-  return '已建立匹配';
+  if (match.evaluationStatus === 'scored' && typeof match.candidateScore === 'number') {
+    return `影子评分 ${scoreLabel(match.candidateScore)} 分`;
+  }
+  if (match.evaluationStatus === 'blocked') return '评分暂未确认';
+  return '等待影子评分';
 }
 
 function seedPriorityReason(item: RssSeedItem, scope: ReturnType<typeof classifyRssResourceScope>) {
@@ -817,7 +883,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
           )}
           <section className="rss-match-panel" aria-label="RSS 候选匹配">
             <header className="rss-match-panel__head">
-              <div><strong>已匹配到追更作品</strong><small>{matchesTotal ? `最近 ${matchesTotal} 条匹配记录` : '新种子会自动尝试匹配，不需要手动扫描'}</small></div>
+              <div><strong>Torra 规则影子评分</strong><small>{matchesTotal ? `最近 ${matchesTotal} 条订阅候选 · 只读评估，不会自动下载` : '新种子会自动匹配并评分，不会自动下载'}</small></div>
               <button className="ops-link" disabled={matchesLoading} type="button" onClick={() => void loadMatches(matchesOffset)}><RefreshCcw size={13} />刷新</button>
             </header>
             {matchesLoading && <small className="sub-detail__hint">正在查看是否有种子匹配到追更作品…</small>}
@@ -837,8 +903,9 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                   <article className="rss-match-row" key={match.id}>
                     <div className="rss-match-row__content">
                       <strong>{match.itemTitle || seed?.title || match.subscriptionTitle || '已匹配到一条追更内容'}</strong>
-                      <small>{match.subscriptionTitle || match.episodeLabel || '已关联到追更作品'}</small>
-                      <span className={action?.status === 'failed' || pollTimedOut ? 'rss-match-status rss-match-status--error' : 'rss-match-status'}>{pollTimedOut ? '状态确认超时，已刷新匹配记录' : matchActionLabel(action, match.status)}</span>
+                      <small>{match.subscriptionTitle || match.episodeLabel || '已关联到追更作品'} · {match.torraLinked ? '已绑定 Torra 订阅' : 'Torra 订阅绑定暂未确认'}</small>
+                      <span className="rss-match-status">{shadowEvaluationLabel(match)}</span>
+                      {(action || pollTimedOut) && <small className={action?.status === 'failed' || pollTimedOut ? 'rss-match-status rss-match-status--error' : 'rss-match-status'}>{pollTimedOut ? '人工 Torra 分析状态确认超时' : `人工 Torra 分析 · ${matchActionLabel(action, match.status)}`}</small>}
                     </div>
                     {pollTimedOut && action ? (
                       <button className="ops-action-button ops-action-button--primary" type="button" onClick={() => {
@@ -849,7 +916,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                       </button>
                     ) : action && selectedCount > 0 ? (
                       <button className="ops-action-button ops-action-button--primary" disabled={isSubmitting} type="button" onClick={() => setDownloadTarget({ match, analysis: action })}>
-                        <Download size={13} />{isSubmitting ? '正在提交' : '交给 Torra 处理'}
+                        <Download size={13} />{isSubmitting ? '正在提交' : '处理 Torra 搜索结果'}
                       </button>
                     ) : downloadFailed ? (
                       <button className="ops-action-button ops-action-button--primary" type="button" onClick={() => onNavigate('tasks', { outcomeState: 'action_required' })}>
@@ -858,8 +925,8 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                     ) : downloadConfirmed ? (
                       <button className="ops-action-button" disabled type="button">已交给 Torra</button>
                     ) : (
-                      <button className={canAnalyze ? 'ops-action-button ops-action-button--primary' : 'ops-action-button'} disabled={!canAnalyze || Boolean(actionRunning) || isSubmitting || action?.status === 'succeeded'} type="button" onClick={() => analyzeMatch(match)}>
-                        <Send size={13} />{isSubmitting ? '正在提交' : actionRunning ? '正在检查' : canAnalyze ? '检查可用版本' : '无需处理'}
+                      <button aria-label="人工触发 Torra 整条订阅分析" title="会触发 Torra 对整条订阅执行搜索分析" className={canAnalyze ? 'ops-action-button ops-action-button--primary' : 'ops-action-button'} disabled={!canAnalyze || Boolean(actionRunning) || isSubmitting || action?.status === 'succeeded'} type="button" onClick={() => analyzeMatch(match)}>
+                        <Send size={13} />{isSubmitting ? '正在提交' : actionRunning ? '人工分析中' : canAnalyze ? '人工 Torra 分析' : '无需处理'}
                       </button>
                     )}
                   </article>
