@@ -117,7 +117,7 @@ NasEmby 的旧管理页面不作为第二套用户界面重新公开，但其源
 - `/api/tasks/chain`：统一证据链。
 - `/api/media/*`：影院大厅和 Emby。
 - `/api/qbittorrent/*`：摘要和可回滚动作。
-- `/api/torra/summary`、`/api/symedia/summary`：只读服务证据。
+- `/api/torra/summary`、`/api/symedia/summary`：只读服务证据；Torra 摘要兼容增加正式批次/调度证据和只读 RSS 优先调整预览，不把运行任务数或标题推测成订阅模式。
 - `/api/internal/nasemby-core/*`：已认证只读诊断，不是第二个服务。
 
 ### 新增 v2 安全接口

@@ -18,7 +18,7 @@
 - 手机月历保留作品海报、状态和数量，控制室、追更与任务工具栏在 390px 窄屏下保持可读且无页面级横向溢出。
 - 管理端业务文字建立 11px 最低基线，错误、空状态、设置说明和任务原因提升到 12~13px，并保持桌面与手机端信息密度一致。
 - 按电影或季集隔离的质量观察、人工追更分析和候选下载。
-- MoviePilot 人工备用入口，以及 Emby、qB、Torra、Symedia 服务状态；Symedia 明确区分历史接口可读与归档监控、STRM 等尚未接入的子能力，并提供保守洗版摘要。
+- MoviePilot 人工备用入口，以及 Emby、qB、Torra、Symedia 服务状态；控制室只读展示 Torra 正式批次/调度证据，Torra 未提供订阅级搜索模式时明确显示“暂未确认”，RSS 优先调整只生成阻断预览，不修改 Torra；Symedia 明确区分历史接口可读与归档监控、STRM 等尚未接入的子能力，并提供保守洗版摘要。
 - 深色/浅色工作台与独立 Mineradio 影院大厅。
 
 ## Docker Compose 快速部署
@@ -127,7 +127,7 @@ Vite 会把 `/api` 和 `/mineradio` 代理到 Python。
 ## 本地检查
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前后端 609 项；v2 机器契约 71 条
+python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前后端 611 项；v2 机器契约 71 条
 npm test
 npm run build
 docker compose config --services

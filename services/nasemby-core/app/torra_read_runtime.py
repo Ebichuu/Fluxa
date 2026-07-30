@@ -15,6 +15,15 @@ from app.secupload_result_runtime import (
     parse_secupload_run_counts,
     secupload_file_path_key,
 )
+from app.torra_search_automation_runtime import (
+    extract_response_items,
+    extract_response_object,
+    latest_subscription_batch,
+    project_batch,
+    project_schedule,
+    search_automation_capability_state,
+    unavailable_search_automation,
+)
 
 
 REQUEST_TIMEOUT_SECONDS = 15
@@ -321,6 +330,74 @@ class TorraReadClient:
             raise RuntimeError("Torra rule response is invalid")
         return rules
 
+    def _read_optional_items(self, pathname: str, *, unavailable_code: str, failed_code: str):
+        try:
+            status, payload = self._fetch_json(pathname)
+        except Exception:
+            return "unknown", [], failed_code
+        if status in {404, 405}:
+            return "unsupported", [], unavailable_code
+        if status >= 400:
+            return "unknown", [], failed_code
+        items = extract_response_items(payload)
+        return ("confirmed", items, "") if items is not None else ("unknown", [], failed_code)
+
+    def _read_optional_object(self, pathname: str):
+        try:
+            status, payload = self._fetch_json(pathname)
+        except Exception:
+            return "unknown", {}
+        if status in {404, 405}:
+            return "unsupported", {}
+        if status >= 400:
+            return "unknown", {}
+        item = extract_response_object(payload)
+        return ("confirmed", item) if item is not None else ("unknown", {})
+
+    def get_search_automation_summary(self, subscription_count: int) -> dict:
+        summary = unavailable_search_automation(subscription_count, connected=True)
+        schedules_state, schedules, schedules_reason = self._read_optional_items(
+            "/api/v1/jobs/schedules",
+            unavailable_code="TORRA_SCHEDULES_ENDPOINT_UNAVAILABLE",
+            failed_code="TORRA_SCHEDULES_READ_FAILED",
+        )
+        jobs_state, jobs, jobs_reason = self._read_optional_items(
+            "/api/v1/jobs?kind_prefix=subscription.batch_run&limit=20&offset=0",
+            unavailable_code="TORRA_BATCH_HISTORY_ENDPOINT_UNAVAILABLE",
+            failed_code="TORRA_BATCH_HISTORY_READ_FAILED",
+        )
+
+        schedule_by_id = {
+            str(item.get("id") or item.get("schedule_id") or "").strip(): item
+            for item in schedules
+        }
+        summary["schedules"] = {
+            "state": schedules_state,
+            "rss": project_schedule(schedule_by_id.get("subscription_batch:rss")),
+            "automaticSearch": project_schedule(schedule_by_id.get("subscription_batch:auto")),
+            "reasonCode": schedules_reason,
+        }
+        summary["recentBatchState"] = jobs_state
+        summary["recentBatchReasonCode"] = jobs_reason
+
+        latest = latest_subscription_batch(jobs) if jobs_state == "confirmed" else None
+        if latest is not None:
+            job_id = str(latest.get("id") or "").strip()
+            detail = {}
+            if job_id:
+                _, detail = self._read_optional_object(
+                    f"/api/v1/jobs/{quote(job_id, safe='')}"
+                )
+            summary["recentBatch"] = project_batch(latest, detail)
+        elif jobs_state == "confirmed":
+            summary["recentBatch"] = None
+
+        summary["capabilityState"] = search_automation_capability_state(
+            schedules_state,
+            jobs_state,
+        )
+        return summary
+
     def inspect_duplicate(self, target: dict) -> dict:
         if not self.is_configured():
             return {
@@ -354,6 +431,7 @@ class TorraReadClient:
             "webUrl": self.base_url,
             "lastCheckedAt": _iso_timestamp(self.clock()),
             "counts": {"total": 0, "active": 0, "completed": 0, "running": 0},
+            "searchAutomation": unavailable_search_automation(0, connected=False),
         }
         if not self.is_configured():
             return {**base, "error": "未配置 Torra 地址或认证信息"}
@@ -369,6 +447,7 @@ class TorraReadClient:
                     "completed": sum(row.get("completed") is True for row in rows),
                     "running": sum(row.get("is_running") is True for row in rows),
                 },
+                "searchAutomation": self.get_search_automation_summary(len(rows)),
             }
         except Exception as exc:
             return {**base, "error": str(exc) or "Torra 读取失败"}

@@ -4,7 +4,7 @@ import { getEmbyOverview, getEmbyRefreshStatus, getIntegrationSummary, getQbitto
 import type { EmbyOverview, EmbyRefreshStatus } from '../../types/emby';
 import type { QbittorrentSummary } from '../../types/qbittorrent';
 import type { SymediaCapabilities, SymediaCapabilityState, SymediaSummary } from '../../types/symedia';
-import type { TorraSummary } from '../../types/torra';
+import type { TorraSearchBatch, TorraSearchSchedule, TorraSummary } from '../../types/torra';
 import type { IntegrationSummary } from '../../types/integrations';
 import type { SubscriptionCapabilitiesResponse } from '../../types/subscriptions';
 import { usePolling } from '../../hooks/usePolling';
@@ -77,6 +77,57 @@ function symediaTodayComposition(summary: SymediaSummary | null) {
 function sparkPoints(values: number[]) {
   const max = Math.max(1, ...values);
   return values.map((value, index) => `${index * (200 / Math.max(1, values.length - 1))},${34 - (value / max) * 30}`).join(' ');
+}
+
+function torraSubscriptionModeText(summary: TorraSummary) {
+  const modes = summary.searchAutomation?.subscriptionModes;
+  if (!modes) return '订阅级模式暂未确认';
+  if (modes.state !== 'confirmed') return `订阅级模式暂未确认 · ${modes.counts.unknown} 条未分类`;
+  return `RSS 优先 ${modes.counts.rssPreferred ?? '暂未确认'} · 自动搜索 ${modes.counts.automaticSearch ?? '暂未确认'}`;
+}
+
+const TORRA_BATCH_MODE_LABELS: Record<TorraSearchBatch['mode'], string> = {
+  rss: 'RSS 批次',
+  automatic_search: '自动搜索批次',
+  unknown: '模式暂未确认'
+};
+
+const TORRA_BATCH_STATUS_LABELS: Record<TorraSearchBatch['status'], string> = {
+  pending: '等待中',
+  queued: '排队中',
+  running: '运行中',
+  success: '已完成',
+  failed: '运行失败',
+  cancelled: '已取消',
+  unknown: '状态暂未确认'
+};
+
+function torraRecentBatchText(summary: TorraSummary) {
+  const automation = summary.searchAutomation;
+  if (!automation || automation.recentBatchState === 'unknown') return '最近批次暂未确认';
+  if (automation.recentBatchState === 'unsupported') return 'Torra 未提供可读批次历史';
+  const batch = automation.recentBatch;
+  if (!batch) return '未发现近期订阅批次';
+  const parts = [TORRA_BATCH_MODE_LABELS[batch.mode], TORRA_BATCH_STATUS_LABELS[batch.status]];
+  if (batch.subscriptionCount != null) parts.push(`${batch.subscriptionCount} 条订阅`);
+  if (batch.estimatedSiteRequests != null) parts.push(`${batch.estimatedSiteRequests} 次站点请求`);
+  if (batch.startedAt) parts.push(formatTimeAgo(batch.startedAt));
+  return parts.join(' · ');
+}
+
+function torraAdjustmentPreviewText(summary: TorraSummary) {
+  const preview = summary.searchAutomation?.adjustmentPreview;
+  if (!preview) return '调整范围暂未确认';
+  if (preview.canApply) return `${preview.eligibleSubscriptions} 条订阅可调整`;
+  return `${preview.reasonText} · ${preview.blockedSubscriptions} 条待确认`;
+}
+
+function torraScheduleText(schedule: TorraSearchSchedule | null, state: 'confirmed' | 'unsupported' | 'unknown') {
+  if (state === 'unsupported') return 'Torra 未提供调度读取端点';
+  if (state === 'unknown') return '调度状态暂未确认';
+  if (!schedule) return '未注册';
+  const status = schedule.enabled === true ? '已启用' : schedule.enabled === false ? '已停用' : '启用状态暂未确认';
+  return schedule.nextRunAt ? `${status} · 下次 ${formatTimeAgo(schedule.nextRunAt)}` : status;
 }
 
 export function ControlRoom() {
@@ -192,6 +243,7 @@ export function ControlRoom() {
     const washSummary = symedia?.washSummary;
     const availableCapabilities = SYMEDIA_CAPABILITY_LABELS.filter(([key]) => symedia?.capabilities?.[key].state === 'available').length;
     const recentEntry = emby?.recent?.[0];
+    const torraAutomation = torra?.searchAutomation;
 
     return [
       {
@@ -201,8 +253,21 @@ export function ControlRoom() {
         checked: torra ? formatTimeAgo(torra.lastCheckedAt) : servicesLoaded ? '本次检查未返回' : '等待首次检查',
         facts: torra?.connected ? [
           { label: '完成情况', value: `已完结 ${torra.counts.completed}` },
-          { label: '搜索任务', value: torra.counts.running ? `${torra.counts.running} 个正在进行` : '当前无搜索任务' }
+          { label: '当前运行', value: torra.counts.running ? `${torra.counts.running} 条订阅正在执行` : '当前无订阅任务执行' },
+          { label: '订阅搜索策略', value: torraSubscriptionModeText(torra) },
+          { label: '最近订阅批次', value: torraRecentBatchText(torra) },
+          { label: 'RSS 优先预览', value: torraAdjustmentPreviewText(torra) }
         ] : [{ label: '连接说明', value: torra?.error || (servicesLoaded ? '服务状态接口暂不可用' : '正在读取 Torra 状态') }],
+        diagnostics: torra?.connected ? [
+          { label: '订阅模式证据', value: torraAutomation?.subscriptionModes.reasonCode || 'TORRA_SEARCH_AUTOMATION_NOT_AVAILABLE' },
+          { label: 'RSS 批次调度', value: torraScheduleText(torraAutomation?.schedules.rss ?? null, torraAutomation?.schedules.state ?? 'unknown') },
+          { label: '自动搜索调度', value: torraScheduleText(torraAutomation?.schedules.automaticSearch ?? null, torraAutomation?.schedules.state ?? 'unknown') },
+          { label: '批次证据状态', value: torraAutomation?.recentBatchReasonCode || torraAutomation?.recentBatchState || 'unknown' },
+          { label: '调整预览原因', value: torraAutomation?.adjustmentPreview.reasonCode || 'TORRA_SEARCH_AUTOMATION_NOT_AVAILABLE' }
+        ] : undefined,
+        impactText: torra?.connected
+          ? '订阅与批次事实只读；模式无法确认时不会生成调整动作'
+          : undefined,
         icon: <Rss aria-hidden="true" size={20} />, toolUrl: torra?.webUrl || ''
       },
       {

@@ -121,6 +121,8 @@ RSS 匹配响应可选增加 `torraLinked/targetKey/artifactKey/ruleId/ruleHash/
 
 自动 RSS 收集、历史匹配和观察单元回扫只执行本地候选评分，读取 Torra 正式只读规则接口，不调用 Torra 订阅分析或下载。人工 `POST /api/v2/rss-matches/:id/torra-rewash-analyses` 仍是显式的整订阅搜索兜底；它与影子评分是两条独立动作，不能把人工搜索结果冒充为当前 RSS 候选评分。
 
+`GET /api/torra/summary` 在保留原 `configured/connected/webUrl/lastCheckedAt/counts/error` 的基础上可选增加 `searchAutomation`。该对象只读取 Torra 正式 `GET /api/v1/jobs`、`GET /api/v1/jobs/{id}` 和 `GET /api/v1/jobs/schedules`；单次订阅批次模式只接受 job detail 中明确的 `auto/rss`，不得从任务标题、展示文案或运行中数量推测。当前 Torra 订阅模型没有公开永久搜索模式字段，因此 `subscriptionModes.state=unsupported`，RSS 优先 `adjustmentPreview` 固定阻断并只返回公开计数与稳定原因码。`recentBatch` 可以返回 `mode/status/trigger/startedAt/finishedAt/subscriptionCount/estimatedSiteRequests`，其中数量只有上游明确字段或内部订阅 ID 列表长度可证实时才非空；响应不包含 job ID、订阅 ID、目录、下载器、URL、Cookie 或 Passkey。上游端点不存在与本次读取失败分别使用 `unsupported/unknown`，不影响原 Torra 连接和订阅计数。
+
 首页、任务、追更和日历响应可以增加可选 `statisticsMeta`。每个统计键对应 `{scope, unit, observedAt, confirmation}`；`confirmation` 固定为 `confirmed/partial/unknown`。该对象只描述旧数值字段的统计口径，不改变原数值和状态码；`unknown` 表示当前不能可靠解释数值，前端不得把兼容默认零显示为真实零，`partial` 保留可确认的数值并明确其证据不完整。不同 `scope` 的同名指标无需相等。
 
 P0.4 可选增加 `mediaResult` 与 `residualIssues`。`mediaResult` 只取目标范围内已验证的最高下游成功阶段：Symedia 表示已整理入库，STRM 表示播放入口已生成，Emby 精确目标命中表示已可播放；系统分类事实不能生成媒体结果。`residualIssues` 只列出不会推翻已确认下游结果的上游明确失败，计划中的自动恢复不计入遗留问题。没有下游成功事实时，原 `pipelineOutcome` 仍负责“需要处理”；旧字段继续由新结果单向投影。

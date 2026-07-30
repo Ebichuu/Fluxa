@@ -80,7 +80,11 @@ class TorraReadRuntimeContractTests(unittest.TestCase):
             {"id": "completed", "enabled": True, "completed": True},
             {"id": "disabled", "enabled": False, "completed": False, "is_running": True},
         ]
-        session = FakeSession([FakeResponse(payload={"data": {"subscriptions": rows}})])
+        session = FakeSession([
+            FakeResponse(payload={"data": {"subscriptions": rows}}),
+            FakeResponse(status=404, payload={}),
+            FakeResponse(status=404, payload={}),
+        ])
         client = TorraReadClient(
             TorraReadConfig(base_url="http://torra.example.test:9029/", token="fixed-token"),
             session=session,
@@ -95,9 +99,177 @@ class TorraReadRuntimeContractTests(unittest.TestCase):
             "webUrl": "http://torra.example.test:9029",
             "lastCheckedAt": "2026-07-16T11:00:00.000Z",
             "counts": {"total": 3, "active": 1, "completed": 1, "running": 1},
+            "searchAutomation": {
+                "capabilityState": "unsupported",
+                "subscriptionModes": {
+                    "state": "unsupported",
+                    "counts": {
+                        "rssPreferred": None,
+                        "automaticSearch": None,
+                        "unknown": 3,
+                    },
+                    "reasonCode": "TORRA_SUBSCRIPTION_MODE_NOT_EXPOSED",
+                    "reasonText": "Torra 未提供可确认的订阅级搜索模式",
+                },
+                "schedules": {
+                    "state": "unsupported",
+                    "rss": None,
+                    "automaticSearch": None,
+                    "reasonCode": "TORRA_SCHEDULES_ENDPOINT_UNAVAILABLE",
+                },
+                "recentBatchState": "unsupported",
+                "recentBatch": None,
+                "recentBatchReasonCode": "TORRA_BATCH_HISTORY_ENDPOINT_UNAVAILABLE",
+                "adjustmentPreview": {
+                    "state": "blocked",
+                    "canApply": False,
+                    "eligibleSubscriptions": 0,
+                    "blockedSubscriptions": 3,
+                    "reasonCode": "TORRA_SUBSCRIPTION_MODE_NOT_EXPOSED",
+                    "reasonText": "无法安全确认哪些订阅可调整为 RSS 优先",
+                },
+            },
         })
         self.assertEqual(session.requests[0][1], "/api/v1/subscriptions")
         self.assertEqual(session.requests[0][2]["headers"]["Authorization"], "Bearer fixed-token")
+
+    def test_summary_reads_official_search_batch_evidence_without_exposing_ids(self):
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        rows = [
+            {"id": "remote-subscription-a", "enabled": True, "completed": False},
+            {"id": "remote-subscription-b", "enabled": True, "completed": False},
+        ]
+        session = FakeSession([
+            FakeResponse(payload={"data": {"subscriptions": rows}}),
+            FakeResponse(payload={"data": {"items": [
+                {
+                    "id": "subscription_batch:rss",
+                    "enabled": True,
+                    "last_run_at": "2026-07-30T08:00:00+08:00",
+                    "next_run_at": "2026-07-30T08:30:00+08:00",
+                },
+                {
+                    "id": "subscription_batch:auto",
+                    "enabled": False,
+                    "last_run_at": "2026-07-29T08:00:00+08:00",
+                    "next_run_at": "",
+                },
+            ]}}),
+            FakeResponse(payload={"data": {"items": [
+                {
+                    "id": "private-job-id",
+                    "kind": "subscription.batch_run",
+                    "status": "success",
+                    "trigger_source": "scheduler",
+                    "created_at": "2026-07-30T08:00:00+08:00",
+                    "started_at": "2026-07-30T08:00:01+08:00",
+                    "finished_at": "2026-07-30T08:03:00+08:00",
+                },
+            ]}}),
+            FakeResponse(payload={"data": {
+                "id": "private-job-id",
+                "kind": "subscription.batch_run",
+                "status": "success",
+                "trigger_source": "scheduler",
+                "started_at": "2026-07-30T08:00:01+08:00",
+                "finished_at": "2026-07-30T08:03:00+08:00",
+                "payload": {
+                    "mode_override": "rss",
+                    "subscription_ids": ["remote-subscription-a", "remote-subscription-b"],
+                },
+                "result": {
+                    "subscription_count": 2,
+                    "site_request_count": 6,
+                },
+            }}),
+        ])
+        client = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+            clock=lambda: datetime(2026, 7, 30, 0, 5, tzinfo=timezone.utc),
+        )
+
+        summary = client.get_summary()
+
+        automation = summary["searchAutomation"]
+        self.assertEqual(automation["capabilityState"], "partial")
+        self.assertEqual(automation["subscriptionModes"]["counts"], {
+            "rssPreferred": None,
+            "automaticSearch": None,
+            "unknown": 2,
+        })
+        self.assertEqual(automation["schedules"], {
+            "state": "confirmed",
+            "rss": {
+                "registered": True,
+                "enabled": True,
+                "lastRunAt": "2026-07-30T08:00:00+08:00",
+                "nextRunAt": "2026-07-30T08:30:00+08:00",
+            },
+            "automaticSearch": {
+                "registered": True,
+                "enabled": False,
+                "lastRunAt": "2026-07-29T08:00:00+08:00",
+                "nextRunAt": "",
+            },
+            "reasonCode": "",
+        })
+        self.assertEqual(automation["recentBatchState"], "confirmed")
+        self.assertEqual(automation["recentBatch"], {
+            "mode": "rss",
+            "status": "success",
+            "trigger": "scheduler",
+            "startedAt": "2026-07-30T08:00:01+08:00",
+            "finishedAt": "2026-07-30T08:03:00+08:00",
+            "subscriptionCount": 2,
+            "estimatedSiteRequests": 6,
+        })
+        self.assertEqual(automation["adjustmentPreview"]["blockedSubscriptions"], 2)
+        self.assertNotIn("private-job-id", str(summary))
+        self.assertNotIn("remote-subscription-a", str(summary))
+        self.assertEqual(
+            [(request[0], request[1]) for request in session.requests],
+            [
+                ("GET", "/api/v1/subscriptions"),
+                ("GET", "/api/v1/jobs/schedules"),
+                ("GET", "/api/v1/jobs"),
+                ("GET", "/api/v1/jobs/private-job-id"),
+            ],
+        )
+
+    def test_search_batch_unknown_mode_is_not_inferred_from_titles(self):
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        session = FakeSession([
+            FakeResponse(payload={"data": {"subscriptions": [{"id": "remote-a"}]}}),
+            FakeResponse(payload={"data": []}),
+            FakeResponse(payload={"data": {"items": [{
+                "id": "job-a",
+                "kind": "subscription.batch_run",
+                "status": "running",
+                "display_name": "RSS 自动搜索批次",
+                "created_at": "2026-07-30T09:00:00+08:00",
+            }]}}),
+            FakeResponse(payload={"data": {
+                "id": "job-a",
+                "kind": "subscription.batch_run",
+                "status": "running",
+                "display_name": "RSS 自动搜索批次",
+                "payload": {"subscription_ids": ["remote-a"]},
+            }}),
+        ])
+        client = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+        )
+
+        automation = client.get_summary()["searchAutomation"]
+
+        self.assertEqual(automation["recentBatchState"], "confirmed")
+        self.assertEqual(automation["recentBatch"]["mode"], "unknown")
+        self.assertEqual(automation["recentBatch"]["subscriptionCount"], 1)
+        self.assertNotIn("RSS 自动搜索批次", str(automation))
 
     def test_password_auth_relogs_once_after_unauthorized(self):
         from app.torra_read_runtime import TorraReadClient, TorraReadConfig
