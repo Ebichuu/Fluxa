@@ -14,6 +14,7 @@ import {
   Search,
   Send,
   ServerCog,
+  ShieldCheck,
   Trash2,
   X
 } from 'lucide-react';
@@ -25,6 +26,7 @@ import {
   getRssSeedItem,
   getRssSeedItems,
   getRssSources,
+  previewRssExactDownload,
   runRssMatcher,
   saveRssSource,
   startRssMatchAnalysis,
@@ -32,7 +34,7 @@ import {
   testRssSource
 } from '../../services/api';
 import { writeUrlQuery, type UrlHistoryMode } from '../../app/urlState';
-import type { AutomationAction, RssIdentityStatus, RssLibrarySummary, RssMatch, RssMatchGroup, RssSeedItem, RssSource, RssSourceInput } from '../../types/rssSeedLibrary';
+import type { AutomationAction, RssExactDownloadPreview, RssIdentityStatus, RssLibrarySummary, RssMatch, RssMatchGroup, RssSeedItem, RssSource, RssSourceInput } from '../../types/rssSeedLibrary';
 import {
   classifyRssResourceScope,
   countRssResourceScopes,
@@ -328,6 +330,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const [matchesOffset, setMatchesOffset] = useState(0);
   const [matchesLoading, setMatchesLoading] = useState(false);
   const [matchActions, setMatchActions] = useState<Record<string, AutomationAction>>({});
+  const [exactPreviews, setExactPreviews] = useState<Record<string, RssExactDownloadPreview>>({});
   const [matchPollTimedOut, setMatchPollTimedOut] = useState<Record<string, boolean>>({});
   const [matchBusy, setMatchBusy] = useState('');
   const [downloadTarget, setDownloadTarget] = useState<{ match: RssMatch; analysis: AutomationAction } | null>(null);
@@ -427,6 +430,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
         throw new Error('候选组接口暂未可用，请确认前后端版本一致');
       }
       setMatchGroups(payload.groups);
+      setExactPreviews({});
       setMatchesTotal(payload.total);
       setMatchesOffset(payload.offset);
       const groupedMatches = payload.groups.flatMap((group) => group.candidates);
@@ -610,6 +614,27 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
         void pollMatchAction(match.id, action.id);
       })
       .catch((reason: unknown) => setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : 'RSS 匹配分析提交失败' }))
+      .finally(() => setMatchBusy(''));
+  };
+
+  const previewExactDownload = (match: RssMatch) => {
+    setMatchBusy(`exact-preview:${match.id}`);
+    previewRssExactDownload(match.id)
+      .then((preview) => {
+        setExactPreviews((current) => ({ ...current, [match.id]: preview }));
+        const providerBlocker = preview.blockers.find(
+          (blocker) => blocker.code === 'TORRA_EXACT_RESOURCE_ENDPOINT_UNAVAILABLE'
+        );
+        const primary = providerBlocker || preview.blockers[0];
+        setFeedback({
+          tone: preview.ready ? 'ok' : 'error',
+          message: primary?.message || (preview.ready ? '精准下载预检通过' : '精准下载预检未通过')
+        });
+      })
+      .catch((reason: unknown) => setFeedback({
+        tone: 'error',
+        message: reason instanceof Error ? reason.message : '精准下载预检失败'
+      }))
       .finally(() => setMatchBusy(''));
   };
 
@@ -918,6 +943,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                 if (!match) return null;
                 const seed = items.find((item) => item.id === match.itemId);
                 const action = matchActions[match.id];
+                const exactPreview = exactPreviews[match.id];
                 const pollTimedOut = Boolean(matchPollTimedOut[match.id]);
                 const actionRunning = action && !pollTimedOut && !['succeeded', 'failed', 'cancelled'].includes(action.status);
                 const selectedCount = action?.type === 'rewash-analysis' && action.status === 'succeeded' ? action.result?.selectedCount ?? 0 : 0;
@@ -931,6 +957,28 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                       <strong>{group.title || match.itemTitle || seed?.title || '已匹配到一条追更内容'} · {group.episodeLabel}</strong>
                       <small>{candidateGroupScoreLabel(group)}</small>
                       <span className="rss-match-status">{shadowEvaluationLabel(match)}</span>
+                      {group.state === 'upgrade_available' && (
+                        <button
+                          className="ops-link rss-exact-preview"
+                          disabled={Boolean(matchBusy)}
+                          title="只读复核订阅、规则、基线和下载器状态"
+                          type="button"
+                          onClick={() => previewExactDownload(match)}
+                        >
+                          <ShieldCheck size={13} />
+                          {matchBusy === `exact-preview:${match.id}` ? '正在预检' : '精准下载预检'}
+                        </button>
+                      )}
+                      {exactPreview && (
+                        <small className="rss-match-status rss-match-status--error">
+                          精准下发不可用 · {
+                            exactPreview.blockers.find((blocker) => blocker.code === 'TORRA_EXACT_RESOURCE_ENDPOINT_UNAVAILABLE')?.message
+                            || exactPreview.blockers[0]?.message
+                            || '预检未通过'
+                          }
+                          {exactPreview.blockers.length > 1 ? ` · 另有 ${exactPreview.blockers.length - 1} 项未通过` : ''}
+                        </small>
+                      )}
                       {(action || pollTimedOut) && <small className={action?.status === 'failed' || pollTimedOut ? 'rss-match-status rss-match-status--error' : 'rss-match-status'}>{pollTimedOut ? '人工 Torra 分析状态确认超时' : `人工 Torra 分析 · ${matchActionLabel(action, match.status)}`}</small>}
                       <details className="rss-candidate-group__details">
                         <summary>查看 {group.candidateCount} 个候选版本</summary>

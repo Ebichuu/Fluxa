@@ -1122,6 +1122,11 @@
   color: var(--ops-rose) !important;
 }
 
+.rss-exact-preview {
+  width: fit-content;
+  margin-top: 2px;
+}
+
 .rss-candidate-group__details {
   margin-top: 4px;
   padding-top: 7px;

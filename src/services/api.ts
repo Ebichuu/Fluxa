@@ -11,6 +11,7 @@ import type { RuntimeSettingsResponse, RuntimeSettingsUpdate } from '../types/ru
 import type {
   AutomationAction,
   CreateRssMatchInput,
+  RssExactDownloadPreview,
   RssIdentityBackfillResponse,
   RssMatch,
   RssMatchGroupListResponse,
@@ -651,6 +652,17 @@ export function startRssMatchAnalysis(
   return postJson<AutomationAction>(
     `/api/v2/rss-matches/${encodeURIComponent(matchId)}/torra-rewash-analyses`,
     { idempotencyKey },
+    options
+  );
+}
+
+export function previewRssExactDownload(
+  matchId: string,
+  options?: RequestOptions
+): Promise<RssExactDownloadPreview> {
+  return postJson<RssExactDownloadPreview>(
+    `/api/v2/rss-matches/${encodeURIComponent(matchId)}/exact-download-previews`,
+    {},
     options
   );
 }

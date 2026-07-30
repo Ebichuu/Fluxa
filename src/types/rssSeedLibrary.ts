@@ -264,6 +264,23 @@ export interface RssMatchGroupListResponse {
   offset: number;
 }
 
+export interface RssExactDownloadPreview {
+  status: 'blocked' | 'ready' | string;
+  ready: boolean;
+  capabilityState: 'unsupported' | 'available' | string;
+  matchId: string;
+  targetKey?: string;
+  versionSummary?: string;
+  candidateScore?: number | null;
+  baselineScore?: number | null;
+  scoreGain?: number | null;
+  blockers: Array<{
+    code: string;
+    message: string;
+  }>;
+  observedAt: string;
+}
+
 export interface CreateRssMatchInput {
   rssItemId: string;
   subscriptionId: string;

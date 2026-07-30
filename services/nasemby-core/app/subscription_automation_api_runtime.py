@@ -91,6 +91,26 @@ def register_subscription_automation(app, service):
     def rss_match_rewash_analysis(match_id):
         return execute(lambda: _accepted_response(service.create_rss_analysis(match_id, request.get_json(silent=True))))
 
+    @app.post("/api/v2/rss-matches/<match_id>/exact-download-previews")
+    def rss_match_exact_download_preview(match_id):
+        def preview():
+            if not service.rss_runtime:
+                raise AutomationApiError("RSS_MATCH_RUNTIME_UNAVAILABLE", "RSS 匹配运行时不可用", 503)
+            body = request.get_json(silent=True)
+            if not isinstance(body, dict):
+                raise AutomationApiError(
+                    "SUBSCRIPTION_AUTOMATION_FIELDS_INVALID",
+                    "请求必须是 JSON 空对象",
+                    422,
+                )
+            service._validate_fields(body, set())
+            result = service.rss_runtime.preview_exact_download(match_id)
+            if result.get("status") == "missing":
+                raise AutomationApiError("RSS_MATCH_NOT_FOUND", "RSS 匹配不存在", 404)
+            return jsonify(result)
+
+        return execute(preview)
+
     @app.post("/api/v2/rss-matches/<match_id>/torra-rewashes")
     def rss_match_rewash_download(match_id):
         def create():

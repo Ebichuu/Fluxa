@@ -1410,6 +1410,202 @@ class RssSubscriptionMatchRuntime:
             match["id"] for match in evaluated
         ])
 
+    def preview_exact_download(self, match_id):
+        match = self.rss_repository.get_match(match_id)
+        if not match:
+            return {"status": "missing"}
+
+        blockers = []
+
+        def add_blocker(code, message):
+            if not any(row["code"] == code for row in blockers):
+                blockers.append({"code": code, "message": message})
+
+        candidate_score = match.get("candidateScore")
+        baseline_score = match.get("baselineScore")
+        candidate_score = (
+            float(candidate_score)
+            if isinstance(candidate_score, (int, float)) and not isinstance(candidate_score, bool)
+            else None
+        )
+        baseline_score = (
+            float(baseline_score)
+            if isinstance(baseline_score, (int, float)) and not isinstance(baseline_score, bool)
+            else None
+        )
+        if match.get("evaluationStatus") != "scored":
+            add_blocker("RSS_EXACT_SCORE_UNCONFIRMED", "候选评分暂未确认")
+        if not match.get("bestCandidate") or match.get("decision") != "current_best":
+            add_blocker("RSS_EXACT_NOT_CURRENT_BEST", "当前候选不是该季集唯一最佳版本")
+        if candidate_score is None or baseline_score is None:
+            add_blocker("RSS_EXACT_BASELINE_UNCONFIRMED", "当前版本基线暂未确认")
+        elif candidate_score <= baseline_score:
+            add_blocker("RSS_EXACT_NOT_STRICT_UPGRADE", "候选分数没有严格高于当前版本")
+        if not match.get("torraLinked"):
+            add_blocker("RSS_EXACT_SUBSCRIPTION_UNCONFIRMED", "Torra 订阅绑定暂未确认")
+        if not _text(match.get("targetKey")) or not _text(match.get("artifactKey")):
+            add_blocker("RSS_EXACT_TARGET_UNCONFIRMED", "候选季集范围或产物身份暂未确认")
+        if match.get("status") == "confirmed" or _text(match.get("downloadActionId")):
+            add_blocker("RSS_EXACT_ALREADY_SUBMITTED", "该候选已经存在下载动作")
+
+        internal_match = self.rss_repository.get_match_internal(match["id"])
+        item = self.rss_repository.get_item(match.get("itemId"), public=False)
+        if not internal_match or not item:
+            add_blocker("RSS_EXACT_CONTEXT_UNAVAILABLE", "候选上下文当前不可读")
+        elif not _text(item.get("download_url")):
+            add_blocker("RSS_EXACT_RESOURCE_UNAVAILABLE", "RSS 来源没有提供可用下载资源")
+
+        torra = getattr(self.analysis, "torra", None) if self.analysis else None
+        qb = getattr(self.analysis, "qb", None) if self.analysis else None
+        torra_row = None
+        if torra is None:
+            add_blocker("RSS_EXACT_TORRA_UNAVAILABLE", "Torra 当前不可读")
+        elif not internal_match or not item:
+            # Context is already reported above; do not dereference partial
+            # matches or perform unrelated upstream reads.
+            pass
+        else:
+            try:
+                if hasattr(torra, "is_configured") and not torra.is_configured():
+                    raise RuntimeError("torra unavailable")
+                torra_rows = torra.list_subscriptions()
+                rules = torra.list_meta_weight_rules()
+            except Exception:
+                add_blocker("RSS_EXACT_TORRA_UNAVAILABLE", "Torra 订阅或规则当前不可读")
+            else:
+                context, context_error = self._subscription_context(
+                    internal_match.get("subscription_key") if internal_match else "",
+                    torra_rows=torra_rows,
+                )
+                if context_error or not context:
+                    add_blocker("RSS_EXACT_SUBSCRIPTION_UNCONFIRMED", "Torra 订阅绑定暂未确认")
+                else:
+                    unit, torra_row, unit_error = self._evaluation_unit(
+                        internal_match,
+                        context,
+                        torra_rows,
+                    )
+                    if unit_error or not unit or not torra_row:
+                        add_blocker("RSS_EXACT_SUBSCRIPTION_UNCONFIRMED", "Torra 订阅季集目标暂未确认")
+                    elif not self._evaluation_identity_valid(item, context["subscription"], torra_row):
+                        add_blocker("RSS_EXACT_IDENTITY_UNCONFIRMED", "作品身份与 Torra 订阅当前不一致")
+                    elif not self._torra_owner_matches(context["subscription"], unit, torra_row):
+                        add_blocker("RSS_EXACT_SUBSCRIPTION_UNCONFIRMED", "Torra 订阅所有权当前不一致")
+                    elif not self._candidate(item, context["subscription"], unit):
+                        add_blocker("RSS_EXACT_TARGET_UNCONFIRMED", "候选季集范围与当前订阅不一致")
+                    elif (
+                        rss_target_key(item) != _text(match.get("targetKey"))
+                        or rss_artifact_key(item) != _text(match.get("artifactKey"))
+                    ):
+                        add_blocker("RSS_EXACT_TARGET_CHANGED", "候选季集范围或产物身份已经变化")
+                    else:
+                        rule, rule_error = select_subscription_rule(
+                            rules,
+                            {**context["subscription"], **torra_row},
+                        )
+                        if not rule:
+                            add_blocker("RSS_EXACT_RULE_UNCONFIRMED", "适用 Torra 规则暂未确认")
+                        else:
+                            current_rule_hash = stable_payload_hash(rule)
+                            if current_rule_hash != _text(match.get("ruleHash")):
+                                add_blocker("RSS_EXACT_RULE_CHANGED", "Torra 规则已经变化，需要重新评分")
+                            try:
+                                current_candidate = score_rss_candidate(rule, item)
+                            except ShadowScoringUnsupported:
+                                add_blocker("RSS_EXACT_SCORE_UNCONFIRMED", "候选无法使用当前 Torra 规则重新评分")
+                            else:
+                                if candidate_score is None or float(current_candidate["score"]) != candidate_score:
+                                    add_blocker("RSS_EXACT_SCORE_CHANGED", "候选评分已经变化，需要重新确认冠军")
+
+                            qb_summary = {}
+                            if qb is None:
+                                add_blocker("RSS_EXACT_QB_UNAVAILABLE", "qB 当前不可读")
+                            else:
+                                try:
+                                    qb_summary = qb.summary()
+                                except Exception:
+                                    qb_summary = {}
+                                if not isinstance(qb_summary, dict) or qb_summary.get("connected") is not True:
+                                    add_blocker("RSS_EXACT_QB_UNAVAILABLE", "qB 当前不可读")
+                                    qb_summary = {}
+                                elif any(
+                                    qb_task_matches(task, context["subscription"], unit)
+                                    for task in qb_summary.get("tasks") or []
+                                    if isinstance(task, dict)
+                                ):
+                                    add_blocker("RSS_EXACT_QB_BUSY", "当前季集已有 qB 下载任务")
+
+                            symedia_rows = []
+                            symedia = getattr(self.analysis, "symedia", None) if self.analysis else None
+                            if symedia is not None:
+                                try:
+                                    page = symedia.list_transfer_history(200)
+                                    if isinstance(page, dict) and isinstance(page.get("rows"), list):
+                                        symedia_rows = page["rows"]
+                                except Exception:
+                                    symedia_rows = []
+                            resolved = resolve_baseline_artifact(
+                                context["subscription"],
+                                torra_row,
+                                unit,
+                                qb_summary=qb_summary,
+                                symedia_rows=symedia_rows,
+                            )
+                            baseline_summary = (
+                                match.get("baselineSummary")
+                                if isinstance(match.get("baselineSummary"), dict)
+                                else {}
+                            )
+                            if resolved.get("status") != "ready":
+                                add_blocker("RSS_EXACT_BASELINE_UNCONFIRMED", "当前版本无法从最新证据重新确认")
+                            elif _text(resolved.get("artifactKey")) != _text(baseline_summary.get("artifactKey")):
+                                add_blocker("RSS_EXACT_BASELINE_CHANGED", "当前已入库版本已经变化，需要重新建立基线")
+                            else:
+                                try:
+                                    current_baseline = score_rss_candidate(rule, {
+                                        "title": resolved.get("versionSummary"),
+                                        "size_bytes": resolved.get("sizeBytes"),
+                                    })
+                                except ShadowScoringUnsupported:
+                                    add_blocker("RSS_EXACT_BASELINE_UNCONFIRMED", "当前版本无法使用最新 Torra 规则评分")
+                                else:
+                                    if baseline_score is None or float(current_baseline["score"]) != baseline_score:
+                                        add_blocker("RSS_EXACT_BASELINE_CHANGED", "当前版本分数已经变化，需要重新建立基线")
+
+                    if torra_row and (
+                        torra_row.get("is_running") is True
+                        or torra_row.get("is_mutating") is True
+                    ):
+                        add_blocker("RSS_EXACT_TORRA_BUSY", "Torra 当前正在处理该订阅")
+
+        add_blocker(
+            "TORRA_EXACT_RESOURCE_ENDPOINT_UNAVAILABLE",
+            "Torra 未提供订阅绑定的指定 RSS 资源入口",
+        )
+        observed_at = _as_utc(self.clock()) or datetime.now(timezone.utc)
+        candidate_summary = (
+            match.get("candidateSummary")
+            if isinstance(match.get("candidateSummary"), dict)
+            else {}
+        )
+        return {
+            "status": "blocked",
+            "ready": False,
+            "capabilityState": "unsupported",
+            "matchId": match["id"],
+            "targetKey": _text(match.get("targetKey")),
+            "versionSummary": _text(candidate_summary.get("versionSummary"))[:240],
+            "candidateScore": candidate_score,
+            "baselineScore": baseline_score,
+            "scoreGain": (
+                candidate_score - baseline_score
+                if candidate_score is not None and baseline_score is not None
+                else None
+            ),
+            "blockers": blockers,
+            "observedAt": observed_at.isoformat().replace("+00:00", "Z"),
+        }
+
     def backfill_watch_unit(self, unit_key, limit=200):
         unit = self.watch_repository.get_watch_unit(unit_key)
         if not unit:

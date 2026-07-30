@@ -4,7 +4,7 @@
 路由数量：47  
 运行实现：Python / Flask
 
-新增能力使用真正的 URL 版本契约：`docs/contracts/http-api-contract-v2.json`，当前共 70 条。v1 的 47 条冻结路径和历史状态码不变。
+新增能力使用真正的 URL 版本契约：`docs/contracts/http-api-contract-v2.json`，当前共 71 条。v1 的 47 条冻结路径和历史状态码不变。
 
 ## 1. 版本规则
 
@@ -194,7 +194,7 @@ NasEmby 原静态管理页不注册为第二套生产页面，迁移期静态快
 
 ## 9. HTTP v2 契约
 
-当前 47 条 v1 契约不承担新增语义。70 条 `/api/v2` 接口包括：
+当前 47 条 v1 契约不承担新增语义。71 条 `/api/v2` 接口包括：
 
 - 当前 React 使用：集成脱敏摘要、Torra 单条预览/推送、缓存系统指标、私人 RSS 来源管理、本地种子库和管理员运行时配置。
 - 发现候选闭环：独立候选列表、只读加入预览和确认加入追更；候选不进入追更与日历，只有人工确认后才创建追更意图。
@@ -248,6 +248,7 @@ v2 新增响应字段允许向后兼容扩展；删除字段、改变类型或�
 - `PATCH /api/v2/subscriptions/:id/quality-watch`
 - `POST /api/v2/rss-matches/:id/torra-rewash-analyses`
 - `POST /api/v2/rss-matches/:id/torra-rewashes`
+- `POST /api/v2/rss-matches/:id/exact-download-previews`
 
 后台 RSS 即时分析与有限主动兜底已经实现，但它们不是 HTTP 接口：可靠 `candidate` 只有在 RSS 与追更洗版双闸门、SQLite 设置、观察窗口、Torra/qB 空闲、冷却和小时/每日限额全部通过时，才创建固定幂等的一次性分析动作；RSS 无命中时，协调器按 SQLite 时间表、批量 2、公平游标和全局并发 1 做有限检查。动作保存外部 job 后仅续查原任务，分析结果不会自动下载。人工接口只允许从服务端已完成分析动作读取分析 ID 与候选映射，下载还必须通过独立下载闸门。
 
@@ -255,9 +256,11 @@ v2 新增响应字段允许向后兼容扩展；删除字段、改变类型或�
 
 动作查询需要同时表达媒体控制中心本地状态和 Torra 外部 job 状态。服务重启后如果动作已经保存 Torra job ID，只能继续轮询原 job，不能重复提交。全局和单条设置中的 `window_hours` 只接受 `24` 或 `48`；时间点不得超过窗口，否则返回 `422`。当前集窗口到期不再自动搜索，下一集建立新窗口。计划状态码为：读取和 PATCH 成功 `200`、异步动作已创建 `202`、并发或幂等冲突 `409`、语义不合法 `422`、限频 `429`、上游失败 `502`、功能闸门关闭 `503`；错误不能包装在 `200` 中。以上约束已固化在 `docs/contracts/http-api-contract-v2.json`，并由契约测试逐条校验。
 
+`POST /api/v2/rss-matches/:id/exact-download-previews` 是阶段 C0 的无写入预检。请求必须是 JSON 空对象；服务端重新读取匹配、冠军、严格分差、订阅绑定、当前 Torra 规则、候选评分、基线、qB 活动任务和 Torra 忙碌状态，只返回公开匹配 ID、规范目标、脱敏版本摘要、分数和稳定阻断码。预检不创建动作、不调用 Torra 分析或下载，也不返回 RSS 下载地址、目录、下载器 ID、Torra 原始 ID、Cookie 或 Passkey。当前 Torra 正式接口只能下载其自身分析会话候选，没有订阅绑定的指定 RSS 资源入口，因此成功读取的预检固定以 `200` 返回业务结果 `status=blocked / ready=false / capabilityState=unsupported`，并包含 `TORRA_EXACT_RESOURCE_ENDPOINT_UNAVAILABLE`；这不是 HTTP 错误。匹配不存在返回 `404`，请求体不是空对象返回 `422`，运行时不可用返回 `503`。在 Torra 提供正式订阅绑定入口前，不开放精准下发和自动洗版。
+
 ## 13. 已实现的私人 PT RSS 种子库接口
 
-以下接口已经进入当前 70 条 v2 机器契约和 React：
+以下接口已经进入当前 71 条 v2 机器契约和 React：
 
 - `GET /api/v2/rss-sources`
 - `POST /api/v2/rss-sources`
@@ -272,6 +275,7 @@ v2 新增响应字段允许向后兼容扩展；删除字段、改变类型或�
 - `GET /api/v2/rss-matches`
 - `GET /api/v2/rss-matches/:id`
 - `POST /api/v2/rss-matches`
+- `POST /api/v2/rss-matches/:id/exact-download-previews`
 - `GET /api/v2/automation-actions/:id`
 
 私人 RSS 和下载地址按用户选择在 SQLite 中明文保存，但所有读取响应、错误和日志都不得返回完整地址或 Passkey。来源创建返回 `201 + Location`，删除成功返回 `204`；测试返回 `202`、动作 ID 和统一动作轮询 `Location`。来源和种子列表分页，重复来源返回 `409`，非法 RSS/周期/保留期或 `identityStatus` 返回 `422`，收集闸门关闭返回 `503`。RSS 收集闸门关闭只阻止测试和后台外部访问，本地来源配置 CRUD 不产生网络请求。

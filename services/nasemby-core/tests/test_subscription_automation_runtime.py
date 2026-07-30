@@ -510,6 +510,64 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
         self.assertEqual(listed[0]["triggerActionId"], accepted.get_json()["id"])
         self.assertNotIn("candidate-success", accepted.get_data(as_text=True))
 
+    def test_rss_exact_download_preview_is_read_only_and_rejects_unknown_fields(self):
+        calls = []
+
+        def preview(match_id):
+            calls.append(match_id)
+            if match_id == "missing":
+                return {"status": "missing"}
+            return {
+                "status": "blocked",
+                "ready": False,
+                "capabilityState": "unsupported",
+                "matchId": match_id,
+                "targetKey": "tv:tmdb:202:season:1:episodes:1-1",
+                "versionSummary": "Test.Show.S01E01.2160p.mkv",
+                "candidateScore": 30,
+                "baselineScore": 10,
+                "scoreGain": 20,
+                "blockers": [{
+                    "code": "TORRA_EXACT_RESOURCE_ENDPOINT_UNAVAILABLE",
+                    "message": "Torra 未提供订阅绑定的指定 RSS 资源入口",
+                }],
+                "observedAt": "2026-07-18T01:00:00Z",
+            }
+
+        self.rss_runtime.preview_exact_download = preview
+        response = self.client.post(
+            "/api/v2/rss-matches/public-match/exact-download-previews",
+            json={},
+        )
+        invalid = self.client.post(
+            "/api/v2/rss-matches/public-match/exact-download-previews",
+            json={"downloadUrl": "https://tracker.example/private"},
+        )
+        invalid_shape = self.client.post(
+            "/api/v2/rss-matches/public-match/exact-download-previews",
+            json=[],
+        )
+        missing = self.client.post(
+            "/api/v2/rss-matches/missing/exact-download-previews",
+            json={},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.get_json()["ready"])
+        self.assertEqual(response.get_json()["capabilityState"], "unsupported")
+        self.assertEqual(
+            response.get_json()["blockers"][0]["code"],
+            "TORRA_EXACT_RESOURCE_ENDPOINT_UNAVAILABLE",
+        )
+        self.assertEqual(invalid.status_code, 422)
+        self.assertEqual(invalid.get_json()["code"], "SUBSCRIPTION_AUTOMATION_FIELDS_INVALID")
+        self.assertEqual(invalid_shape.status_code, 422)
+        self.assertEqual(invalid_shape.get_json()["code"], "SUBSCRIPTION_AUTOMATION_FIELDS_INVALID")
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.get_json()["code"], "RSS_MATCH_NOT_FOUND")
+        self.assertEqual(calls, ["public-match", "missing"])
+        self.assertEqual((self.torra.analyses, self.torra.downloads), ([], []))
+
     def test_rss_match_download_rejects_expired_observation_window(self):
         match, analysis_id = self._rss_match_with_analysis("expired-window")
         self.environment["MCC_TORRA_REWASH_DOWNLOAD_ENABLED"] = "true"

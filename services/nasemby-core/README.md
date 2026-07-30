@@ -9,7 +9,7 @@
 - NasEmby 原发现、JustWatch 海外流媒体、订阅、日历、资源规则和调度源码。
 - SQLite 唯一订阅台账、独立发现候选池、Torra 已有订阅单向镜像、旧 JSON 一次性迁移、私人 PT RSS 本地种子索引、活动观察窗口匹配和订阅绑定规则影子评分。
 - 115、Telegram、HDHive / pansou、provider 等原核心能力与接口调用关系。
-- Torra 固定目标推送，以及只读权重规则、追更洗版人工分析、候选下载、job 状态解析、按集 Emby 基准、SQLite 幂等/租约和脱敏审计；自动 RSS 匹配只在 Fluxa 本地影子评分，不触发 Torra 整订阅搜索或下载。
+- Torra 固定目标推送，以及只读权重规则、追更洗版人工分析、候选下载、job 状态解析、按集 Emby 基准、SQLite 幂等/租约和脱敏审计；自动 RSS 匹配只在 Fluxa 本地影子评分，不触发 Torra 整订阅搜索或下载。订阅级精准下载当前只提供只读预检，并因 Torra 缺少订阅绑定的指定 RSS 资源入口而固定阻断。
 - 30 秒缓存的 NAS 系统指标，以及统一脱敏、可筛选的 v2 活动日志。
 - 115、Telegram、HDHive / pansou 和 MoviePilot 的 v2 细分接口继续保留；MoviePilot 阶段 7 已增加默认关闭的人工备用预览/推送，其他能力延期。
 - Emby、qBittorrent、Torra、Symedia 的服务端适配和凭据隔离；Symedia 摘要把 transfer history 与归档监控、云盘监听、Webhook、STRM、归档调度和文件观察分别建模。实机 `/api/v1/system/sync_stats` 只提供按日 STRM 数量，不能绑定媒体目标；STRM 独立结果继续保持 `unknown + NOT_INTEGRATED`。
@@ -110,6 +110,7 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/v2/rss-sources`、`/api/v2/rss-items`：私人 RSS 来源和本地种子库；支持订阅身份/类型/季号/年份精确筛选，电视剧标题候选不强制年份，未知季号只作为人工候选，读取响应不含完整 RSS/下载地址。
 - `/api/v2/rss-items/identity-backfills`：管理员显式触发的本地有界身份回填，每批最多 200 条，不访问 PT 详情页或执行下载；摘要保留最近扫描、识别、冲突、未变化和剩余数量。
 - `/api/v2/rss-matches`：读取本地候选、规范订阅/季集绑定和 Torra 规则影子评分；POST 可为一个 RSS 搜索结果和明确观察单元建立幂等人工匹配，服务端复核身份、季集、首次下载时间及 Torra 归属，并只读当前规则评分。规则或证据不完整时返回“暂未确认”，不按零分处理；后续人工 Torra 分析和下载仍分别受独立闸门保护。
+- `/api/v2/rss-matches/:id/exact-download-previews`：阶段 C0 只读复核冠军、严格高分、订阅绑定、当前规则、候选评分、基线及 qB/Torra 状态；请求只接受空对象，不创建动作或执行下载。当前固定返回 Torra 正式指定 RSS 资源入口缺失，不使用通用下载器入口。
 - `/api/v2/subscription-automation/settings`、`/api/v2/subscriptions/:id/quality-watch`：追更洗版全局与单条观察设置、暂停和恢复。
 - `/api/v2/subscriptions/:id/torra-rewash-analyses`、`/api/v2/subscriptions/:id/torra-rewashes`、`/api/v2/rss-matches/:id/torra-rewash-analyses`、`/api/v2/rss-matches/:id/torra-rewashes`：人工异步分析与候选下载；服务端从观察单元和已完成分析动作读取 Torra ID/候选，不接受浏览器映射。
 - `/api/v2/search`、`/api/v2/media/:mediaKey`：外部只读聚合本地追更、已识别 RSS、任务、当月日历和 Emby TMDB 索引；本地无结果时才使用 TMDB 只读补充。无 TMDB 的本地任务保留空 `tmdbId`、公开 `chainId` 和任务深链，不伪造作品详情地址；以媒体键或 TMDB 身份也可定位仅 Emby 候选。响应不返回路径、Hash、外部原始 ID 或不安全播放直链。
@@ -122,7 +123,7 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 
 任务链公开 DTO 同样不会返回 qB hash、Symedia 内部 ID、artifact 原键、外部 job、路径或 URL。qB 引用使用确定性的 40 位 SHA-256 摘要，以保持现有前端字段形状；暂停/恢复动作必须从本次实时 qB 快照唯一反解，引用不存在或冲突时拒绝执行。`chainId`、`mediaKey` 与 `targetKey` 仍是 Fluxa 本地聚合和深链定位键。
 
-47 条冻结 v1 契约见项目根 `docs/contracts/http-api-contract-v1.json`；70 条新增能力见 `http-api-contract-v2.json`。浏览器公开响应经过白名单映射；内部诊断路由保留 NasEmby 原始字段，仍受整站认证保护。
+47 条冻结 v1 契约见项目根 `docs/contracts/http-api-contract-v1.json`；71 条新增能力见 `http-api-contract-v2.json`。浏览器公开响应经过白名单映射；内部诊断路由保留 NasEmby 原始字段，仍受整站认证保护。
 
 ## 唯一订阅台账
 
@@ -138,7 +139,7 @@ python -m unittest discover -s tests -t . -v
 
 测试使用临时台账、隔离的临时活动日志和模拟客户端，不连接真实服务执行写操作。保留接口只在模拟测试中显式开启；Mineradio 注入片段继续使用冻结的 SHA-256 快照保护视觉桥接基线。
 
-当前共 592 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘、日历时间线、全局作品搜索和系统指标测试全部使用临时台账、临时活动日志和模拟函数，不连接真实外部服务；覆盖默认闸门、脱敏、原子迁移、候选刷新与追更隔离、候选只读预览与幂等确认加入、历史污染四类预览、备份失败与并发变化回滚、Torra 镜像幂等与公开哈希 ID、旧 Torra 冲突键公开投影、六阶段任务事实、六来源适配、单向兼容投影、媒体最终结果与遗留问题、Symedia `0/1` 状态归一化、能力证据和洗版摘要、Emby 集级分页索引与结果派生、任务公开引用与 qB 动作反解、qB 共享评估与 900 秒观察边界、5 秒单飞快照、全局活跃计数与 `qbActive` 深链、任务用户状态、无 TMDB 任务深链、首页关注项、跨首页与任务中心的全量问题组、统计范围与确认状态、北京时间自然日、日历全来源可靠集级去重与完整索引、RSS 订阅绑定、范围包单一所有权、Torra 规则影子评分、首版下载期间候选回扫、RSS 单条安全匹配与匹配级下载确认、追更海报补齐、qB 安全动作、自动化窗口、租约回收终态和完整幂等请求绑定。
+当前共 605 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘、日历时间线、全局作品搜索和系统指标测试全部使用临时台账、临时活动日志和模拟函数，不连接真实外部服务；覆盖默认闸门、脱敏、原子迁移、候选刷新与追更隔离、候选只读预览与幂等确认加入、历史污染四类预览、备份失败与并发变化回滚、Torra 镜像幂等与公开哈希 ID、旧 Torra 冲突键公开投影、六阶段任务事实、六来源适配、单向兼容投影、媒体最终结果与遗留问题、Symedia `0/1` 状态归一化、能力证据和洗版摘要、Emby 集级分页索引与结果派生、任务公开引用与 qB 动作反解、qB 共享评估与 900 秒观察边界、5 秒单飞快照、全局活跃计数与 `qbActive` 深链、任务用户状态、无 TMDB 任务深链、首页关注项、跨首页与任务中心的全量问题组、统计范围与确认状态、北京时间自然日、日历全来源可靠集级去重与完整索引、RSS 订阅绑定、范围包单一所有权、Torra 规则影子评分、首版下载期间候选回扫、可靠基线与跨批次冠军、订阅级精准下载只读预检、RSS 单条安全匹配与匹配级下载确认、追更海报补齐、qB 安全动作、自动化窗口、租约回收终态和完整幂等请求绑定。
 
 RSS 身份端到端验收使用临时 SQLite 覆盖结构化 TMDB、简介 IMDb 链接、唯一追更匹配和多候选冲突四类固定样本，不写入正式 RSS 台账。
 

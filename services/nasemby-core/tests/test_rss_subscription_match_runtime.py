@@ -176,6 +176,7 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         end=1,
         published_at="",
         size_bytes=0,
+        download_url="",
     ):
         return self.rss.upsert_items(
             self.source["id"],
@@ -188,6 +189,7 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
                 "episode_start": start if media_type == "tv" else None,
                 "episode_end": end if media_type == "tv" else None,
                 "size_bytes": size_bytes,
+                "download_url": download_url,
             }],
             on_insert=self.runtime.match_inserted_rows,
         )
@@ -1231,6 +1233,97 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(stored_unit["baseline_score"], 10.0)
         self.assertEqual(stored_unit["best_match_id"], match["id"])
         self.assertEqual(stored_unit["best_candidate_score"], 30.0)
+
+    def test_exact_download_preview_stops_at_missing_torra_subscription_endpoint(self):
+        self._watch(
+            "tv:202:s1",
+            episode=2,
+            title="Test Show",
+            media_category="anime",
+        )
+        torra, qb = self._enable_analysis()
+        self._configure_shadow_torra(torra)
+        torra.rows[0]["downloaded_episode_files"] = {
+            "2": ["/downloads/Test.Show.S01E02.1080p.WEB-DL.mkv"],
+        }
+        qb.tasks = [{
+            "name": "Test.Show.S01E02.1080p.WEB-DL.mkv",
+            "size": 2_000_000_000,
+            "status": "completed",
+        }]
+        inserted = self._insert(
+            "Test Show S01E02 2160p WEB-DL.mkv",
+            start=2,
+            end=2,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=2_000_000_000,
+            download_url="https://tracker.example/download?passkey=private",
+        )
+        self.runtime.wake_matches(inserted["_match_ids"])
+
+        preview = self.runtime.preview_exact_download(inserted["_match_ids"][0])
+
+        self.assertFalse(preview["ready"])
+        self.assertEqual(preview["capabilityState"], "unsupported")
+        self.assertEqual(preview["candidateScore"], 30.0)
+        self.assertEqual(preview["baselineScore"], 10.0)
+        self.assertEqual(preview["scoreGain"], 20.0)
+        self.assertEqual(
+            [row["code"] for row in preview["blockers"]],
+            ["TORRA_EXACT_RESOURCE_ENDPOINT_UNAVAILABLE"],
+        )
+        self.assertNotIn("tracker.example", str(preview))
+        self.assertNotIn("private", str(preview))
+        self.assertEqual(torra.submissions, [])
+
+        stored = self.rss.get_match(inserted["_match_ids"][0])
+        self.rss.set_match_binding(
+            stored["id"],
+            torra_subscription_id="torra-202",
+            target_key="tv:tmdb:202:season:1:episodes:3-3",
+            artifact_key=stored["artifactKey"],
+        )
+        changed = self.runtime.preview_exact_download(stored["id"])
+        self.assertIn("RSS_EXACT_TARGET_CHANGED", [row["code"] for row in changed["blockers"]])
+        self.assertEqual(torra.submissions, [])
+
+    def test_exact_download_preview_blocks_when_internal_context_is_missing(self):
+        self._watch(
+            "tv:202:s1",
+            episode=2,
+            title="Test Show",
+            media_category="anime",
+        )
+        torra, _qb = self._enable_analysis()
+        self._configure_shadow_torra(torra)
+        inserted = self._insert(
+            "Test Show S01E02 2160p WEB-DL.mkv",
+            start=2,
+            end=2,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=2_000_000_000,
+            download_url="https://tracker.example/download?passkey=private",
+        )
+        self.rss.get_match_internal = lambda _match_id: None
+
+        preview = self.runtime.preview_exact_download(inserted["_match_ids"][0])
+
+        self.assertFalse(preview["ready"])
+        self.assertEqual(
+            [row["code"] for row in preview["blockers"]],
+            [
+                "RSS_EXACT_SCORE_UNCONFIRMED",
+                "RSS_EXACT_NOT_CURRENT_BEST",
+                "RSS_EXACT_BASELINE_UNCONFIRMED",
+                "RSS_EXACT_SUBSCRIPTION_UNCONFIRMED",
+                "RSS_EXACT_TARGET_UNCONFIRMED",
+                "RSS_EXACT_CONTEXT_UNAVAILABLE",
+                "TORRA_EXACT_RESOURCE_ENDPOINT_UNAVAILABLE",
+            ],
+        )
+        self.assertEqual(torra.submissions, [])
+        self.assertNotIn("tracker.example", str(preview))
+        self.assertNotIn("private", str(preview))
 
     def test_new_batch_reconciles_existing_candidates_and_keeps_one_champion(self):
         unit = self._watch(
