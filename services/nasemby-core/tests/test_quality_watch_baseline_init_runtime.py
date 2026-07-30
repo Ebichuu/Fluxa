@@ -12,6 +12,7 @@ from app.quality_watch_baseline_init_runtime import (
 )
 from app.quality_watch_repository import QualityWatchRepository
 from app.quality_watch_runtime import QualityWatchRuntime
+from tests.test_quality_watch_bridge_runtime import production_season_snapshot
 
 
 NOW = datetime(2026, 7, 31, 1, 0, tzinfo=timezone.utc)
@@ -182,6 +183,23 @@ class QualityWatchBaselineInitializationTests(unittest.TestCase):
 
         self.assertEqual(preview["counts"]["safeToInitialize"], 1)
         self.assertEqual(preview["groups"][0]["items"][0]["baselineReadyAt"], "2026-07-20T01:00:00.000Z")
+
+    def test_preview_keeps_each_episode_from_one_historical_season_artifact(self):
+        self.snapshot[0] = production_season_snapshot(
+            "symedia", "2026-07-20T01:00:00Z"
+        )
+
+        preview = self.service.preview()
+
+        self.assertEqual(preview["counts"]["safeToInitialize"], 2)
+        self.assertEqual(
+            {
+                item["episodeNumber"]
+                for group in preview["groups"]
+                for item in group["items"]
+            },
+            {2, 3},
+        )
 
 
 if __name__ == "__main__":
