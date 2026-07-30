@@ -191,8 +191,10 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
         current = self.client.get("/api/v2/subscription-automation/settings")
         self.assertEqual(current.status_code, 200)
         self.assertEqual(current.get_json()["lifecycleMode"], "follow_rss")
+        self.assertFalse(current.get_json()["missingFallbackEnabled"])
         updated = self.client.patch("/api/v2/subscription-automation/settings", json={
             "enabled": True,
+            "missingFallbackEnabled": True,
             "lifecycleMode": "fixed_window",
             "defaultWindowHours": 24,
             "scheduleMinutes": [30, 120],
@@ -203,6 +205,7 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
         })
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.get_json()["lifecycleMode"], "fixed_window")
+        self.assertTrue(updated.get_json()["missingFallbackEnabled"])
         self.assertEqual(updated.get_json()["scheduleMinutes"], [30, 120, 1440])
         invalid = self.client.patch(
             "/api/v2/subscription-automation/settings",
@@ -215,6 +218,43 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
             json={"lifecycleMode": "legacy"},
         )
         self.assertEqual(invalid_mode.status_code, 422)
+        invalid_fallback = self.client.patch(
+            "/api/v2/subscription-automation/settings",
+            json={"missingFallbackEnabled": "true"},
+        )
+        self.assertEqual(invalid_fallback.status_code, 422)
+
+    def test_quality_watch_projects_latest_missing_episode_fallback_action(self):
+        self.config["torra_quality_missing_fallback_enabled"] = True
+        claim = self.repository.claim_action(
+            "missing-episode-fallback:tv:202:s1:e2,3",
+            "tv:202",
+            "torra",
+            "rewash-analysis",
+            unit_key="tv:202:s1:missing-fallback",
+            request_summary={
+                "source": "missing-episode-fallback",
+                "tmdbId": "202",
+                "seasonNumber": 1,
+                "episodeNumbers": [2, 3],
+            },
+        )
+
+        queued = self.client.get("/api/v2/subscriptions/tv:202/quality-watch").get_json()
+
+        self.assertEqual(queued["missingFallback"]["state"], "queued")
+        self.assertEqual(queued["missingFallback"]["episodeNumbers"], [2, 3])
+        self.assertTrue(queued["missingFallback"]["enabled"])
+
+        self.repository.complete_action(
+            claim["action"]["action_id"],
+            "succeeded",
+            {"reason": "missing_episode_fallback_checked", "rowCount": 1},
+        )
+        checked = self.client.get("/api/v2/subscriptions/tv:202/quality-watch").get_json()
+
+        self.assertEqual(checked["missingFallback"]["state"], "checked")
+        self.assertEqual(checked["missingFallback"]["actionId"], claim["action"]["action_id"])
 
     def test_get_routes_do_not_change_settings_units_or_call_providers(self):
         config_before = copy.deepcopy(self.config)
@@ -386,6 +426,30 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.get_json()["code"], "TORRA_REWASH_IDEMPOTENCY_CONFLICT")
+        self.assertEqual(self.torra.analyses, [])
+
+    def test_manual_analysis_yields_to_missing_fallback_provider_slot(self):
+        self.repository.claim_action(
+            "missing-episode-fallback:tv:202:s1:e2",
+            "tv:202",
+            "torra",
+            "rewash-analysis",
+            unit_key="tv:202:s1:missing-fallback",
+            request_summary={
+                "source": "missing-episode-fallback",
+                "tmdbId": "202",
+                "seasonNumber": 1,
+                "episodeNumbers": [2],
+            },
+        )
+
+        response = self.client.post(
+            "/api/v2/subscriptions/tv:202/torra-rewash-analyses",
+            json={"idempotencyKey": "analysis-manual-provider-slot", "unitId": self.unit["unit_key"]},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["code"], "TORRA_REWASH_BUSY")
         self.assertEqual(self.torra.analyses, [])
 
     def test_download_uses_server_selection_and_independent_confirmation_gate(self):

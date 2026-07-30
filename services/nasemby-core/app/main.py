@@ -1520,6 +1520,7 @@ def create_app(
                 discover_runtime.load_subscription_config,
                 rss_runtime=application.extensions.get("mcc_rss_subscription_match_runtime"),
                 automation_runtime=automation_service,
+                calendar_service=application.extensions.get("mcc_calendar_timeline"),
             ),
             clock=quality_repository.clock,
         ),

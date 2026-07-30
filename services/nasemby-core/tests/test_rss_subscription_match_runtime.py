@@ -211,6 +211,45 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(repeated["inserted"], 0)
         self.assertEqual(self.rss.list_matches()["total"], 2)
 
+    def test_executable_candidate_requires_bound_unique_strict_upgrade_for_episode(self):
+        unit = self._watch("tv:202:s1", episode=3)
+        self._insert("[Group] 测试剧.S01E03.2160p", start=3, end=3)
+        match = self.rss.list_matches()["items"][0]
+        self.rss.set_match_binding(
+            match["id"],
+            torra_subscription_id="torra-202",
+            target_key="tv:tmdb:202:season:1:episode:3",
+            artifact_key="rss:artifact-3",
+        )
+        self.rss.save_match_evaluation([match["id"]], {
+            "candidateScore": 80,
+            "baselineScore": 60,
+            "status": "scored",
+            "decision": "upgrade_available",
+        })
+        self.rss.save_candidate_decisions([{
+            "matchIds": [match["id"]],
+            "decision": "current_best",
+            "reason": "strict_upgrade",
+            "bestCandidate": True,
+        }])
+
+        self.assertTrue(self.runtime.has_executable_candidate(
+            "tv:202:s1",
+            media_type="tv",
+            season_number=1,
+            episode_numbers=[3],
+            torra_subscription_id="torra-202",
+        ))
+        self.assertFalse(self.runtime.has_executable_candidate(
+            "tv:202:s1",
+            media_type="tv",
+            season_number=1,
+            episode_numbers=[4],
+            torra_subscription_id="torra-202",
+        ))
+        self.assertEqual(unit["episode_number"], 3)
+
     def test_aliases_years_and_media_conflicts_are_conservative(self):
         self._watch("movie:2020", media_type="movie", tmdb_id="20", season=None, year="2020")
         self._watch("movie:2021", media_type="movie", tmdb_id="21", season=None, year="2021")

@@ -493,6 +493,21 @@ class QualityWatchRepository:
             ).fetchall()
         return [self._action(row) for row in rows]
 
+    def latest_subscription_action(self, subscription_key, provider, action_type, source=""):
+        with closing(self.runtime.connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM provider_actions WHERE subscription_key=? AND provider=? "
+                "AND action_type=? ORDER BY created_at DESC LIMIT 50",
+                (str(subscription_key), str(provider), str(action_type)),
+            ).fetchall()
+        actions = [self._action(row) for row in rows]
+        if source:
+            actions = [
+                action for action in actions
+                if action.get("request_summary", {}).get("source") == str(source)
+            ]
+        return actions[0] if actions else None
+
     def _existing_claim(
         self,
         connection,
@@ -539,6 +554,7 @@ class QualityWatchRepository:
         cooldown_seconds=0,
         rate_limits=None,
         require_idle=False,
+        require_provider_idle=False,
     ):
         values = [str(value or "").strip() for value in (idempotency_key, subscription_key, provider, action_type)]
         if not all(values):
@@ -576,9 +592,17 @@ class QualityWatchRepository:
                 return {"disposition": "cooldown", "remaining_seconds": remaining, "action": None}
             limits = rate_limits if isinstance(rate_limits, dict) else {}
             if require_idle:
+                idle_sql = (
+                    "SELECT * FROM provider_actions WHERE provider=? "
+                    "AND status IN ('claimed', 'submitted', 'polling') ORDER BY created_at LIMIT 1"
+                    if require_provider_idle
+                    else "SELECT * FROM provider_actions WHERE provider=? AND action_type=? "
+                    "AND status IN ('claimed', 'submitted', 'polling') ORDER BY created_at LIMIT 1"
+                )
+                idle_params = (provider,) if require_provider_idle else (provider, action_type)
                 inflight = connection.execute(
-                    "SELECT * FROM provider_actions WHERE provider=? AND action_type=? AND status IN ('claimed', 'submitted', 'polling') ORDER BY created_at LIMIT 1",
-                    (provider, action_type),
+                    idle_sql,
+                    idle_params,
                 ).fetchone()
                 if inflight:
                     return {"disposition": "global_busy", "action": self._action(inflight)}

@@ -834,6 +834,14 @@ export interface QualityWatchResponse {
     scheduleMinutes: number[];
   };
   paused: boolean;
+  missingFallback?: {
+    enabled: boolean;
+    state: 'disabled' | 'idle' | 'queued' | 'running' | 'checked' | 'failed' | 'cancelled' | 'unknown';
+    reasonText: string;
+    episodeNumbers: number[];
+    actionId: string;
+    observedAt: string;
+  };
   units: QualityWatchUnit[];
 }
 
@@ -859,6 +867,7 @@ export interface MoviePilotPushResult {
 
 export interface SubscriptionAutomationSettings {
   enabled: boolean;
+  missingFallbackEnabled: boolean;
   environmentEnabled: boolean;
   downloadEnvironmentEnabled: boolean;
   lifecycleMode: 'follow_rss' | 'fixed_window';

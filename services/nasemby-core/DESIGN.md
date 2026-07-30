@@ -116,7 +116,7 @@ RSS 匹配只在新条目写入时运行，并与 `rss_subscription_matches` 的
 
 RSS `candidate` 只有在 `MCC_PRIVATE_RSS_ENABLED` 与 `MCC_TORRA_QUALITY_WATCH_ENABLED` 均开启、SQLite 设置允许、观察窗口有效、Torra 非运行/变更中、qB 无同单元活动任务且冷却与小时/每日限额均通过时，才领取固定幂等动作 `rss-rewash-analysis:{match_id}`。外部调用在 SQLite 事务外执行；保存 `external_job_id` 后匹配进入 `triggered`，重启或租约恢复后只续查原 job。无升级结果进入 `ignored`，有升级结果保持 `triggered` 并只保存脱敏摘要，当前阶段不自动下载；失败或取消可回到 `candidate` 展示，但自动路径不会用同一固定动作无限重提。
 
-有限主动兜底使用独立单线程协调器和同一 `provider_actions` 台账。24 小时窗口默认在 12/24 小时检查，48 小时窗口默认在 12/24/48 小时检查；自定义时间点最早 30 分钟，严格递增，窗口截止点始终保留最后一次检查。实际执行时间增加按单元和时间点计算的 0–15 分钟确定性错峰，每轮默认最多选择两个不同订阅，持久化公平游标，Torra 分析全局并发固定为 1。RSS 在当前时间段已取得 job 时记录跳过；调度动作使用 `scheduled-rewash-analysis:{unit_key}:{offset_index}` 幂等键，崩溃租约恢复和 RSS job 续查均不重复提交。分析终态只推进观察时间点或关闭窗口，不自动下载候选。
+主动搜索继续复用同一协调器和 `provider_actions` 台账。`fixed_window` 高级兼容模式保留 24/48 小时时间点、确定性错峰、公平游标、冷却和小时/每日限额；默认 `follow_rss` 不执行这些定时整订阅搜索。E2 缺集兜底由独立协调组件读取日历的明确 `missing` 条目，要求已关联订阅、有效 TMDB、明确季集、已超过播出宽限、实时 Torra 映射一致、同集无 qB/Torra 活动任务且没有可执行 RSS 冠军。它按订阅和季聚合缺集，使用不含轮询时间的稳定幂等键调用一次 Torra 单订阅分析；分析结果只记录脱敏行数/候选数，不下载、不更新基线。分析与下载共用 provider 级原子空闲槽，全局同时最多一个 Torra 动作；已保存外部 job 的动作重启后只续查原 job。
 
 阶段 6 的人工接口使用同一观察单元、动作台账、冷却和限额。GET 只读；设置和暂停/恢复使用 PATCH 并返回 200；分析与下载使用 POST，返回 `202 + Location`。浏览器只能提交幂等键、观察单元和已完成分析动作 ID，不能提交 Torra subscription ID、analysis ID 或候选映射。人工 RSS 分析可使用本地已存在匹配而不要求 RSS 收集闸门，但仍要求追更洗版总闸门和 SQLite 设置。候选下载还要求独立 `MCC_TORRA_REWASH_DOWNLOAD_ENABLED=true`、`confirm=true`，且只能读取服务端已完成分析动作；打开分析闸门不会自动下载。
 

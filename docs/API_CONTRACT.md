@@ -88,7 +88,7 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `GET /api/subscriptions/calendar` | `year`、`month`、`type` |
 | `GET /api/v2/subscriptions/:id/torra-push-preview` | 路径中的订阅 ID，只读预检 |
 | `POST /api/v2/subscriptions/:id/torra-pushes` | `confirm=true`、12–128 字符幂等键；成功仅返回 `torraPushState=submitted`，兼容 `subscriptionId` 固定为空且不得依据 POST 响应 ID 建立 linked；后续只读对账确认后由 workbench 投影 `linked` |
-| `PATCH /api/v2/subscription-automation/settings` | camelCase 设置字段；可选 `lifecycleMode=follow_rss/fixed_window`，窗口只允许 24/48 小时，固定窗口时间点严格递增且最早 30 分钟 |
+| `PATCH /api/v2/subscription-automation/settings` | camelCase 设置字段；可选布尔 `missingFallbackEnabled`（默认关闭）与 `lifecycleMode=follow_rss/fixed_window`，窗口只允许 24/48 小时，固定窗口时间点严格递增且最早 30 分钟 |
 | `PATCH /api/v2/subscriptions/:id/quality-watch` | 可选 `paused`、`lifecycleMode`、`windowHours`、`scheduleMinutes` |
 | `POST /api/v2/subscriptions/:id/torra-rewash-analyses` | `idempotencyKey`、可选 `unitId` |
 | `POST /api/v2/subscriptions/:id/torra-rewashes` | `confirm=true`、`idempotencyKey`、`analysisActionId`、可选 `unitId` |
@@ -252,7 +252,7 @@ v2 新增响应字段允许向后兼容扩展；删除字段、改变类型或�
 - `POST /api/v2/rss-matches/:id/torra-rewashes`
 - `POST /api/v2/rss-matches/:id/exact-download-previews`
 
-默认生命周期为 `follow_rss`：RSS 候选到达后只在 Fluxa 本地完成订阅绑定、规则评分和冠军选择，协调器不会按旧检查时间点调用 Torra 整订阅分析。观察单元保留到 24/48 小时宽限期结束后转为 `observation_expired`；已有外部 job 继续轮询，尚未提交的旧调度动作会取消。`fixed_window` 仅作为显式高级兼容模式保留原时间表、批量、公平游标和限额；人工 Torra 分析仍是独立兜底。`lifecycleMode` 是既有响应和 PATCH 请求的可选增量字段，旧字段、状态码和旧消费者保持兼容。
+默认生命周期为 `follow_rss`：RSS 候选到达后只在 Fluxa 本地完成订阅绑定、规则评分和冠军选择，协调器不会按旧检查时间点调用 Torra 整订阅分析。观察单元保留到 24/48 小时宽限期结束后转为 `observation_expired`；已有外部 job 继续轮询，尚未提交的旧调度动作会取消。`fixed_window` 仅作为显式高级兼容模式保留原时间表、批量、公平游标和限额；人工 Torra 分析仍是独立兜底。`missingFallbackEnabled` 是默认关闭的可选增量设置：开启后只对已关联日历中超过宽限期的明确缺集执行单订阅 Torra 分析；身份、季集、RSS 候选或 Torra/qB 活动证据不完整时不提交。该动作复用现有幂等、冷却、限额、租约和 provider 级全局并发 1，只记录脱敏分析摘要，不自动下载或更新基线。质量观察响应可选增加 `missingFallback` 状态投影；旧字段、状态码和旧消费者保持兼容。
 
 追更洗版分析会触发 PT 站点搜索，因此不是无副作用 GET，必须使用独立分析闸门、冷却和幂等。分析和候选下载都创建异步动作，返回 `202 Accepted`、动作 ID 和 `Location` 轮询地址；不能用 200 表示 Torra 已经完成。候选下载还必须满足管理员会话、下载闸门、确认和服务端复查。这里的“追更洗版”只指更新期间的高质量版本追踪，不包含 Torra 自身的完结洗版。
 

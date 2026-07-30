@@ -755,7 +755,7 @@ export function getSubscriptionAutomationSettings(options?: RequestOptions): Pro
 
 export function updateSubscriptionAutomationSettings(
   input: Partial<Pick<SubscriptionAutomationSettings,
-    'enabled' | 'lifecycleMode' | 'defaultWindowHours' | 'scheduleMinutes'
+    'enabled' | 'missingFallbackEnabled' | 'lifecycleMode' | 'defaultWindowHours' | 'scheduleMinutes'
     | 'minIntervalMinutes' | 'hourlyLimit' | 'dailyLimit' | 'batchSize'>>,
   options?: RequestOptions
 ): Promise<SubscriptionAutomationSettings> {

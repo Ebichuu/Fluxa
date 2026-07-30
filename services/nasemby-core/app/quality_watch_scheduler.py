@@ -4,6 +4,11 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from app.missing_episode_fallback_runtime import (
+    MISSING_FALLBACK_ACTION_SOURCE,
+    MissingEpisodeFallbackCoordinator,
+    MissingEpisodeFallbackDependencies,
+)
 from app.quality_watch_repository import DEFAULT_LIFECYCLE_MODE, QualityWatchVersionConflict
 from app.quality_watch_runtime import resolve_watch_policy
 from app.rss_subscription_match_runtime import qb_task_matches
@@ -66,6 +71,7 @@ class QualityWatchSchedulerDependencies:
     config_loader: object
     rss_runtime: object = None
     automation_runtime: object = None
+    calendar_service: object = None
 
 
 class QualityWatchScheduler:
@@ -78,7 +84,18 @@ class QualityWatchScheduler:
         self.config_loader = dependencies.config_loader or (lambda: {})
         self.rss_runtime = dependencies.rss_runtime
         self.automation_runtime = dependencies.automation_runtime
+        self.calendar_service = dependencies.calendar_service
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.missing_fallback = MissingEpisodeFallbackCoordinator(
+            repository,
+            MissingEpisodeFallbackDependencies(
+                self.torra,
+                self.qb,
+                self.rss_runtime,
+                self.calendar_service,
+            ),
+            clock=self.clock,
+        )
 
     def _config(self):
         value = self.config_loader()
@@ -311,6 +328,7 @@ class QualityWatchScheduler:
             cooldown_seconds=max(60, _integer(config.get("torra_quality_min_interval_minutes"), 60)) * 60,
             rate_limits=self._limits(config),
             require_idle=True,
+            require_provider_idle=True,
         )
 
     def _finish_success(self, context, action_id, job):
@@ -529,6 +547,8 @@ class QualityWatchScheduler:
         if source == "private-rss" and self.rss_runtime:
             match_id = action.get("request_summary", {}).get("matchId")
             return {"source": source, **self.rss_runtime.start_analysis(match_id)}
+        if source == MISSING_FALLBACK_ACTION_SOURCE:
+            return {"source": source, **self.missing_fallback.resume(action, config, subscriptions)}
         if source in {"manual-subscription", "manual-rss"} and self.automation_runtime:
             return {"source": source, **self.automation_runtime.resume_action(action)}
         if source != SCHEDULER_ACTION_SOURCE:
@@ -599,15 +619,42 @@ class QualityWatchScheduler:
         if running:
             return {"status": "ok", "processed": [{"source": "private-rss", **running}]}
         state = self._scheduler_state()
+        missing_contexts = []
+        missing_processed = []
+        if self.missing_fallback.enabled(config):
+            missing_contexts = self._select_fair(
+                self.missing_fallback.contexts(subscriptions),
+                config,
+                state,
+            )
+            for context in missing_contexts:
+                result = self.missing_fallback.process(context, config)
+                missing_processed.append({
+                    "source": MISSING_FALLBACK_ACTION_SOURCE,
+                    "seasonNumber": context["season_number"],
+                    "episodeCount": len(context["episode_numbers"]),
+                    **result,
+                })
+                self._record_cursor(context)
+                if result.get("status") in RUNNING_RESULTS:
+                    return {
+                        "status": "ok",
+                        "selected": len(missing_contexts),
+                        "processed": missing_processed,
+                    }
         selected = self._select_fair(self._due_contexts(config, subscriptions), config, state)
-        processed = []
+        processed = list(missing_processed)
         for context in selected:
             result = self._process_context(context, config)
             processed.append(result)
             self._record_cursor(context)
             if result.get("status") in RUNNING_RESULTS:
                 break
-        return {"status": "ok", "selected": len(selected), "processed": processed}
+        return {
+            "status": "ok",
+            "selected": len(missing_contexts) + len(selected),
+            "processed": processed,
+        }
 
 
 def register_quality_watch_scheduler(app, scheduler):

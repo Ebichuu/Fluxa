@@ -79,6 +79,7 @@ function QualityWatchSettings() {
     setMessage('');
     updateSubscriptionAutomationSettings({
       enabled: settings.enabled,
+      missingFallbackEnabled: settings.missingFallbackEnabled,
       lifecycleMode: settings.lifecycleMode,
       defaultWindowHours: settings.defaultWindowHours,
       scheduleMinutes,
@@ -104,6 +105,7 @@ function QualityWatchSettings() {
       </header>
       <div className="sub-config__toggles">
         <label><input checked={settings.enabled} disabled={saving} type="checkbox" onChange={(event) => setSettings({ ...settings, enabled: event.target.checked })} />启用质量观察</label>
+        <label><input checked={settings.missingFallbackEnabled} disabled={saving || !settings.enabled} type="checkbox" onChange={(event) => setSettings({ ...settings, missingFallbackEnabled: event.target.checked })} />缺集 PT 搜索兜底</label>
         <span className="quality-settings__readonly">下载闸门：{settings.downloadEnvironmentEnabled ? '已开启' : '未开启'}</span>
       </div>
       <div className="sub-config__row sub-config__row--pair">
@@ -131,7 +133,7 @@ function QualityWatchSettings() {
         </div>
       </>}
       <div className="sub-config__foot">
-        <small>{settings.lifecycleMode === 'follow_rss' ? '候选即时评分 · 定时整订阅搜索未启用' : '高级兼容模式 · 按固定检查点分析'}</small>
+        <small>{settings.lifecycleMode === 'follow_rss' ? `候选即时评分 · 缺集兜底${settings.missingFallbackEnabled ? '已启用' : '未启用'}` : '高级兼容模式 · 按固定检查点分析'}</small>
         <button className="tool-link" disabled={saving} type="button" onClick={save}><Save size={14} />{saving ? '保存中…' : '保存质量观察设置'}</button>
         {message && <small role="status">{message}</small>}
       </div>

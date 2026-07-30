@@ -57,6 +57,8 @@ class FakeRssRuntime:
     def __init__(self):
         self.matches = []
         self.pending = []
+        self.executable_candidate = False
+        self.candidate_checks = []
 
     def start_analysis(self, match_id):
         self.matches.append(match_id)
@@ -64,6 +66,20 @@ class FakeRssRuntime:
 
     def wake_pending_candidates(self):
         return list(self.pending)
+
+    def has_executable_candidate(self, subscription_key, **scope):
+        self.candidate_checks.append((subscription_key, scope))
+        return self.executable_candidate
+
+
+class FakeCalendarService:
+    def __init__(self):
+        self.entries = []
+        self.calls = []
+
+    def snapshot(self, year, month, media_type, **options):
+        self.calls.append((year, month, media_type, options))
+        return {"ok": True, "calendar": {"entries": list(self.entries)}}
 
 
 class FakeAutomationRuntime:
@@ -116,7 +132,13 @@ class QualityWatchSchedulerTests(unittest.TestCase):
         }
         self.scheduler = self._scheduler()
 
-    def _scheduler(self, environment=None, rss_runtime=None, automation_runtime=None):
+    def _scheduler(
+        self,
+        environment=None,
+        rss_runtime=None,
+        automation_runtime=None,
+        calendar_service=None,
+    ):
         return QualityWatchScheduler(
             self.repository,
             QualityWatchSchedulerDependencies(
@@ -127,6 +149,7 @@ class QualityWatchSchedulerTests(unittest.TestCase):
                 lambda: self.config,
                 rss_runtime=rss_runtime,
                 automation_runtime=automation_runtime,
+                calendar_service=calendar_service,
             ),
             clock=lambda: self.now[0],
         )
@@ -151,6 +174,44 @@ class QualityWatchSchedulerTests(unittest.TestCase):
             torra_subscription_id=torra_id,
         )
         return self.repository.mark_baseline_ready(unit["unit_key"], offsets_minutes=[30, 1440])
+
+    def _missing_subscription(self, key="tv:101", tmdb_id="101", season=1, torra_id="torra-101"):
+        subscription = {
+            "key": key,
+            "title": f"测试剧 {key}",
+            "media_type": "tv",
+            "tmdb_id": tmdb_id,
+            "target_season": season,
+            "torra_remote_id": torra_id,
+            "torra_mapping_status": "mapped",
+        }
+        self.subscriptions.append(subscription)
+        self.torra.rows.append({
+            "id": torra_id,
+            "name": subscription["title"],
+            "media_type": "tv",
+            "tmdb_id": tmdb_id,
+            "season_number": season,
+            "is_running": False,
+            "is_mutating": False,
+        })
+        return subscription
+
+    @staticmethod
+    def _missing_entry(key="tv:101", tmdb_id="101", season=1, episode=2, **overrides):
+        return {
+            "key": key,
+            "title": "测试剧",
+            "mediaType": "tv",
+            "tmdbId": tmdb_id,
+            "seasonNumber": season,
+            "episodeNumber": episode,
+            "airAt": "2026-07-16T00:00:00+08:00",
+            "status": "missing",
+            "linkState": "linked",
+            "followScopeExplicit": True,
+            **overrides,
+        }
 
     def _make_due(self):
         self.now[0] += timedelta(minutes=46)
@@ -390,6 +451,127 @@ class QualityWatchSchedulerTests(unittest.TestCase):
         self.assertEqual(self.torra.submissions, [])
         action = self.repository.get_action(claim["action"]["action_id"])
         self.assertEqual(action["status"], "cancelled")
+
+    def test_missing_episode_fallback_is_opt_in_and_default_does_not_read_calendar(self):
+        self._missing_subscription()
+        calendar = FakeCalendarService()
+        calendar.entries = [self._missing_entry()]
+        rss = FakeRssRuntime()
+
+        result = self._scheduler(rss_runtime=rss, calendar_service=calendar).run_once()
+
+        self.assertEqual(result["processed"], [])
+        self.assertEqual(calendar.calls, [])
+        self.assertEqual(self.torra.submissions, [])
+
+    def test_missing_episode_fallback_submits_one_subscription_and_is_idempotent(self):
+        self.config["torra_quality_missing_fallback_enabled"] = True
+        self._missing_subscription()
+        calendar = FakeCalendarService()
+        calendar.entries = [self._missing_entry(episode=2), self._missing_entry(episode=3)]
+        rss = FakeRssRuntime()
+        scheduler = self._scheduler(rss_runtime=rss, calendar_service=calendar)
+
+        submitted = scheduler.run_once()
+
+        self.assertEqual(submitted["processed"][0]["status"], "submitted")
+        self.assertEqual(submitted["processed"][0]["episodeCount"], 2)
+        self.assertEqual(self.torra.submissions, ["torra-101"])
+        action = self.repository.find_inflight_action("torra", "rewash-analysis")
+        self.assertEqual(action["request_summary"]["source"], "missing-episode-fallback")
+        self.assertEqual(action["request_summary"]["episodeNumbers"], [2, 3])
+        self.assertNotIn("observedAt", action["idempotency_key"])
+
+        self.torra.jobs[action["external_job_id"]] = {
+            "status": "success",
+            "result": {
+                "analysis_id": "internal-analysis",
+                "rows": [{"candidates": [{"candidate_id": "internal-candidate"}]}],
+            },
+        }
+        self.now[0] += timedelta(seconds=61)
+        completed = self._scheduler(rss_runtime=rss, calendar_service=calendar).run_once()
+
+        self.assertEqual(completed["processed"][0]["status"], "checked")
+        stored = self.repository.get_action(action["action_id"])
+        self.assertEqual(stored["status"], "succeeded")
+        self.assertEqual(stored["response_summary"]["candidateCount"], 1)
+        self.assertNotIn("analysisId", stored["response_summary"])
+
+        repeated = self._scheduler(rss_runtime=rss, calendar_service=calendar).run_once()
+        self.assertEqual(repeated["processed"], [])
+        self.assertEqual(self.torra.submissions, ["torra-101"])
+
+    def test_missing_episode_fallback_requires_exact_linked_calendar_identity(self):
+        self.config["torra_quality_missing_fallback_enabled"] = True
+        self._missing_subscription()
+        calendar = FakeCalendarService()
+        calendar.entries = [
+            self._missing_entry(episode=2, linkState="unlinked"),
+            self._missing_entry(episode=3, status="upcoming"),
+            self._missing_entry(episode=4, tmdbId="999"),
+            self._missing_entry(episode=5, followScopeExplicit=False),
+        ]
+
+        result = self._scheduler(
+            rss_runtime=FakeRssRuntime(),
+            calendar_service=calendar,
+        ).run_once()
+
+        self.assertEqual(result["processed"], [])
+        self.assertEqual(self.torra.submissions, [])
+
+    def test_missing_episode_fallback_yields_to_qb_and_executable_rss_candidate(self):
+        self.config["torra_quality_missing_fallback_enabled"] = True
+        subscription = self._missing_subscription()
+        calendar = FakeCalendarService()
+        calendar.entries = [self._missing_entry()]
+        rss = FakeRssRuntime()
+        self.qb.tasks = [{
+            "name": f"{subscription['title']} S01E02",
+            "status": "downloading",
+        }]
+
+        qb_blocked = self._scheduler(rss_runtime=rss, calendar_service=calendar).run_once()
+
+        self.assertEqual(qb_blocked["processed"][0]["reason"], "qb_busy")
+        self.assertEqual(self.torra.submissions, [])
+
+        self.qb.tasks = []
+        rss.executable_candidate = True
+        rss_blocked = self._scheduler(rss_runtime=rss, calendar_service=calendar).run_once()
+
+        self.assertEqual(rss_blocked["processed"][0]["reason"], "rss_candidate_available")
+        self.assertEqual(self.torra.submissions, [])
+        self.assertEqual(rss.candidate_checks[0][1]["episode_numbers"], [2])
+
+    def test_missing_episode_fallback_keeps_global_provider_concurrency_at_one(self):
+        self.config["torra_quality_missing_fallback_enabled"] = True
+        self._missing_subscription("tv:101", "101", 1, "torra-101")
+        self._missing_subscription("tv:202", "202", 1, "torra-202")
+        calendar = FakeCalendarService()
+        calendar.entries = [
+            self._missing_entry("tv:101", "101", 1, 2),
+            self._missing_entry("tv:202", "202", 1, 4),
+        ]
+        rss = FakeRssRuntime()
+
+        first = self._scheduler(rss_runtime=rss, calendar_service=calendar).run_once()
+
+        self.assertEqual(first["processed"][0]["status"], "submitted")
+        self.assertEqual(len(self.torra.submissions), 1)
+        first_action = self.repository.find_inflight_action("torra", "rewash-analysis")
+        self.torra.jobs[first_action["external_job_id"]] = {
+            "status": "success",
+            "result": {"analysis_id": "first", "rows": []},
+        }
+        self.now[0] += timedelta(seconds=61)
+        self._scheduler(rss_runtime=rss, calendar_service=calendar).run_once()
+        second = self._scheduler(rss_runtime=rss, calendar_service=calendar).run_once()
+
+        self.assertEqual(second["processed"][0]["status"], "submitted")
+        self.assertEqual(set(self.torra.submissions), {"torra-101", "torra-202"})
+        self.assertEqual(len(self.torra.submissions), 2)
 
     def test_custom_offsets_validate_and_always_keep_the_window_deadline(self):
         policy = resolve_watch_policy(

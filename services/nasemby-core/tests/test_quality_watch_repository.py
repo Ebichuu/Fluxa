@@ -201,6 +201,31 @@ class QualityWatchRepositoryTests(unittest.TestCase):
             )
             self.assertEqual(retried["disposition"], "claimed")
 
+    def test_provider_idle_slot_blocks_other_torra_action_types(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = QualityWatchRepository(Path(directory) / "media_control_center.sqlite3")
+            download = repository.claim_action(
+                "provider-slot-download",
+                "tv:101",
+                "torra",
+                "rewash-download",
+                unit_key="tv:101:s1:e1",
+            )
+
+            fallback = repository.claim_action(
+                "provider-slot-missing-fallback",
+                "tv:202",
+                "torra",
+                "rewash-analysis",
+                unit_key="tv:202:s1:missing-fallback",
+                require_idle=True,
+                require_provider_idle=True,
+            )
+
+            self.assertEqual(download["disposition"], "claimed")
+            self.assertEqual(fallback["disposition"], "global_busy")
+            self.assertEqual(fallback["action"]["action_id"], download["action"]["action_id"])
+
 
     def test_scheduler_state_uses_optimistic_version(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -32,6 +32,7 @@ PERMANENT_RECLAIM_ERRORS = {
 }
 SETTINGS_FIELDS = {
     "enabled",
+    "missingFallbackEnabled",
     "lifecycleMode",
     "defaultWindowHours",
     "scheduleMinutes",
@@ -264,6 +265,9 @@ class SubscriptionAutomationService:
         window = policy["window_hours"]
         return {
             "enabled": _truthy(config.get("torra_quality_watch_enabled")),
+            "missingFallbackEnabled": _truthy(
+                config.get("torra_quality_missing_fallback_enabled")
+            ),
             "environmentEnabled": _truthy(self.environment.get("MCC_TORRA_QUALITY_WATCH_ENABLED")),
             "downloadEnvironmentEnabled": _truthy(self.environment.get("MCC_TORRA_REWASH_DOWNLOAD_ENABLED")),
             "lifecycleMode": policy["lifecycle_mode"],
@@ -301,8 +305,17 @@ class SubscriptionAutomationService:
             )
         if "enabled" in body and not isinstance(body["enabled"], bool):
             raise AutomationApiError("SUBSCRIPTION_AUTOMATION_SETTINGS_INVALID", "enabled 必须是布尔值", 422)
+        if "missingFallbackEnabled" in body and not isinstance(body["missingFallbackEnabled"], bool):
+            raise AutomationApiError(
+                "SUBSCRIPTION_AUTOMATION_SETTINGS_INVALID",
+                "missingFallbackEnabled 必须是布尔值",
+                422,
+            )
         config.update({
             "torra_quality_watch_enabled": body.get("enabled", current["enabled"]),
+            "torra_quality_missing_fallback_enabled": body.get(
+                "missingFallbackEnabled", current["missingFallbackEnabled"]
+            ),
             "torra_quality_lifecycle_mode": lifecycle_mode,
             "torra_quality_default_window_hours": window,
             "torra_quality_schedule_json": schedule,
@@ -354,6 +367,7 @@ class SubscriptionAutomationService:
         except ValueError as exc:
             raise AutomationApiError("SUBSCRIPTION_AUTOMATION_SCHEDULE_INVALID", str(exc), 422) from exc
         units = self.repository.list_watch_units(context["internalKey"])
+        missing_fallback = self._missing_fallback_projection(context["internalKey"], config)
         return {
             "subscriptionId": context["publicKey"],
             "readOnly": context["readOnly"],
@@ -363,10 +377,64 @@ class SubscriptionAutomationService:
                 "scheduleMinutes": policy["offsets_minutes"],
             },
             "paused": bool(units) and all(unit["state"] == "paused" for unit in units),
+            "missingFallback": missing_fallback,
             "units": [
                 self._public_unit(unit, context["internalKey"], context["publicKey"])
                 for unit in units
             ],
+        }
+
+    def _missing_fallback_projection(self, subscription_key, config):
+        enabled = bool(
+            _truthy(self.environment.get("MCC_TORRA_QUALITY_WATCH_ENABLED"))
+            and _truthy(config.get("torra_quality_watch_enabled"))
+            and _truthy(config.get("torra_quality_missing_fallback_enabled"))
+        )
+        action = self.repository.latest_subscription_action(
+            subscription_key,
+            "torra",
+            ANALYSIS_TYPE,
+            source="missing-episode-fallback",
+        )
+        if not action:
+            return {
+                "enabled": enabled,
+                "state": "idle" if enabled else "disabled",
+                "reasonText": "等待可靠缺集证据" if enabled else "缺集 PT 搜索兜底未启用",
+                "episodeNumbers": [],
+                "actionId": "",
+                "observedAt": "",
+            }
+        state = {
+            "claimed": "queued",
+            "submitted": "running",
+            "polling": "running",
+            "succeeded": "checked",
+            "failed": "failed",
+            "cancelled": "cancelled",
+        }.get(_text(action.get("status")), "unknown")
+        reason_text = {
+            "queued": "已排队，等待单订阅缺集分析",
+            "running": "正在执行单订阅缺集分析",
+            "checked": "最近一次缺集分析已完成",
+            "failed": "最近一次缺集分析失败",
+            "cancelled": "最近一次缺集分析已取消",
+            "unknown": "缺集分析状态暂未确认",
+        }[state]
+        if not enabled:
+            reason_text = f"已关闭 · {reason_text}"
+        episodes = sorted({
+            int(value)
+            for value in action.get("request_summary", {}).get("episodeNumbers") or []
+            if str(value).isdigit() and int(value) > 0
+        })
+        return {
+            "enabled": enabled,
+            "state": state,
+            "reasonText": reason_text,
+            "episodeNumbers": episodes,
+            "actionId": _text(action.get("action_id")),
+            "observedAt": _text(action.get("updated_at")),
         }
 
     @staticmethod
@@ -513,6 +581,7 @@ class SubscriptionAutomationService:
                 "daily": max(1, int(config.get("torra_quality_daily_limit") or 30)),
             },
             require_idle=True,
+            require_provider_idle=True,
         )
         disposition = claim["disposition"]
         if disposition in {"claimed", "reclaimed"}:

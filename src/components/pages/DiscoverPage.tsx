@@ -3327,6 +3327,14 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                     ) : (
                       <small className="sub-detail__hint">当前没有可操作的观察单元，等待首个版本或入库基线。</small>
                     )}
+                    {qualityWatch?.missingFallback && (
+                      <p className="quality-watch-panel__status">
+                        缺集搜索兜底 · {qualityWatch.missingFallback.reasonText}
+                        {qualityWatch.missingFallback.episodeNumbers.length > 0
+                          ? ` · E${qualityWatch.missingFallback.episodeNumbers.map((episode) => String(episode).padStart(2, '0')).join('、E')}`
+                          : ''}
+                      </p>
+                    )}
                     {qualityWatchMessage && <p className="quality-watch-panel__status" role="status">{qualityWatchMessage}</p>}
                   </section>
                   {!item.readOnly && <section className="sub-detail__section moviepilot-backup-panel">

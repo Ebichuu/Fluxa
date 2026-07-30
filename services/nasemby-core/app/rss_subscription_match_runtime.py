@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from app.private_rss_parser import extract_media_identity, extract_release_scope
+from app.quality_watch_repository import make_unit_key
 from app.rss_baseline_runtime import resolve_baseline_artifact
 from app.rss_shadow_scoring_runtime import (
     ShadowScoringUnsupported,
@@ -291,6 +292,54 @@ class RssSubscriptionMatchRuntime:
     def _subscriptions(self):
         local = self._local_subscriptions()
         return {**self._torra_subscriptions(), **local}
+
+    def has_executable_candidate(
+        self,
+        subscription_key,
+        *,
+        media_type="tv",
+        season_number=None,
+        episode_numbers=(),
+        torra_subscription_id="",
+    ):
+        """Return whether a strict, uniquely selected RSS upgrade already covers the target."""
+        internal_key = _text(subscription_key)
+        episodes = sorted({_int(value) for value in episode_numbers if _int(value) > 0})
+        if not internal_key or media_type != "tv" or season_number is None or not episodes:
+            return False
+        public_key = (
+            torra_public_subscription_key(torra_subscription_id)
+            if internal_key.startswith("torra:") and _text(torra_subscription_id)
+            else internal_key
+        )
+        refs = []
+        for episode in episodes:
+            internal_unit = make_unit_key(
+                internal_key,
+                "tv",
+                _int(season_number),
+                episode,
+            )
+            public_unit = torra_public_unit_key(internal_unit, internal_key, public_key)
+            refs.extend(((internal_key, internal_unit), (public_key, public_unit)))
+        matches = self.rss_repository.list_matches_for_units(refs)
+        for match in matches:
+            candidate_score = match.get("candidateScore")
+            baseline_score = match.get("baselineScore")
+            if any(isinstance(value, bool) for value in (candidate_score, baseline_score)):
+                continue
+            if not all(isinstance(value, (int, float)) for value in (candidate_score, baseline_score)):
+                continue
+            if (
+                match.get("status") in {"candidate", "triggered", "confirmed"}
+                and match.get("torraLinked") is True
+                and match.get("evaluationStatus") == "scored"
+                and match.get("bestCandidate") is True
+                and match.get("decision") == "current_best"
+                and float(candidate_score) > float(baseline_score)
+            ):
+                return True
+        return False
 
     def _subscription_context(self, subscription_id, torra_rows=None):
         subscription_id = _text(subscription_id)
@@ -1739,6 +1788,7 @@ class RssSubscriptionMatchRuntime:
                 "daily": max(1, _int(config.get("torra_quality_daily_limit") or 30)),
             },
             require_idle=True,
+            require_provider_idle=True,
         )
 
     def _cancel_reclaimed_context(self, claim, reason):
