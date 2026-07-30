@@ -877,4 +877,80 @@ export interface SubscriptionAutomationSettings {
   hourlyLimit: number;
   dailyLimit: number;
   batchSize: number;
+  bridgeMode?: QualityWatchBridgeMode;
+}
+
+export type QualityWatchBridgeMode = 'off' | 'shadow' | 'apply';
+
+export interface QualityWatchBridgeSummary {
+  bridgeVersion: string;
+  mode: QualityWatchBridgeMode;
+  activatedAt: string;
+  updatedAt: string;
+  receiptCounts: {
+    pending: number;
+    applied: number;
+    historical: number;
+    needs_review: number;
+    rejected: number;
+    retryable_failed: number;
+  };
+  receiptTotal: number;
+  lastReceiptAt: string;
+}
+
+export type BaselineInitializationCategory = 'safe_to_initialize' | 'needs_review' | 'skipped';
+
+export interface BaselineInitializationItem {
+  id: string;
+  category: BaselineInitializationCategory;
+  reasonCode: string;
+  subscriptionTitle: string;
+  tmdbId: string;
+  seasonNumber: number;
+  episodeNumber: number;
+  artifactRef: string;
+  evidenceSource: 'torra' | 'qb' | 'symedia' | string;
+  firstSuccessAt: string;
+  baselineReadyAt: string;
+  result?: 'initialized' | 'observation_expired' | string;
+}
+
+export interface BaselineInitializationPreview {
+  runId: string;
+  status: 'previewed';
+  previewFingerprint: string;
+  bridgeVersion: string;
+  generatedAt: string;
+  counts: {
+    safeToInitialize: number;
+    needsReview: number;
+    skipped: number;
+    alreadyExisting: number;
+    insufficientEvidence: number;
+    conflicts: number;
+  };
+  reasonCounts: Record<string, number>;
+  groups: Array<{
+    id: string;
+    subscriptionTitle: string;
+    seasonNumber: number;
+    items: BaselineInitializationItem[];
+  }>;
+  maxSelectedTargets: number;
+  requiresConfirmation: true;
+}
+
+export interface BaselineInitializationResult {
+  runId: string;
+  status: 'applied';
+  initialized: number;
+  processed: number;
+  alreadyExisting: number;
+  insufficientEvidence: number;
+  expired: number;
+  conflicts: number;
+  reasonCounts: Record<string, number>;
+  replayed: boolean;
+  items?: BaselineInitializationItem[];
 }

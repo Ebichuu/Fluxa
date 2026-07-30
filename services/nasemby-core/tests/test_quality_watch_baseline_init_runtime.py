@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -98,6 +99,13 @@ class QualityWatchBaselineInitializationTests(unittest.TestCase):
 
         self.assertEqual(preview["counts"]["safeToInitialize"], 1)
         self.assertEqual(preview["status"], "previewed")
+        self.assertTrue(preview["groups"][0]["id"].startswith("baseline-group:"))
+        self.assertNotIn("tv:202", preview["groups"][0]["id"])
+        serialized_preview = json.dumps(preview, ensure_ascii=False)
+        self.assertNotIn("torra-202", serialized_preview)
+        self.assertNotIn("artifact:history-1", serialized_preview)
+        self.assertNotIn("tv:tmdb:202:season:1:episode:1", serialized_preview)
+        self.assertNotIn("symedia-history-1", serialized_preview)
         target_id = preview["groups"][0]["items"][0]["id"]
         result = self.service.execute({
             "confirm": True,
@@ -163,6 +171,17 @@ class QualityWatchBaselineInitializationTests(unittest.TestCase):
         self.assertEqual(preview["counts"]["safeToInitialize"], 0)
         self.assertEqual(preview["counts"]["needsReview"], 1)
         self.assertEqual(preview["groups"][0]["items"][0]["reasonCode"], "identity_conflict")
+
+    def test_preview_stably_orders_multiple_success_facts_at_same_time(self):
+        duplicate = dict(self.snapshot[0]["items"][0]["pipelineFacts"][0])
+        duplicate["reasonCode"] = "SYMEDIA_ORGANIZED_RECHECKED"
+        duplicate["sourceRef"] = "symedia-history-2"
+        self.snapshot[0]["items"][0]["pipelineFacts"].append(duplicate)
+
+        preview = self.service.preview()
+
+        self.assertEqual(preview["counts"]["safeToInitialize"], 1)
+        self.assertEqual(preview["groups"][0]["items"][0]["baselineReadyAt"], "2026-07-20T01:00:00.000Z")
 
 
 if __name__ == "__main__":

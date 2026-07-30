@@ -56,6 +56,10 @@ import type { MediaOverviewResponse, MediaSearchResponse } from '../types/mediaS
 import type {
   MoviePilotPreview,
   MoviePilotPushResult,
+  BaselineInitializationPreview,
+  BaselineInitializationResult,
+  QualityWatchBridgeMode,
+  QualityWatchBridgeSummary,
   QualityWatchResponse,
   SubscriptionAutomationSettings
 } from '../types/subscriptions';
@@ -756,10 +760,52 @@ export function getSubscriptionAutomationSettings(options?: RequestOptions): Pro
 export function updateSubscriptionAutomationSettings(
   input: Partial<Pick<SubscriptionAutomationSettings,
     'enabled' | 'missingFallbackEnabled' | 'lifecycleMode' | 'defaultWindowHours' | 'scheduleMinutes'
-    | 'minIntervalMinutes' | 'hourlyLimit' | 'dailyLimit' | 'batchSize'>>,
+    | 'minIntervalMinutes' | 'hourlyLimit' | 'dailyLimit' | 'batchSize'>> & {
+      bridgeMode?: QualityWatchBridgeMode;
+      bridgeModeConfirm?: true;
+    },
   options?: RequestOptions
 ): Promise<SubscriptionAutomationSettings> {
   return patchJson<SubscriptionAutomationSettings>('/api/v2/subscription-automation/settings', input, options);
+}
+
+export function getQualityWatchBridgeSummary(options?: RequestOptions): Promise<QualityWatchBridgeSummary> {
+  return readJson<QualityWatchBridgeSummary>('/api/v2/subscription-automation/bridge-summary', options);
+}
+
+export function previewBaselineInitialization(options?: RequestOptions): Promise<BaselineInitializationPreview> {
+  return postJson<BaselineInitializationPreview>(
+    '/api/v2/subscription-automation/baseline-initialization-previews',
+    {},
+    options
+  );
+}
+
+export function executeBaselineInitialization(
+  input: {
+    confirm: true;
+    runId: string;
+    previewFingerprint: string;
+    selectedTargetIds: string[];
+    idempotencyKey: string;
+  },
+  options?: RequestOptions
+): Promise<BaselineInitializationResult> {
+  return postJson<BaselineInitializationResult>(
+    '/api/v2/subscription-automation/baseline-initializations',
+    input,
+    options
+  );
+}
+
+export function getBaselineInitialization(
+  runId: string,
+  options?: RequestOptions
+): Promise<BaselineInitializationResult | BaselineInitializationPreview> {
+  return readJson<BaselineInitializationResult | BaselineInitializationPreview>(
+    `/api/v2/subscription-automation/baseline-initializations/${encodeURIComponent(runId)}`,
+    options
+  );
 }
 
 export function getAutomationAction(id: string, options?: RequestOptions): Promise<AutomationAction> {

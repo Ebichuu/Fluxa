@@ -224,6 +224,54 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(invalid_fallback.status_code, 422)
 
+    def test_bridge_rollout_and_baseline_preview_routes_are_local_and_auditable(self):
+        summary = self.client.get("/api/v2/subscription-automation/bridge-summary")
+        unconfirmed_shadow = self.client.patch(
+            "/api/v2/subscription-automation/settings", json={"bridgeMode": "shadow"}
+        )
+        apply_without_shadow = self.client.patch(
+            "/api/v2/subscription-automation/settings",
+            json={"bridgeMode": "apply", "bridgeModeConfirm": True},
+        )
+        shadow = self.client.patch(
+            "/api/v2/subscription-automation/settings",
+            json={"bridgeMode": "shadow", "bridgeModeConfirm": True},
+        )
+        preview = self.client.post(
+            "/api/v2/subscription-automation/baseline-initialization-previews", json={}
+        )
+        audit = self.client.get(preview.headers["Location"])
+
+        self.assertEqual(summary.status_code, 200)
+        self.assertEqual(summary.get_json()["mode"], "off")
+        self.assertEqual(unconfirmed_shadow.status_code, 422)
+        self.assertEqual(apply_without_shadow.status_code, 409)
+        self.assertIn("request_id", apply_without_shadow.get_json())
+        self.assertEqual(shadow.status_code, 200)
+        self.assertEqual(shadow.get_json()["bridgeMode"], "shadow")
+        self.assertTrue(shadow.get_json()["missingFallbackEnabled"] is False)
+        self.assertEqual(preview.status_code, 201)
+        self.assertEqual(audit.status_code, 200)
+        self.assertEqual(audit.get_json()["runId"], preview.get_json()["runId"])
+        self.assertEqual((self.torra.analyses, self.torra.downloads), ([], []))
+
+        invalid_preview = self.client.post(
+            "/api/v2/subscription-automation/baseline-initialization-previews",
+            json={"refresh": True},
+        )
+        invalid_execute = self.client.post(
+            "/api/v2/subscription-automation/baseline-initializations",
+            json={"confirm": True},
+        )
+        self.assertEqual((invalid_preview.status_code, invalid_execute.status_code), (422, 422))
+        self.assertIn("request_id", invalid_execute.get_json())
+
+        self.environment["NASEMBY_CORE_WRITE_ENABLED"] = "false"
+        write_disabled = self.client.post(
+            "/api/v2/subscription-automation/baseline-initialization-previews", json={}
+        )
+        self.assertEqual(write_disabled.status_code, 503)
+
     def test_quality_watch_projects_latest_missing_episode_fallback_action(self):
         self.config["torra_quality_missing_fallback_enabled"] = True
         claim = self.repository.claim_action(

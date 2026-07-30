@@ -112,6 +112,8 @@ Torra 追更洗版动作使用 schema version 3 的 `quality_watch_units`、`pro
 
 质量观察运行时采用双证据：现有任务链的 `download=done + evidence=verified` 只负责证明首个版本已下载；Torra 订阅行的 `library_file_names` 或逐集 `library_episode_files` 才证明 Torra 已能读取 Emby 当前文件并允许写入 `baseline_ready_at`。系列级 `embyIndexed` 汇总不能代替逐集基准。电视剧必须有明确季集，历史扫描默认不创建观察单元；qB 证据可以先建立等待单元，Torra 后续关联时补写 ID。窗口建立后不因重复证据或新版本延长，目标已达也只作用于明确的电影或单集。
 
+生产任务快照通过版本化质量观察桥接器接入同一 `plan_reconcile()` / `apply_reconcile_plan()`：`shadow` 只持久化按阶段和事实类型隔离的判定收据，`apply` 才在收据与观察单元的同一 SQLite 事务内应用。首次影子 `activated_at` 是永久水位；水位前事实、无正式发生时间和无前置单元的 Symedia 历史归档不会冒充新下载。历史资源只通过持久预览、最多 200 项明确确认和整批乐观校验初始化；任一漂移全批回滚，真实历史时间直接决定 `observing_upgrade` 或 `observation_expired`。
+
 RSS 匹配只在新条目写入时运行，并与 `rss_subscription_matches` 的 `candidate` 写入共用同一 SQLite 事务。候选范围只包含仍在截止时间内的 `observing_upgrade / search_due / search_running` 单元；标准媒体身份优先，其次使用订阅标题和别名，再校验媒体类型、年份、季和明确集号。多个不同身份同时命中时全部放弃，连续集可以分别命中多个活动单元。发布时间早于 `baseline_ready_at`、历史导入、过期窗口和不可靠季集都不创建记录；版本摘要不参与质量高低判断。
 
 RSS `candidate` 只有在 `MCC_PRIVATE_RSS_ENABLED` 与 `MCC_TORRA_QUALITY_WATCH_ENABLED` 均开启、SQLite 设置允许、观察窗口有效、Torra 非运行/变更中、qB 无同单元活动任务且冷却与小时/每日限额均通过时，才领取固定幂等动作 `rss-rewash-analysis:{match_id}`。外部调用在 SQLite 事务外执行；保存 `external_job_id` 后匹配进入 `triggered`，重启或租约恢复后只续查原 job。无升级结果进入 `ignored`，有升级结果保持 `triggered` 并只保存脱敏摘要，当前阶段不自动下载；失败或取消可回到 `candidate` 展示，但自动路径不会用同一固定动作无限重提。

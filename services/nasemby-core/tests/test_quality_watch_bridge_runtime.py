@@ -103,6 +103,10 @@ class QualityWatchBridgeRuntimeTests(unittest.TestCase):
         self.assertEqual(shadow["activatedAt"], "2026-07-31T01:00:00.000Z")
         self.assertEqual(reapplied["activatedAt"], shadow["activatedAt"])
 
+        upgraded = self.repository.set_bridge_mode("off", bridge_version="2")
+        self.assertEqual(upgraded["bridgeVersion"], "2")
+        self.assertEqual(upgraded["activatedAt"], shadow["activatedAt"])
+
     def test_shadow_keeps_stage_specific_receipts_without_units(self):
         self.bridge.set_mode("shadow")
         self.now[0] += timedelta(minutes=3)
@@ -114,6 +118,10 @@ class QualityWatchBridgeRuntimeTests(unittest.TestCase):
         self.assertEqual({row["stage"] for row in receipts}, {"qb", "symedia"})
         self.assertEqual(len({row["receipt_key"] for row in receipts}), 2)
         self.assertEqual(self.repository.list_watch_units("tv:202"), [])
+        summary = self.bridge.summary()
+        self.assertEqual(summary["receiptTotal"], 2)
+        self.assertEqual(summary["receiptCounts"]["pending"], 1)
+        self.assertEqual(summary["receiptCounts"]["historical"], 1)
 
     def test_apply_creates_from_qb_then_symedia_advances_baseline(self):
         self.bridge.set_mode("shadow")

@@ -53,6 +53,7 @@ from app.automation_action_runtime import register_automation_actions
 from app.health_state_runtime import SchedulerStatusRegistry
 from app.quality_watch_repository import QualityWatchRepository
 from app.quality_watch_bridge_runtime import QualityWatchBridgeRuntime
+from app.quality_watch_baseline_init_runtime import QualityWatchBaselineInitializationService
 from app.resource_task_repository import ResourceTaskRepository
 from app.quality_watch_runtime import register_quality_watch
 from app.quality_watch_scheduler import (
@@ -1488,6 +1489,18 @@ def create_app(
     task_chain_v2_service = application.extensions.get("mcc_task_chain_v2_service")
     if task_chain_v2_service:
         task_chain_v2_service.set_quality_watch_bridge(quality_watch_bridge)
+    baseline_initializer = QualityWatchBaselineInitializationService(
+        quality_repository,
+        resource_repository,
+        quality_runtime,
+        snapshot_loader=(
+            task_chain_v2_service.cached_snapshot if task_chain_v2_service else (lambda: {"items": []})
+        ),
+        subscription_loader=lambda: discover_runtime.load_subscription_items(remove_completed=False),
+        config_loader=discover_runtime.load_subscription_config,
+        clock=quality_repository.clock,
+    )
+    application.extensions["mcc_quality_watch_baseline_initializer"] = baseline_initializer
     register_subscription_workbench(application, environment)
     register_discover_candidates(application, environment)
     register_candidate_migrations(application, environment)
@@ -1503,9 +1516,13 @@ def create_app(
             lambda: discover_runtime.load_subscription_items(remove_completed=False),
             discover_runtime.update_subscription_item,
             rss_runtime=application.extensions.get("mcc_rss_subscription_match_runtime"),
+            bridge_runtime=quality_watch_bridge,
+            baseline_initializer=baseline_initializer,
             clock=quality_repository.clock,
         )
     )
+    automation_service.bridge_runtime = quality_watch_bridge
+    automation_service.baseline_initializer = baseline_initializer
     register_subscription_automation(application, automation_service)
     backup_service = moviepilot_backup_service or MoviePilotBackupService(
         MoviePilotBackupDependencies(

@@ -120,6 +120,18 @@
   color: var(--theme-success);
 }
 
+.app-shell:not(.app-shell--hall)[data-theme='light'] .quality-bridge__modes button {
+  border-color: var(--theme-border);
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--theme-muted);
+  transition: none;
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .quality-bridge__modes button:is(:hover, :focus-visible, .is-active) {
+  border-color: rgba(var(--theme-accent-rgb), 0.32);
+  background: rgba(var(--theme-accent-rgb), 0.09);
+}
+
 .app-shell:not(.app-shell--hall)[data-theme='light'] .rss-library-page {
   --rss-line: rgba(31, 35, 41, 0.12);
   --rss-blue: var(--theme-accent);
@@ -144,6 +156,37 @@
 .app-shell:not(.app-shell--hall)[data-theme='light'] .rss-seed-open:hover,
 .app-shell:not(.app-shell--hall)[data-theme='light'] .rss-seed-open:focus-visible {
   color: var(--theme-text-strong);
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .quality-bridge :is(
+  .quality-bridge__heading strong,
+  .baseline-init__heading strong,
+  .quality-bridge__modes strong,
+  .quality-bridge__receipts strong,
+  .baseline-init__summary strong,
+  .baseline-init__groups summary,
+  .baseline-init__groups li > label strong,
+  .baseline-init__result
+) {
+  color: var(--theme-text-strong);
+  transition: none;
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='light'] .quality-bridge :is(
+  .quality-bridge__heading small,
+  .baseline-init__heading small,
+  .quality-bridge__heading > span,
+  .quality-bridge__modes button,
+  .quality-bridge__receipts,
+  .baseline-init__summary span,
+  .baseline-init__groups summary strong,
+  .baseline-init__groups li > label small,
+  .baseline-init__groups li > span,
+  .baseline-init__actions small,
+  .quality-bridge__message
+) {
+  color: var(--theme-muted);
+  transition: none;
 }
 
 .app-shell:not(.app-shell--hall)[data-theme='light'] :is(

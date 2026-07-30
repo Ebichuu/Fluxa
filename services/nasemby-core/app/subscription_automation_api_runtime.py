@@ -4,6 +4,7 @@ from flask import jsonify, request
 
 from app.automation_action_runtime import present_automation_action
 from app.http_runtime import current_request_id
+from app.quality_watch_baseline_init_runtime import BaselineInitializationError
 
 
 class AutomationApiError(RuntimeError):
@@ -27,6 +28,13 @@ def _accepted_response(action):
     response = jsonify(public)
     response.status_code = 202
     response.headers["Location"] = f"/api/v2/automation-actions/{public['id']}"
+    return response
+
+
+def _created_response(payload, location):
+    response = jsonify(payload)
+    response.status_code = 201
+    response.headers["Location"] = location
     return response
 
 
@@ -62,6 +70,8 @@ def register_subscription_automation(app, service):
             return callback()
         except AutomationApiError as exc:
             return _error_response(exc)
+        except BaselineInitializationError as exc:
+            return _error_response(AutomationApiError(exc.code, exc.message, exc.status))
 
     @app.get("/api/v2/subscription-automation/settings")
     def subscription_automation_settings_get():
@@ -70,6 +80,45 @@ def register_subscription_automation(app, service):
     @app.patch("/api/v2/subscription-automation/settings")
     def subscription_automation_settings_patch():
         return execute(lambda: jsonify(service.update_settings(request.get_json(silent=True))))
+
+    @app.get("/api/v2/subscription-automation/bridge-summary")
+    def subscription_automation_bridge_summary_get():
+        return execute(lambda: jsonify(service.get_bridge_summary()))
+
+    @app.post("/api/v2/subscription-automation/baseline-initialization-previews")
+    def subscription_automation_baseline_preview_post():
+        def create():
+            body = request.get_json(silent=True)
+            if not isinstance(body, dict) or body:
+                raise AutomationApiError(
+                    "BASELINE_INITIALIZATION_PREVIEW_FIELDS_INVALID",
+                    "预览请求必须是 JSON 空对象",
+                    422,
+                )
+            payload = service.create_baseline_initialization_preview()
+            location = (
+                "/api/v2/subscription-automation/baseline-initializations/"
+                f"{payload['runId']}"
+            )
+            return _created_response(payload, location)
+
+        return execute(create)
+
+    @app.post("/api/v2/subscription-automation/baseline-initializations")
+    def subscription_automation_baseline_initialization_post():
+        def create():
+            payload = service.execute_baseline_initialization(request.get_json(silent=True))
+            location = (
+                "/api/v2/subscription-automation/baseline-initializations/"
+                f"{payload['runId']}"
+            )
+            return _created_response(payload, location)
+
+        return execute(create)
+
+    @app.get("/api/v2/subscription-automation/baseline-initializations/<path:run_id>")
+    def subscription_automation_baseline_initialization_get(run_id):
+        return execute(lambda: jsonify(service.get_baseline_initialization(run_id)))
 
     @app.get("/api/v2/subscriptions/<path:key>/quality-watch")
     def subscription_quality_watch_get(key):

@@ -936,6 +936,9 @@ class TaskChainV2Service:
     def set_quality_watch_bridge(self, bridge):
         self.quality_watch_bridge = bridge
 
+    def cached_snapshot(self):
+        return self._cache or {"items": []}
+
     def full_snapshot(self, *, force=False):
         with self._lock:
             if not force and self._cache and time.monotonic() - self._cache_at < self.cache_seconds:

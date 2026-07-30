@@ -4,7 +4,7 @@
 路由数量：47  
 运行实现：Python / Flask
 
-新增能力使用真正的 URL 版本契约：`docs/contracts/http-api-contract-v2.json`，当前共 71 条。v1 的 47 条冻结路径和历史状态码不变。
+新增能力使用真正的 URL 版本契约：`docs/contracts/http-api-contract-v2.json`，当前共 75 条。v1 的 47 条冻结路径和历史状态码不变。
 
 ## 1. 版本规则
 
@@ -251,6 +251,10 @@ v2 新增响应字段允许向后兼容扩展；删除字段、改变类型或�
 - `POST /api/v2/rss-matches/:id/torra-rewash-analyses`
 - `POST /api/v2/rss-matches/:id/torra-rewashes`
 - `POST /api/v2/rss-matches/:id/exact-download-previews`
+- `GET /api/v2/subscription-automation/bridge-summary`
+- `POST /api/v2/subscription-automation/baseline-initialization-previews`
+- `POST /api/v2/subscription-automation/baseline-initializations`
+- `GET /api/v2/subscription-automation/baseline-initializations/:runId`
 
 默认生命周期为 `follow_rss`：RSS 候选到达后只在 Fluxa 本地完成订阅绑定、规则评分和冠军选择，协调器不会按旧检查时间点调用 Torra 整订阅分析。观察单元保留到 24/48 小时宽限期结束后转为 `observation_expired`；已有外部 job 继续轮询，尚未提交的旧调度动作会取消。`fixed_window` 仅作为显式高级兼容模式保留原时间表、批量、公平游标和限额；人工 Torra 分析仍是独立兜底。`missingFallbackEnabled` 是默认关闭的可选增量设置：开启后只对已关联日历中超过宽限期的明确缺集执行单订阅 Torra 分析；身份、季集、RSS 候选或 Torra/qB 活动证据不完整时不提交。该动作复用现有幂等、冷却、限额、租约和 provider 级全局并发 1，只记录脱敏分析摘要，不自动下载或更新基线。质量观察响应可选增加 `missingFallback` 状态投影；旧字段、状态码和旧消费者保持兼容。
 
@@ -258,11 +262,13 @@ v2 新增响应字段允许向后兼容扩展；删除字段、改变类型或�
 
 动作查询需要同时表达媒体控制中心本地状态和 Torra 外部 job 状态。服务重启后如果动作已经保存 Torra job ID，只能继续轮询原 job，不能重复提交。全局和单条设置中的 `window_hours` 只接受 `24` 或 `48`；`fixed_window` 时间点不得超过窗口，否则返回 `422`。计划状态码为：读取和 PATCH 成功 `200`、异步动作已创建 `202`、并发或幂等冲突 `409`、语义不合法 `422`、限频 `429`、上游失败 `502`、功能闸门关闭 `503`；错误不能包装在 `200` 中。以上约束已固化在 `docs/contracts/http-api-contract-v2.json`，并由契约测试逐条校验。
 
+生产桥接设置只增加可选 `bridgeMode=off|shadow|apply`；切换时必须同时提交 `bridgeModeConfirm=true`。`activatedAt` 在首次进入影子模式时写入一次，普通关闭、重启或再次启用不得刷新。桥接摘要 GET 只读取本地水位和脱敏收据计数，不刷新任务快照、不访问外部服务。历史基线预览 POST 创建持久审计批次并返回 `201 + Location`；确认 POST 必须携带预览指纹、最多 200 个公开目标 ID、明确确认和幂等键，同批任一目标漂移返回 `409` 且整批零写入。执行结果使用真实历史发生时间，分别返回进入观察和已过期数量，不触发 Torra 搜索、下载、qB、秒传、Symedia 或 Emby 写动作。
+
 `POST /api/v2/rss-matches/:id/exact-download-previews` 是阶段 C0 的无写入预检。请求必须是 JSON 空对象；服务端重新读取匹配、冠军、严格分差、订阅绑定、当前 Torra 规则、候选评分、基线、qB 活动任务和 Torra 忙碌状态，只返回公开匹配 ID、规范目标、脱敏版本摘要、分数和稳定阻断码。预检不创建动作、不调用 Torra 分析或下载，也不返回 RSS 下载地址、目录、下载器 ID、Torra 原始 ID、Cookie 或 Passkey。当前 Torra 正式接口只能下载其自身分析会话候选，没有订阅绑定的指定 RSS 资源入口，因此成功读取的预检固定以 `200` 返回业务结果 `status=blocked / ready=false / capabilityState=unsupported`，并包含 `TORRA_EXACT_RESOURCE_ENDPOINT_UNAVAILABLE`；这不是 HTTP 错误。匹配不存在返回 `404`，请求体不是空对象返回 `422`，运行时不可用返回 `503`。在 Torra 提供正式订阅绑定入口前，不开放精准下发和自动洗版。
 
 ## 13. 已实现的私人 PT RSS 种子库接口
 
-以下接口已经进入当前 71 条 v2 机器契约和 React：
+以下接口已经进入当前 75 条 v2 机器契约和 React：
 
 - `GET /api/v2/rss-sources`
 - `POST /api/v2/rss-sources`

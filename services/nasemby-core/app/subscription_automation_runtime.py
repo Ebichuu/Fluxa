@@ -40,6 +40,8 @@ SETTINGS_FIELDS = {
     "hourlyLimit",
     "dailyLimit",
     "batchSize",
+    "bridgeMode",
+    "bridgeModeConfirm",
 }
 QUALITY_PATCH_FIELDS = {"paused", "lifecycleMode", "windowHours", "scheduleMinutes"}
 
@@ -95,6 +97,8 @@ class SubscriptionAutomationDependencies:
     subscription_loader: object
     subscription_updater: object
     rss_runtime: object = None
+    bridge_runtime: object = None
+    baseline_initializer: object = None
     clock: object = None
 
 
@@ -109,6 +113,8 @@ class SubscriptionAutomationService:
         self.subscription_loader = dependencies.subscription_loader or (lambda: [])
         self.subscription_updater = dependencies.subscription_updater
         self.rss_runtime = dependencies.rss_runtime
+        self.bridge_runtime = dependencies.bridge_runtime
+        self.baseline_initializer = dependencies.baseline_initializer
         self.clock = dependencies.clock or (lambda: datetime.now(timezone.utc))
 
     def _config(self):
@@ -263,7 +269,7 @@ class SubscriptionAutomationService:
         config = self._config() if config is None else config
         policy = resolve_watch_policy({}, config)
         window = policy["window_hours"]
-        return {
+        result = {
             "enabled": _truthy(config.get("torra_quality_watch_enabled")),
             "missingFallbackEnabled": _truthy(
                 config.get("torra_quality_missing_fallback_enabled")
@@ -278,6 +284,9 @@ class SubscriptionAutomationService:
             "dailyLimit": int(config.get("torra_quality_daily_limit") or 30),
             "batchSize": int(config.get("torra_quality_scheduler_batch_size") or 2),
         }
+        if self.bridge_runtime:
+            result["bridgeMode"] = self.bridge_runtime.summary()["mode"]
+        return result
 
     def update_settings(self, body):
         self._require_write()
@@ -285,6 +294,10 @@ class SubscriptionAutomationService:
         self._validate_fields(body, SETTINGS_FIELDS)
         if not body:
             raise AutomationApiError("SUBSCRIPTION_AUTOMATION_SETTINGS_EMPTY", "至少需要一个设置字段", 422)
+        if "bridgeModeConfirm" in body and "bridgeMode" not in body:
+            raise AutomationApiError(
+                "QUALITY_WATCH_BRIDGE_MODE_REQUIRED", "确认生产桥接时必须指定 bridgeMode", 422
+            )
         config = self._config()
         current = self.present_settings(config)
         window = _integer(body.get("defaultWindowHours", current["defaultWindowHours"]), "defaultWindowHours")
@@ -311,6 +324,31 @@ class SubscriptionAutomationService:
                 "missingFallbackEnabled 必须是布尔值",
                 422,
             )
+        bridge_mode = _text(body.get("bridgeMode", current.get("bridgeMode", ""))).lower()
+        if "bridgeMode" in body:
+            if body.get("bridgeModeConfirm") is not True:
+                raise AutomationApiError(
+                    "QUALITY_WATCH_BRIDGE_CONFIRM_REQUIRED",
+                    "切换生产桥接模式需要明确确认",
+                    422,
+                )
+            if not self.bridge_runtime:
+                raise AutomationApiError(
+                    "QUALITY_WATCH_BRIDGE_UNAVAILABLE", "生产桥接运行时不可用", 503
+                )
+            if bridge_mode not in {"off", "shadow", "apply"}:
+                raise AutomationApiError(
+                    "QUALITY_WATCH_BRIDGE_MODE_INVALID",
+                    "bridgeMode 只允许 off、shadow 或 apply",
+                    422,
+                )
+            state = self.bridge_runtime.summary()
+            if bridge_mode == "apply" and not state.get("activatedAt"):
+                raise AutomationApiError(
+                    "QUALITY_WATCH_BRIDGE_SHADOW_REQUIRED",
+                    "正式桥接前必须先启用影子模式并完成核对",
+                    409,
+                )
         config.update({
             "torra_quality_watch_enabled": body.get("enabled", current["enabled"]),
             "torra_quality_missing_fallback_enabled": body.get(
@@ -333,7 +371,44 @@ class SubscriptionAutomationService:
             ),
         })
         saved = self.config_saver(config)
+        if "bridgeMode" in body:
+            try:
+                self.bridge_runtime.set_mode(bridge_mode)
+            except ValueError as exc:
+                raise AutomationApiError(
+                    "QUALITY_WATCH_BRIDGE_TRANSITION_INVALID", "生产桥接状态无法切换", 409
+                ) from exc
         return self.present_settings(saved if isinstance(saved, dict) else config)
+
+    def get_bridge_summary(self):
+        if not self.bridge_runtime:
+            raise AutomationApiError(
+                "QUALITY_WATCH_BRIDGE_UNAVAILABLE", "生产桥接运行时不可用", 503
+            )
+        return self.bridge_runtime.summary()
+
+    def create_baseline_initialization_preview(self):
+        self._require_write()
+        if not self.baseline_initializer:
+            raise AutomationApiError(
+                "BASELINE_INITIALIZATION_UNAVAILABLE", "历史基线初始化运行时不可用", 503
+            )
+        return self.baseline_initializer.preview()
+
+    def execute_baseline_initialization(self, body):
+        self._require_write()
+        if not self.baseline_initializer:
+            raise AutomationApiError(
+                "BASELINE_INITIALIZATION_UNAVAILABLE", "历史基线初始化运行时不可用", 503
+            )
+        return self.baseline_initializer.execute(body)
+
+    def get_baseline_initialization(self, run_id):
+        if not self.baseline_initializer:
+            raise AutomationApiError(
+                "BASELINE_INITIALIZATION_UNAVAILABLE", "历史基线初始化运行时不可用", 503
+            )
+        return self.baseline_initializer.get_run(run_id)
 
     @staticmethod
     def _public_unit(unit, internal_key="", public_key=""):

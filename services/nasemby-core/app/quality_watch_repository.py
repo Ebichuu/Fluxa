@@ -295,9 +295,9 @@ class QualityWatchRepository:
                 if mode == "apply" and not activated_at:
                     raise ValueError("shadow mode must be enabled before apply")
                 connection.execute(
-                    "UPDATE quality_watch_bridge_state SET mode=?, activated_at=?, updated_at=?, "
+                    "UPDATE quality_watch_bridge_state SET bridge_version=?, mode=?, activated_at=?, updated_at=?, "
                     "version=version+1 WHERE singleton_id=1",
-                    (mode, activated_at, now_text),
+                    (str(bridge_version), mode, activated_at, now_text),
                 )
             current = connection.execute(
                 "SELECT * FROM quality_watch_bridge_state WHERE singleton_id=1"
@@ -356,6 +356,24 @@ class QualityWatchRepository:
                 params,
             ).fetchall()
         return [self._bridge_receipt(row) for row in rows]
+
+    def summarize_bridge_receipts(self, bridge_version="1"):
+        with closing(self.runtime.connect()) as connection:
+            rows = connection.execute(
+                "SELECT status, COUNT(*) AS count, MAX(updated_at) AS last_updated_at "
+                "FROM quality_watch_bridge_receipts WHERE bridge_version=? GROUP BY status",
+                (str(bridge_version),),
+            ).fetchall()
+        counts = {status: 0 for status in BRIDGE_RECEIPT_STATUSES}
+        last_receipt_at = ""
+        for row in rows:
+            counts[row["status"]] = int(row["count"] or 0)
+            last_receipt_at = max(last_receipt_at, str(row["last_updated_at"] or ""))
+        return {
+            "counts": counts,
+            "total": sum(counts.values()),
+            "lastReceiptAt": last_receipt_at,
+        }
 
     @staticmethod
     def _baseline_init_run(row):

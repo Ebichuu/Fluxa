@@ -132,6 +132,19 @@ class QualityWatchBridgeRuntime:
     def set_mode(self, mode):
         return self.repository.set_bridge_mode(mode, bridge_version=BRIDGE_VERSION)
 
+    def summary(self):
+        state = self.repository.get_bridge_state()
+        receipts = self.repository.summarize_bridge_receipts(BRIDGE_VERSION)
+        return {
+            "bridgeVersion": BRIDGE_VERSION,
+            "mode": state["mode"],
+            "activatedAt": state["activatedAt"],
+            "updatedAt": state["updatedAt"],
+            "receiptCounts": receipts["counts"],
+            "receiptTotal": receipts["total"],
+            "lastReceiptAt": receipts["lastReceiptAt"],
+        }
+
     def _receipt(self, fact):
         source_identity = fact["source_result_id"] or fact["upstream_occurred_at"]
         components = {

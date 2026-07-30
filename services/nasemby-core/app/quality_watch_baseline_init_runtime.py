@@ -52,6 +52,10 @@ def _public_target_id(subscription_key, target_key):
     return f"baseline:{_stable_hash([subscription_key, target_key])[:24]}"
 
 
+def _public_group_id(subscription_key):
+    return f"baseline-group:{_stable_hash(subscription_key)[:24]}"
+
+
 def _artifact_ref(artifact_key):
     return f"artifact:{_stable_hash(artifact_key)[:24]}"
 
@@ -61,6 +65,67 @@ def _subscription_season(subscription):
         return int(subscription.get("target_season") or subscription.get("season_number") or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _identity_classification(subscription, facts, season, episode):
+    subscription = subscription or {}
+    subscription_tmdb = _text(subscription.get("tmdb_id"))
+    if (
+        not subscription
+        or any(fact["identity_state"] != "linked" for fact in facts)
+        or any(fact["media_type"] != "tv" or not fact["tmdb_id"].isdigit() for fact in facts)
+        or season <= 0
+        or episode <= 0
+        or not _text(subscription.get("torra_remote_id"))
+    ):
+        return "needs_review", "identity_incomplete"
+    if (
+        _text(subscription.get("media_type")).lower() != "tv"
+        or not subscription_tmdb.isdigit()
+        or any(fact["tmdb_id"] != subscription_tmdb for fact in facts)
+        or (_subscription_season(subscription) > 0 and _subscription_season(subscription) != season)
+    ):
+        return "needs_review", "identity_conflict"
+    return "safe_to_initialize", "eligible"
+
+
+def _evidence_summary(facts):
+    symedia = [fact for fact in facts if fact["stage"] == "symedia" and fact["artifact_key"]]
+    downloads = [
+        fact for fact in facts
+        if fact["stage"] in {"torra", "qb"} and fact["artifact_key"]
+    ]
+    preferred = symedia or downloads
+    artifacts = sorted({fact["artifact_key"] for fact in preferred})
+    reason = ""
+    if not preferred:
+        reason = "success_file_missing"
+    elif len(artifacts) != 1:
+        reason = "success_file_conflict"
+    occurred = sorted(
+        [
+            (_utc(fact["upstream_occurred_at"]), fact)
+            for fact in preferred if _utc(fact["upstream_occurred_at"])
+        ],
+        key=lambda row: (row[0], row[1]["stage"], row[1]["evidence_version"]),
+    )
+    if len(occurred) != len(preferred):
+        reason = "success_time_missing"
+    download_times = [
+        _utc(fact["upstream_occurred_at"])
+        for fact in downloads if _utc(fact["upstream_occurred_at"])
+    ]
+    first_at = min(download_times) if download_times else (occurred[0][0] if occurred else None)
+    baseline_at = occurred[-1][0] if occurred else None
+    if first_at and baseline_at and baseline_at < first_at:
+        reason = "success_time_inverted"
+    return {
+        "artifacts": artifacts,
+        "baselineFact": occurred[-1][1] if occurred else None,
+        "firstAt": first_at,
+        "baselineAt": baseline_at,
+        "reasonCode": reason,
+    }
 
 
 def _persisted_fact(row, subscriptions):
@@ -144,26 +209,7 @@ class QualityWatchBaselineInitializationService:
         for (subscription_key, season, episode, target), facts in sorted(grouped.items()):
             subscription = subscriptions.get(subscription_key)
             public_id = _public_target_id(subscription_key, target)
-            category = "safe_to_initialize"
-            reason = "eligible"
-            subscription_tmdb = _text((subscription or {}).get("tmdb_id"))
-            subscription_media_type = _text((subscription or {}).get("media_type")).lower()
-            subscription_season = _subscription_season(subscription or {})
-            if (
-                not subscription
-                or any(fact["identity_state"] != "linked" for fact in facts)
-                or any(fact["media_type"] != "tv" or not fact["tmdb_id"].isdigit() for fact in facts)
-                or season <= 0 or episode <= 0
-                or not _text(subscription.get("torra_remote_id"))
-            ):
-                category, reason = "needs_review", "identity_incomplete"
-            elif (
-                subscription_media_type != "tv"
-                or not subscription_tmdb.isdigit()
-                or any(fact["tmdb_id"] != subscription_tmdb for fact in facts)
-                or (subscription_season > 0 and subscription_season != season)
-            ):
-                category, reason = "needs_review", "identity_conflict"
+            category, reason = _identity_classification(subscription, facts, season, episode)
             unit_key = ""
             if subscription_key and season > 0 and episode > 0:
                 unit_key = make_unit_key(subscription_key, "tv", season, episode)
@@ -171,29 +217,9 @@ class QualityWatchBaselineInitializationService:
                 category, reason = "skipped", "observation_unit_exists"
             if any(fact["owners"] != [target] for fact in facts):
                 category, reason = "needs_review", "artifact_owner_unconfirmed"
-            symedia = [fact for fact in facts if fact["stage"] == "symedia" and fact["artifact_key"]]
-            downloads = [fact for fact in facts if fact["stage"] in {"torra", "qb"} and fact["artifact_key"]]
-            preferred = symedia or downloads
-            artifacts = sorted({fact["artifact_key"] for fact in preferred})
-            if not preferred:
-                category, reason = "needs_review", "success_file_missing"
-            elif len(artifacts) != 1:
-                category, reason = "needs_review", "success_file_conflict"
-            occurred = sorted(
-                (_utc(fact["upstream_occurred_at"]), fact)
-                for fact in preferred if _utc(fact["upstream_occurred_at"])
-            )
-            if len(occurred) != len(preferred):
-                category, reason = "needs_review", "success_time_missing"
-            baseline_fact = occurred[-1][1] if occurred else None
-            download_times = [
-                _utc(fact["upstream_occurred_at"])
-                for fact in downloads if _utc(fact["upstream_occurred_at"])
-            ]
-            first_at = min(download_times) if download_times else (occurred[0][0] if occurred else None)
-            baseline_at = occurred[-1][0] if occurred else None
-            if first_at and baseline_at and baseline_at < first_at:
-                category, reason = "needs_review", "success_time_inverted"
+            evidence = _evidence_summary(facts)
+            if evidence["reasonCode"]:
+                category, reason = "needs_review", evidence["reasonCode"]
             try:
                 policy = resolve_watch_policy(subscription or {}, config)
             except ValueError:
@@ -202,6 +228,8 @@ class QualityWatchBaselineInitializationService:
             policy_version = _stable_hash(policy or {})
             evidence_version = _stable_hash(sorted(fact["evidence_version"] for fact in facts))
             ownership_version = _stable_hash(sorted(fact["ownership_version"] for fact in facts))
+            artifacts = evidence["artifacts"]
+            baseline_fact = evidence["baselineFact"]
             candidates.append({
                 "id": public_id,
                 "category": category,
@@ -215,8 +243,8 @@ class QualityWatchBaselineInitializationService:
                 "artifactKey": artifacts[0] if len(artifacts) == 1 else "",
                 "artifactRef": _artifact_ref(artifacts[0]) if len(artifacts) == 1 else "",
                 "evidenceSource": baseline_fact["stage"] if baseline_fact else "",
-                "firstSuccessAt": _iso(first_at),
-                "baselineReadyAt": _iso(baseline_at),
+                "firstSuccessAt": _iso(evidence["firstAt"]),
+                "baselineReadyAt": _iso(evidence["baselineAt"]),
                 "evidenceVersion": evidence_version,
                 "ownershipVersion": ownership_version,
                 "policyVersion": policy_version,
@@ -253,6 +281,7 @@ class QualityWatchBaselineInitializationService:
         for item in candidates:
             group_key = (item["subscriptionKey"], item["seasonNumber"])
             groups.setdefault(group_key, {
+                "id": _public_group_id(item["subscriptionKey"]),
                 "subscriptionTitle": item["subscriptionTitle"],
                 "seasonNumber": item["seasonNumber"],
                 "items": [],
@@ -357,6 +386,146 @@ class QualityWatchBaselineInitializationService:
         except Exception:
             pass
 
+    def _validated_candidates(self, run_id, fingerprint, selected):
+        run = self.repository.get_baseline_init_run(run_id)
+        if not run:
+            raise BaselineInitializationError(
+                "BASELINE_INITIALIZATION_RUN_NOT_FOUND", "预览批次不存在", 404
+            )
+        if run["status"] != "previewed" or run["preview_fingerprint"] != fingerprint:
+            raise BaselineInitializationError(
+                "BASELINE_INITIALIZATION_PREVIEW_STALE", "预览已过期，请重新预览", 409
+            )
+        current = self._preview_data()
+        if current["fingerprint"] != fingerprint:
+            self._mark_failed(run_id, "stale", "PREVIEW_CHANGED")
+            raise BaselineInitializationError(
+                "BASELINE_INITIALIZATION_PREVIEW_STALE", "证据已变化，请重新预览", 409
+            )
+        candidates = {item["id"]: item for item in current["candidates"]}
+        selection_changed = any(
+            target not in candidates
+            or candidates[target]["category"] != "safe_to_initialize"
+            for target in selected
+        )
+        if selection_changed:
+            self._mark_failed(run_id, "stale", "SELECTION_CHANGED")
+            raise BaselineInitializationError(
+                "BASELINE_INITIALIZATION_PREVIEW_STALE", "选中目标已变化，请重新预览", 409
+            )
+        return current, candidates
+
+    @staticmethod
+    def _target_plan(item, existing, now):
+        remote_id = _text(item["subscription"].get("torra_remote_id"))
+        task_item = {
+            "mediaType": "tv",
+            "tmdbId": item["tmdbId"],
+            "seasonNumber": item["seasonNumber"],
+            "episodeNumber": item["episodeNumber"],
+            "steps": [{
+                "key": "download",
+                "status": "done",
+                "evidence": "verified",
+                "source": item["evidenceSource"],
+                "timestamp": item["firstSuccessAt"],
+            }],
+            "sourceIds": {
+                "subscriptionId": item["subscriptionKey"],
+                "torraId": remote_id,
+            },
+        }
+        return plan_reconcile(
+            now=now,
+            subscription=item["subscription"],
+            task_item=task_item,
+            torra_row={
+                "id": remote_id,
+                "media_type": "tv",
+                "tmdb_id": item["tmdbId"],
+                "season_number": item["seasonNumber"],
+            },
+            evidence={
+                "is_new": True,
+                "episode_numbers": [item["episodeNumber"]],
+                "first_download_at": item["firstSuccessAt"],
+                "baseline_ready_at": item["baselineReadyAt"],
+                "baseline_success": True,
+                "baseline_episode_numbers": [item["episodeNumber"]],
+                "time_source": f"{item['evidenceSource']}_completed",
+                "require_reliable_times": True,
+            },
+            policy=item["policy"],
+            existing_units=existing,
+        )
+
+    def _apply_target(self, connection, target_id, item, now):
+        existing = self.repository.list_watch_units_in_connection(
+            connection, item["subscriptionKey"]
+        )
+        unit_key = make_unit_key(
+            item["subscriptionKey"], "tv", item["seasonNumber"], item["episodeNumber"]
+        )
+        if any(unit["unit_key"] == unit_key for unit in existing):
+            raise QualityWatchVersionConflict("historical target changed")
+        plan = self._target_plan(item, existing, now)
+        if plan["status"] in {"blocked", "needs_review", "ignored"}:
+            raise QualityWatchVersionConflict(plan["reason"] or "historical target invalid")
+        self.repository.apply_reconcile_plan(connection, plan, now=now)
+        unit_write = next(
+            (write for write in plan["writes"] if write["unitKey"] == unit_key),
+            None,
+        )
+        if not unit_write:
+            raise QualityWatchVersionConflict("historical target produced no write")
+        state = unit_write["values"].get("state", "")
+        return {
+            "publicTargetId": target_id,
+            "ownerTargetKey": item["ownerTargetKey"],
+            "artifactRef": item["artifactRef"],
+            "seasonNumber": item["seasonNumber"],
+            "episodeNumber": item["episodeNumber"],
+            "evidenceSource": item["evidenceSource"],
+            "firstSuccessAt": item["firstSuccessAt"],
+            "baselineReadyAt": item["baselineReadyAt"],
+            "result": "observation_expired" if state == "observation_expired" else "initialized",
+            "reasonCode": "",
+        }
+
+    def _apply_batch(self, execution, current, candidates, now):
+        run_id = execution["runId"]
+        idempotency_key = execution["idempotencyKey"]
+        selected = execution["selectedTargetIds"]
+        plan_items = []
+        with self.repository.runtime.transaction(immediate=True) as connection:
+            for target_id in selected:
+                plan_items.append(
+                    self._apply_target(connection, target_id, candidates[target_id], now)
+                )
+            expired = sum(item["result"] == "observation_expired" for item in plan_items)
+            response = {
+                "runId": run_id,
+                "status": "applied",
+                "initialized": len(plan_items) - expired,
+                "processed": len(plan_items),
+                "alreadyExisting": current["counts"]["alreadyExisting"],
+                "insufficientEvidence": current["counts"]["insufficientEvidence"],
+                "expired": expired,
+                "conflicts": current["counts"]["conflicts"],
+                "reasonCounts": current["reasonCounts"],
+                "replayed": False,
+            }
+            self.repository.apply_baseline_init_run(
+                connection,
+                run_id,
+                idempotency_key,
+                selected,
+                plan_items,
+                response,
+                now=now,
+            )
+        return response, plan_items
+
     def execute(self, body):
         run_id, fingerprint, idempotency_key, selected = self._validate_body(body)
         replay = self.repository.get_baseline_init_run(idempotency_key=idempotency_key)
@@ -364,109 +533,26 @@ class QualityWatchBaselineInitializationService:
             if replay["run_id"] != run_id or replay["preview_fingerprint"] != fingerprint:
                 raise BaselineInitializationError("BASELINE_INITIALIZATION_IDEMPOTENCY_CONFLICT", "幂等键已用于其他批次", 409)
             return {**replay["response"], "replayed": True}
-        run = self.repository.get_baseline_init_run(run_id)
-        if not run:
-            raise BaselineInitializationError("BASELINE_INITIALIZATION_RUN_NOT_FOUND", "预览批次不存在", 404)
-        if run["status"] != "previewed" or run["preview_fingerprint"] != fingerprint:
-            raise BaselineInitializationError("BASELINE_INITIALIZATION_PREVIEW_STALE", "预览已过期，请重新预览", 409)
-        current = self._preview_data()
-        if current["fingerprint"] != fingerprint:
-            self._mark_failed(run_id, "stale", "PREVIEW_CHANGED")
-            raise BaselineInitializationError("BASELINE_INITIALIZATION_PREVIEW_STALE", "证据已变化，请重新预览", 409)
-        candidates = {item["id"]: item for item in current["candidates"]}
-        if any(target not in candidates or candidates[target]["category"] != "safe_to_initialize" for target in selected):
-            self._mark_failed(run_id, "stale", "SELECTION_CHANGED")
-            raise BaselineInitializationError("BASELINE_INITIALIZATION_PREVIEW_STALE", "选中目标已变化，请重新预览", 409)
+        current, candidates = self._validated_candidates(run_id, fingerprint, selected)
         now = self.clock()
-        plan_items = []
-        expired = 0
         try:
-            with self.repository.runtime.transaction(immediate=True) as connection:
-                for target_id in selected:
-                    item = candidates[target_id]
-                    existing = self.repository.list_watch_units_in_connection(
-                        connection, item["subscriptionKey"]
-                    )
-                    unit_key = make_unit_key(
-                        item["subscriptionKey"], "tv", item["seasonNumber"], item["episodeNumber"]
-                    )
-                    if any(unit["unit_key"] == unit_key for unit in existing):
-                        raise QualityWatchVersionConflict("historical target changed")
-                    task_item = {
-                        "mediaType": "tv", "tmdbId": item["tmdbId"],
-                        "seasonNumber": item["seasonNumber"], "episodeNumber": item["episodeNumber"],
-                        "steps": [{
-                            "key": "download", "status": "done", "evidence": "verified",
-                            "source": item["evidenceSource"], "timestamp": item["firstSuccessAt"],
-                        }],
-                        "sourceIds": {
-                            "subscriptionId": item["subscriptionKey"],
-                            "torraId": _text(item["subscription"].get("torra_remote_id")),
-                        },
-                    }
-                    plan = plan_reconcile(
-                        now=now,
-                        subscription=item["subscription"],
-                        task_item=task_item,
-                        torra_row={
-                            "id": _text(item["subscription"].get("torra_remote_id")),
-                            "media_type": "tv", "tmdb_id": item["tmdbId"],
-                            "season_number": item["seasonNumber"],
-                        },
-                        evidence={
-                            "is_new": True,
-                            "episode_numbers": [item["episodeNumber"]],
-                            "first_download_at": item["firstSuccessAt"],
-                            "baseline_ready_at": item["baselineReadyAt"],
-                            "baseline_success": True,
-                            "baseline_episode_numbers": [item["episodeNumber"]],
-                            "time_source": f"{item['evidenceSource']}_completed",
-                            "require_reliable_times": True,
-                        },
-                        policy=item["policy"],
-                        existing_units=existing,
-                    )
-                    if plan["status"] in {"blocked", "needs_review", "ignored"}:
-                        raise QualityWatchVersionConflict(plan["reason"] or "historical target invalid")
-                    self.repository.apply_reconcile_plan(connection, plan, now=now)
-                    unit_write = next(
-                        (write for write in plan["writes"] if write["unitKey"] == unit_key),
-                        None,
-                    )
-                    if not unit_write:
-                        raise QualityWatchVersionConflict("historical target produced no write")
-                    state = unit_write["values"].get("state", "")
-                    expired += state == "observation_expired"
-                    plan_items.append({
-                        "publicTargetId": target_id,
-                        "ownerTargetKey": item["ownerTargetKey"],
-                        "artifactRef": item["artifactRef"],
-                        "seasonNumber": item["seasonNumber"],
-                        "episodeNumber": item["episodeNumber"],
-                        "evidenceSource": item["evidenceSource"],
-                        "firstSuccessAt": item["firstSuccessAt"],
-                        "baselineReadyAt": item["baselineReadyAt"],
-                        "result": "observation_expired" if state == "observation_expired" else "initialized",
-                        "reasonCode": "",
-                    })
-                response = {
+            response, plan_items = self._apply_batch(
+                {
                     "runId": run_id,
-                    "status": "applied",
-                    "initialized": len(plan_items) - int(expired),
-                    "processed": len(plan_items),
-                    "alreadyExisting": current["counts"]["alreadyExisting"],
-                    "insufficientEvidence": current["counts"]["insufficientEvidence"],
-                    "expired": int(expired),
-                    "conflicts": current["counts"]["conflicts"],
-                    "reasonCounts": current["reasonCounts"],
-                    "replayed": False,
-                }
-                self.repository.apply_baseline_init_run(
-                    connection, run_id, idempotency_key, selected, plan_items, response, now=now
-                )
+                    "idempotencyKey": idempotency_key,
+                    "selectedTargetIds": selected,
+                },
+                current,
+                candidates,
+                now,
+            )
         except Exception as exc:
-            self._mark_failed(run_id, "stale" if isinstance(exc, QualityWatchVersionConflict) else "failed", "APPLY_FAILED")
-            code = "BASELINE_INITIALIZATION_PREVIEW_STALE" if isinstance(exc, QualityWatchVersionConflict) else "BASELINE_INITIALIZATION_FAILED"
+            conflict = isinstance(exc, QualityWatchVersionConflict)
+            self._mark_failed(run_id, "stale" if conflict else "failed", "APPLY_FAILED")
+            code = (
+                "BASELINE_INITIALIZATION_PREVIEW_STALE"
+                if conflict else "BASELINE_INITIALIZATION_FAILED"
+            )
             status = 409 if isinstance(exc, QualityWatchVersionConflict) else 500
             raise BaselineInitializationError(code, "历史基线初始化未执行，请重新预览", status) from exc
         for item in plan_items:

@@ -111,7 +111,8 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/v2/rss-items/identity-backfills`：管理员显式触发的本地有界身份回填，每批最多 200 条，不访问 PT 详情页或执行下载；摘要保留最近扫描、识别、冲突、未变化和剩余数量。
 - `/api/v2/rss-matches`：读取本地候选、规范订阅/季集绑定和 Torra 规则影子评分；POST 可为一个 RSS 搜索结果和明确观察单元建立幂等人工匹配，服务端复核身份、季集、首次下载时间及 Torra 归属，并只读当前规则评分。规则或证据不完整时返回“暂未确认”，不按零分处理；后续人工 Torra 分析和下载仍分别受独立闸门保护。
 - `/api/v2/rss-matches/:id/exact-download-previews`：阶段 C0 只读复核冠军、严格高分、订阅绑定、当前规则、候选评分、基线及 qB/Torra 状态；请求只接受空对象，不创建动作或执行下载。当前固定返回 Torra 正式指定 RSS 资源入口缺失，不使用通用下载器入口。
-- `/api/v2/subscription-automation/settings`、`/api/v2/subscriptions/:id/quality-watch`：追更洗版全局与单条观察设置、暂停和恢复；默认 `follow_rss` 只监听并本地评分 RSS 候选，不按旧检查点触发 Torra 整订阅搜索。可选 `missingFallbackEnabled` 开启可靠缺集的单订阅搜索兜底，状态通过单条质量观察响应的可选 `missingFallback` 投影；显式 `fixed_window` 才保留高级兼容调度。
+- `/api/v2/subscription-automation/settings`、`/api/v2/subscription-automation/bridge-summary`、`/api/v2/subscriptions/:id/quality-watch`：追更洗版全局与单条观察设置、生产桥接水位/收据摘要、暂停和恢复；默认 `follow_rss` 只监听并本地评分 RSS 候选，不按旧检查点触发 Torra 整订阅搜索。生产桥接支持 `off/shadow/apply`，首次影子水位永久保留；可选 `missingFallbackEnabled` 开启可靠缺集的单订阅搜索兜底，显式 `fixed_window` 才保留高级兼容调度。
+- `/api/v2/subscription-automation/baseline-initialization-previews`、`/api/v2/subscription-automation/baseline-initializations`：只从缓存任务快照和稳定 `resource_events` 生成持久预览，最多确认 200 个可靠历史目标；同批漂移全部回滚，真实历史时间决定进入观察或直接过期，不触发任何外部搜索或下载动作。
 - `/api/v2/subscriptions/:id/torra-rewash-analyses`、`/api/v2/subscriptions/:id/torra-rewashes`、`/api/v2/rss-matches/:id/torra-rewash-analyses`、`/api/v2/rss-matches/:id/torra-rewashes`：人工异步分析与候选下载；服务端从观察单元和已完成分析动作读取 Torra ID/候选，不接受浏览器映射。
 - `/api/v2/search`、`/api/v2/media/:mediaKey`：外部只读聚合本地追更、已识别 RSS、任务、当月日历和 Emby TMDB 索引；本地无结果时才使用 TMDB 只读补充。无 TMDB 的本地任务保留空 `tmdbId`、公开 `chainId` 和任务深链，不伪造作品详情地址；以媒体键或 TMDB 身份也可定位仅 Emby 候选。响应不返回路径、Hash、外部原始 ID 或不安全播放直链。
 - `/api/v2/subscriptions/:id/moviepilot-previews`、`/api/v2/subscriptions/:id/moviepilot-pushes`：阶段 7 人工备用预览与同步推送；只复用 NasEmby MoviePilot 门面，不返回外部订阅 ID、URL、Token 或原始响应。

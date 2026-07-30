@@ -220,6 +220,271 @@
   font-size: 12px;
 }
 
+.quality-bridge {
+  display: grid;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--ops-hair);
+}
+
+.quality-bridge__heading,
+.quality-bridge__heading > div,
+.quality-bridge__heading > div > span,
+.baseline-init__heading,
+.baseline-init__heading > div,
+.baseline-init__heading > div > span {
+  display: flex;
+  align-items: center;
+}
+
+.quality-bridge__heading,
+.baseline-init__heading {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.quality-bridge__heading > div,
+.baseline-init__heading > div {
+  min-width: 0;
+  gap: 8px;
+  color: var(--ops-steel);
+}
+
+.quality-bridge__heading > div > span,
+.baseline-init__heading > div > span {
+  min-width: 0;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.quality-bridge__heading strong,
+.baseline-init__heading strong {
+  color: var(--ops-ink-strong);
+  font-size: 12px;
+}
+
+.quality-bridge__heading small,
+.baseline-init__heading small,
+.quality-bridge__heading > span {
+  color: var(--ops-muted);
+  font-size: 11px;
+}
+
+.quality-bridge__modes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.quality-bridge__modes button {
+  display: grid;
+  min-width: 0;
+  min-height: 54px;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid var(--ops-hair);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--ops-muted);
+  cursor: pointer;
+  text-align: left;
+}
+
+.quality-bridge__modes button:hover,
+.quality-bridge__modes button:focus-visible,
+.quality-bridge__modes button.is-active {
+  border-color: rgba(122, 215, 194, 0.34);
+  background: rgba(122, 215, 194, 0.08);
+  outline: none;
+}
+
+.quality-bridge__modes button:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.quality-bridge__modes strong {
+  color: var(--ops-ink-strong);
+  font-size: 12px;
+}
+
+.quality-bridge__modes small {
+  overflow-wrap: anywhere;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.quality-bridge__receipts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  color: var(--ops-muted);
+  font-size: 11px;
+}
+
+.quality-bridge__receipts strong {
+  color: var(--ops-ink-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.baseline-init__heading {
+  padding-top: 12px;
+  border-top: 1px solid var(--ops-hair);
+}
+
+.baseline-init__summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-block: 1px solid var(--ops-hair);
+}
+
+.baseline-init__summary span {
+  display: grid;
+  gap: 2px;
+  padding: 10px;
+  color: var(--ops-muted);
+  font-size: 10px;
+}
+
+.baseline-init__summary span + span {
+  border-left: 1px solid var(--ops-hair);
+}
+
+.baseline-init__summary strong {
+  color: var(--ops-ink-strong);
+  font-size: 17px;
+}
+
+.baseline-init__groups details {
+  border-bottom: 1px solid var(--ops-hair);
+}
+
+.baseline-init__groups summary {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ops-ink-strong);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.baseline-init__groups summary strong {
+  color: var(--ops-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.baseline-init__groups ul {
+  display: grid;
+  max-height: 320px;
+  margin: 0;
+  padding: 0 0 8px;
+  overflow: auto;
+  list-style: none;
+}
+
+.baseline-init__groups li {
+  display: grid;
+  grid-template-columns: minmax(210px, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 0;
+  border-top: 1px solid var(--ops-hair);
+}
+
+.baseline-init__groups li > label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.baseline-init__groups li > label > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.baseline-init__groups li > label strong {
+  color: var(--ops-ink-strong);
+  font-size: 12px;
+}
+
+.baseline-init__groups li > label small,
+.baseline-init__groups li > span {
+  color: var(--ops-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.baseline-init__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.baseline-init__actions small,
+.quality-bridge__message {
+  color: var(--ops-muted);
+  font-size: 11px;
+}
+
+.baseline-init__result {
+  padding: 9px 10px;
+  border-left: 2px solid var(--ops-signal);
+  background: rgba(122, 215, 194, 0.06);
+  color: var(--ops-ink-strong);
+  font-size: 11px;
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='dark'] .quality-bridge :is(
+  .quality-bridge__heading strong,
+  .baseline-init__heading strong,
+  .quality-bridge__modes strong,
+  .quality-bridge__receipts strong,
+  .baseline-init__summary strong,
+  .baseline-init__groups summary,
+  .baseline-init__groups li > label strong,
+  .baseline-init__result
+) {
+  color: #f8f4ee;
+  transition: none;
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='dark'] .quality-bridge :is(
+  .quality-bridge__heading small,
+  .baseline-init__heading small,
+  .quality-bridge__heading > span,
+  .quality-bridge__modes button,
+  .quality-bridge__receipts,
+  .baseline-init__summary span,
+  .baseline-init__groups summary strong,
+  .baseline-init__groups li > label small,
+  .baseline-init__groups li > span,
+  .baseline-init__actions small,
+  .quality-bridge__message
+) {
+  color: #aeb7c0;
+  transition: none;
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='dark'] .quality-bridge__modes button {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.025);
+  transition: none;
+}
+
+.app-shell:not(.app-shell--hall)[data-theme='dark'] .quality-bridge__modes button:is(:hover, :focus-visible, .is-active) {
+  border-color: rgba(122, 215, 194, 0.34);
+  background: rgba(122, 215, 194, 0.08);
+}
+
 .candidate-migration__empty {
   padding: 14px 0;
   border-block: 1px solid var(--ops-hair);
@@ -344,6 +609,18 @@
   .candidate-migration__groups li {
     grid-template-columns: 1fr;
     gap: 5px;
+  }
+
+  .quality-bridge__heading,
+  .baseline-init__heading,
+  .baseline-init__actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .baseline-init__groups li {
+    grid-template-columns: 1fr;
+    gap: 4px;
   }
 }
 

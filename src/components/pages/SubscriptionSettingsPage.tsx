@@ -1,15 +1,23 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Database, RefreshCcw, Save, ShieldCheck, SlidersHorizontal } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Database, History, RefreshCcw, Save, ShieldCheck, SlidersHorizontal } from 'lucide-react';
 import {
+  executeBaselineInitialization,
   executeCandidateMigration,
+  getQualityWatchBridgeSummary,
   getSubscriptionAutomationSettings,
+  previewBaselineInitialization,
   previewCandidateMigration,
   updateSubscriptionAutomationSettings
 } from '../../services/api';
 import type {
+  BaselineInitializationCategory,
+  BaselineInitializationPreview,
+  BaselineInitializationResult,
   CandidateMigrationCategory,
   CandidateMigrationPreview,
   CandidateMigrationResult,
+  QualityWatchBridgeMode,
+  QualityWatchBridgeSummary,
   SubscriptionAutomationSettings
 } from '../../types/subscriptions';
 import { createIdempotencyKey } from '../../utils/idempotency';
@@ -44,6 +52,261 @@ function qualitySettingsError(settings: SubscriptionAutomationSettings, schedule
     return '每轮批量只能填写 2 或 3';
   }
   return '';
+}
+
+const bridgeModeLabels: Record<QualityWatchBridgeMode, string> = {
+  off: '关闭',
+  shadow: '影子',
+  apply: '正式'
+};
+
+const baselineCategoryLabels: Record<BaselineInitializationCategory, string> = {
+  safe_to_initialize: '可安全初始化',
+  needs_review: '需要复核',
+  skipped: '已跳过'
+};
+
+const baselineReasonLabels: Record<string, string> = {
+  eligible: '证据完整',
+  identity_incomplete: '身份信息不完整',
+  identity_conflict: '身份信息冲突',
+  observation_unit_exists: '已有观察单元',
+  artifact_owner_unconfirmed: '文件所有权未确认',
+  success_file_missing: '缺少成功文件证据',
+  success_file_conflict: '成功文件证据冲突',
+  success_time_missing: '缺少正式发生时间',
+  success_time_inverted: '历史时间顺序异常',
+  policy_invalid: '当前策略无效'
+};
+
+function localTime(value: string) {
+  if (!value) return '尚未建立';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return '时间暂未确认';
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).format(parsed);
+}
+
+function QualityWatchBridgeSettings() {
+  const [summary, setSummary] = useState<QualityWatchBridgeSummary | null>(null);
+  const [preview, setPreview] = useState<BaselineInitializationPreview | null>(null);
+  const [result, setResult] = useState<BaselineInitializationResult | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [message, setMessage] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [modeBusy, setModeBusy] = useState(false);
+  const [pendingMode, setPendingMode] = useState<QualityWatchBridgeMode | null>(null);
+  const [modeConfirmOpen, setModeConfirmOpen] = useState(false);
+  const [initConfirmOpen, setInitConfirmOpen] = useState(false);
+
+  const refreshSummary = () => getQualityWatchBridgeSummary().then(setSummary);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getQualityWatchBridgeSummary({ signal: controller.signal })
+      .then((payload) => {
+        if (!controller.signal.aborted) setSummary(payload);
+      })
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted) setMessage(reason instanceof Error ? reason.message : '生产桥接状态加载失败');
+      });
+    return () => controller.abort();
+  }, []);
+
+  const applyMode = (mode: QualityWatchBridgeMode) => {
+    setModeBusy(true);
+    setMessage('');
+    updateSubscriptionAutomationSettings({ bridgeMode: mode, bridgeModeConfirm: true })
+      .then(() => refreshSummary())
+      .then(() => {
+        setModeConfirmOpen(false);
+        setPendingMode(null);
+        setMessage(`生产桥接已切换为${bridgeModeLabels[mode]}模式`);
+      })
+      .catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : '生产桥接模式切换失败'))
+      .finally(() => setModeBusy(false));
+  };
+
+  const requestMode = (mode: QualityWatchBridgeMode) => {
+    if (!summary || modeBusy || mode === summary.mode) return;
+    if (mode === 'apply') {
+      setPendingMode(mode);
+      setModeConfirmOpen(true);
+      return;
+    }
+    applyMode(mode);
+  };
+
+  const loadPreview = () => {
+    setLoading(true);
+    setMessage('');
+    previewBaselineInitialization()
+      .then((payload) => {
+        setPreview(payload);
+        setResult(null);
+        const safeIds = payload.groups
+          .flatMap((group) => group.items)
+          .filter((item) => item.category === 'safe_to_initialize')
+          .slice(0, payload.maxSelectedTargets)
+          .map((item) => item.id);
+        setSelected(safeIds);
+      })
+      .catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : '历史基线预览失败'))
+      .finally(() => setLoading(false));
+  };
+
+  const toggleSelected = (id: string) => {
+    if (!preview) return;
+    setSelected((current) => {
+      if (current.includes(id)) return current.filter((value) => value !== id);
+      if (current.length >= preview.maxSelectedTargets) return current;
+      return [...current, id];
+    });
+  };
+
+  const execute = () => {
+    if (!preview || selected.length === 0) return;
+    setLoading(true);
+    setMessage('');
+    executeBaselineInitialization({
+      confirm: true,
+      runId: preview.runId,
+      previewFingerprint: preview.previewFingerprint,
+      selectedTargetIds: selected,
+      idempotencyKey: createIdempotencyKey()
+    })
+      .then((payload) => {
+        setResult(payload);
+        setInitConfirmOpen(false);
+        setMessage(`已处理 ${payload.processed} 集 · 进入观察 ${payload.initialized} · 历史过期 ${payload.expired}`);
+      })
+      .catch((reason: unknown) => {
+        setInitConfirmOpen(false);
+        setMessage(reason instanceof Error ? reason.message : '历史基线初始化失败');
+      })
+      .finally(() => setLoading(false));
+  };
+
+  const receiptCounts = summary?.receiptCounts;
+
+  return (
+    <div className="quality-bridge">
+      <div className="quality-bridge__heading">
+        <div><ShieldCheck size={15} /><span><strong>生产桥接</strong><small>永久水位 {summary ? localTime(summary.activatedAt) : '读取中'}</small></span></div>
+        <span>{summary ? `${summary.receiptTotal} 条收据` : '状态读取中'}</span>
+      </div>
+      <div className="quality-bridge__modes" role="group" aria-label="生产桥接模式">
+        {(Object.keys(bridgeModeLabels) as QualityWatchBridgeMode[]).map((mode) => (
+          <button
+            aria-pressed={summary?.mode === mode}
+            className={summary?.mode === mode ? 'is-active' : ''}
+            disabled={!summary || modeBusy}
+            key={mode}
+            onClick={() => requestMode(mode)}
+            type="button"
+          >
+            <strong>{bridgeModeLabels[mode]}</strong>
+            <small>{mode === 'off' ? '不接收新事实' : mode === 'shadow' ? '只判定并记收据' : '应用新事实'}</small>
+          </button>
+        ))}
+      </div>
+      {summary && (
+        <div className="quality-bridge__receipts" aria-label="生产桥接收据统计">
+          <span>待应用 <strong>{receiptCounts?.pending ?? 0}</strong></span>
+          <span>已应用 <strong>{receiptCounts?.applied ?? 0}</strong></span>
+          <span>历史 <strong>{receiptCounts?.historical ?? 0}</strong></span>
+          <span>待复核 <strong>{receiptCounts?.needs_review ?? 0}</strong></span>
+          <span>可重试失败 <strong>{receiptCounts?.retryable_failed ?? 0}</strong></span>
+        </div>
+      )}
+
+      <div className="baseline-init__heading">
+        <div><History size={15} /><span><strong>历史基线初始化</strong><small>{preview ? `预览于 ${localTime(preview.generatedAt)}` : '尚未预览'}</small></span></div>
+        <button className="tool-link" disabled={loading || modeBusy} type="button" onClick={loadPreview}>
+          <RefreshCcw size={14} />{loading ? '读取中…' : preview ? '重新预览' : '创建预览'}
+        </button>
+      </div>
+
+      {preview && (
+        <>
+          <div className="baseline-init__summary">
+            <span><strong>{preview.counts.safeToInitialize}</strong> 可安全初始化</span>
+            <span><strong>{preview.counts.needsReview}</strong> 需要复核</span>
+            <span><strong>{preview.counts.skipped}</strong> 已跳过</span>
+          </div>
+          <div className="baseline-init__groups">
+            {preview.groups.map((group) => (
+              <details key={`${group.id}:${group.seasonNumber}`}>
+                <summary><span>{group.subscriptionTitle || '未命名订阅'} · {group.seasonNumber > 0 ? `第 ${group.seasonNumber} 季` : '季数暂未确认'}</span><strong>{group.items.length} 条</strong></summary>
+                <ul>
+                  {group.items.map((item) => (
+                    <li key={item.id}>
+                      <label>
+                        <input
+                          checked={selected.includes(item.id)}
+                          disabled={item.category !== 'safe_to_initialize' || loading}
+                          onChange={() => toggleSelected(item.id)}
+                          type="checkbox"
+                        />
+                        <span><strong>{item.episodeNumber > 0 ? `E${String(item.episodeNumber).padStart(2, '0')}` : '集号暂未确认'}</strong><small>{baselineCategoryLabels[item.category]} · {baselineReasonLabels[item.reasonCode] || item.reasonCode}</small></span>
+                      </label>
+                      <span>{item.evidenceSource === 'symedia' ? 'Symedia 归档' : item.evidenceSource === 'qb' ? 'qB 完成' : 'Torra 完成'} · {localTime(item.baselineReadyAt)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ))}
+          </div>
+          <div className="baseline-init__actions">
+            <small>已选择 {selected.length}/{preview.maxSelectedTargets} 集</small>
+            <button className="ops-action-button ops-action-button--primary" disabled={selected.length === 0 || loading} onClick={() => setInitConfirmOpen(true)} type="button">
+              <CheckCircle2 size={14} />初始化所选基线
+            </button>
+          </div>
+        </>
+      )}
+      {result && <div className="baseline-init__result">已处理 {result.processed} 集 · 进入观察 {result.initialized} · 历史过期 {result.expired}</div>}
+      {message && <small className="quality-bridge__message" role="status">{message}</small>}
+
+      <ConfirmDialog
+        busy={modeBusy}
+        labelledBy="quality-bridge-confirm-title"
+        describedBy="quality-bridge-confirm-description"
+        open={modeConfirmOpen}
+        onClose={() => !modeBusy && setModeConfirmOpen(false)}
+      >
+        <span className="ops-confirm-dialog__signal">生产桥接</span>
+        <h2 id="quality-bridge-confirm-title">启用正式桥接？</h2>
+        <p id="quality-bridge-confirm-description">后续新完成事实会按同一事务写入质量观察；不会触发搜索、下载或秒传。</p>
+        <div className="ops-confirm-dialog__actions">
+          <button className="ops-action-button" disabled={modeBusy} onClick={() => setModeConfirmOpen(false)} type="button">取消</button>
+          <button className="ops-action-button ops-action-button--primary" disabled={modeBusy} onClick={() => pendingMode && applyMode(pendingMode)} type="button">{modeBusy ? '切换中…' : '确认启用'}</button>
+        </div>
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        busy={loading}
+        labelledBy="baseline-init-confirm-title"
+        describedBy="baseline-init-confirm-description"
+        open={initConfirmOpen}
+        onClose={() => !loading && setInitConfirmOpen(false)}
+      >
+        <span className="ops-confirm-dialog__signal">历史基线</span>
+        <h2 id="baseline-init-confirm-title">初始化 {selected.length} 集历史基线？</h2>
+        <p id="baseline-init-confirm-description">将按预览中的真实历史时间写入观察单元。已过观察期限的记录只保留历史状态。</p>
+        <div className="ops-confirm-dialog__actions">
+          <button className="ops-action-button" disabled={loading} onClick={() => setInitConfirmOpen(false)} type="button">取消</button>
+          <button className="ops-action-button ops-action-button--primary" disabled={loading} onClick={execute} type="button">{loading ? '执行中…' : '确认初始化'}</button>
+        </div>
+      </ConfirmDialog>
+    </div>
+  );
 }
 
 function QualityWatchSettings() {
@@ -132,6 +395,7 @@ function QualityWatchSettings() {
           <label>每轮批量<input disabled={saving} min={2} max={3} type="number" value={settings.batchSize} onChange={(event) => setSettings({ ...settings, batchSize: Number(event.target.value) })} /></label>
         </div>
       </>}
+      <QualityWatchBridgeSettings />
       <div className="sub-config__foot">
         <small>{settings.lifecycleMode === 'follow_rss' ? `候选即时评分 · 缺集兜底${settings.missingFallbackEnabled ? '已启用' : '未启用'}` : '高级兼容模式 · 按固定检查点分析'}</small>
         <button className="tool-link" disabled={saving} type="button" onClick={save}><Save size={14} />{saving ? '保存中…' : '保存质量观察设置'}</button>
