@@ -182,7 +182,8 @@ class QualityWatchBaselineInitializationService:
         unique = {}
         for fact in facts:
             key = (
-                fact["stage"], fact["owner_target_key"], fact["artifact_key"],
+                fact["stage"], fact["subscription_key"], fact["owner_target_key"],
+                fact["artifact_key"], fact["season_number"], fact["episode_number"],
                 _iso(fact["upstream_occurred_at"]),
             )
             current = unique.get(key)
