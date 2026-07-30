@@ -7,7 +7,12 @@ from flask import Flask, jsonify, request
 from app.http_runtime import current_request_id
 from app import discover_runtime
 from app.contract_mapping import map_subscription_item
-from app.task_public_runtime import present_pipeline_fact, present_pipeline_outcome
+from app.task_public_runtime import (
+    present_media_result,
+    present_pipeline_fact,
+    present_pipeline_outcome,
+    present_residual_issues,
+)
 from app.statistic_metadata_runtime import statistic_metadata
 
 
@@ -334,6 +339,8 @@ def _item_snapshot(row, chain_item=None):
         "library": _fact_stage(facts.get("symedia"), "尚无 Symedia 整理证据"),
         "torraFact": torra_fact,
         "pipelineOutcome": pipeline_outcome,
+        "mediaResult": present_media_result(chain_item.get("mediaResult")),
+        "residualIssues": present_residual_issues(chain_item.get("residualIssues")),
         "outcomeState": outcome_state,
         "blockingReason": pipeline_outcome["reasonText"] if outcome_state == "action_required" else "",
         "chainState": _legacy_chain_state(outcome_state),
@@ -563,6 +570,8 @@ class SubscriptionWorkbenchService:
                 if not chain_item:
                     mapped["torraFact"] = recon.get("torraFact")
                     mapped["pipelineOutcome"] = present_pipeline_outcome(recon.get("pipelineOutcome"))
+                    mapped["mediaResult"] = present_media_result(recon.get("mediaResult"))
+                    mapped["residualIssues"] = present_residual_issues(recon.get("residualIssues"))
                     mapped["outcomeState"] = mapped["pipelineOutcome"]["state"]
                     mapped["chainState"] = _legacy_chain_state(mapped["outcomeState"])
                     mapped["status"] = "done" if mapped["outcomeState"] == "playable" else "pending"
@@ -609,6 +618,8 @@ class SubscriptionWorkbenchService:
                 "chainState": _legacy_chain_state(outcome_state),
                 "outcomeState": outcome_state,
                 "pipelineOutcome": pipeline_outcome,
+                "mediaResult": present_media_result(recon.get("mediaResult")),
+                "residualIssues": present_residual_issues(recon.get("residualIssues")),
                 "torraFact": torra_fact,
                 "torra": _torra_push_snapshot(
                     {}, recon, _truthy(self.environment.get("TORRA_PUSH_ENABLED"))

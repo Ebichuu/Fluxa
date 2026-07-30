@@ -734,6 +734,13 @@
   line-height: 1.5;
 }
 
+.ops-task-card__head .ops-task-card__residual {
+  margin-top: 2px;
+  color: #d5a14a;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .ops-task-card__head .ops-task-card__meta-line {
   margin-top: 3px;
   color: var(--ops-faint);
@@ -793,6 +800,12 @@
   border-color: rgba(255, 83, 103, 0.32);
   background: rgba(255, 83, 103, 0.08);
   color: var(--ops-rose);
+}
+
+.ops-task-state--media-result {
+  border-color: rgba(108, 171, 137, 0.28);
+  background: rgba(108, 171, 137, 0.08);
+  color: #8fc5a7;
 }
 
 .ops-task-state--completed {
@@ -887,6 +900,12 @@
   border-color: rgba(255, 83, 103, 0.18);
   background: rgba(255, 83, 103, 0.035);
   color: var(--ops-rose);
+}
+
+.ops-task-guidance--residual {
+  border-color: rgba(213, 161, 74, 0.22);
+  background: rgba(213, 161, 74, 0.055);
+  color: #d5a14a;
 }
 
 .ops-task-guidance--evidence-insufficient {

@@ -2981,6 +2981,13 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             ? item.torraSyncState === 'remote_missing' ? 'Torra 远端已缺失' : 'Torra 已有追更，只读同步'
             : '由 Fluxa 管理，可检查后推送';
           const userStatus = subscriptionUserStatus(item);
+          const mediaResult = item.mediaResult?.state && item.mediaResult.state !== 'unknown'
+            ? item.mediaResult
+            : undefined;
+          const residualCount = (item.residualIssues ?? []).reduce(
+            (total, issue) => total + Math.max(1, issue.resourceCount || 1),
+            0,
+          );
           return (
             <div
               className={detailId === item.id ? 'discover-sub discover-sub--open' : 'discover-sub'}
@@ -3012,7 +3019,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                     {item.progress?.state === 'unconfirmed'
                       ? ` · ${item.progress.text}`
                       : item.progressText && ` · 进度 ${item.progressText}`}
-                    {item.outcomeState === 'playable' && ' · 已可播放'}
+                    {mediaResult ? ` · ${mediaResult.resultText}` : item.outcomeState === 'playable' ? ' · 已可播放' : ''}
                   </small>
                   <em>{item.readOnly ? '来自 Torra · 只读' : item.sourceLabel || 'Fluxa'} · {subscriptionUpdateLabel(item.updatedAt)}</em>
                 </button>
@@ -3056,8 +3063,8 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
 
               {subscriptionsOnly && (
                 <div className="discover-sub__chain" aria-label={`${item.title} 处理状态`}>
-                  <span className={item.outcomeState === 'playable' ? 'is-ok' : item.outcomeState === 'action_required' ? 'is-warn' : undefined}>
-                    <b>当前进展</b><small>{fulfillmentLabel(item)}</small>
+                  <span className={mediaResult ? 'is-ok' : item.outcomeState === 'action_required' ? 'is-warn' : undefined}>
+                    <b>当前进展</b><small>{mediaResult?.resultText || fulfillmentLabel(item)}</small>
                   </span>
                   <span className={item.qb?.status === 'blocked' ? 'is-warn' : item.qb?.status === 'done' || item.qb?.status === 'active' ? 'is-ok' : undefined}>
                     <b>下载</b><small>{item.qb?.detail || '等待下载任务'}</small>
@@ -3072,6 +3079,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                     <b>最近检查</b><small><RelativeTime value={item.observedAt || item.updatedAt} /></small>
                   </span>
                   {userStatus && <p className={subscriptionUserStatusTone(item)}><strong>当前状态</strong>{userStatus}</p>}
+                  {residualCount > 0 && <p className="discover-sub__residual"><strong>遗留问题</strong>另有 {residualCount} 个资源需处理</p>}
                   <details className="discover-sub__advanced">
                     <summary>高级诊断</summary>
                     <div>

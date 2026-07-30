@@ -241,6 +241,28 @@ function outcomeStateLabel(value: PipelineOutcomeState) {
   } as const)[value];
 }
 
+function confirmedMediaResult(item: TaskChainListItem | TaskChainItem) {
+  return item.mediaResult?.state && item.mediaResult.state !== 'unknown'
+    ? item.mediaResult
+    : undefined;
+}
+
+function residualIssueCount(item: TaskChainListItem | TaskChainItem) {
+  return (item.residualIssues ?? []).reduce(
+    (total, issue) => total + Math.max(1, issue.resourceCount || 1),
+    0
+  );
+}
+
+function residualIssueLabel(item: TaskChainListItem | TaskChainItem) {
+  const issues = item.residualIssues ?? [];
+  const count = residualIssueCount(item);
+  const label = issues.length > 0 && issues.every((issue) => issue.stage === 'qb')
+    ? '残留下载'
+    : '遗留问题';
+  return `另有 ${count} 个${label}需处理`;
+}
+
 function focusedOutcome(items: Array<TaskChainListItem | TaskChainItem>): PipelineOutcomeState | null {
   const states = items.map(resolvedOutcomeState);
   if (states.includes('action_required')) return 'action_required';
@@ -1063,6 +1085,11 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
             const expanded = expandedChainId === chainId;
             const health = resolvedHealth(item);
             const outcomeState = resolvedOutcomeState(item);
+            const mediaResult = confirmedMediaResult(item);
+            const residualCount = residualIssueCount(item);
+            const separatedResidual = Boolean(mediaResult && residualCount > 0);
+            const showMediaResult = Boolean(mediaResult && (outcomeState !== 'action_required' || separatedResidual));
+            const residualIssue = item.residualIssues?.[0];
             const stages = detail ? pipelineStageItems(detail) : [];
             const primaryAction = item.primaryAction;
             const detailsArePrimaryAction = Boolean(
@@ -1070,7 +1097,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
             );
             return (
               <article
-                className={`${outcomeState === 'action_required' ? 'ops-task-card ops-task-card--stuck' : 'ops-task-card'}${focusActive && chainId === focusedTaskId ? ' ops-task-card--focused' : ''}`}
+                className={`${outcomeState === 'action_required' && !separatedResidual ? 'ops-task-card ops-task-card--stuck' : 'ops-task-card'}${focusActive && chainId === focusedTaskId ? ' ops-task-card--focused' : ''}`}
                 key={chainId}
                 ref={(element) => {
                   if (element) taskCardRefs.current.set(chainId, element);
@@ -1080,11 +1107,16 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
               >
               <div className="ops-task-card__head">
                 <div className="ops-task-card__status">
-                  <span className={`ops-task-state ops-task-state--${outcomeState.replace(/_/g, '-')}`}>{outcomeStateLabel(outcomeState)}</span>
+                  <span className={`ops-task-state ${showMediaResult ? 'ops-task-state--media-result' : `ops-task-state--${outcomeState.replace(/_/g, '-')}`}`}>
+                    {showMediaResult ? mediaResult?.resultText : outcomeStateLabel(outcomeState)}
+                  </span>
                 </div>
                 <div>
                   <h2>{item.title}</h2>
-                  <p className="ops-task-card__result">{item.resultText || currentDetail(detail ?? item)}</p>
+                  <p className="ops-task-card__result">
+                    {showMediaResult ? mediaResult?.resultText : item.resultText || currentDetail(detail ?? item)}
+                  </p>
+                  {residualCount > 0 && <p className="ops-task-card__residual">{residualIssueLabel(item)}</p>}
                   <p className="ops-task-card__meta-line">
                     PT · {item.mediaType === 'movie' ? '电影' : item.mediaType === 'tv' ? `剧集${item.seasonNumber ? ` S${String(item.seasonNumber).padStart(2, '0')}` : ''}` : '未识别媒体'}
                   </p>
@@ -1098,7 +1130,15 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                 <strong>已确认 {item.confirmedStageCount ?? 0}/6</strong>
               </div>
 
-              {outcomeState === 'action_required' && (
+              {residualCount > 0 && (
+                <div className="ops-task-guidance ops-task-guidance--residual" role="status">
+                  <AlertTriangle aria-hidden="true" size={16} />
+                  <div><strong>遗留问题</strong><span>{residualIssue?.reasonText || residualIssueLabel(item)}</span></div>
+                  <div><strong>建议处理</strong><span>{primaryAction?.label || '展开查看对应阶段证据'}</span></div>
+                </div>
+              )}
+
+              {outcomeState === 'action_required' && residualCount === 0 && (
                 <div className="ops-task-guidance ops-task-guidance--action-required" role="alert">
                   {guidanceIcon(health)}
                   <div><strong>发生了什么</strong><span>{currentDetail(detail ?? item)}</span></div>

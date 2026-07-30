@@ -14,7 +14,13 @@ from app.pipeline_fact_runtime import (
     normalize_pipeline_fact,
     target_scope_for_item,
 )
-from app.pipeline_outcome_runtime import PIPELINE_OUTCOMES, derive_outcome_counts, derive_pipeline_outcome
+from app.pipeline_outcome_runtime import (
+    PIPELINE_OUTCOMES,
+    derive_media_result,
+    derive_outcome_counts,
+    derive_pipeline_outcome,
+    derive_residual_issues,
+)
 from app.problem_group_runtime import derive_problem_groups
 from app.resource_identity_runtime import artifact_key, chain_id, media_key, target_key
 from app.resource_task_repository import pipeline_source_ref, pipeline_unit_ref
@@ -512,6 +518,27 @@ def _apply_user_projection(item: dict, services: dict) -> dict:
     }
 
 
+def _apply_media_projection(item: dict, now_value: datetime) -> dict:
+    facts = item.get("pipelineFacts") or []
+    target_scope = target_scope_for_item(item)
+    target_unit_key = str(item.get("targetUnitKey") or "")
+    return {
+        **item,
+        "mediaResult": derive_media_result(
+            facts,
+            target_scope=target_scope,
+            target_unit_key=target_unit_key,
+            now=now_value,
+        ),
+        "residualIssues": derive_residual_issues(
+            facts,
+            target_scope=target_scope,
+            target_unit_key=target_unit_key,
+            now=now_value,
+        ),
+    }
+
+
 def _refresh_pipeline_projections(payload: dict, now_value: datetime) -> dict:
     services = payload.get("services") or {}
     items = []
@@ -524,7 +551,7 @@ def _refresh_pipeline_projections(payload: dict, now_value: datetime) -> dict:
             target_unit_key=str(item.get("targetUnitKey") or ""),
             now=now_value,
         )
-        items.append(_apply_user_projection(item, services))
+        items.append(_apply_user_projection(_apply_media_projection(item, now_value), services))
     payload["items"] = items
     payload["counts"] = _counts(items)
     payload["userCounts"] = {
@@ -560,6 +587,18 @@ def _merge_group(items: list[dict], observed_at: str, fresh_until: str, now_valu
         target_unit_key=str(primary.get("targetUnitKey") or ""),
         now=now_value,
     )
+    media_result = derive_media_result(
+        pipeline_facts,
+        target_scope=target_scope_for_item(primary),
+        target_unit_key=str(primary.get("targetUnitKey") or ""),
+        now=now_value,
+    )
+    residual_issues = derive_residual_issues(
+        pipeline_facts,
+        target_scope=target_scope_for_item(primary),
+        target_unit_key=str(primary.get("targetUnitKey") or ""),
+        now=now_value,
+    )
     state = _merged_state(stages)
     confidence = min(
         (str(item.get("confidence") or "unlinked") for item in items),
@@ -585,6 +624,8 @@ def _merge_group(items: list[dict], observed_at: str, fresh_until: str, now_valu
         "pipelineFacts": pipeline_facts,
         "confirmedStageCount": _confirmed_stage_count(pipeline_facts),
         "pipelineOutcome": pipeline_outcome,
+        "mediaResult": media_result,
+        "residualIssues": residual_issues,
         "origins": _dedupe(item.get("origin") for item in items),
         "relatedRecords": len(items),
         "updatedAt": max((str(item.get("updatedAt") or "") for item in items), default=""),
@@ -729,7 +770,7 @@ def _summary_item(item: dict) -> dict:
         "reasonCode", "reasonText", "userReasonText", "recommendedAction", "retryEligible", "plannedRetryAt",
         "identityState", "executionState", "outcomeState", "playableAt",
         "userState", "resultText", "completedAt", "primaryAction",
-        "pipelineOutcome", "confirmedStageCount",
+        "pipelineOutcome", "mediaResult", "residualIssues", "confirmedStageCount",
         "relatedRecords", "activeDownloadTasks", "completedDownloadTasks", "concurrentDownloadCount",
     )
     result = {field: item.get(field) for field in fields if field in item}
@@ -807,6 +848,13 @@ def _version(payload: dict) -> str:
             "playableAt": outcome.get("playableAt"),
         }
 
+    def media_result_version(result):
+        return {
+            "state": result.get("state"),
+            "stage": result.get("stage"),
+            "eventAt": result.get("eventAt"),
+        }
+
     stable = {
         "counts": payload.get("counts") or {},
         "healthCounts": payload.get("healthCounts") or {},
@@ -829,6 +877,13 @@ def _version(payload: dict) -> str:
             "executionState": item.get("executionState"),
             "userState": item.get("userState"),
             "pipelineOutcome": outcome_version(item.get("pipelineOutcome") or {}),
+            "mediaResult": media_result_version(item.get("mediaResult") or {}),
+            "residualIssues": [{
+                "stage": issue.get("stage"),
+                "reasonCode": issue.get("reasonCode"),
+                "observedAt": issue.get("observedAt"),
+                "resourceCount": issue.get("resourceCount"),
+            } for issue in item.get("residualIssues") or []],
             "pipelineFacts": [fact_version(fact) for fact in item.get("pipelineFacts") or []],
             "resultText": item.get("resultText"),
             "completedAt": item.get("completedAt"),

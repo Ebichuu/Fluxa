@@ -1,5 +1,5 @@
 import type { RssResourceScope, RssResourceScopeCounts } from './rssSeedLibrary';
-import type { PipelineFact, PipelineOutcome, PipelineOutcomeState } from './taskChain';
+import type { MediaResult, PipelineFact, PipelineOutcome, PipelineOutcomeState, ResidualIssue } from './taskChain';
 
 import type { StatisticMetadata } from './statistics';
 
@@ -177,6 +177,8 @@ export interface SubscriptionItem {
   chainProgress?: number;
   torraFact?: PipelineFact | null;
   pipelineOutcome?: PipelineOutcome;
+  mediaResult?: MediaResult;
+  residualIssues?: ResidualIssue[];
   outcomeState?: PipelineOutcomeState;
 }
 

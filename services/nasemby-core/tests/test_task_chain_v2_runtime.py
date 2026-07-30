@@ -271,6 +271,84 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(item["playableAt"], "2026-07-22T03:00:00Z")
         self.assertEqual(item["completedAt"], item["playableAt"])
 
+    def test_media_result_separates_archived_result_from_residual_qb_failure(self):
+        chain = FakeTaskChain().get_chain()
+        chain["items"][0].update({"episodeNumber": 3, "targetUnitKey": "episode:3"})
+        chain["items"][0]["pipelineFacts"] = [
+            pipeline_fact(
+                "qb", "failed", scope="file",
+                reason_code="QB_STALLED",
+                reason_text="qB 下载持续无活动",
+            ),
+            pipeline_fact(
+                "symedia", "succeeded", scope="file",
+                reason_code="SYMEDIA_ORGANIZED",
+                reason_text="Symedia 整理入库完成",
+            ),
+        ]
+
+        item = adapt_task_chain(
+            chain,
+            now=datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+        )["items"][0]
+
+        self.assertEqual(item["pipelineOutcome"]["state"], "action_required")
+        self.assertEqual(item["mediaResult"]["state"], "archived")
+        self.assertEqual(item["mediaResult"]["resultText"], "已整理入库")
+        self.assertEqual(item["residualIssues"], [{
+            "stage": "qb",
+            "reasonCode": "QB_STALLED",
+            "reasonText": "qB 下载持续无活动",
+            "observedAt": "2026-07-22T03:00:00Z",
+            "resourceCount": 1,
+        }])
+
+    def test_playable_media_result_keeps_upstream_failure_without_losing_completion(self):
+        chain = FakeTaskChain().get_chain()
+        chain["items"][0].update({"episodeNumber": 3, "targetUnitKey": "episode:3"})
+        chain["items"][0]["pipelineFacts"] = [
+            pipeline_fact(
+                "qb", "failed", scope="file",
+                reason_code="QB_STALLED",
+                reason_text="qB 下载持续无活动",
+            ),
+            {
+                **pipeline_fact(
+                    "emby", "succeeded", scope="episode",
+                    reason_code="EMBY_EPISODE_INDEXED",
+                    reason_text="Emby 已收录目标集",
+                ),
+                "unitKey": "episode:3",
+            },
+        ]
+
+        item = adapt_task_chain(
+            chain,
+            now=datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+        )["items"][0]
+
+        self.assertEqual(item["pipelineOutcome"]["state"], "playable")
+        self.assertEqual(item["userState"], "completed")
+        self.assertEqual(item["mediaResult"]["state"], "playable")
+        self.assertEqual(item["residualIssues"][0]["stage"], "qb")
+
+    def test_failure_without_downstream_success_keeps_media_result_unknown(self):
+        chain = FakeTaskChain().get_chain()
+        chain["items"][0]["pipelineFacts"] = [pipeline_fact(
+            "qb", "failed", scope="file",
+            reason_code="QB_ERROR",
+            reason_text="qB 下载失败",
+        )]
+
+        item = adapt_task_chain(
+            chain,
+            now=datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+        )["items"][0]
+
+        self.assertEqual(item["pipelineOutcome"]["state"], "action_required")
+        self.assertEqual(item["mediaResult"]["state"], "unknown")
+        self.assertEqual(item["residualIssues"], [])
+
     def test_historical_emby_time_is_rederived_into_task_projection(self):
         with tempfile.TemporaryDirectory() as directory:
             chain = FakeTaskChain().get_chain()

@@ -13,6 +13,7 @@ export type PipelineStage = 'torra' | 'qb' | 'cloud115' | 'symedia' | 'strm' | '
 export type PipelineFactState = 'unknown' | 'waiting' | 'active' | 'succeeded' | 'failed' | 'protected' | 'not_applicable';
 export type PipelineScope = 'movie' | 'season' | 'episode' | 'file' | 'system-category';
 export type PipelineOutcomeState = 'waiting' | 'in_progress' | 'protected' | 'action_required' | 'playable' | 'evidence_insufficient';
+export type MediaResultState = 'unknown' | 'acquisition_satisfied' | 'downloaded' | 'cloud_transferred' | 'archived' | 'strm_ready' | 'playable';
 
 export interface PipelineFactUnit {
   unitKey: string;
@@ -56,6 +57,22 @@ export interface PipelineOutcome {
   reasonText: string;
   observedAt: string;
   playableAt: string;
+}
+
+export interface MediaResult {
+  state: MediaResultState;
+  stage: PipelineStage | '';
+  resultText: string;
+  observedAt: string;
+  eventAt: string;
+}
+
+export interface ResidualIssue {
+  stage: PipelineStage;
+  reasonCode: string;
+  reasonText: string;
+  observedAt: string;
+  resourceCount: number;
 }
 
 export interface TorraSecuploadRun {
@@ -267,6 +284,8 @@ export interface TaskChainItem {
   relatedRecords?: number;
   pipelineFacts?: PipelineFact[];
   pipelineOutcome?: PipelineOutcome;
+  mediaResult?: MediaResult;
+  residualIssues?: ResidualIssue[];
 }
 
 export type TaskChainListItem = Omit<TaskChainItem, 'steps' | 'sourceIds' | 'suggestion' | 'artifactKeys' | 'stages'> & {

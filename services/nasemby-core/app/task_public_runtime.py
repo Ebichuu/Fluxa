@@ -295,6 +295,35 @@ def present_pipeline_outcome(value) -> dict:
     }
 
 
+def present_media_result(value) -> dict:
+    result = value if isinstance(value, dict) else {}
+    return {
+        "state": str(result.get("state") or "unknown"),
+        "stage": str(result.get("stage") or ""),
+        "resultText": safe_public_text(result.get("resultText"), "媒体结果暂未确认"),
+        "observedAt": str(result.get("observedAt") or ""),
+        "eventAt": str(result.get("eventAt") or ""),
+    }
+
+
+def present_residual_issues(value) -> list[dict]:
+    issues = value if isinstance(value, list) else []
+    result = []
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        stage = str(issue.get("stage") or "")
+        reason_code = str(issue.get("reasonCode") or "")
+        result.append({
+            "stage": stage,
+            "reasonCode": reason_code,
+            "reasonText": _public_task_reason(stage, reason_code, issue.get("reasonText")),
+            "observedAt": str(issue.get("observedAt") or ""),
+            "resourceCount": max(1, int(issue.get("resourceCount") or 1)),
+        })
+    return result
+
+
 ITEM_FIELDS = (
     "title", "mediaType", "tmdbId", "seasonNumber", "episodeNumber", "origin", "origins",
     "channel", "state", "confidence", "progress", "currentStep", "embyIndexed",
@@ -351,6 +380,8 @@ def present_task_item(value) -> dict:
         "evidenceOwnership": [_present_ownership(row) for row in item.get("evidenceOwnership") or []],
         "pipelineFacts": [present_pipeline_fact(fact) for fact in item.get("pipelineFacts") or []],
         "pipelineOutcome": present_pipeline_outcome(item.get("pipelineOutcome")),
+        "mediaResult": present_media_result(item.get("mediaResult")),
+        "residualIssues": present_residual_issues(item.get("residualIssues")),
         "primaryAction": _present_primary_action(item.get("primaryAction")),
     })
     if isinstance(item.get("acquisition"), dict):

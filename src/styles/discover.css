@@ -2224,6 +2224,16 @@
   color: var(--theme-text);
 }
 
+.discover-sub__residual {
+  grid-column: 1 / -1;
+  color: #a56e18;
+  font-size: 12px;
+}
+
+.discover-sub__residual strong {
+  margin-right: 6px;
+}
+
 .discover-sub__advanced > summary {
   display: flex;
   min-height: 36px;

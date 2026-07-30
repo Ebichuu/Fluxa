@@ -233,6 +233,32 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         archived_focus = next(value for value in result["focusItems"] if value["key"] == "archived_today")
         self.assertEqual(archived_focus["href"], "/tasks?archivedDate=2026-07-22")
 
+    def test_home_issue_copy_keeps_confirmed_media_result_above_residual_failure(self):
+        value = item(library_status="done")
+        value["pipelineFacts"] = [
+            pipeline_fact("qb", "failed", scope="file", reason_code="QB_STALLED", reason_text="qB 下载持续无活动"),
+            pipeline_fact("symedia", "succeeded", scope="file", reason_code="SYMEDIA_ORGANIZED", reason_text="Symedia 已完成整理入库"),
+        ]
+        value["mediaResult"] = {
+            "state": "archived",
+            "stage": "symedia",
+            "resultText": "已整理入库",
+            "observedAt": "2026-07-22T01:00:00Z",
+            "eventAt": "2026-07-22T00:55:00Z",
+        }
+        value["residualIssues"] = [{
+            "stage": "qb",
+            "reasonCode": "QB_STALLED",
+            "reasonText": "qB 下载持续无活动",
+            "observedAt": "2026-07-22T01:00:00Z",
+            "resourceCount": 1,
+        }]
+        result = HomeSummaryService(self.build_app([value]), clock=lambda: NOW).snapshot()
+        issue = next(row for row in result["issues"] if row.get("issueKind") == "media")
+
+        self.assertEqual(issue["headline"], "《测试剧》S01E01已整理入库")
+        self.assertIn("另有 1 个遗留资源需处理", issue["reasonText"])
+
     def test_today_archive_uses_symedia_success_count_without_changing_legacy_target_count(self):
         app = self.build_app([item()])
         app.extensions["mcc_task_chain_service"].payload["services"]["symedia"]["totals"] = {

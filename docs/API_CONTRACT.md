@@ -118,6 +118,8 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 
 首页、任务、追更和日历响应可以增加可选 `statisticsMeta`。每个统计键对应 `{scope, unit, observedAt, confirmation}`；`confirmation` 固定为 `confirmed/partial/unknown`。该对象只描述旧数值字段的统计口径，不改变原数值和状态码；`unknown` 表示当前不能可靠解释数值，前端不得把兼容默认零显示为真实零，`partial` 保留可确认的数值并明确其证据不完整。不同 `scope` 的同名指标无需相等。
 
+P0.4 可选增加 `mediaResult` 与 `residualIssues`。`mediaResult` 只取目标范围内已验证的最高下游成功阶段：Symedia 表示已整理入库，STRM 表示播放入口已生成，Emby 精确目标命中表示已可播放；系统分类事实不能生成媒体结果。`residualIssues` 只列出不会推翻已确认下游结果的上游明确失败，计划中的自动恢复不计入遗留问题。没有下游成功事实时，原 `pipelineOutcome` 仍负责“需要处理”；旧字段继续由新结果单向投影。
+
 任务链健康状态固定为 `action_required`、`evidence_insufficient`、`waiting`、`protected`、`normal`，优先级依次降低。缺失或过期证据不得返回 `normal`；已有计划重试返回 `waiting`；低分、重复或已有更高版本返回 `protected`，并且不会通过该读取接口开放重试动作。
 
 新事实契约固定为 `torra/qb/cloud115/symedia/strm/emby` 六个独立阶段，状态固定为 `unknown/waiting/active/succeeded/failed/protected/not_applicable`。`missing` 证据必须且只能搭配 `unknown`；过期事实保留并标记 `isStale`，但不进入当前结果。多个同阶段当前事实冲突时返回 `unknown + missing + EVIDENCE_CONFLICT`，不得选择一个伪造赢家。公开 `sourceRef/unitKey` 均为稳定不透明引用。

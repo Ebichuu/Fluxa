@@ -244,6 +244,18 @@ def _safe_issue_copy(item: dict, result: dict) -> dict:
         "episodeNumber": episode,
         "secondaryReasonText": _secondary_issue_reason(result),
     }
+    media_result = item.get("mediaResult") if isinstance(item.get("mediaResult"), dict) else {}
+    residual_issues = item.get("residualIssues") if isinstance(item.get("residualIssues"), list) else []
+    media_state = str(media_result.get("state") or "unknown")
+    if media_state != "unknown" and residual_issues:
+        result_text = safe_public_text(media_result.get("resultText"), "媒体结果已确认")
+        residual_count = sum(max(1, _integer(issue.get("resourceCount")) or 1) for issue in residual_issues if isinstance(issue, dict))
+        return {
+            **base,
+            "headline": f"{label}{result_text}",
+            "reasonText": f"{result_text} · 另有 {residual_count} 个遗留资源需处理",
+            "secondaryReasonText": "遗留下载或清理问题仍需处理",
+        }
     if result_reason_code == "EVIDENCE_OWNER_CONFLICT":
         return {**base, "headline": f"{label}证据存在冲突", "reasonText": "同一条处理证据对应多个媒体候选，当前没有自动绑定"}
     if result.get("executionState") == "suspected_blocked" or result_reason_code == "TASK_SUSPECTED_BLOCKED":
