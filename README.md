@@ -13,6 +13,7 @@
 - Torra 已有订阅支持只读对账、预览、确认导入和状态同步；第一阶段不修改或删除 Torra 订阅，也不自动创建第二套本地真相。
 - Torra → qBittorrent → 115 → Symedia → Emby 的 PT 任务链观察，同时区分媒体身份、执行状态和用户介入优先级；Torra 已确认文件名与 Symedia 记录完全一致时可只读串链，没有 Torra 逐文件秒传证据时，不会由 qB 完成时间推断秒传中、已进入 115 或疑似阻塞。
 - 私人 PT RSS 种子库、本地全文搜索、订阅目标精确筛选、TMDB/IMDb 身份与有界历史回填；界面可区分回填尚未运行与运行后仍未识别。
+- RSS 候选按 Torra 订阅和季集跨批次分组，使用只读规则快照展示当前版本基线、最佳候选与评分明细；基线身份、版本或范围不明确时固定显示“暂未确认”，不会触发自动下载。
 - 追更卡片按明确 TMDB 身份补齐空缺海报；无身份或仅 Torra 条目保持安全占位和只读边界。
 - 手机月历保留作品海报、状态和数量，控制室、追更与任务工具栏在 390px 窄屏下保持可读且无页面级横向溢出。
 - 管理端业务文字建立 11px 最低基线，错误、空状态、设置说明和任务原因提升到 12~13px，并保持桌面与手机端信息密度一致。
@@ -126,7 +127,7 @@ Vite 会把 `/api` 和 `/mineradio` 代理到 Python。
 ## 本地检查
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前后端 581 项；v2 机器契约 70 条
+python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前后端 602 项；v2 机器契约 70 条
 npm test
 npm run build
 docker compose config --services

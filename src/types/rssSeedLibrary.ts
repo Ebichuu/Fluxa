@@ -208,6 +208,9 @@ export interface RssMatch {
   evaluationReason?: string;
   evaluationActionId?: string;
   downloadActionId?: string;
+  candidateSummary?: RssScoreSummary;
+  baselineSummary?: RssScoreSummary;
+  bestCandidate?: boolean;
   evaluatedAt?: string;
   itemTitle?: string;
   subscriptionTitle?: string;
@@ -218,8 +221,44 @@ export interface RssMatch {
   identity?: Record<string, unknown>;
 }
 
+export interface RssScoreSummary {
+  versionSummary?: string;
+  versionName?: string;
+  artifactKey?: string;
+  sources?: Array<'torra' | 'qb' | 'symedia' | string>;
+  scoreBreakdown?: Array<{
+    field: string;
+    label: string;
+    score: number;
+  }>;
+}
+
+export interface RssMatchGroup {
+  id: string;
+  subscriptionId: string;
+  unitId: string;
+  title: string;
+  episodeLabel: string;
+  state: 'waiting_baseline' | 'monitoring_rss' | 'upgrade_available' | 'protected' | 'blocked' | string;
+  candidateCount: number;
+  bestMatchId?: string;
+  bestArtifactKey?: string;
+  bestCandidateScore?: number | null;
+  baselineScore?: number | null;
+  baselineSummary?: RssScoreSummary;
+  lastCandidateAt?: string;
+  candidates: RssMatch[];
+}
+
 export interface RssMatchListResponse {
   items: RssMatch[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface RssMatchGroupListResponse {
+  groups: RssMatchGroup[];
   total: number;
   limit: number;
   offset: number;

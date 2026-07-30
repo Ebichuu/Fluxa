@@ -104,9 +104,26 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
                 "unitId": f"{public_key}:s1:e1",
             })
             detail = client.get(created.headers["Location"])
+            legacy_list = client.get("/api/v2/rss-matches?limit=10")
+            grouped = client.get("/api/v2/rss-matches?view=groups&limit=10")
+            invalid_view = client.get("/api/v2/rss-matches?view=unknown")
 
             self.assertEqual(created.status_code, 201)
             self.assertEqual(detail.status_code, 200)
+            self.assertEqual(legacy_list.status_code, 200)
+            self.assertIn("items", legacy_list.get_json())
+            self.assertNotIn("groups", legacy_list.get_json())
+            self.assertEqual(grouped.status_code, 200)
+            self.assertNotIn("items", grouped.get_json())
+            self.assertEqual(grouped.get_json()["total"], 1)
+            self.assertEqual(len(grouped.get_json()["groups"]), 1)
+            self.assertEqual(grouped.get_json()["groups"][0]["candidateCount"], 1)
+            self.assertEqual(
+                grouped.get_json()["groups"][0]["candidates"][0],
+                detail.get_json(),
+            )
+            self.assertEqual(invalid_view.status_code, 422)
+            self.assertEqual(invalid_view.get_json()["code"], "RSS_MATCH_QUERY_INVALID")
             self.assertEqual(detail.get_json(), created.get_json())
             self.assertEqual(detail.get_json(), repository.get_match(created.get_json()["id"]))
             self.assertEqual(set(detail.get_json()), {
@@ -114,7 +131,8 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
                 "triggerActionId", "torraLinked", "targetKey", "artifactKey",
                 "ruleId", "ruleHash", "candidateScore", "baselineScore",
                 "evaluationStatus", "decision", "evaluationReason",
-                "evaluationActionId", "downloadActionId", "evaluatedAt",
+                "evaluationActionId", "downloadActionId", "candidateSummary",
+                "baselineSummary", "bestCandidate", "evaluatedAt",
                 "createdAt", "updatedAt",
             })
             response_text = detail.get_data(as_text=True)

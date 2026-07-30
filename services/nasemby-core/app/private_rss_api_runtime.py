@@ -40,6 +40,9 @@ RSS_MATCH_PUBLIC_FIELDS = (
     "evaluationReason",
     "evaluationActionId",
     "downloadActionId",
+    "candidateSummary",
+    "baselineSummary",
+    "bestCandidate",
     "evaluatedAt",
     "createdAt",
     "updatedAt",
@@ -111,6 +114,41 @@ def _public_match_reason(reason, hidden_refs=()):
     return result
 
 
+def _public_score_summary(summary, baseline=False):
+    source = summary if isinstance(summary, dict) else {}
+    result = {}
+    version_summary = safe_public_text(source.get("versionSummary"))
+    if version_summary:
+        result["versionSummary"] = version_summary[:240]
+    version_name = safe_public_text(source.get("versionName"))
+    if version_name:
+        result["versionName"] = version_name[:120]
+    breakdown = []
+    for row in source.get("scoreBreakdown") or []:
+        if not isinstance(row, dict) or isinstance(row.get("score"), bool):
+            continue
+        if not isinstance(row.get("score"), (int, float)):
+            continue
+        field = str(row.get("field") or "").strip()[:80]
+        label = safe_public_text(row.get("label"))[:120]
+        if field and label:
+            breakdown.append({"field": field, "label": label, "score": row["score"]})
+    if breakdown:
+        result["scoreBreakdown"] = breakdown
+    if baseline:
+        artifact_key = str(source.get("artifactKey") or "").strip()
+        if artifact_key.startswith("baseline:") and len(artifact_key) <= 80:
+            result["artifactKey"] = artifact_key
+        sources = sorted({
+            str(value or "").strip().lower()
+            for value in source.get("sources") or []
+            if str(value or "").strip().lower() in {"torra", "qb", "symedia"}
+        })
+        if sources:
+            result["sources"] = sources
+    return result
+
+
 def _present_rss_match(match):
     if not isinstance(match, dict):
         return None
@@ -127,6 +165,9 @@ def _present_rss_match(match):
             str(match.get("unitId") or "").strip(),
         ))
     value["reason"] = _public_match_reason(match.get("reason"), hidden_refs)
+    value["candidateSummary"] = _public_score_summary(match.get("candidateSummary"))
+    value["baselineSummary"] = _public_score_summary(match.get("baselineSummary"), baseline=True)
+    value["bestCandidate"] = bool(match.get("bestCandidate"))
     return value
 
 
@@ -135,6 +176,49 @@ def _present_rss_match_list(payload):
     value["items"] = [
         presented
         for presented in (_present_rss_match(match) for match in value.get("items") or [])
+        if presented is not None
+    ]
+    return value
+
+
+def _present_rss_match_group(group):
+    if not isinstance(group, dict):
+        return None
+    subscription_id, unit_id = torra_public_match_keys(
+        group.get("subscriptionId"), group.get("unitId")
+    )
+    return {
+        "id": str(group.get("id") or "")[:80],
+        "subscriptionId": subscription_id,
+        "unitId": unit_id,
+        "title": safe_public_text(group.get("title"))[:240],
+        "episodeLabel": safe_public_text(group.get("episodeLabel"))[:80],
+        "state": str(group.get("state") or "monitoring_rss")[:80],
+        "candidateCount": max(0, int(group.get("candidateCount") or 0)),
+        "bestMatchId": str(group.get("bestMatchId") or "")[:80],
+        "bestArtifactKey": str(group.get("bestArtifactKey") or "")[:120],
+        "bestCandidateScore": group.get("bestCandidateScore"),
+        "baselineScore": group.get("baselineScore"),
+        "baselineSummary": _public_score_summary(group.get("baselineSummary"), baseline=True),
+        "lastCandidateAt": str(group.get("lastCandidateAt") or "")[:80],
+        "candidates": [
+            presented
+            for presented in (
+                _present_rss_match(candidate)
+                for candidate in group.get("candidates") or []
+            )
+            if presented is not None
+        ],
+    }
+
+
+def _present_rss_match_group_list(payload):
+    value = dict(payload) if isinstance(payload, dict) else {}
+    value["groups"] = [
+        presented
+        for presented in (
+            _present_rss_match_group(group) for group in value.get("groups") or []
+        )
         if presented is not None
     ]
     return value
@@ -251,6 +335,7 @@ def register_private_rss(
             app.extensions.get("mcc_torra_quality_client"),
             app.extensions.get("mcc_qbittorrent_client"),
             config_loader,
+            app.extensions.get("mcc_symedia_client"),
         ),
     )
     register_rss_subscription_match(app, match_runtime)
@@ -392,6 +477,17 @@ def register_private_rss(
     @app.get("/api/v2/rss-matches")
     def rss_matches_list():
         try:
+            view = str(request.args.get("view") or "").strip().lower()
+            if view not in {"", "groups"}:
+                raise ValueError
+            if view == "groups":
+                return jsonify(_present_rss_match_group_list(
+                    service.repository.list_candidate_groups(
+                        status=request.args.get("status") or "",
+                        limit=request.args.get("limit") or 20,
+                        offset=request.args.get("offset") or 0,
+                    )
+                ))
             return jsonify(_present_rss_match_list(service.repository.list_matches(
                 status=request.args.get("status") or "",
                 limit=request.args.get("limit") or 50,

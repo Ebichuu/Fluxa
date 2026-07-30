@@ -13,6 +13,7 @@ import type {
   CreateRssMatchInput,
   RssIdentityBackfillResponse,
   RssMatch,
+  RssMatchGroupListResponse,
   RssMatchListResponse,
   RssMatchRunResponse,
   RssSeedItem,
@@ -625,6 +626,14 @@ export function getRssMatches(input: { status?: string; limit?: number; offset?:
   query.set('limit', String(input.limit ?? 20));
   query.set('offset', String(input.offset ?? 0));
   return readJson<RssMatchListResponse>(`/api/v2/rss-matches?${query.toString()}`, options);
+}
+
+export function getRssMatchGroups(input: { status?: string; limit?: number; offset?: number } = {}, options?: RequestOptions): Promise<RssMatchGroupListResponse> {
+  const query = new URLSearchParams({ view: 'groups' });
+  if (input.status) query.set('status', input.status);
+  query.set('limit', String(input.limit ?? 20));
+  query.set('offset', String(input.offset ?? 0));
+  return readJson<RssMatchGroupListResponse>(`/api/v2/rss-matches?${query.toString()}`, options);
 }
 
 export function createRssMatch(

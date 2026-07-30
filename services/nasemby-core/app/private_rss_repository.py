@@ -28,6 +28,9 @@ MATCH_EVALUATION_COLUMNS = {
     "evaluation_reason": "TEXT NOT NULL DEFAULT ''",
     "evaluation_action_id": "TEXT NOT NULL DEFAULT ''",
     "download_action_id": "TEXT NOT NULL DEFAULT ''",
+    "candidate_summary_json": "TEXT NOT NULL DEFAULT '{}'",
+    "baseline_summary_json": "TEXT NOT NULL DEFAULT '{}'",
+    "is_best_candidate": "INTEGER NOT NULL DEFAULT 0",
     "evaluated_at": "TEXT NOT NULL DEFAULT ''",
 }
 
@@ -167,6 +170,8 @@ def _create_match_table(connection):
         "candidate_score REAL, baseline_score REAL, evaluation_status TEXT NOT NULL DEFAULT 'pending', "
         "decision TEXT NOT NULL DEFAULT '', evaluation_reason TEXT NOT NULL DEFAULT '', "
         "evaluation_action_id TEXT NOT NULL DEFAULT '', download_action_id TEXT NOT NULL DEFAULT '', "
+        "candidate_summary_json TEXT NOT NULL DEFAULT '{}', baseline_summary_json TEXT NOT NULL DEFAULT '{}', "
+        "is_best_candidate INTEGER NOT NULL DEFAULT 0, "
         "evaluated_at TEXT NOT NULL DEFAULT '', "
         "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(item_id, unit_key))"
     )
@@ -839,6 +844,9 @@ class PrivateRssRepository:
             "evaluationReason": result.get("evaluation_reason") or "",
             "evaluationActionId": result.get("evaluation_action_id") or "",
             "downloadActionId": result.get("download_action_id") or "",
+            "candidateSummary": _json_load(result.get("candidate_summary_json")),
+            "baselineSummary": _json_load(result.get("baseline_summary_json")),
+            "bestCandidate": bool(result.get("is_best_candidate")),
             "evaluatedAt": result.get("evaluated_at") or "",
             "createdAt": result["created_at"],
             "updatedAt": result["updated_at"],
@@ -926,6 +934,8 @@ class PrivateRssRepository:
             str(evaluation.get("decision") or ""),
             str(evaluation.get("reason") or ""),
             str(evaluation.get("actionId") or ""),
+            _json_dump(evaluation.get("candidateSummary")),
+            _json_dump(evaluation.get("baselineSummary")),
             now,
             now,
         )
@@ -934,10 +944,55 @@ class PrivateRssRepository:
             connection.execute(
                 "UPDATE rss_subscription_matches SET rule_id=?, rule_hash=?, candidate_score=?, "
                 "baseline_score=?, evaluation_status=?, decision=?, evaluation_reason=?, "
-                f"evaluation_action_id=?, evaluated_at=?, updated_at=? WHERE id IN ({placeholders})",
+                "evaluation_action_id=?, candidate_summary_json=?, baseline_summary_json=?, "
+                f"evaluated_at=?, updated_at=? WHERE id IN ({placeholders})",
                 (*values, *ids),
             )
         return [match for match in (self.get_match(match_id) for match_id in ids) if match]
+
+    def list_matches_for_units(self, unit_refs):
+        refs = sorted({
+            (str(subscription_key or "").strip(), str(unit_key or "").strip())
+            for subscription_key, unit_key in unit_refs
+            if str(subscription_key or "").strip() and str(unit_key or "").strip()
+        })
+        if not refs:
+            return []
+        where = " OR ".join("(subscription_key=? AND unit_key=?)" for _ in refs)
+        params = [value for ref in refs for value in ref]
+        with closing(self.runtime.connect()) as connection:
+            rows = connection.execute(
+                f"SELECT * FROM rss_subscription_matches WHERE {where} ORDER BY created_at, id",
+                params,
+            ).fetchall()
+        return [self._match(row) for row in rows]
+
+    def save_candidate_decisions(self, updates):
+        rows = []
+        now = _iso()
+        for update in updates if isinstance(updates, list) else []:
+            match_ids = sorted({
+                str(value or "").strip()
+                for value in update.get("matchIds") or []
+                if str(value or "").strip()
+            })
+            for match_id in match_ids:
+                rows.append((
+                    str(update.get("decision") or ""),
+                    str(update.get("reason") or ""),
+                    1 if update.get("bestCandidate") else 0,
+                    now,
+                    match_id,
+                ))
+        if not rows:
+            return 0
+        with self.runtime.transaction(immediate=True) as connection:
+            connection.executemany(
+                "UPDATE rss_subscription_matches SET decision=?, evaluation_reason=?, "
+                "is_best_candidate=?, updated_at=? WHERE id=?",
+                rows,
+            )
+        return len(rows)
 
     def save_rule_snapshots(self, snapshots, observed_at=None):
         observed_at = str(observed_at or _iso())
@@ -1079,6 +1134,115 @@ class PrivateRssRepository:
                 (*params, limit, offset),
             ).fetchall()
         return {"items": [self._match(row) for row in rows], "total": total, "limit": limit, "offset": offset}
+
+    @staticmethod
+    def _candidate_group_state(candidates):
+        best = next((row for row in candidates if row.get("bestCandidate")), None)
+        if best:
+            decision = str(best.get("decision") or "")
+            if decision == "current_best":
+                return "upgrade_available"
+            if decision == "best_waiting_baseline":
+                return "waiting_baseline"
+            if decision in {"same_score", "lower_score", "rule_rejected"}:
+                return "protected"
+        if candidates and all(row.get("evaluationStatus") == "blocked" for row in candidates):
+            return "blocked"
+        return "monitoring_rss"
+
+    @staticmethod
+    def _candidate_group_episode_label(candidates):
+        reason = next((
+            row.get("reason") for row in candidates
+            if isinstance(row.get("reason"), dict)
+        ), {})
+        if str(reason.get("mediaType") or "") == "movie":
+            return "电影"
+        season = reason.get("season") if isinstance(reason.get("season"), dict) else {}
+        episode = reason.get("episode") if isinstance(reason.get("episode"), dict) else {}
+        season_number = season.get("unit") or season.get("item")
+        episode_number = episode.get("unit")
+        if isinstance(season_number, int) and isinstance(episode_number, int):
+            return f"S{season_number:02d}E{episode_number:02d}"
+        return "季集暂未确认"
+
+    def list_candidate_groups(self, status="", limit=20, offset=0):
+        status = str(status or "").strip().lower()
+        if status and status not in MATCH_STATUSES:
+            raise ValueError("RSS 匹配状态无效")
+        limit = max(1, min(int(limit or 20), 50))
+        offset = max(0, int(offset or 0))
+        where = "WHERE match_status=?" if status else ""
+        params = (status,) if status else ()
+        with closing(self.runtime.connect()) as connection:
+            total = int(connection.execute(
+                "SELECT COUNT(*) AS count FROM ("
+                "SELECT 1 FROM rss_subscription_matches "
+                f"{where} GROUP BY subscription_key, unit_key)",
+                params,
+            ).fetchone()["count"])
+            refs = connection.execute(
+                "SELECT subscription_key, unit_key, MAX(created_at) AS latest_at "
+                f"FROM rss_subscription_matches {where} "
+                "GROUP BY subscription_key, unit_key "
+                "ORDER BY latest_at DESC, subscription_key, unit_key LIMIT ? OFFSET ?",
+                (*params, limit, offset),
+            ).fetchall()
+            if not refs:
+                return {"groups": [], "total": total, "limit": limit, "offset": offset}
+            clauses = " OR ".join("(m.subscription_key=? AND m.unit_key=?)" for _ in refs)
+            ref_params = [value for row in refs for value in (row["subscription_key"], row["unit_key"])]
+            rows = connection.execute(
+                "SELECT m.*, i.title AS item_title, i.published_at AS item_published_at "
+                "FROM rss_subscription_matches m JOIN rss_items i ON i.id=m.item_id "
+                f"WHERE {clauses} ORDER BY m.created_at DESC, m.id DESC",
+                ref_params,
+            ).fetchall()
+
+        grouped = {}
+        for row in rows:
+            candidate = self._match(row)
+            candidate["itemTitle"] = str(row["item_title"] or "")[:240]
+            candidate["publishedAt"] = str(row["item_published_at"] or "")
+            grouped.setdefault((candidate["subscriptionId"], candidate["unitId"]), []).append(candidate)
+        groups = []
+        for ref in refs:
+            key = (ref["subscription_key"], ref["unit_key"])
+            candidates = grouped.get(key) or []
+            candidates.sort(key=lambda row: (
+                0 if row.get("bestCandidate") else 1,
+                -float(row.get("candidateScore") or 0),
+                str(row.get("createdAt") or ""),
+                row["id"],
+            ))
+            best = next((row for row in candidates if row.get("bestCandidate")), None)
+            baseline = next((
+                row for row in candidates
+                if isinstance(row.get("baselineScore"), (int, float))
+                and not isinstance(row.get("baselineScore"), bool)
+            ), None)
+            groups.append({
+                "id": "rss-group:" + hashlib.sha256(
+                    f"{key[0]}|{key[1]}".encode("utf-8")
+                ).hexdigest()[:24],
+                "subscriptionId": key[0],
+                "unitId": key[1],
+                "title": str((best or (candidates[0] if candidates else {})).get("itemTitle") or "")[:240],
+                "episodeLabel": self._candidate_group_episode_label(candidates),
+                "state": self._candidate_group_state(candidates),
+                "candidateCount": len(candidates),
+                "bestMatchId": str((best or {}).get("id") or ""),
+                "bestArtifactKey": str((best or {}).get("artifactKey") or ""),
+                "bestCandidateScore": (best or {}).get("candidateScore"),
+                "baselineScore": (baseline or {}).get("baselineScore"),
+                "baselineSummary": (baseline or {}).get("baselineSummary") or {},
+                "lastCandidateAt": max((
+                    str(row.get("evaluatedAt") or row.get("createdAt") or "")
+                    for row in candidates
+                ), default=""),
+                "candidates": candidates,
+            })
+        return {"groups": groups, "total": total, "limit": limit, "offset": offset}
 
     def list_pending_evaluation_matches(self, limit=20):
         limit = max(1, min(int(limit or 20), 50))

@@ -10,6 +10,70 @@ from app.private_rss_repository import FetchRunRecord, PrivateRssRepository
 
 
 class PrivateRssRepositoryTests(unittest.TestCase):
+    def test_candidate_group_paginates_units_and_keeps_all_versions_together(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({
+                "name": "Rules",
+                "feedUrl": "https://tracker.example/rss",
+            })
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "candidate-low",
+                "title": "Show.S01E02.1080p.mkv",
+            }, {
+                "fingerprint": "candidate-high",
+                "title": "Show.S01E02.2160p.mkv",
+            }])
+            items = repository.search_items(limit=10)["items"]
+            unit_key = "tv:123:s1:s1:e2"
+            matches = []
+            for item in items:
+                match = repository.create_match(item["id"], "tv:123:s1", unit_key, {
+                    "mediaType": "tv",
+                    "season": {"item": 1, "unit": 1},
+                    "episode": {"start": 2, "end": 2, "unit": 2},
+                })
+                repository.set_match_binding(
+                    match["id"],
+                    torra_subscription_id="raw-torra-id",
+                    target_key="tv:tmdb:123:season:1:episodes:2-2",
+                    artifact_key=f"rss:{item['id']}",
+                )
+                score = 90 if "2160p" in item["title"] else 60
+                repository.save_match_evaluation([match["id"]], {
+                    "ruleId": "rule-1",
+                    "ruleHash": "hash-1",
+                    "candidateScore": score,
+                    "baselineScore": 50,
+                    "status": "scored",
+                    "decision": "current_best" if score == 90 else "superseded",
+                    "candidateSummary": {"versionSummary": item["title"]},
+                })
+                matches.append((match, score))
+            winner = next(match for match, score in matches if score == 90)
+            repository.save_candidate_decisions([{
+                "matchIds": [match["id"] for match, _score in matches],
+                "decision": "superseded",
+                "reason": "higher_scored_candidate",
+                "bestCandidate": False,
+            }, {
+                "matchIds": [winner["id"]],
+                "decision": "current_best",
+                "reason": "shadow_only_no_download",
+                "bestCandidate": True,
+            }])
+
+            payload = repository.list_candidate_groups(limit=10, offset=0)
+
+            self.assertEqual(payload["total"], 1)
+            self.assertEqual(len(payload["groups"]), 1)
+            group = payload["groups"][0]
+            self.assertEqual(group["candidateCount"], 2)
+            self.assertEqual(group["state"], "upgrade_available")
+            self.assertEqual(group["bestMatchId"], winner["id"])
+            self.assertEqual(group["bestCandidateScore"], 90)
+            self.assertEqual([row["candidateScore"] for row in group["candidates"]], [90, 60])
+
     def test_match_shadow_fields_and_rule_snapshots_are_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")

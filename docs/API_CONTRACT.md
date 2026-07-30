@@ -94,6 +94,7 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `POST /api/v2/subscriptions/:id/torra-rewashes` | `confirm=true`、`idempotencyKey`、`analysisActionId`、可选 `unitId` |
 | `POST /api/v2/rss-matches/:id/torra-rewash-analyses` | `idempotencyKey`；不接受 Torra ID 或候选映射 |
 | `POST /api/v2/rss-matches/:id/torra-rewashes` | `confirm=true`、`idempotencyKey`、`analysisActionId`；严格绑定同一 RSS 匹配、追更和观察单元 |
+| `GET /api/v2/rss-matches` | 可选 `status`、`limit`、`offset`；默认保持原 `items` 分页。可选 `view=groups` 改为按订阅季集返回 `groups` 分页，每组携带脱敏候选、可靠基线和唯一冠军投影；不触发 Torra 搜索或下载 |
 | `GET /api/v2/rss-matches/:id` | 读取单条本地 RSS 匹配及可选订阅绑定、规范范围和影子评分；不存在返回 `404 RSS_MATCH_NOT_FOUND`；响应不包含 Torra 原始订阅 ID、下载地址、详情地址或 Passkey |
 | `POST /api/v2/rss-matches` | `rssItemId`、`subscriptionId`、`unitId`；服务端重新验证种子身份、媒体类型、季集、观察窗口与 Torra 归属，并只读当前 Torra 订阅与权重规则完成影子评分；新建返回 `201 + Location`，已存在返回 `200`；不触发 Torra 搜索或下载 |
 | `POST /api/v2/subscriptions/:id/moviepilot-previews` | 空对象；服务端复核观察单元、Torra、qB 和 MoviePilot 查重 |
@@ -116,7 +117,7 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 
 公开订阅、详情、日历、发现和资源响应通过 `contract_mapping.py` 白名单映射。浏览器不会收到原始上游包络、未知内部字段、Cookie、Token 或异常正文。
 
-RSS 匹配响应可选增加 `torraLinked/targetKey/artifactKey/ruleId/ruleHash/candidateScore/baselineScore/evaluationStatus/decision/evaluationReason/evaluationActionId/downloadActionId/evaluatedAt`。`torraLinked` 只表达是否具有可靠远端绑定，不返回远端订阅 ID；`artifactKey`、动作 ID 和规则哈希均为不透明公开引用。`candidateScore` 或 `baselineScore` 缺失时必须为 `null`，不得返回零；`evaluationStatus=blocked` 表示规则、身份、范围或字段暂未确认。该增量不改变旧 `status/triggerActionId`，也不授权浏览器提交规则、目录、下载器、分类或 RSS 下载地址。
+RSS 匹配响应可选增加 `torraLinked/targetKey/artifactKey/ruleId/ruleHash/candidateScore/baselineScore/evaluationStatus/decision/evaluationReason/evaluationActionId/downloadActionId/candidateSummary/baselineSummary/bestCandidate/evaluatedAt`。`torraLinked` 只表达是否具有可靠远端绑定，不返回远端订阅 ID；`artifactKey`、动作 ID、基线产物键和规则哈希均为不透明公开引用。`candidateScore` 或 `baselineScore` 缺失时必须为 `null`，不得返回零；`evaluationStatus=blocked` 表示规则、身份、范围或字段暂未确认。`candidateSummary/baselineSummary` 只允许脱敏版本摘要、规则分项和 `torra/qb/symedia` 来源枚举，不返回路径、下载地址或上游原始对象。该增量不改变旧 `status/triggerActionId`，也不授权浏览器提交规则、目录、下载器、分类或 RSS 下载地址。
 
 自动 RSS 收集、历史匹配和观察单元回扫只执行本地候选评分，读取 Torra 正式只读规则接口，不调用 Torra 订阅分析或下载。人工 `POST /api/v2/rss-matches/:id/torra-rewash-analyses` 仍是显式的整订阅搜索兜底；它与影子评分是两条独立动作，不能把人工搜索结果冒充为当前 RSS 候选评分。
 
@@ -281,7 +282,7 @@ v2 新增响应字段允许向后兼容扩展；删除字段、改变类型或�
 
 `GET /api/v2/rss-sources` 的摘要可选返回最近一次身份回填的运行时间、扫描、识别、冲突、未变化和剩余数量。未运行与“已运行但识别为 0”必须明确区分，不能仅凭当前未识别数量推断回填器是否工作。
 
-`GET /api/v2/rss-matches` 读取 SQLite 中的本地匹配记录，可按 `candidate / ignored / triggered / confirmed / expired` 状态筛选；`GET /api/v2/rss-matches/:id` 返回与创建接口相同的公开 DTO，供 `POST 201` 的 `Location` 解引用，不存在时返回统一 `404 RSS_MATCH_NOT_FOUND`，且不读取或返回 RSS 条目的下载地址、详情地址或凭据。公开 DTO 的 `reason` 只允许 `identity`、`mediaType`、`year`、`season`、`episode` 和 `matchSource`；旧 Torra subscription/unit ID、路径、URL、外部 job 字段及所有未知键在投影时剔除。新插入条目仍可由自动匹配器生成 `candidate`；普通追更页也可调用 `POST /api/v2/rss-matches` 为一个搜索结果建立单条人工匹配。人工创建不会调用全局 matcher，服务端重新读取 RSS 条目、本地或 Torra 只读追更、观察单元与 Torra 当前订阅，校验身份、媒体类型、年份、季集、基线时间和归属；同一条目与观察单元已存在时幂等返回原匹配。该记录不代表本地已经判断版本更好。随后 `POST /api/v2/rss-matches/:id/torra-rewash-analyses` 执行人工分析；成功响应只公开评分变化、质量和大小等脱敏摘要，不返回候选 ID。`POST /api/v2/rss-matches/:id/torra-rewashes` 要求明确确认，并重新校验分析动作确实属于同一匹配、追更和观察单元。匹配状态和下载动作 ID 在同一 SQLite 事务中更新，幂等重放不会重复提交。RSS 收集闸门关闭不影响人工分析，但下载仍要求独立下载闸门、Torra/qB 前检、限流和冷却。
+`GET /api/v2/rss-matches` 读取 SQLite 中的本地匹配记录，可按 `candidate / ignored / triggered / confirmed / expired` 状态筛选；默认继续返回 `{items,total,limit,offset}`。可选 `view=groups` 返回 `{groups,total,limit,offset}`，其中 `total` 是订阅季集组数，每组包含 `candidateCount/bestMatchId/bestArtifactKey/bestCandidateScore/baselineScore/baselineSummary/lastCandidateAt/candidates`；同一范围包可以投影到多个集级组，但底层 `artifactKey` 与冠军判定保持单一，未完整覆盖全部目标的范围包不得成为冠军。基线只来自 Torra 明确季集文件，或具有 TMDB、媒体类型、季集和成功状态的 Symedia 文件；qB 只能为精确同名基线补充大小，不能独立认领。多个不同当前版本、规则不明确或证据不足时分数为 `null` 并显示“暂未确认”。`GET /api/v2/rss-matches/:id` 返回与创建接口相同的公开 DTO，供 `POST 201` 的 `Location` 解引用，不存在时返回统一 `404 RSS_MATCH_NOT_FOUND`，且不读取或返回 RSS 条目的下载地址、详情地址或凭据。公开 DTO 的 `reason` 只允许 `identity`、`mediaType`、`year`、`season`、`episode` 和 `matchSource`；旧 Torra subscription/unit ID、路径、URL、外部 job 字段及所有未知键在投影时剔除。新插入条目仍可由自动匹配器生成 `candidate`；普通追更页也可调用 `POST /api/v2/rss-matches` 为一个搜索结果建立单条人工匹配。人工创建不会调用全局 matcher，服务端重新读取 RSS 条目、本地或 Torra 只读追更、观察单元与 Torra 当前订阅，校验身份、媒体类型、年份、季集、基线时间和归属；同一条目与观察单元已存在时幂等返回原匹配。该记录不代表本地已经判断版本更好。随后 `POST /api/v2/rss-matches/:id/torra-rewash-analyses` 执行人工分析；成功响应只公开评分变化、质量和大小等脱敏摘要，不返回候选 ID。`POST /api/v2/rss-matches/:id/torra-rewashes` 要求明确确认，并重新校验分析动作确实属于同一匹配、追更和观察单元。匹配状态和下载动作 ID 在同一 SQLite 事务中更新，幂等重放不会重复提交。RSS 收集闸门关闭不影响人工分析，但下载仍要求独立下载闸门、Torra/qB 前检、限流和冷却。
 
 ## 14. 已实现的 MoviePilot 人工备用接口
 

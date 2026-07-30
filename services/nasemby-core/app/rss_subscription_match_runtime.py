@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from app.private_rss_parser import extract_media_identity, extract_release_scope
+from app.rss_baseline_runtime import resolve_baseline_artifact
 from app.rss_shadow_scoring_runtime import (
     ShadowScoringUnsupported,
     rss_artifact_key,
@@ -196,6 +197,7 @@ class RssAnalysisDependencies:
     torra: object
     qb: object
     config_loader: object
+    symedia: object = None
 
 
 def _identity_match(item, subscription):
@@ -994,49 +996,167 @@ class RssSubscriptionMatchRuntime:
             rule_hashes[rule_id] = rule_hash
             snapshots.append({"ruleId": rule_id, "ruleHash": rule_hash, "rule": rule})
         self.rss_repository.save_rule_snapshots(snapshots)
-        return torra_rows, rules, rule_hashes
+        baseline_inputs = {"qbSummary": {}, "symediaRows": []}
+        qb = getattr(self.analysis, "qb", None) if self.analysis else None
+        if qb is not None:
+            try:
+                summary = qb.summary()
+                if isinstance(summary, dict):
+                    baseline_inputs["qbSummary"] = summary
+            except Exception:
+                pass
+        symedia = getattr(self.analysis, "symedia", None) if self.analysis else None
+        if symedia is not None:
+            try:
+                page = symedia.list_transfer_history(200)
+                if isinstance(page, dict) and isinstance(page.get("rows"), list):
+                    baseline_inputs["symediaRows"] = page["rows"]
+            except Exception:
+                pass
+        return torra_rows, rules, rule_hashes, baseline_inputs
 
-    def _score_artifact_contexts(self, rules, rule_hashes, contexts):
+    @staticmethod
+    def _score_summary(score, version_summary):
+        return {
+            "versionSummary": _text(version_summary)[:240],
+            "versionName": _text(score.get("versionName"))[:120],
+            "scoreBreakdown": [
+                {
+                    "field": _text(row.get("field"))[:80],
+                    "label": _text(row.get("label"))[:120],
+                    "score": row.get("score"),
+                }
+                for row in score.get("breakdown") or []
+                if isinstance(row, dict) and isinstance(row.get("score"), (int, float))
+            ],
+        }
+
+    def _baseline_for_context(self, rule, rule_hash, context, baseline_inputs):
+        unit = context["unit"]
+        resolved = resolve_baseline_artifact(
+            context["subscription"],
+            context["torraRow"],
+            unit,
+            qb_summary=baseline_inputs.get("qbSummary"),
+            symedia_rows=baseline_inputs.get("symediaRows"),
+        )
+        if resolved.get("status") == "ready":
+            try:
+                score = score_rss_candidate(rule, {
+                    "title": resolved.get("versionSummary"),
+                    "size_bytes": resolved.get("sizeBytes"),
+                })
+            except ShadowScoringUnsupported as exc:
+                resolved = {"status": "unconfirmed", "reason": exc.code}
+            else:
+                summary = {
+                    **self._score_summary(score, resolved.get("versionSummary")),
+                    "artifactKey": resolved.get("artifactKey"),
+                    "sources": list(resolved.get("sources") or []),
+                }
+                if any((
+                    _text(unit.get("baseline_artifact_key")) != _text(resolved.get("artifactKey")),
+                    unit.get("baseline_score") != score["score"],
+                    _text(unit.get("baseline_rule_hash")) != rule_hash,
+                )):
+                    self.watch_repository.save_baseline(
+                        [unit["unit_key"]],
+                        resolved.get("artifactKey"),
+                        score["score"],
+                        rule_hash,
+                        summary,
+                    )
+                return score["score"], summary, ""
+
+        persisted_score = unit.get("baseline_score")
+        persisted_hash = _text(unit.get("baseline_rule_hash"))
+        if (
+            not isinstance(persisted_score, bool)
+            and isinstance(persisted_score, (int, float))
+            and persisted_hash == rule_hash
+        ):
+            evidence = unit.get("current_evidence") if isinstance(unit.get("current_evidence"), dict) else {}
+            summary = evidence.get("baselineSummary") if isinstance(evidence.get("baselineSummary"), dict) else {}
+            return float(persisted_score), summary, ""
+        return None, {}, _text(resolved.get("reason")) or "baseline_version_unconfirmed"
+
+    def _save_scored_contexts(self, contexts, results):
+        if not contexts or not results:
+            return []
+        action_id = self._record_shadow_action(contexts[0], results[0])
+        evaluated_at = _as_utc(self.clock())
+        if isinstance(evaluated_at, datetime):
+            evaluated_at = evaluated_at.isoformat().replace("+00:00", "Z")
+        saved = []
+        for context, result in zip(contexts, results):
+            saved.extend(self.rss_repository.save_match_evaluation(
+                [context["match"]["id"]],
+                {
+                    **result,
+                    "actionId": action_id,
+                    "evaluatedAt": _text(evaluated_at),
+                },
+            ))
+        return saved
+
+    def _score_artifact_contexts(self, rules, rule_hashes, contexts, baseline_inputs):
         primary = contexts[0]
         rule, reason = select_subscription_rule(
             rules,
             {**primary["subscription"], **primary["torraRow"]},
         )
         if not rule:
-            return self._unconfirmed_shadow_result(reason)
+            return self._save_shadow_result(contexts, self._unconfirmed_shadow_result(reason))
         rule_id = _text(rule.get("id"))
         rule_hash = rule_hashes.get(rule_id) or stable_payload_hash(rule)
-        baseline_score = primary["unit"].get("baseline_score")
         try:
             score = score_rss_candidate(rule, primary["item"])
         except ShadowScoringUnsupported as exc:
-            return self._unconfirmed_shadow_result(
+            return self._save_shadow_result(contexts, self._unconfirmed_shadow_result(
                 exc.code,
-                baseline_score=baseline_score,
                 rule_id=rule_id,
                 rule_hash=rule_hash,
+            ))
+        candidate_summary = self._score_summary(score, primary["item"].get("title"))
+        results = []
+        for context in contexts:
+            baseline_score, baseline_summary, baseline_reason = self._baseline_for_context(
+                rule,
+                rule_hash,
+                context,
+                baseline_inputs,
             )
-        if score["versionState"] == "rejected":
-            decision = "rule_rejected"
-        elif baseline_score is None:
-            decision = "waiting_baseline"
-        elif score["score"] > float(baseline_score):
-            decision = "upgrade_available"
-        elif score["score"] == float(baseline_score):
-            decision = "same_score"
-        else:
-            decision = "lower_score"
-        return {
-            "status": "scored",
-            "decision": decision,
-            "reason": "shadow_only_no_download",
-            "candidateScore": score["score"],
-            "baselineScore": baseline_score,
-            "ruleId": rule_id,
-            "ruleHash": rule_hash,
-        }
+            if score["versionState"] == "rejected":
+                decision = "rule_rejected"
+            elif baseline_score is None:
+                decision = "waiting_baseline"
+            elif score["score"] > float(baseline_score):
+                decision = "upgrade_available"
+            elif score["score"] == float(baseline_score):
+                decision = "same_score"
+            else:
+                decision = "lower_score"
+            results.append({
+                "status": "scored",
+                "decision": decision,
+                "reason": baseline_reason or "shadow_only_no_download",
+                "candidateScore": score["score"],
+                "baselineScore": baseline_score,
+                "candidateSummary": candidate_summary,
+                "baselineSummary": baseline_summary,
+                "ruleId": rule_id,
+                "ruleHash": rule_hash,
+            })
+        return self._save_scored_contexts(contexts, results)
 
-    def _evaluate_artifact_contexts(self, rules, rule_hashes, artifact_key, contexts):
+    def _evaluate_artifact_contexts(
+        self,
+        rules,
+        rule_hashes,
+        baseline_inputs,
+        artifact_key,
+        contexts,
+    ):
         stored_rows = self.rss_repository.list_internal_matches_for_artifact(artifact_key)
         owners = {
             (_text(row.get("torra_subscription_id")), _text(row.get("target_key")))
@@ -1048,9 +1168,213 @@ class RssSubscriptionMatchRuntime:
                 **self._unconfirmed_shadow_result("artifact_owner_conflict"),
                 "decision": "ownership_conflict",
             }
+            return self._save_shadow_result(contexts, result)
         else:
-            result = self._score_artifact_contexts(rules, rule_hashes, contexts)
-        return self._save_shadow_result(contexts, result)
+            return self._score_artifact_contexts(
+                rules,
+                rule_hashes,
+                contexts,
+                baseline_inputs,
+            )
+
+    def _expand_evaluation_contexts(self, matches, torra_rows):
+        all_matches = {match["id"]: match for match in matches}
+        contexts = {}
+        reasons = {}
+        for _ in range(12):
+            contexts = {}
+            reasons = {}
+            for match in all_matches.values():
+                context, reason = self._evaluation_context(match, torra_rows)
+                if context:
+                    contexts[match["id"]] = context
+                else:
+                    reasons[match["id"]] = reason
+            refs = {
+                (context["match"]["subscriptionId"], context["match"]["unitId"])
+                for context in contexts.values()
+            }
+            expanded = self.rss_repository.list_matches_for_units(refs)
+            for artifact_key in {context["artifactKey"] for context in contexts.values()}:
+                expanded.extend(
+                    self.rss_repository.get_match(row["id"])
+                    for row in self.rss_repository.list_internal_matches_for_artifact(artifact_key)
+                )
+            changed = False
+            for match in expanded:
+                if match and match["id"] not in all_matches:
+                    all_matches[match["id"]] = match
+                    changed = True
+            if not changed:
+                break
+        return list(contexts.values()), [
+            (all_matches[match_id], reason)
+            for match_id, reason in reasons.items()
+        ]
+
+    @staticmethod
+    def _winner_decision(match):
+        baseline = match.get("baselineScore")
+        score = match.get("candidateScore")
+        if baseline is None:
+            return "best_waiting_baseline"
+        if score > baseline:
+            return "current_best"
+        if score == baseline:
+            return "same_score"
+        return "lower_score"
+
+    def _reconcile_champions(self, contexts):
+        fresh = {
+            match["id"]: match
+            for match in self.rss_repository.list_matches_by_ids(
+                [context["match"]["id"] for context in contexts]
+            )
+        }
+        context_by_match = {context["match"]["id"]: context for context in contexts}
+        groups = {}
+        artifacts = {}
+        for match_id, match in fresh.items():
+            groups.setdefault((match["subscriptionId"], match["unitId"]), []).append(match)
+            artifacts.setdefault(match.get("artifactKey") or f"match:{match_id}", []).append(match)
+
+        eligible_groups = {
+            group_key: [
+                match for match in matches
+                if match.get("evaluationStatus") == "scored"
+                and match.get("decision") != "rule_rejected"
+                and not isinstance(match.get("candidateScore"), bool)
+                and isinstance(match.get("candidateScore"), (int, float))
+            ]
+            for group_key, matches in groups.items()
+        }
+        available_artifacts = {
+            match.get("artifactKey") or f"match:{match['id']}"
+            for matches in eligible_groups.values()
+            for match in matches
+        }
+        winners = {}
+        for _ in range(len(available_artifacts) + 1):
+            winners = {}
+            for group_key, matches in eligible_groups.items():
+                available = [
+                    match for match in matches
+                    if (match.get("artifactKey") or f"match:{match['id']}") in available_artifacts
+                ]
+                if available:
+                    winners[group_key] = min(available, key=lambda match: (
+                        -float(match["candidateScore"]),
+                        _text(match.get("createdAt")),
+                        _text(match.get("artifactKey")),
+                        match["id"],
+                    ))
+            partial_range_winners = set()
+            for artifact_key, rows in artifacts.items():
+                covered_groups = {
+                    (row["subscriptionId"], row["unitId"])
+                    for row in rows
+                    if any(row["id"] == eligible["id"] for eligible in eligible_groups.get(
+                        (row["subscriptionId"], row["unitId"]),
+                        [],
+                    ))
+                }
+                if len(covered_groups) <= 1:
+                    continue
+                won_groups = {
+                    group_key for group_key in covered_groups
+                    if group_key in winners
+                    and (winners[group_key].get("artifactKey") or f"match:{winners[group_key]['id']}") == artifact_key
+                }
+                if won_groups and won_groups != covered_groups:
+                    partial_range_winners.add(artifact_key)
+            if not partial_range_winners:
+                break
+            available_artifacts.difference_update(partial_range_winners)
+
+        outcomes = {artifact_key: [] for artifact_key in artifacts}
+        for group_key, matches in eligible_groups.items():
+            winner = winners.get(group_key)
+            winner_artifact = (
+                winner.get("artifactKey") or f"match:{winner['id']}"
+                if winner
+                else ""
+            )
+            for match in matches:
+                artifact_key = match.get("artifactKey") or f"match:{match['id']}"
+                outcomes.setdefault(artifact_key, []).append({
+                    "winner": artifact_key == winner_artifact,
+                    "decision": self._winner_decision(match),
+                    "score": float(match["candidateScore"]),
+                })
+
+        canonical_ids = {
+            artifact_key: min(
+                rows,
+                key=lambda match: (_text(match.get("createdAt")), match["id"]),
+            )["id"]
+            for artifact_key, rows in artifacts.items()
+        }
+        updates = []
+        priority = {
+            "best_waiting_baseline": 0,
+            "lower_score": 1,
+            "same_score": 2,
+            "current_best": 3,
+        }
+        for artifact_key, matches in artifacts.items():
+            artifact_outcomes = outcomes.get(artifact_key) or []
+            if not artifact_outcomes:
+                updates.append({
+                    "matchIds": [match["id"] for match in matches],
+                    "decision": matches[0].get("decision"),
+                    "reason": matches[0].get("evaluationReason"),
+                    "bestCandidate": False,
+                })
+                continue
+            wins_all = all(outcome["winner"] for outcome in artifact_outcomes)
+            decision = (
+                min(artifact_outcomes, key=lambda outcome: priority[outcome["decision"]])["decision"]
+                if wins_all
+                else "superseded"
+            )
+            updates.append({
+                "matchIds": [match["id"] for match in matches],
+                "decision": decision,
+                "reason": "shadow_only_no_download" if wins_all else "higher_scored_candidate",
+                "bestCandidate": wins_all,
+            })
+        self.rss_repository.save_candidate_decisions(updates)
+
+        for group_key, group_matches in groups.items():
+            winner = winners.get(group_key)
+            if not winner:
+                context = next((
+                    context_by_match.get(match["id"])
+                    for match in group_matches
+                    if context_by_match.get(match["id"])
+                ), None)
+                if context:
+                    self.watch_repository.clear_candidate_champion(
+                        context["unit"]["unit_key"],
+                        max((
+                            _text(match.get("evaluatedAt") or match.get("createdAt"))
+                            for match in group_matches
+                        ), default=""),
+                    )
+                continue
+            artifact_key = winner.get("artifactKey") or f"match:{winner['id']}"
+            context = context_by_match.get(winner["id"])
+            if not context:
+                continue
+            self.watch_repository.save_candidate_champion(
+                context["unit"]["unit_key"],
+                match_id=canonical_ids[artifact_key],
+                score=winner["candidateScore"],
+                last_candidate_at=winner.get("evaluatedAt") or winner.get("createdAt"),
+                artifact_key=artifact_key,
+                decision=self._winner_decision(winner),
+                summary=winner.get("candidateSummary"),
+            )
 
     def evaluate_matches(self, match_ids):
         matches = self.rss_repository.list_matches_by_ids(match_ids)
@@ -1062,16 +1386,12 @@ class RssSubscriptionMatchRuntime:
         shadow_inputs = self._read_shadow_inputs(torra)
         if shadow_inputs is None:
             return self._blocked_shadow_result(matches, "torra_rule_read_failed")
-        torra_rows, rules, rule_hashes = shadow_inputs
+        torra_rows, rules, rule_hashes, baseline_inputs = shadow_inputs
 
-        contexts = []
+        contexts, blocked_matches = self._expand_evaluation_contexts(matches, torra_rows)
         blocked = []
-        for match in matches:
-            context, reason = self._evaluation_context(match, torra_rows)
-            if context:
-                contexts.append(context)
-            else:
-                blocked.extend(self._blocked_shadow_result([match], reason))
+        for match, reason in blocked_matches:
+            blocked.extend(self._blocked_shadow_result([match], reason))
 
         grouped = {}
         for context in contexts:
@@ -1081,10 +1401,14 @@ class RssSubscriptionMatchRuntime:
             evaluated.extend(self._evaluate_artifact_contexts(
                 rules,
                 rule_hashes,
+                baseline_inputs,
                 artifact_key,
                 artifact_contexts,
             ))
-        return evaluated
+        self._reconcile_champions(contexts)
+        return self.rss_repository.list_matches_by_ids([
+            match["id"] for match in evaluated
+        ])
 
     def backfill_watch_unit(self, unit_key, limit=200):
         unit = self.watch_repository.get_watch_unit(unit_key)

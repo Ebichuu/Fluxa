@@ -335,6 +335,107 @@ class QualityWatchRepository:
                 raise QualityWatchVersionConflict("观察单元版本已变化")
         return self.get_watch_unit(unit_key)
 
+    def save_baseline(self, unit_keys, artifact_key, score, rule_hash, summary=None):
+        keys = sorted({str(value or "").strip() for value in unit_keys if str(value or "").strip()})
+        if not keys:
+            return []
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            raise ValueError("baseline score must be numeric")
+        with self.runtime.transaction(immediate=True) as connection:
+            for unit_key in keys:
+                row = connection.execute(
+                    "SELECT current_evidence_json FROM quality_watch_units WHERE unit_key=?",
+                    (unit_key,),
+                ).fetchone()
+                if not row:
+                    continue
+                evidence = _json_load(row["current_evidence_json"])
+                evidence["baselineSummary"] = summary if isinstance(summary, dict) else {}
+                connection.execute(
+                    "UPDATE quality_watch_units SET baseline_artifact_key=?, baseline_score=?, "
+                    "baseline_rule_hash=?, current_evidence_json=?, updated_at=?, version=version+1 "
+                    "WHERE unit_key=?",
+                    (
+                        str(artifact_key or ""),
+                        float(score),
+                        str(rule_hash or ""),
+                        _json_dump(evidence),
+                        _iso(self.clock()),
+                        unit_key,
+                    ),
+                )
+        return [unit for unit in (self.get_watch_unit(key) for key in keys) if unit]
+
+    def save_candidate_champion(
+        self,
+        unit_key,
+        *,
+        match_id,
+        score,
+        last_candidate_at,
+        artifact_key="",
+        decision="",
+        summary=None,
+    ):
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            raise ValueError("candidate score must be numeric")
+        unit_key = str(unit_key or "").strip()
+        with self.runtime.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT current_evidence_json FROM quality_watch_units WHERE unit_key=?",
+                (unit_key,),
+            ).fetchone()
+            if not row:
+                return None
+            evidence = _json_load(row["current_evidence_json"])
+            evidence.update({
+                "candidateDecision": str(decision or ""),
+                "bestArtifactKey": str(artifact_key or ""),
+                "bestCandidateSummary": summary if isinstance(summary, dict) else {},
+            })
+            connection.execute(
+                "UPDATE quality_watch_units SET best_match_id=?, best_candidate_score=?, "
+                "last_candidate_at=?, current_evidence_json=?, updated_at=?, version=version+1 "
+                "WHERE unit_key=?",
+                (
+                    str(match_id or ""),
+                    float(score),
+                    str(last_candidate_at or ""),
+                    _json_dump(evidence),
+                    _iso(self.clock()),
+                    unit_key,
+                ),
+            )
+        return self.get_watch_unit(unit_key)
+
+    def clear_candidate_champion(self, unit_key, last_candidate_at=""):
+        unit_key = str(unit_key or "").strip()
+        with self.runtime.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT current_evidence_json FROM quality_watch_units WHERE unit_key=?",
+                (unit_key,),
+            ).fetchone()
+            if not row:
+                return None
+            evidence = _json_load(row["current_evidence_json"])
+            evidence.update({
+                "candidateDecision": "",
+                "bestArtifactKey": "",
+                "bestCandidateSummary": {},
+            })
+            connection.execute(
+                "UPDATE quality_watch_units SET best_match_id='', best_candidate_score=NULL, "
+                "last_candidate_at=?, current_evidence_json=?, updated_at=?, version=version+1 "
+                "WHERE unit_key=?",
+                (
+                    str(last_candidate_at or ""),
+                    _json_dump(evidence),
+                    _iso(self.clock()),
+                    unit_key,
+                ),
+            )
+        return self.get_watch_unit(unit_key)
+
     def get_action(self, action_id):
         with closing(self.runtime.connect()) as connection:
             row = connection.execute("SELECT * FROM provider_actions WHERE action_id=?", (str(action_id),)).fetchone()

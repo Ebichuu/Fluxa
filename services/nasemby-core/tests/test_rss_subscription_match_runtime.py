@@ -1052,7 +1052,7 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(len({match["evaluationActionId"] for match in matches}), 1)
         self.assertEqual({match["evaluationStatus"] for match in matches}, {"scored"})
-        self.assertEqual({match["decision"] for match in matches}, {"waiting_baseline"})
+        self.assertEqual({match["decision"] for match in matches}, {"best_waiting_baseline"})
         self.assertEqual({match["candidateScore"] for match in matches}, {30.0})
 
     def test_shadow_scoring_does_not_guess_ambiguous_rules_or_missing_fields(self):
@@ -1193,6 +1193,216 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual({match["evaluationReason"] for match in stored}, {"artifact_owner_conflict"})
         self.assertEqual({match["candidateScore"] for match in stored}, {None})
         self.assertEqual(torra.submissions, [])
+
+    def test_exact_current_version_becomes_persisted_baseline_and_upgrade(self):
+        unit = self._watch(
+            "tv:202:s1",
+            episode=2,
+            title="Test Show",
+            media_category="anime",
+        )
+        torra, qb = self._enable_analysis()
+        self._configure_shadow_torra(torra)
+        torra.rows[0]["downloaded_episode_files"] = {
+            "2": ["/downloads/Test.Show.S01E02.1080p.WEB-DL.mkv"],
+        }
+        qb.tasks = [{
+            "name": "Test.Show.S01E02.1080p.WEB-DL.mkv",
+            "size": 2_000_000_000,
+        }]
+
+        inserted = self._insert(
+            "Test Show S01E02 2160p WEB-DL.mkv",
+            start=2,
+            end=2,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=2_000_000_000,
+        )
+        self.runtime.wake_matches(inserted["_match_ids"])
+
+        match = self.rss.get_match(inserted["_match_ids"][0])
+        stored_unit = self.watch.get_watch_unit(unit["unit_key"])
+        self.assertEqual(match["baselineScore"], 10.0)
+        self.assertEqual(match["candidateScore"], 30.0)
+        self.assertEqual(match["decision"], "current_best")
+        self.assertTrue(match["bestCandidate"])
+        self.assertEqual(match["baselineSummary"]["versionSummary"], "Test.Show.S01E02.1080p.WEB-DL.mkv")
+        self.assertTrue(stored_unit["baseline_artifact_key"].startswith("baseline:"))
+        self.assertEqual(stored_unit["baseline_score"], 10.0)
+        self.assertEqual(stored_unit["best_match_id"], match["id"])
+        self.assertEqual(stored_unit["best_candidate_score"], 30.0)
+
+    def test_new_batch_reconciles_existing_candidates_and_keeps_one_champion(self):
+        unit = self._watch(
+            "tv:202:s1",
+            episode=2,
+            title="Test Show",
+            media_category="anime",
+        )
+        torra, qb = self._enable_analysis()
+        self._configure_shadow_torra(torra)
+        torra.rows[0]["downloaded_episode_files"] = {
+            "2": ["/downloads/Test.Show.S01E02.1080p.WEB-DL.mkv"],
+        }
+        qb.tasks = [{
+            "name": "Test.Show.S01E02.1080p.WEB-DL.mkv",
+            "size": 2_000_000_000,
+        }]
+
+        first = self._insert(
+            "Test Show S01E02 1080p WEB-DL.mkv",
+            start=2,
+            end=2,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=2_000_000_000,
+        )
+        self.runtime.wake_matches(first["_match_ids"])
+        self.now[0] += timedelta(minutes=5)
+        second = self._insert(
+            "Test Show S01E02 2160p WEB-DL.mkv",
+            start=2,
+            end=2,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=2_000_000_000,
+        )
+        self.runtime.wake_matches(second["_match_ids"])
+
+        matches = {match["id"]: match for match in self.rss.list_matches()["items"]}
+        self.assertEqual(matches[first["_match_ids"][0]]["decision"], "superseded")
+        self.assertFalse(matches[first["_match_ids"][0]]["bestCandidate"])
+        self.assertEqual(matches[second["_match_ids"][0]]["decision"], "current_best")
+        self.assertTrue(matches[second["_match_ids"][0]]["bestCandidate"])
+        stored_unit = self.watch.get_watch_unit(unit["unit_key"])
+        self.assertEqual(stored_unit["best_match_id"], second["_match_ids"][0])
+        self.assertEqual(stored_unit["best_candidate_score"], 30.0)
+
+    def test_range_champion_uses_one_canonical_match_for_every_projected_unit(self):
+        units = [
+            self._watch("tv:202:s1", episode=episode, title="Test Show", media_category="anime")
+            for episode in (2, 3)
+        ]
+        torra, qb = self._enable_analysis()
+        self._configure_shadow_torra(torra)
+        torra.rows[0]["downloaded_episode_files"] = {
+            "2": ["/downloads/Test.Show.S01E02.1080p.WEB-DL.mkv"],
+            "3": ["/downloads/Test.Show.S01E03.1080p.WEB-DL.mkv"],
+        }
+        qb.tasks = [
+            {"name": f"Test.Show.S01E0{episode}.1080p.WEB-DL.mkv", "size": 2_000_000_000}
+            for episode in (2, 3)
+        ]
+
+        inserted = self._insert(
+            "Test Show S01E02-E03 2160p WEB-DL.mkv",
+            start=2,
+            end=3,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=4_000_000_000,
+        )
+        self.runtime.wake_matches(inserted["_match_ids"])
+
+        stored_matches = [self.rss.get_match(match_id) for match_id in inserted["_match_ids"]]
+        self.assertEqual({match["decision"] for match in stored_matches}, {"current_best"})
+        self.assertEqual({match["bestCandidate"] for match in stored_matches}, {True})
+        canonical_ids = {
+            self.watch.get_watch_unit(unit["unit_key"])["best_match_id"]
+            for unit in units
+        }
+        self.assertEqual(len(canonical_ids), 1)
+        self.assertTrue(next(iter(canonical_ids)) in inserted["_match_ids"])
+
+    def test_range_artifact_losing_one_episode_is_removed_from_every_champion(self):
+        units = [
+            self._watch("tv:202:s1", episode=episode, title="Test Show", media_category="anime")
+            for episode in (2, 3)
+        ]
+        torra, qb = self._enable_analysis()
+        rule = self._shadow_rule()
+        rule["custom_attributes"].append({
+            "name": "REMUX",
+            "pattern": "REMUX",
+            "score": 20,
+        })
+        self._configure_shadow_torra(torra, [rule])
+        torra.rows[0]["downloaded_episode_files"] = {
+            "2": ["/downloads/Test.Show.S01E02.1080p.WEB-DL.mkv"],
+            "3": ["/downloads/Test.Show.S01E03.1080p.WEB-DL.mkv"],
+        }
+        qb.tasks = [
+            {"name": f"Test.Show.S01E0{episode}.1080p.WEB-DL.mkv", "size": 2_000_000_000}
+            for episode in (2, 3)
+        ]
+        ranged = self._insert(
+            "Test Show S01E02-E03 2160p WEB-DL.mkv",
+            start=2,
+            end=3,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=4_000_000_000,
+        )
+        self.runtime.wake_matches(ranged["_match_ids"])
+
+        self.now[0] += timedelta(minutes=5)
+        single = self._insert(
+            "Test Show S01E03 2160p WEB-DL REMUX.mkv",
+            start=3,
+            end=3,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=3_000_000_000,
+        )
+        self.runtime.wake_matches(single["_match_ids"])
+
+        ranged_matches = [self.rss.get_match(match_id) for match_id in ranged["_match_ids"]]
+        single_match = self.rss.get_match(single["_match_ids"][0])
+        self.assertEqual({match["decision"] for match in ranged_matches}, {"superseded"})
+        self.assertEqual({match["bestCandidate"] for match in ranged_matches}, {False})
+        self.assertEqual(single_match["decision"], "current_best")
+        self.assertTrue(single_match["bestCandidate"])
+        self.assertEqual(self.watch.get_watch_unit(units[1]["unit_key"])["best_match_id"], single_match["id"])
+        self.assertNotIn(
+            self.watch.get_watch_unit(units[0]["unit_key"])["best_match_id"],
+            ranged["_match_ids"],
+        )
+
+    def test_persisted_baseline_survives_temporary_upstream_evidence_loss(self):
+        self._watch(
+            "tv:202:s1",
+            episode=2,
+            title="Test Show",
+            media_category="anime",
+        )
+        torra, qb = self._enable_analysis()
+        self._configure_shadow_torra(torra)
+        torra.rows[0]["downloaded_episode_files"] = {
+            "2": ["/downloads/Test.Show.S01E02.1080p.WEB-DL.mkv"],
+        }
+        qb.tasks = [{
+            "name": "Test.Show.S01E02.1080p.WEB-DL.mkv",
+            "size": 2_000_000_000,
+        }]
+        first = self._insert(
+            "Test Show S01E02 2160p WEB-DL.mkv",
+            start=2,
+            end=2,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=2_000_000_000,
+        )
+        self.runtime.wake_matches(first["_match_ids"])
+
+        torra.rows[0].pop("downloaded_episode_files")
+        qb.tasks = []
+        self.now[0] += timedelta(minutes=5)
+        second = self._insert(
+            "Test Show S01E02 720p WEB-DL.mkv",
+            start=2,
+            end=2,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=1_000_000_000,
+        )
+        self.runtime.wake_matches(second["_match_ids"])
+
+        stored = self.rss.get_match(second["_match_ids"][0])
+        self.assertEqual(stored["baselineScore"], 10.0)
+        self.assertEqual(stored["baselineSummary"]["versionSummary"], "Test.Show.S01E02.1080p.WEB-DL.mkv")
 
 
 if __name__ == "__main__":

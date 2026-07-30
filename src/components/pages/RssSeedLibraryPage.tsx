@@ -21,9 +21,9 @@ import {
   backfillRssIdentities,
   deleteRssSource,
   getAutomationAction,
+  getRssMatchGroups,
   getRssSeedItem,
   getRssSeedItems,
-  getRssMatches,
   getRssSources,
   runRssMatcher,
   saveRssSource,
@@ -32,7 +32,7 @@ import {
   testRssSource
 } from '../../services/api';
 import { writeUrlQuery, type UrlHistoryMode } from '../../app/urlState';
-import type { AutomationAction, RssIdentityStatus, RssLibrarySummary, RssMatch, RssSeedItem, RssSource, RssSourceInput } from '../../types/rssSeedLibrary';
+import type { AutomationAction, RssIdentityStatus, RssLibrarySummary, RssMatch, RssMatchGroup, RssSeedItem, RssSource, RssSourceInput } from '../../types/rssSeedLibrary';
 import {
   classifyRssResourceScope,
   countRssResourceScopes,
@@ -239,6 +239,11 @@ const shadowReasonLabels: Record<string, string> = {
   candidate_title_missing: '候选标题不完整',
   candidate_size_invalid: '候选大小无效',
   candidate_size_unconfirmed: '候选大小暂未确认',
+  baseline_identity_unconfirmed: '当前版本身份暂未确认',
+  baseline_version_unconfirmed: '当前版本文件暂未确认',
+  baseline_artifact_conflict: '当前版本存在多个冲突文件',
+  baseline_size_conflict: '当前版本文件大小存在冲突',
+  higher_scored_candidate: '已被同集更高分候选取代',
   rule_pattern_missing: '规则字段不完整',
   rule_pattern_invalid: '规则表达式无法安全解析',
   rule_group_invalid: '规则分组无法安全解析',
@@ -264,11 +269,12 @@ function scoreLabel(value: number | null | undefined) {
 function shadowEvaluationLabel(match: RssMatch) {
   if (match.evaluationStatus === 'scored' && typeof match.candidateScore === 'number') {
     const candidate = `候选 ${scoreLabel(match.candidateScore)} 分`;
-    if (match.decision === 'waiting_baseline') return `${candidate} · 等待当前版本基线`;
+    if (['waiting_baseline', 'best_waiting_baseline'].includes(match.decision || '')) return `${candidate} · 等待当前版本基线`;
     if (match.decision === 'rule_rejected') return `${candidate} · Torra 规则未接受`;
+    if (match.decision === 'superseded') return `${candidate} · 已被更高分候选取代`;
     if (typeof match.baselineScore !== 'number') return candidate;
     const baseline = `当前版本 ${scoreLabel(match.baselineScore)} 分`;
-    if (match.decision === 'upgrade_available') {
+    if (['upgrade_available', 'current_best'].includes(match.decision || '')) {
       return `${candidate} · ${baseline} · 提升 ${scoreLabel(match.candidateScore - match.baselineScore)} 分`;
     }
     if (match.decision === 'same_score') return `${candidate} · 与当前版本同分`;
@@ -280,6 +286,16 @@ function shadowEvaluationLabel(match: RssMatch) {
     return `评分暂未确认 · ${reason}`;
   }
   return '等待 Torra 规则影子评分';
+}
+
+function candidateGroupScoreLabel(group: RssMatchGroup) {
+  const baseline = typeof group.baselineScore === 'number'
+    ? `当前版本 ${scoreLabel(group.baselineScore)} 分`
+    : '当前版本暂未确认';
+  const candidate = typeof group.bestCandidateScore === 'number'
+    ? `最佳候选 ${scoreLabel(group.bestCandidateScore)} 分`
+    : '最佳候选暂未确认';
+  return `${baseline} · ${candidate} · ${group.candidateCount} 个版本`;
 }
 
 function seedProcessingStateLabel(match: RssMatch | undefined, action: AutomationAction | undefined) {
@@ -307,7 +323,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const [summary, setSummary] = useState<RssLibrarySummary>(emptySummary);
   const [items, setItems] = useState<RssSeedItem[]>([]);
   const [total, setTotal] = useState(0);
-  const [matches, setMatches] = useState<RssMatch[]>([]);
+  const [matchGroups, setMatchGroups] = useState<RssMatchGroup[]>([]);
   const [matchesTotal, setMatchesTotal] = useState(0);
   const [matchesOffset, setMatchesOffset] = useState(0);
   const [matchesLoading, setMatchesLoading] = useState(false);
@@ -328,6 +344,10 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const [editing, setEditing] = useState<RssSource | null>(null);
   const [form, setForm] = useState<RssSourceInput>(defaultForm);
   const [saving, setSaving] = useState(false);
+  const matches = useMemo(
+    () => matchGroups.flatMap((group) => group.candidates),
+    [matchGroups]
+  );
   const [testingSourceId, setTestingSourceId] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<RssSource | null>(null);
   const [detailItem, setDetailItem] = useState<RssSeedItem | null>(null);
@@ -401,12 +421,16 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     matchesRequestRef.current = controller;
     setMatchesLoading(true);
     try {
-      const payload = await getRssMatches({ limit: 10, offset: nextOffset }, { signal: controller.signal });
+      const payload = await getRssMatchGroups({ limit: 10, offset: nextOffset }, { signal: controller.signal });
       if (controller.signal.aborted) return {};
-      setMatches(payload.items);
+      if (!Array.isArray(payload.groups)) {
+        throw new Error('候选组接口暂未可用，请确认前后端版本一致');
+      }
+      setMatchGroups(payload.groups);
       setMatchesTotal(payload.total);
       setMatchesOffset(payload.offset);
-      const linkedActions = await Promise.all(payload.items.map(async (match) => {
+      const groupedMatches = payload.groups.flatMap((group) => group.candidates);
+      const linkedActions = await Promise.all(groupedMatches.map(async (match) => {
         if (!match.triggerActionId) return null;
         try {
           return { matchId: match.id, action: await getAutomationAction(match.triggerActionId, { signal: controller.signal }) };
@@ -883,13 +907,15 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
           )}
           <section className="rss-match-panel" aria-label="RSS 候选匹配">
             <header className="rss-match-panel__head">
-              <div><strong>Torra 规则影子评分</strong><small>{matchesTotal ? `最近 ${matchesTotal} 条订阅候选 · 只读评估，不会自动下载` : '新种子会自动匹配并评分，不会自动下载'}</small></div>
+              <div><strong>Torra 规则候选决策</strong><small>{matchesTotal ? `最近 ${matchesTotal} 个季集候选组 · 只读评估，不会自动下载` : '新种子会自动匹配并评分，不会自动下载'}</small></div>
               <button className="ops-link" disabled={matchesLoading} type="button" onClick={() => void loadMatches(matchesOffset)}><RefreshCcw size={13} />刷新</button>
             </header>
             {matchesLoading && <small className="sub-detail__hint">正在查看是否有种子匹配到追更作品…</small>}
-            {!matchesLoading && matches.length === 0 && <div className="rss-match-empty"><CheckCircle2 size={15} /><span><strong>{summary.enabled && summary.errorSources === 0 ? 'RSS 正常收集，但暂未匹配到追更作品' : '暂未匹配到追更作品'}</strong><small>{summary.enabled ? '可用来源会继续自动检查；现在无需处理。' : '开启收集后，新种子会自动尝试匹配。'}</small></span></div>}
+            {!matchesLoading && matchGroups.length === 0 && <div className="rss-match-empty"><CheckCircle2 size={15} /><span><strong>{summary.enabled && summary.errorSources === 0 ? 'RSS 正常收集，但暂未匹配到追更作品' : '暂未匹配到追更作品'}</strong><small>{summary.enabled ? '可用来源会继续自动检查；现在无需处理。' : '开启收集后，新种子会自动尝试匹配。'}</small></span></div>}
             <div className="rss-match-list">
-              {matches.map((match) => {
+              {matchGroups.map((group) => {
+                const match = group.candidates.find((candidate) => candidate.bestCandidate) || group.candidates[0];
+                if (!match) return null;
                 const seed = items.find((item) => item.id === match.itemId);
                 const action = matchActions[match.id];
                 const pollTimedOut = Boolean(matchPollTimedOut[match.id]);
@@ -900,12 +926,28 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                 const downloadFailed = action?.type === 'rewash-download' && ['failed', 'cancelled'].includes(action.status);
                 const downloadConfirmed = !downloadFailed && (action?.type === 'rewash-download' || match.status === 'confirmed');
                 return (
-                  <article className="rss-match-row" key={match.id}>
+                  <article className="rss-match-row" key={group.id}>
                     <div className="rss-match-row__content">
-                      <strong>{match.itemTitle || seed?.title || match.subscriptionTitle || '已匹配到一条追更内容'}</strong>
-                      <small>{match.subscriptionTitle || match.episodeLabel || '已关联到追更作品'} · {match.torraLinked ? '已绑定 Torra 订阅' : 'Torra 订阅绑定暂未确认'}</small>
+                      <strong>{group.title || match.itemTitle || seed?.title || '已匹配到一条追更内容'} · {group.episodeLabel}</strong>
+                      <small>{candidateGroupScoreLabel(group)}</small>
                       <span className="rss-match-status">{shadowEvaluationLabel(match)}</span>
                       {(action || pollTimedOut) && <small className={action?.status === 'failed' || pollTimedOut ? 'rss-match-status rss-match-status--error' : 'rss-match-status'}>{pollTimedOut ? '人工 Torra 分析状态确认超时' : `人工 Torra 分析 · ${matchActionLabel(action, match.status)}`}</small>}
+                      <details className="rss-candidate-group__details">
+                        <summary>查看 {group.candidateCount} 个候选版本</summary>
+                        <div className="rss-candidate-group__versions">
+                          {group.candidates.map((candidate) => (
+                            <div className="rss-candidate-version" key={candidate.id}>
+                              <span>
+                                <strong>{candidate.candidateSummary?.versionSummary || '版本信息暂未确认'}</strong>
+                                <small>{shadowEvaluationLabel(candidate)}</small>
+                              </span>
+                              {Boolean(candidate.candidateSummary?.scoreBreakdown?.length) && (
+                                <small>{candidate.candidateSummary?.scoreBreakdown?.map((row) => `${row.label} ${row.score >= 0 ? '+' : ''}${scoreLabel(row.score)}`).join(' · ')}</small>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </details>
                     </div>
                     {pollTimedOut && action ? (
                       <button className="ops-action-button ops-action-button--primary" type="button" onClick={() => {
