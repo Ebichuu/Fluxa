@@ -11,6 +11,7 @@ from app.http_runtime import current_request_id
 from app.problem_group_runtime import derive_problem_groups
 from app.resource_identity_runtime import target_key as resource_target_key
 from app.secupload_issue_runtime import build_secupload_issue
+from app.statistic_metadata_runtime import statistic_metadata
 from app.task_chain_v2_runtime import adapt_task_chain
 from app.task_public_runtime import present_system_issue, safe_public_text
 
@@ -834,6 +835,36 @@ class HomeSummaryService:
             f"{counts['actionRequiredIdentityUnconfirmedResources']} 条身份未确认） · "
             f"辅助提醒 {counts['auxiliaryAlerts']}"
         )
+        emby_connected = bool(isinstance(services.get("emby"), dict) and services["emby"].get("connected") is True)
+        task_count_confirmation = "partial" if counts["evidenceInsufficient"] > 0 else "confirmed"
+        playable_confirmation = (
+            task_count_confirmation
+            if emby_connected
+            else "partial" if counts["playableToday"] > 0
+            else "unknown"
+        )
+        statistics_meta = {
+            "archivedToday": statistic_metadata(
+                scope="home_today", unit="file", observed_at=now,
+                confirmation=(
+                    "unknown" if counts["archivedToday"] is None
+                    else "confirmed" if isinstance(archive_summary, dict)
+                    else "partial"
+                ),
+            ),
+            "playableToday": statistic_metadata(
+                scope="home_today", unit="media_target", observed_at=now,
+                confirmation=playable_confirmation,
+            ),
+            "activeDownloadTasks": statistic_metadata(
+                scope="current_qb_snapshot", unit="qb_task", observed_at=now,
+                confirmation="confirmed" if counts["activeDownloadTasks"] is not None else "unknown",
+            ),
+            "actionRequiredGroups": statistic_metadata(
+                scope="current_unique_task_chains", unit="problem_group", observed_at=now,
+                confirmation=task_count_confirmation,
+            ),
+        }
         return {
             "ok": True,
             "generatedAt": now,
@@ -841,6 +872,7 @@ class HomeSummaryService:
             "headline": headline,
             "detail": detail,
             "counts": counts,
+            "statisticsMeta": statistics_meta,
             "archiveSummary": archive_summary,
             "problemGroupSummary": problem_group_summary,
             "problemGroupTotal": len(media_problem_groups),

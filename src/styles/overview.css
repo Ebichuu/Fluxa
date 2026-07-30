@@ -242,8 +242,19 @@
 }
 
 .home-metric small {
+  display: grid;
+  gap: 2px;
   color: var(--ops-muted);
   font-size: 11px;
+}
+
+.home-metric small em {
+  overflow: hidden;
+  color: var(--ops-faint);
+  font-size: 10px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .home-metric strong {
@@ -632,6 +643,12 @@
   .home-summary__hero-actions { justify-content: flex-end; }
   .home-summary__headline h1 { font-size: 25px; }
   .home-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .home-metric small em {
+    min-height: 25px;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
   .home-focus__list { grid-template-columns: 1fr; }
   .home-focus__item:nth-child(odd) { border-right: 0; }
   .home-issue { grid-template-columns: 8px minmax(0, 1fr) auto; }

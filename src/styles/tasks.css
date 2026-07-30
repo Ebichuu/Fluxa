@@ -159,6 +159,12 @@
   font-size: 12px;
 }
 
+.ops-statistic-scope {
+  margin: -8px 2px 0;
+  color: var(--ops-faint);
+  font-size: 11px;
+}
+
 .ops-system-issues {
   display: grid;
   gap: 10px;

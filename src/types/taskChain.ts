@@ -1,3 +1,5 @@
+import type { StatisticMetadata } from './statistics';
+
 export type TaskChainState = 'active' | 'blocked' | 'completed' | 'waiting';
 export type TaskChainConfidence = 'strong' | 'fallback' | 'unlinked';
 export type TaskChainStepStatus = 'done' | 'active' | 'blocked' | 'waiting' | 'unknown';
@@ -319,6 +321,7 @@ export interface TaskChainResponse {
   items: TaskChainListItem[];
   problemGroups?: TaskProblemGroup[];
   problemGroupSummary?: TaskProblemGroupSummary;
+  statisticsMeta?: Partial<Record<'total' | 'inProgress' | 'actionRequired' | 'playable' | 'noAction', StatisticMetadata>>;
   archiveSummary?: ArchiveSummary;
   version?: string;
   page?: {

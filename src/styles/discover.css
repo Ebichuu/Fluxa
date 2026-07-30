@@ -1927,11 +1927,16 @@
 }
 
 .subscription-workbench-summary__composition,
+.subscription-workbench-summary__scope,
 .subscription-workbench-summary__updated {
   grid-column: 1 / -1;
 }
 
 .subscription-workbench-summary__composition {
+  white-space: normal;
+}
+
+.subscription-workbench-summary__scope {
   white-space: normal;
 }
 

@@ -8,6 +8,7 @@ from app.http_runtime import current_request_id
 from app import discover_runtime
 from app.contract_mapping import map_subscription_item
 from app.task_public_runtime import present_pipeline_fact, present_pipeline_outcome
+from app.statistic_metadata_runtime import statistic_metadata
 
 
 SHANGHAI_TZ = timezone(timedelta(hours=8), "Asia/Shanghai")
@@ -648,6 +649,29 @@ class SubscriptionWorkbenchService:
             "inLibrary": sum(item.get("library", {}).get("status") == "done" for item in mapped_items),
             **_reconciliation_composition(mapped_items),
         }
+        chain_available = 'chain_payload' in locals() and isinstance(chain_payload, dict) and not chain_error
+        unknown_outcomes = sum(
+            item.get("outcomeState") == "evidence_insufficient"
+            for item in mapped_items
+        )
+        outcome_confirmation = (
+            "unknown" if not chain_available
+            else "partial" if unknown_outcomes > 0
+            else "confirmed"
+        )
+        statistics_meta = {
+            "total": statistic_metadata(
+                scope="current_subscription_ledger", unit="subscription",
+                observed_at=checked_at, confirmation="confirmed",
+            ),
+            **{
+                key: statistic_metadata(
+                    scope="current_subscription_ledger", unit="subscription",
+                    observed_at=checked_at, confirmation=outcome_confirmation,
+                )
+                for key in ("following", "playable", "actionRequired", "inLibrary")
+            },
+        }
         filtered_items = mapped_items
         if media_type in {"movie", "tv"}:
             filtered_items = [item for item in filtered_items if item.get("mediaType") == media_type]
@@ -760,6 +784,7 @@ class SubscriptionWorkbenchService:
             "lastReadAt": checked_at,
             "capabilities": capabilities,
             "stats": stats,
+            "statisticsMeta": statistics_meta,
             "items": paged_items,
             "posterBackfillIds": poster_backfill_ids,
             "page": {

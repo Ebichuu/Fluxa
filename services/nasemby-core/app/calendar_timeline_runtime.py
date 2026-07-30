@@ -13,6 +13,7 @@ from flask import Flask, Response, jsonify, request
 from app import discover_runtime
 from app.contract_mapping import map_calendar_payload
 from app.http_runtime import current_request_id
+from app.statistic_metadata_runtime import statistic_metadata
 from app.task_exception_runtime import protection_rule
 from app.task_public_runtime import (
     present_pipeline_fact,
@@ -881,12 +882,38 @@ class CalendarTimelineService:
             entries = [entry for entry in entries if entry.get("linkState") != "unlinked"]
         today = current.astimezone(BEIJING_TZ).strftime("%Y-%m-%d")
         entries = [{**entry, "status": _entry_status(entry, today)} for entry in entries]
+        observed_at = current.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        source_confirmation = "partial" if int(calendar.get("errorCount") or 0) > 0 else "confirmed"
+        evidence_confirmation = (
+            "unknown" if not task_service
+            else "partial" if source_confirmation == "partial" or any(
+                entry.get("status") in {"unknown", "unlinked"} for entry in entries
+            )
+            else "confirmed"
+        )
+        statistics_meta = {
+            **{
+                key: statistic_metadata(
+                    scope="calendar_query", unit="episode_event",
+                    observed_at=observed_at, confirmation=source_confirmation,
+                )
+                for key in ("entries", "linkedEntries", "unlinkedEntries", "totalEntries")
+            },
+            **{
+                key: statistic_metadata(
+                    scope="calendar_query", unit="episode_event",
+                    observed_at=observed_at, confirmation=evidence_confirmation,
+                )
+                for key in ("upcoming", "acquiring", "library", "playable", "protected", "missing", "unknown")
+            },
+        }
         calendar = {
             **calendar,
             "timeZone": "Asia/Shanghai",
             "includeUnlinked": bool(include_unlinked),
             "entries": entries,
             "view": view or "legacy",
+            "statisticsMeta": statistics_meta,
             "stats": {
                 **(calendar.get("stats") or {}),
                 "entries": len(entries),

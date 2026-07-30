@@ -66,6 +66,7 @@ import type {
 } from '../../types/subscriptions';
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
 import { createIdempotencyKey } from '../../utils/idempotency';
+import { statisticDisplayValue, statisticScopeText } from '../../utils/statistics';
 import type { AppNavigate, TaskNavigationTarget } from '../layout/AppTopNav';
 import { HealthBadge } from '../status/HealthBadge';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
@@ -2756,11 +2757,14 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
         {subscriptionsOnly && workbench && (
           <section className="subscription-workbench-summary" aria-label="追更统计">
             <span><b>{workbenchStats.following}</b>追更中</span>
-            <span><b>{workbenchStats.playable}</b>已可播放</span>
+            <span><b>{statisticDisplayValue(workbenchStats.playable, workbench.statisticsMeta?.playable)}</b>已可播放</span>
             <span><b>{workbenchStats.actionRequired}</b>需要处理</span>
             <span><b>{workbenchStats.inLibrary}</b>已入库</span>
             <small className="subscription-workbench-summary__composition">
               全库构成（{workbenchStats.total}）：已关联 {workbenchStats.linked} · 仅 Torra {workbenchStats.onlyTorra} · 仅 Fluxa {workbenchStats.onlyFluxa} · 对账异常 {workbenchStats.attention} · 未分类 {workbenchStats.unclassified}
+            </small>
+            <small className="subscription-workbench-summary__scope">
+              已可播放统计：{statisticScopeText(workbench.statisticsMeta?.playable, '当前追更台账')}
             </small>
             <small className="subscription-workbench-summary__updated">{subscriptionReadAtLabel(workbench.lastReadAt)}</small>
           </section>

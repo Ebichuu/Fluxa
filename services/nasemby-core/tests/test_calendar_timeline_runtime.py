@@ -171,6 +171,28 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
         self.assertEqual(entry["targetKey"], "tv:tmdb:101:season:2:episode:3")
         self.assertEqual(payload["calendar"]["timeZone"], "Asia/Shanghai")
         self.assertEqual(payload["calendar"]["stats"]["acquired"], 1)
+        self.assertEqual(payload["calendar"]["statisticsMeta"]["playable"], {
+            "scope": "calendar_query",
+            "unit": "episode_event",
+            "observedAt": "2026-07-22T01:31:00Z",
+            "confirmation": "confirmed",
+        })
+
+    def test_calendar_without_task_service_marks_playable_statistic_unknown(self):
+        application = Flask(f"{__name__}-no-task-service")
+        register_calendar_timeline(
+            application,
+            calendar_loader=calendar_loader,
+            clock=lambda: datetime(2026, 7, 22, 1, 31, tzinfo=timezone.utc),
+        )
+
+        calendar = application.test_client().get(
+            "/api/v2/calendar?year=2026&month=7&type=tv"
+        ).get_json()["calendar"]
+
+        self.assertEqual(calendar["stats"]["playable"], 0)
+        self.assertEqual(calendar["statisticsMeta"]["playable"]["confirmation"], "unknown")
+        self.assertEqual(calendar["statisticsMeta"]["entries"]["confirmation"], "confirmed")
 
     def test_calendar_validates_query_and_supports_etag(self):
         invalid = self.client.get("/api/v2/calendar?month=13")

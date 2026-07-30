@@ -245,6 +245,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
 
         self.assertEqual(result["counts"]["archivedToday"], 24)
+        self.assertEqual(result["statisticsMeta"]["archivedToday"]["confirmation"], "partial")
         self.assertEqual(result["counts"]["completedTargetsToday"], 1)
         self.assertEqual(result["counts"]["ingestedToday"], 1)
         self.assertIn("归档文件 24 · 已可播放 1", result["detail"])
@@ -262,6 +263,12 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
 
         self.assertEqual(result["counts"]["archivedToday"], 35)
+        self.assertEqual(result["statisticsMeta"]["archivedToday"], {
+            "scope": "home_today",
+            "unit": "file",
+            "observedAt": "2026-07-22T02:00:00Z",
+            "confirmation": "confirmed",
+        })
         self.assertEqual(result["archiveSummary"]["linkedTasks"], 18)
         archived = next(value for value in result["focusItems"] if value["key"] == "archived_today")
         self.assertIn("关联 18 个任务", archived["detail"])
@@ -602,6 +609,10 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
 
         verified_zero = HomeSummaryService(app, clock=lambda: NOW).snapshot()
         self.assertEqual(verified_zero["counts"]["activeDownloadTasks"], 0)
+        self.assertEqual(
+            verified_zero["statisticsMeta"]["activeDownloadTasks"]["confirmation"],
+            "confirmed",
+        )
 
         qb.payload = {
             "configured": True,
@@ -612,6 +623,10 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         }
         unreadable = HomeSummaryService(app, clock=lambda: NOW).snapshot()
         self.assertIsNone(unreadable["counts"]["activeDownloadTasks"])
+        self.assertEqual(
+            unreadable["statisticsMeta"]["activeDownloadTasks"]["confirmation"],
+            "unknown",
+        )
 
     def test_focus_items_report_verified_zero_and_precise_hrefs(self):
         app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)
@@ -746,6 +761,8 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(focus["action_required"]["state"], "normal")
         self.assertIsNone(result["counts"]["activeDownloadTasks"])
         self.assertIsNone(result["counts"]["archivedToday"])
+        self.assertEqual(result["statisticsMeta"]["activeDownloadTasks"]["confirmation"], "unknown")
+        self.assertEqual(result["statisticsMeta"]["archivedToday"]["confirmation"], "unknown")
         self.assertEqual(result["healthState"], "evidence_insufficient")
         self.assertEqual(result["headline"], "核心服务状态尚待确认")
         self.assertIn("归档文件 未知", result["detail"])

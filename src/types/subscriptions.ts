@@ -1,6 +1,8 @@
 import type { RssResourceScope, RssResourceScopeCounts } from './rssSeedLibrary';
 import type { PipelineFact, PipelineOutcome, PipelineOutcomeState } from './taskChain';
 
+import type { StatisticMetadata } from './statistics';
+
 export interface SubscriptionCalendarEntry {
   date: string;
   key?: string;
@@ -102,6 +104,7 @@ export interface SubscriptionCalendar {
     actionRequired?: number;
     statusCounts?: Record<SubscriptionCalendarStatus, number>;
   };
+  statisticsMeta?: Partial<Record<'entries' | 'linkedEntries' | 'unlinkedEntries' | 'totalEntries' | 'upcoming' | 'acquiring' | 'library' | 'playable' | 'protected' | 'missing' | 'unknown', StatisticMetadata>>;
   timeZone?: 'Asia/Shanghai' | string;
   mediaType?: string;
   errors?: string[];
@@ -214,6 +217,7 @@ export interface SubscriptionWorkbenchResponse {
     attention: number;
     unclassified: number;
   };
+  statisticsMeta?: Partial<Record<'total' | 'following' | 'playable' | 'actionRequired' | 'inLibrary', StatisticMetadata>>;
   items: SubscriptionItem[];
   posterBackfillIds?: string[];
   page: {

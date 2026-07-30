@@ -18,6 +18,7 @@ from app.pipeline_outcome_runtime import PIPELINE_OUTCOMES, derive_outcome_count
 from app.problem_group_runtime import derive_problem_groups
 from app.resource_identity_runtime import artifact_key, chain_id, media_key, target_key
 from app.resource_task_repository import pipeline_source_ref, pipeline_unit_ref
+from app.statistic_metadata_runtime import statistic_metadata
 from app.task_exception_runtime import classify_stage, classify_task
 from app.task_public_runtime import (
     present_migration_preview,
@@ -678,6 +679,21 @@ def adapt_task_chain(chain: dict, *, now: datetime | None = None, health_filter:
     }
     outcome_counts = derive_outcome_counts(all_items)
     problem_group_projection = derive_problem_groups(all_items)
+    generated_at = str(chain.get("generatedAt") or observed_at)
+    outcome_confirmation = "partial" if outcome_counts.get("evidence_insufficient", 0) > 0 else "confirmed"
+    statistics_meta = {
+        "total": statistic_metadata(
+            scope="current_unique_task_chains", unit="task_chain",
+            observed_at=generated_at, confirmation="confirmed",
+        ),
+        **{
+            key: statistic_metadata(
+                scope="current_unique_task_chains", unit="task_chain",
+                observed_at=generated_at, confirmation=outcome_confirmation,
+            )
+            for key in ("inProgress", "actionRequired", "playable", "noAction")
+        },
+    }
     items = [
         item for item in all_items
         if not health_filter or item.get("healthState") == health_filter
@@ -697,7 +713,8 @@ def adapt_task_chain(chain: dict, *, now: datetime | None = None, health_filter:
         "userCounts": user_counts,
         "outcomeCounts": outcome_counts,
         "problemGroupSummary": problem_group_projection["summary"],
-        "generatedAt": str(chain.get("generatedAt") or observed_at),
+        "statisticsMeta": statistics_meta,
+        "generatedAt": generated_at,
         "contractVersion": 2,
     }
 
@@ -798,6 +815,7 @@ def _version(payload: dict) -> str:
         "userCounts": payload.get("userCounts") or {},
         "outcomeCounts": payload.get("outcomeCounts") or {},
         "problemGroupSummary": payload.get("problemGroupSummary") or {},
+        "statisticsMeta": payload.get("statisticsMeta") or {},
         "originCounts": payload.get("originCounts") or {},
         "stageCounts": payload.get("stageCounts") or {},
         "services": payload.get("services") or {},
@@ -905,7 +923,7 @@ class TaskChainV2Service:
             for key in (
                 "contractVersion", "generatedAt", "version", "counts", "healthCounts",
                 "identityCounts", "executionCounts", "originCounts", "stageCounts",
-                "userCounts", "outcomeCounts", "problemGroupSummary", "services", "ledger", "systemIssues",
+                "userCounts", "outcomeCounts", "problemGroupSummary", "statisticsMeta", "services", "ledger", "systemIssues",
             )
             if key in payload
         }

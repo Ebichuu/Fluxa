@@ -25,9 +25,11 @@ import type {
   SubscriptionCalendarDaySummary,
   SubscriptionCalendarEntry,
   SubscriptionCalendarStatus,
-  SubscriptionHealthState
+  SubscriptionHealthState,
+  SubscriptionCalendar
 } from '../../types/subscriptions';
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
+import { statisticDisplayValue, statisticScopeText } from '../../utils/statistics';
 import type { AppNavigate } from '../layout/AppTopNav';
 import { HealthBadge } from '../status/HealthBadge';
 
@@ -202,6 +204,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
   const [detailMode, setDetailMode] = useState<'idle' | 'loading' | 'live' | 'error'>('idle');
   const [calendarErrors, setCalendarErrors] = useState<string[]>([]);
   const [entryTotals, setEntryTotals] = useState({ linked: 0, unlinked: 0, total: 0 });
+  const [statisticsMeta, setStatisticsMeta] = useState<SubscriptionCalendar['statisticsMeta']>();
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const detailRequestRef = useRef<AbortController | null>(null);
   const detailPanelRef = useRef<HTMLElement | null>(null);
@@ -245,6 +248,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         setDays(payload.calendar.days ?? []);
         setSearchIndex(payload.calendar.searchIndex ?? []);
         setCalendarErrors(payload.calendar.errors ?? []);
+        setStatisticsMeta(payload.calendar.statisticsMeta);
         setEntryTotals({
           linked: payload.calendar.stats.linkedEntries ?? payload.calendar.stats.entries,
           unlinked: payload.calendar.stats.unlinkedEntries ?? payload.calendar.stats.unlinked ?? 0,
@@ -258,6 +262,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
           setDays([]);
           setSearchIndex([]);
           setEntryTotals({ linked: 0, unlinked: 0, total: 0 });
+          setStatisticsMeta(undefined);
           setMode('error');
         }
       });
@@ -548,11 +553,12 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         <div className="ops-calendar-stats" aria-label={calendarView === 'week' ? '本周追更统计' : '本月追更统计'}>
           <div><Radio size={15} /><span>待播出</span><strong>{isLoading ? '—' : counts.upcoming}</strong></div>
           <div><Clock3 size={15} /><span>正在获取</span><strong>{isLoading ? '—' : counts.acquiring}</strong></div>
-          <div><Check size={15} /><span>已可播放</span><strong>{isLoading ? '—' : counts.playable}</strong></div>
+          <div><Check size={15} /><span>已可播放</span><strong>{isLoading ? '—' : statisticDisplayValue(counts.playable, statisticsMeta?.playable)}</strong></div>
           <div><Library size={15} /><span>整理入库</span><strong>{isLoading ? '—' : counts.library}</strong></div>
           <div className={counts.missing ? 'is-alert' : undefined}><ListChecks size={15} /><span>逾期未获取</span><strong>{isLoading ? '—' : counts.missing}</strong></div>
           <div className="is-protected"><ShieldCheck size={15} /><span>正常保护</span><strong>{isLoading ? '—' : counts.protected}</strong></div>
           <div className="is-faint"><CircleHelp size={15} /><span>状态未关联</span><strong>{isLoading ? '—' : entryTotals.unlinked}</strong></div>
+          <small className="ops-calendar-stat-scope">已可播放统计：{statisticScopeText(statisticsMeta?.playable, '当前日历查询')}</small>
         </div>
       </section>
 

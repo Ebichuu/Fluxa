@@ -8,6 +8,7 @@ import { usePolling } from '../../hooks/usePolling';
 import { currentHistoryEntryIs, writeUrlQuery } from '../../app/urlState';
 import { formatSpeed } from '../../utils/formatters';
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
+import { statisticDisplayValue, statisticScopeText } from '../../utils/statistics';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
 import type { AppNavigate, TaskNavigationTarget } from '../layout/AppTopNav';
 import { RelativeTime } from '../status/RelativeTime';
@@ -834,9 +835,13 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
         <section className="ops-task-summary" aria-label="任务状态摘要">
           <div><Download size={16} /><span>处理中</span><strong>{counts['处理中']}<em>个</em></strong></div>
           <div><AlertTriangle size={16} /><span>需要处理</span><strong>{counts['需要处理']}<em>项</em></strong></div>
-          <div><Server size={16} /><span>已可播放</span><strong>{counts['已可播放']}<em>个</em></strong></div>
+          <div><Server size={16} /><span>已可播放</span><strong>{statisticDisplayValue(counts['已可播放'], chain?.statisticsMeta?.playable)}{chain?.statisticsMeta?.playable?.confirmation !== 'unknown' && <em>个</em>}</strong></div>
           <div><ShieldCheck size={16} /><span>无需处理</span><strong>{counts['无需处理']}<em>个</em></strong></div>
         </section>
+      )}
+
+      {!qbActiveView && chain && (
+        <p className="ops-statistic-scope">已可播放统计：{statisticScopeText(chain.statisticsMeta?.playable, '当前唯一任务链')}</p>
       )}
 
       {!qbActiveView && (loading || snapshotDelta) && (

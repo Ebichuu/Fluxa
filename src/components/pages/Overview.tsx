@@ -16,6 +16,7 @@ import { usePolling } from '../../hooks/usePolling';
 import { getHomeSummary } from '../../services/api';
 import type { HealthState, HomeSummaryFocusItem, HomeSummaryResponse } from '../../types/homeSummary';
 import { readLocalStorage, writeLocalStorage } from '../../utils/storage';
+import { statisticScopeText } from '../../utils/statistics';
 import type { AppNavigate, AppPathNavigate } from '../layout/AppTopNav';
 import { HealthBadge } from '../status/HealthBadge';
 import { RelativeTime } from '../status/RelativeTime';
@@ -219,15 +220,17 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
 
       <section className="home-metrics" aria-label="今日媒体处理统计">
         {metricDefinitions.map(({ key, label, unit, icon: Icon, target }) => {
-          const value = summaryUnavailable
+          const meta = summary.statisticsMeta?.[key];
+          const rawValue = summaryUnavailable
             ? null
             : key === 'actionRequiredGroups'
               ? summary.counts.actionRequiredGroups ?? summary.counts.actionRequiredResources ?? summary.counts.mediaActionRequired
               : summary.counts[key];
+          const value = meta?.confirmation === 'unknown' ? null : rawValue;
           return (
             <button className={`home-metric home-metric--${key}`} key={key} type="button" onClick={() => openMetric(target)}>
               <span aria-hidden="true"><Icon size={17} /></span>
-              <small>{label}</small>
+              <small><span>{label}</span><em>{statisticScopeText(meta, key === 'activeDownloadTasks' ? '当前 qB 快照' : '今日范围')}</em></small>
               <strong><b>{value ?? '—'}</b><em>{value == null ? '未知' : unit}</em></strong>
             </button>
           );

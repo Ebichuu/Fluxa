@@ -323,6 +323,8 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         self.assertEqual(snapshot["stats"]["completed"], 0)
         self.assertEqual(snapshot["stats"]["actionRequired"], 1)
         self.assertEqual(snapshot["stats"]["unclassified"], 1)
+        self.assertEqual(snapshot["statisticsMeta"]["playable"]["confirmation"], "confirmed")
+        self.assertEqual(snapshot["statisticsMeta"]["playable"]["scope"], "current_subscription_ledger")
         self.assertEqual(sum(
             snapshot["stats"][key]
             for key in ("linked", "onlyTorra", "onlyFluxa", "attention", "unclassified")
@@ -795,6 +797,7 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         self.assertEqual(snapshot["stats"]["playable"], 0)
         self.assertEqual(snapshot["stats"]["actionRequired"], 0)
         self.assertEqual(snapshot["stats"]["inLibrary"], 0)
+        self.assertEqual(snapshot["statisticsMeta"]["playable"]["confirmation"], "unknown")
 
     def test_visual_backfill_updates_only_local_rows_with_exact_tmdb_identity(self):
         app = Flask(__name__)

@@ -1,3 +1,5 @@
+import type { StatisticMetadata } from './statistics';
+
 export type HealthState = 'normal' | 'protected' | 'waiting' | 'evidence_insufficient' | 'action_required';
 
 export interface HomeSummaryCounts {
@@ -72,6 +74,7 @@ export interface HomeSummaryResponse {
   headline: string;
   detail: string;
   counts: HomeSummaryCounts;
+  statisticsMeta?: Partial<Record<'archivedToday' | 'playableToday' | 'activeDownloadTasks' | 'actionRequiredGroups', StatisticMetadata>>;
   archiveSummary?: {
     date: string;
     timezone: 'Asia/Shanghai';

@@ -242,6 +242,14 @@
   color: var(--ops-muted);
 }
 
+.ops-calendar-stat-scope {
+  grid-column: 1 / -1;
+  padding: 6px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--ops-faint);
+  font-size: 10px;
+}
+
 .ops-calendar-board {
   padding: 0;
   overflow: hidden;

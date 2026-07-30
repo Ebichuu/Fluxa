@@ -176,6 +176,13 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(item["userState"], "no_action")
         self.assertEqual(item["completedAt"], "")
         self.assertEqual(item["confirmedStageCount"], 0)
+        self.assertEqual(payload["statisticsMeta"]["playable"], {
+            "scope": "current_unique_task_chains",
+            "unit": "task_chain",
+            "observedAt": "2026-07-22T03:00:00Z",
+            "confirmation": "partial",
+        })
+        self.assertEqual(payload["outcomeCounts"]["playable"], 0)
 
     def test_list_exposes_shared_problem_groups_before_resource_pagination(self):
         app = Flask(f"{__name__}-problem-groups")
