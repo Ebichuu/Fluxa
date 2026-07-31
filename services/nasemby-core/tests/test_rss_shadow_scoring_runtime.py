@@ -75,8 +75,8 @@ class RssShadowScoringRuntimeTests(unittest.TestCase):
             [rule("one"), rule("two")],
             {"media_type": "tv", "save_path": "/downloads/00-anime"},
         )
-        self.assertIsNone(selected)
-        self.assertEqual(reason, "rule_ambiguous")
+        self.assertEqual(reason, "")
+        self.assertEqual(selected["id"], "one")
 
     def test_scores_supported_rule_and_keeps_version_decision_separate(self):
         result = score_rss_candidate(rule(), {

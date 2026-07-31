@@ -1299,7 +1299,8 @@ class PrivateRssRepository:
         with closing(self.runtime.connect()) as connection:
             rows = connection.execute(
                 "SELECT * FROM rss_subscription_matches "
-                "WHERE match_status='candidate' AND evaluation_status='pending' "
+                "WHERE match_status='candidate' AND (evaluation_status='pending' "
+                "OR (evaluation_status='blocked' AND evaluation_reason='rule_ambiguous')) "
                 "ORDER BY created_at, id LIMIT ?",
                 (limit,),
             ).fetchall()

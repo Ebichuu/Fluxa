@@ -1214,7 +1214,7 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual({match["decision"] for match in matches}, {"best_waiting_baseline"})
         self.assertEqual({match["candidateScore"] for match in matches}, {30.0})
 
-    def test_shadow_scoring_does_not_guess_ambiguous_rules_or_missing_fields(self):
+    def test_shadow_scoring_uses_torra_rule_order_and_does_not_guess_missing_fields(self):
         self._watch(
             "tv:202:s1",
             episode=1,
@@ -1231,9 +1231,24 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         )
         self.runtime.wake_matches(ambiguous["_match_ids"])
         ambiguous_match = self.rss.list_matches()["items"][0]
-        self.assertEqual(ambiguous_match["evaluationStatus"], "blocked")
-        self.assertEqual(ambiguous_match["evaluationReason"], "rule_ambiguous")
-        self.assertIsNone(ambiguous_match["candidateScore"])
+        self.assertEqual(ambiguous_match["evaluationStatus"], "scored")
+        self.assertEqual(ambiguous_match["ruleId"], "anime-rule")
+        self.assertEqual(ambiguous_match["candidateScore"], 30.0)
+
+        self.rss.save_match_evaluation([ambiguous_match["id"]], {
+            "status": "blocked",
+            "decision": "temporarily_unconfirmed",
+            "reason": "rule_ambiguous",
+        })
+        retried = self.runtime.wake_pending_candidates(limit=2)
+        retried_match = self.rss.get_match(ambiguous_match["id"])
+        self.assertEqual(retried, [{
+            "matchId": ambiguous_match["id"],
+            "status": "evaluated",
+            "reason": "shadow_only_no_download",
+        }])
+        self.assertEqual(retried_match["evaluationStatus"], "scored")
+        self.assertEqual(retried_match["candidateScore"], 30.0)
 
         self.now[0] += timedelta(minutes=1)
         self._configure_shadow_torra(torra)

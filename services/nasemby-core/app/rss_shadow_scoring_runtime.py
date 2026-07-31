@@ -182,8 +182,11 @@ def select_subscription_rule(rules, subscription):
     ]
     if not matches:
         return None, "rule_not_found"
-    if len(matches) > 1:
-        return None, "rule_ambiguous"
+    # Torra resolves category-scoped rules in the order returned by
+    # meta_weight_config.list_all().  Overlapping scopes are valid there: a
+    # specific rule can precede a broader fallback rule.  Preserve that order
+    # instead of blocking a candidate merely because a later fallback also
+    # matches.
     return matches[0], ""
 
 
