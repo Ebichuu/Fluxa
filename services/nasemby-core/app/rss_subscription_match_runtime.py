@@ -386,6 +386,7 @@ class RssSubscriptionMatchRuntime:
             "internalKey": internal_key,
             "publicKey": resolved["publicKey"],
             "canonicalKey": resolved["canonicalKey"],
+            "remoteId": resolved["remoteId"],
             "torraRows": rows,
         }, ""
 
@@ -540,17 +541,13 @@ class RssSubscriptionMatchRuntime:
 
     def _supplement_item_from_subscriptions(self, connection, item, subscriptions):
         identity_status = _text(item.get("identity_status") or item.get("identityStatus")) or "unidentified"
-        if (
-            identity_status != "unidentified"
-            or _tmdb_id(item)
-            or _text(item.get("imdb_id") or item.get("imdbId"))
-        ):
+        if identity_status == "conflict" or _tmdb_id(item):
             return item
         candidates = self._identity_backfill_candidates(item, subscriptions)
         candidate_tmdb_ids = {candidate["tmdbId"] for candidate in candidates if candidate["tmdbId"]}
         if len(candidate_tmdb_ids) == 1:
             tmdb_id = next(iter(candidate_tmdb_ids))
-            changed = self.rss_repository.supplement_item_identity(
+            changed = self.rss_repository.supplement_item_tmdb_identity(
                 connection,
                 item.get("id"),
                 tmdb_id=tmdb_id,
@@ -674,6 +671,10 @@ class RssSubscriptionMatchRuntime:
             return ""
         return item_type
 
+    @staticmethod
+    def _is_subscription_target(unit):
+        return bool(unit.get("subscription_target_only"))
+
     def _candidate(self, item, subscription, unit):
         item_type = self._compatible_type(item, subscription, unit)
         if not item_type:
@@ -681,7 +682,15 @@ class RssSubscriptionMatchRuntime:
         identity = _identity_match(item, subscription)
         years = _year_match(item, subscription)
         episode = _episode_match(item, unit, item_type)
-        if identity is None or years is None or episode is None or not _is_after_first_download(item, unit):
+        if (
+            identity is None
+            or years is None
+            or episode is None
+            or (
+                not self._is_subscription_target(unit)
+                and not _is_after_first_download(item, unit)
+            )
+        ):
             return None
         basis, matched_alias, subscription_tmdb = identity
         item_year, subscription_year = years
@@ -698,15 +707,93 @@ class RssSubscriptionMatchRuntime:
         if item_year or subscription_year:
             reason["year"] = {"item": item_year, "subscription": subscription_year}
         reason.update(episode_reason)
+        reason["candidatePhase"] = (
+            "initial_acquisition"
+            if self._is_subscription_target(unit)
+            else "post_success_upgrade"
+        )
         return {
             "unit": unit,
             "identity_key": f"{item_type}:{identity_key}:{item_year or subscription_year}",
             "reason": reason,
         }
 
+    def _subscription_target_units(self, item, subscriptions, active_units):
+        item_type = _media_type(item.get("media_type") or item.get("mediaType"))
+        if item_type not in {"movie", "tv"}:
+            return []
+        if item_type == "tv":
+            season = _int(item.get("season_number", item.get("seasonNumber")))
+            episode_range = _positive_range(
+                item.get("episode_start", item.get("episodeStart")),
+                item.get("episode_end", item.get("episodeEnd")),
+            )
+            if season <= 0 or not episode_range or episode_range[1] - episode_range[0] > 199:
+                return []
+            episodes = range(episode_range[0], episode_range[1] + 1)
+        else:
+            season = None
+            episodes = (None,)
+
+        covered_targets = {
+            (
+                _text(unit.get("torra_subscription_id")),
+                unit.get("season_number"),
+                unit.get("episode_number"),
+            )
+            for unit in active_units
+            if _text(unit.get("torra_subscription_id"))
+        }
+        targets = []
+        for subscription_key, subscription in subscriptions.items():
+            if (
+                not subscription_key.startswith("torra:")
+                or _text(subscription.get("source")) != "torra"
+            ):
+                continue
+            remote_id = _text(subscription.get("id")) or subscription_key.removeprefix("torra:")
+            if not remote_id:
+                continue
+            subscription_type = _media_type(
+                subscription.get("media_type") or subscription.get("mediaType")
+            )
+            if subscription_type and subscription_type != item_type:
+                continue
+            subscription_season = self._subscription_season(subscription)
+            if (
+                item_type == "tv"
+                and subscription_season is not None
+                and subscription_season > 0
+                and subscription_season != season
+            ):
+                continue
+            for episode in episodes:
+                covered_key = (remote_id, season, episode)
+                if covered_key in covered_targets:
+                    continue
+                targets.append({
+                    "unit_key": make_unit_key(
+                        subscription_key,
+                        item_type,
+                        season,
+                        episode,
+                    ),
+                    "subscription_key": subscription_key,
+                    "season_number": season,
+                    "episode_number": episode,
+                    "torra_subscription_id": remote_id,
+                    "first_success_at": "",
+                    "subscription_target_only": True,
+                })
+        return targets
+
     def _candidates_for_item(self, item, subscriptions, active_units):
         candidates = []
-        for unit in active_units:
+        units = [
+            *active_units,
+            *self._subscription_target_units(item, subscriptions, active_units),
+        ]
+        for unit in units:
             subscription = subscriptions.get(_text(unit.get("subscription_key")))
             if subscription:
                 candidate = self._candidate(item, subscription, unit)
@@ -853,14 +940,83 @@ class RssSubscriptionMatchRuntime:
         self.evaluate_matches([match["id"]])
         return {"status": "created", "match": self.rss_repository.get_match(match["id"])}
 
-    def _evaluation_unit(self, internal_match, context, torra_rows):
+    def _subscription_target_from_match(self, match, item, context, torra_rows):
+        if not context["internalKey"].startswith("torra:"):
+            return None, None, "watch_unit_missing"
+        remote_id = _text(context.get("remoteId"))
+        torra_row = next(
+            (
+                row for row in torra_rows
+                if isinstance(row, dict) and _text(row.get("id")) == remote_id
+            ),
+            None,
+        )
+        if not remote_id or not torra_row:
+            return None, None, "torra_subscription_missing"
+
+        media_type = _media_type(item.get("media_type") or item.get("mediaType"))
+        reason = match.get("reason") if isinstance(match.get("reason"), dict) else {}
+        if media_type == "movie":
+            season = None
+            episode = None
+        elif media_type == "tv":
+            season_reason = reason.get("season") if isinstance(reason.get("season"), dict) else {}
+            episode_reason = reason.get("episode") if isinstance(reason.get("episode"), dict) else {}
+            season = _int(season_reason.get("unit"))
+            episode = _int(episode_reason.get("unit"))
+            episode_range = _positive_range(
+                item.get("episode_start", item.get("episodeStart")),
+                item.get("episode_end", item.get("episodeEnd")),
+            )
+            if (
+                season <= 0
+                or episode <= 0
+                or not episode_range
+                or not episode_range[0] <= episode <= episode_range[1]
+            ):
+                return None, None, "artifact_scope_unconfirmed"
+        else:
+            return None, None, "subscription_media_type_unconfirmed"
+
+        expected_key = make_unit_key(
+            context["internalKey"],
+            media_type,
+            season,
+            episode,
+        )
+        internal_unit_id = torra_internal_unit_key(
+            match.get("unitId"),
+            context["internalKey"],
+            context["publicKey"],
+        )
+        if internal_unit_id != expected_key:
+            return None, None, "candidate_scope_mismatch"
+        return {
+            "unit_key": expected_key,
+            "subscription_key": context["internalKey"],
+            "season_number": season,
+            "episode_number": episode,
+            "torra_subscription_id": remote_id,
+            "first_success_at": "",
+            "baseline_artifact_key": "",
+            "baseline_score": None,
+            "baseline_rule_hash": "",
+            "current_evidence": {},
+            "subscription_target_only": True,
+        }, torra_row, ""
+
+    def _evaluation_unit(self, internal_match, context, torra_rows, *, match=None, item=None):
         internal_unit_id = torra_internal_unit_key(
             internal_match.get("unit_key"),
             context["internalKey"],
             context["publicKey"],
         )
         unit = self.watch_repository.get_watch_unit(internal_unit_id)
-        if not unit or _text(unit.get("subscription_key")) != context["internalKey"]:
+        if not unit:
+            if match and item:
+                return self._subscription_target_from_match(match, item, context, torra_rows)
+            return None, None, "watch_unit_missing"
+        if _text(unit.get("subscription_key")) != context["internalKey"]:
             return None, None, "watch_unit_missing"
         torra_id = _text(unit.get("torra_subscription_id"))
         torra_row = next(
@@ -904,6 +1060,8 @@ class RssSubscriptionMatchRuntime:
             internal_match,
             context,
             torra_rows,
+            match=match,
+            item=item,
         )
         if unit_error:
             return None, unit_error
@@ -1107,7 +1265,7 @@ class RssSubscriptionMatchRuntime:
                     _text(unit.get("baseline_artifact_key")) != _text(resolved.get("artifactKey")),
                     unit.get("baseline_score") != score["score"],
                     _text(unit.get("baseline_rule_hash")) != rule_hash,
-                )):
+                )) and not self._is_subscription_target(unit):
                     self.watch_repository.save_baseline(
                         [unit["unit_key"]],
                         resolved.get("artifactKey"),
@@ -1178,7 +1336,11 @@ class RssSubscriptionMatchRuntime:
             if score["versionState"] == "rejected":
                 decision = "rule_rejected"
             elif baseline_score is None:
-                decision = "waiting_baseline"
+                decision = (
+                    "initial_candidate"
+                    if self._is_subscription_target(context["unit"])
+                    else "waiting_baseline"
+                )
             elif score["score"] > float(baseline_score):
                 decision = "upgrade_available"
             elif score["score"] == float(baseline_score):
@@ -1266,7 +1428,11 @@ class RssSubscriptionMatchRuntime:
         baseline = match.get("baselineScore")
         score = match.get("candidateScore")
         if baseline is None:
-            return "best_waiting_baseline"
+            return (
+                "best_available"
+                if match.get("decision") == "initial_candidate"
+                else "best_waiting_baseline"
+            )
         if score > baseline:
             return "current_best"
         if score == baseline:
@@ -1368,7 +1534,8 @@ class RssSubscriptionMatchRuntime:
             "best_waiting_baseline": 0,
             "lower_score": 1,
             "same_score": 2,
-            "current_best": 3,
+            "best_available": 3,
+            "current_best": 4,
         }
         for artifact_key, matches in artifacts.items():
             artifact_outcomes = outcomes.get(artifact_key) or []
@@ -1403,27 +1570,29 @@ class RssSubscriptionMatchRuntime:
                     if context_by_match.get(match["id"])
                 ), None)
                 if context:
-                    self.watch_repository.clear_candidate_champion(
-                        context["unit"]["unit_key"],
-                        max((
-                            _text(match.get("evaluatedAt") or match.get("createdAt"))
-                            for match in group_matches
-                        ), default=""),
-                    )
+                    if not self._is_subscription_target(context["unit"]):
+                        self.watch_repository.clear_candidate_champion(
+                            context["unit"]["unit_key"],
+                            max((
+                                _text(match.get("evaluatedAt") or match.get("createdAt"))
+                                for match in group_matches
+                            ), default=""),
+                        )
                 continue
             artifact_key = winner.get("artifactKey") or f"match:{winner['id']}"
             context = context_by_match.get(winner["id"])
             if not context:
                 continue
-            self.watch_repository.save_candidate_champion(
-                context["unit"]["unit_key"],
-                match_id=canonical_ids[artifact_key],
-                score=winner["candidateScore"],
-                last_candidate_at=winner.get("evaluatedAt") or winner.get("createdAt"),
-                artifact_key=artifact_key,
-                decision=self._winner_decision(winner),
-                summary=winner.get("candidateSummary"),
-            )
+            if not self._is_subscription_target(context["unit"]):
+                self.watch_repository.save_candidate_champion(
+                    context["unit"]["unit_key"],
+                    match_id=canonical_ids[artifact_key],
+                    score=winner["candidateScore"],
+                    last_candidate_at=winner.get("evaluatedAt") or winner.get("createdAt"),
+                    artifact_key=artifact_key,
+                    decision=self._winner_decision(winner),
+                    summary=winner.get("candidateSummary"),
+                )
 
     def evaluate_matches(self, match_ids):
         matches = self.rss_repository.list_matches_by_ids(match_ids)
@@ -1484,11 +1653,15 @@ class RssSubscriptionMatchRuntime:
         )
         if match.get("evaluationStatus") != "scored":
             add_blocker("RSS_EXACT_SCORE_UNCONFIRMED", "候选评分暂未确认")
-        if not match.get("bestCandidate") or match.get("decision") != "current_best":
+        if not match.get("bestCandidate") or match.get("decision") not in {
+            "current_best",
+            "best_available",
+        }:
             add_blocker("RSS_EXACT_NOT_CURRENT_BEST", "当前候选不是该季集唯一最佳版本")
-        if candidate_score is None or baseline_score is None:
+        initial_best = match.get("decision") == "best_available"
+        if candidate_score is None or (baseline_score is None and not initial_best):
             add_blocker("RSS_EXACT_BASELINE_UNCONFIRMED", "当前版本基线暂未确认")
-        elif candidate_score <= baseline_score:
+        elif baseline_score is not None and candidate_score <= baseline_score:
             add_blocker("RSS_EXACT_NOT_STRICT_UPGRADE", "候选分数没有严格高于当前版本")
         if not match.get("torraLinked"):
             add_blocker("RSS_EXACT_SUBSCRIPTION_UNCONFIRMED", "Torra 订阅绑定暂未确认")
@@ -1533,6 +1706,8 @@ class RssSubscriptionMatchRuntime:
                         internal_match,
                         context,
                         torra_rows,
+                        match=match,
+                        item=item,
                     )
                     if unit_error or not unit or not torra_row:
                         add_blocker("RSS_EXACT_SUBSCRIPTION_UNCONFIRMED", "Torra 订阅季集目标暂未确认")
@@ -1605,11 +1780,14 @@ class RssSubscriptionMatchRuntime:
                                 if isinstance(match.get("baselineSummary"), dict)
                                 else {}
                             )
-                            if resolved.get("status") != "ready":
+                            if resolved.get("status") != "ready" and not initial_best:
                                 add_blocker("RSS_EXACT_BASELINE_UNCONFIRMED", "当前版本无法从最新证据重新确认")
-                            elif _text(resolved.get("artifactKey")) != _text(baseline_summary.get("artifactKey")):
+                            elif resolved.get("status") == "ready" and (
+                                _text(resolved.get("artifactKey"))
+                                != _text(baseline_summary.get("artifactKey"))
+                            ):
                                 add_blocker("RSS_EXACT_BASELINE_CHANGED", "当前已入库版本已经变化，需要重新建立基线")
-                            else:
+                            elif resolved.get("status") == "ready":
                                 try:
                                     current_baseline = score_rss_candidate(rule, {
                                         "title": resolved.get("versionSummary"),
