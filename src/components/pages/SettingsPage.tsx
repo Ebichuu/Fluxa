@@ -23,7 +23,9 @@ const subscriptionSourceGroups = [
   { key: 'platform', label: '平台热更', sources: ['platform_tencent', 'platform_youku', 'platform_iqiyi', 'platform_mango'] }
 ] as const;
 
-const latestSubscriptionSources = subscriptionSourceGroups.flatMap((group) => [...group.sources]);
+const recommendedTvSources = subscriptionSourceGroups
+  .filter((group) => group.key !== 'movie')
+  .flatMap((group) => [...group.sources]);
 
 interface SubscriptionHubSettingsProps {
   onModeChange?: (label: string) => void;
@@ -113,13 +115,15 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
       ...config,
       douban: {
         ...douban,
-        sources: [...latestSubscriptionSources],
+        movie_enabled: false,
+        tv_enabled: true,
+        sources: [...recommendedTvSources],
         movie_years: [String(year), String(year - 1), String(year - 2)],
         tv_min_rating: 0,
         task_time: douban.task_time || '08:30'
       }
     });
-    setMessage('已套用最新规则，保存后生效');
+    setMessage('已套用推荐剧集规则并关闭电影候选，保存后生效');
   };
 
   return (
@@ -241,7 +245,7 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
       <div className="sub-config__foot">
         <button className="tool-link" disabled={saving} type="button" onClick={applyLatestPreset}>
           <RotateCcw aria-hidden="true" size={14} />
-          使用最新规则
+          使用推荐剧集规则
         </button>
         <button className="ops-action-button ops-action-button--primary" disabled={saving} type="button" onClick={save}>
           <Save aria-hidden="true" size={14} />
