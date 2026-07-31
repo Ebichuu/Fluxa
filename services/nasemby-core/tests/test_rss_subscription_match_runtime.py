@@ -277,6 +277,38 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(groups[0]["candidateCount"], 2)
         self.assertEqual(self.watch.list_candidate_watch_units(self.now[0]), [])
 
+    def test_rss_candidate_without_file_extension_is_ranked_but_not_downloadable(self):
+        torra, _qb = self._enable_analysis()
+        self._configure_shadow_torra(torra)
+        inserted = self._insert(
+            "Test Show S01E03 2160p WEB-DL",
+            start=3,
+            end=3,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=2_000_000_000,
+            download_url="https://tracker.example/download?passkey=private",
+        )
+
+        self.runtime.wake_matches(inserted["_match_ids"])
+        evaluated = self.rss.list_matches_by_ids(inserted["_match_ids"])
+
+        self.assertEqual(len(evaluated), 1)
+        match = evaluated[0]
+        self.assertEqual(match["evaluationStatus"], "scored")
+        self.assertEqual(match["evaluationReason"], "version_fields_unconfirmed")
+        self.assertEqual(match["candidateScore"], 28.0)
+        self.assertEqual(match["candidateSummary"]["versionState"], "unconfirmed")
+        self.assertEqual(match["decision"], "best_available")
+        self.assertTrue(match["bestCandidate"])
+
+        preview = self.runtime.preview_exact_download(match["id"])
+        blocker_codes = [row["code"] for row in preview["blockers"]]
+        self.assertIn("RSS_EXACT_VERSION_UNCONFIRMED", blocker_codes)
+        self.assertIn("TORRA_EXACT_RESOURCE_ENDPOINT_UNAVAILABLE", blocker_codes)
+        self.assertNotIn("tracker.example", str(preview))
+        self.assertNotIn("private", str(preview))
+        self.assertEqual(torra.submissions, [])
+
     def test_torra_subscription_range_uses_one_artifact_across_explicit_episodes(self):
         torra, _qb = self._enable_analysis()
         self._configure_shadow_torra(torra)
@@ -1250,6 +1282,21 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(retried_match["evaluationStatus"], "scored")
         self.assertEqual(retried_match["candidateScore"], 30.0)
 
+        self.rss.save_match_evaluation([ambiguous_match["id"]], {
+            "status": "blocked",
+            "decision": "temporarily_unconfirmed",
+            "reason": "version_fields_unconfirmed",
+        })
+        retried = self.runtime.wake_pending_candidates(limit=2)
+        retried_match = self.rss.get_match(ambiguous_match["id"])
+        self.assertEqual(retried, [{
+            "matchId": ambiguous_match["id"],
+            "status": "evaluated",
+            "reason": "shadow_only_no_download",
+        }])
+        self.assertEqual(retried_match["evaluationStatus"], "scored")
+        self.assertEqual(retried_match["candidateScore"], 30.0)
+
         self.now[0] += timedelta(minutes=1)
         self._configure_shadow_torra(torra)
         missing_size = self._insert(
@@ -1485,6 +1532,7 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
             [row["code"] for row in preview["blockers"]],
             [
                 "RSS_EXACT_SCORE_UNCONFIRMED",
+                "RSS_EXACT_VERSION_UNCONFIRMED",
                 "RSS_EXACT_NOT_CURRENT_BEST",
                 "RSS_EXACT_BASELINE_UNCONFIRMED",
                 "RSS_EXACT_SUBSCRIPTION_UNCONFIRMED",
