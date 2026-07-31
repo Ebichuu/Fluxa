@@ -224,6 +224,7 @@ export interface RssMatch {
 
 export interface RssScoreSummary {
   versionSummary?: string;
+  versionState?: 'accepted' | 'unconfirmed' | 'rejected' | string;
   versionName?: string;
   artifactKey?: string;
   sources?: Array<'torra' | 'qb' | 'symedia' | string>;
