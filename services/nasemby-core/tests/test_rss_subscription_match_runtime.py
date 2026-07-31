@@ -235,6 +235,8 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result["scanned"], 2)
         self.assertEqual(result["created"], 0)
+        self.assertEqual(result["uncheckedRemaining"], 1)
+        self.assertEqual(result["remaining"], 3)
         self.assertIn(unscanned_id, second_batch_ids)
 
     def test_torra_subscription_scores_initial_rss_candidates_without_watch_units(self):

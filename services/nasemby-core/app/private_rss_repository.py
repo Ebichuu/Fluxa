@@ -767,6 +767,14 @@ class PrivateRssRepository:
                 "SELECT 1 FROM rss_subscription_matches m WHERE m.item_id=i.id)"
             ).fetchone()["count"])
 
+    def count_unchecked_items_for_match(self):
+        with closing(self.runtime.connect()) as connection:
+            return int(connection.execute(
+                "SELECT COUNT(*) AS count FROM rss_items i "
+                "WHERE i.identity_status<>'conflict' AND i.match_checked_at='' AND NOT EXISTS ("
+                "SELECT 1 FROM rss_subscription_matches m WHERE m.item_id=i.id)"
+            ).fetchone()["count"])
+
     @staticmethod
     def supplement_item_identity(connection, item_id, tmdb_id="", imdb_id="", source="subscription_match", confidence="fallback"):
         tmdb_id = str(tmdb_id or "").strip()[:24]

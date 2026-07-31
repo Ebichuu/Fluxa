@@ -503,7 +503,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       const result = await runRssMatcher(200);
       setFeedback({
         tone: 'ok',
-        message: `匹配器完成：扫描 ${result.scanned} 条，新增 ${result.created} 条候选，仍有 ${result.remaining} 条待处理`
+        message: `匹配器完成：扫描 ${result.scanned} 条，新增 ${result.created} 条候选，尚有 ${result.uncheckedRemaining ?? result.remaining} 条从未检查 · ${result.remaining} 条未建立候选`
       });
       await Promise.all([loadSources(), loadItems({ offset: 0 }), loadMatches(0)]);
     } catch (reason) {
