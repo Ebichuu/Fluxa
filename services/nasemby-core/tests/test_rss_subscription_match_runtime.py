@@ -211,6 +211,32 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(repeated["inserted"], 0)
         self.assertEqual(self.rss.list_matches()["total"], 2)
 
+    def test_historical_match_batches_rotate_past_unmatched_items(self):
+        self.rss.upsert_items(self.source["id"], [
+            {
+                "fingerprint": f"unmatched-{number}",
+                "title": f"未匹配条目 {number}",
+                "published_at": f"2026-07-18T00:0{number}:00Z",
+            }
+            for number in range(1, 4)
+        ])
+        first_batch = self.rss.list_items_for_match(2)
+        first_ids = {item["id"] for item in first_batch}
+        unscanned_id = next(
+            item["id"]
+            for item in self.rss.list_items_for_match(3)
+            if item["id"] not in first_ids
+        )
+
+        result = self.runtime.match_existing_items(2)
+        second_batch_ids = {
+            item["id"] for item in self.rss.list_items_for_match(2)
+        }
+
+        self.assertEqual(result["scanned"], 2)
+        self.assertEqual(result["created"], 0)
+        self.assertIn(unscanned_id, second_batch_ids)
+
     def test_torra_subscription_scores_initial_rss_candidates_without_watch_units(self):
         torra, _qb = self._enable_analysis()
         self._configure_shadow_torra(torra)
