@@ -314,7 +314,7 @@ def _version_control_decision(rule, facts):
         if decision == "accepted":
             return decision, version_name
     if had_unknown:
-        raise ShadowScoringUnsupported("version_fields_unconfirmed")
+        return "unconfirmed", ""
     return "rejected", ""
 
 
