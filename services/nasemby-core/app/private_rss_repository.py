@@ -291,6 +291,7 @@ class PrivateRssRepository:
                 "tmdb_id TEXT NOT NULL DEFAULT '', imdb_id TEXT NOT NULL DEFAULT '', "
                 "identity_status TEXT NOT NULL DEFAULT 'unidentified', identity_source TEXT NOT NULL DEFAULT '', "
                 "identity_confidence TEXT NOT NULL DEFAULT '', identity_updated_at TEXT NOT NULL DEFAULT '', "
+                "match_checked_at TEXT NOT NULL DEFAULT '', "
                 "created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, expires_at TEXT NOT NULL, UNIQUE(source_id, fingerprint))"
             )
             connection.execute("CREATE INDEX IF NOT EXISTS idx_rss_items_time ON rss_items(published_at DESC, created_at DESC)")
@@ -338,9 +339,15 @@ class PrivateRssRepository:
                 connection.execute("ALTER TABLE rss_items ADD COLUMN identity_confidence TEXT NOT NULL DEFAULT ''")
             if "identity_updated_at" not in item_columns:
                 connection.execute("ALTER TABLE rss_items ADD COLUMN identity_updated_at TEXT NOT NULL DEFAULT ''")
+            if "match_checked_at" not in item_columns:
+                connection.execute("ALTER TABLE rss_items ADD COLUMN match_checked_at TEXT NOT NULL DEFAULT ''")
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_rss_items_identity "
                 "ON rss_items(identity_status, published_at DESC, created_at DESC)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rss_items_match_check "
+                "ON rss_items(match_checked_at, identity_status)"
             )
             _initialize_match_table(connection)
             _initialize_rule_snapshot_table(connection)
@@ -747,7 +754,7 @@ class PrivateRssRepository:
                 "FROM rss_items i JOIN rss_sources s ON s.id=i.source_id "
                 "WHERE i.identity_status<>'conflict' AND NOT EXISTS ("
                 "SELECT 1 FROM rss_subscription_matches m WHERE m.item_id=i.id) "
-                "ORDER BY i.identity_updated_at ASC, "
+                "ORDER BY i.match_checked_at ASC, "
                 "COALESCE(NULLIF(i.published_at, ''), i.created_at) DESC, i.id DESC LIMIT ?",
                 (limit,),
             ).fetchall()]
@@ -841,6 +848,14 @@ class PrivateRssRepository:
             "UPDATE rss_items SET identity_updated_at=? "
             "WHERE id=? AND identity_status='unidentified' AND tmdb_id='' AND imdb_id=''",
             (_iso(_now() + timedelta(seconds=1)), str(item_id)),
+        )
+        return cursor.rowcount > 0
+
+    @staticmethod
+    def touch_item_match_check(connection, item_id):
+        cursor = connection.execute(
+            "UPDATE rss_items SET match_checked_at=? WHERE id=?",
+            (_iso(), str(item_id)),
         )
         return cursor.rowcount > 0
 
