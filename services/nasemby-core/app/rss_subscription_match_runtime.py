@@ -657,6 +657,7 @@ class RssSubscriptionMatchRuntime:
             "created": len(created),
             "evaluated": len(evaluated),
             "remaining": self.rss_repository.count_items_for_match(),
+            "uncheckedRemaining": self.rss_repository.count_unchecked_items_for_match(),
             "limit": limit,
         }
 
