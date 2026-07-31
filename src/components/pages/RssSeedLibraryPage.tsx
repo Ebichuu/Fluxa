@@ -271,18 +271,21 @@ function scoreLabel(value: number | null | undefined) {
 function shadowEvaluationLabel(match: RssMatch) {
   if (match.evaluationStatus === 'scored' && typeof match.candidateScore === 'number') {
     const candidate = `候选 ${scoreLabel(match.candidateScore)} 分`;
-    if (['initial_candidate', 'best_available'].includes(match.decision || '')) return `${candidate} · 当前首轮最高分`;
-    if (['waiting_baseline', 'best_waiting_baseline'].includes(match.decision || '')) return `${candidate} · 等待当前版本基线`;
-    if (match.decision === 'rule_rejected') return `${candidate} · Torra 规则未接受`;
-    if (match.decision === 'superseded') return `${candidate} · 已被更高分候选取代`;
-    if (typeof match.baselineScore !== 'number') return candidate;
+    const versionNote = match.candidateSummary?.versionState === 'unconfirmed'
+      ? ' · 版本条件待下载后确认'
+      : '';
+    if (['initial_candidate', 'best_available'].includes(match.decision || '')) return `${candidate} · 当前首轮最高分${versionNote}`;
+    if (['waiting_baseline', 'best_waiting_baseline'].includes(match.decision || '')) return `${candidate} · 等待当前版本基线${versionNote}`;
+    if (match.decision === 'rule_rejected') return `${candidate} · Torra 规则未接受${versionNote}`;
+    if (match.decision === 'superseded') return `${candidate} · 已被更高分候选取代${versionNote}`;
+    if (typeof match.baselineScore !== 'number') return `${candidate}${versionNote}`;
     const baseline = `当前版本 ${scoreLabel(match.baselineScore)} 分`;
     if (['upgrade_available', 'current_best'].includes(match.decision || '')) {
-      return `${candidate} · ${baseline} · 提升 ${scoreLabel(match.candidateScore - match.baselineScore)} 分`;
+      return `${candidate} · ${baseline} · 提升 ${scoreLabel(match.candidateScore - match.baselineScore)} 分${versionNote}`;
     }
-    if (match.decision === 'same_score') return `${candidate} · 与当前版本同分`;
-    if (match.decision === 'lower_score') return `${candidate} · 低于${baseline}`;
-    return `${candidate} · ${baseline}`;
+    if (match.decision === 'same_score') return `${candidate} · 与当前版本同分${versionNote}`;
+    if (match.decision === 'lower_score') return `${candidate} · 低于${baseline}${versionNote}`;
+    return `${candidate} · ${baseline}${versionNote}`;
   }
   if (match.evaluationStatus === 'blocked') {
     const reason = shadowReasonLabels[match.evaluationReason || ''] || '评分条件暂未确认';
