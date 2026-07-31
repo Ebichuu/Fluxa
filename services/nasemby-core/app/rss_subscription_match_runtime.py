@@ -1228,6 +1228,7 @@ class RssSubscriptionMatchRuntime:
     def _score_summary(score, version_summary):
         return {
             "versionSummary": _text(version_summary)[:240],
+            "versionState": _text(score.get("versionState"))[:40],
             "versionName": _text(score.get("versionName"))[:120],
             "scoreBreakdown": [
                 {
@@ -1258,24 +1259,30 @@ class RssSubscriptionMatchRuntime:
             except ShadowScoringUnsupported as exc:
                 resolved = {"status": "unconfirmed", "reason": exc.code}
             else:
-                summary = {
-                    **self._score_summary(score, resolved.get("versionSummary")),
-                    "artifactKey": resolved.get("artifactKey"),
-                    "sources": list(resolved.get("sources") or []),
-                }
-                if any((
-                    _text(unit.get("baseline_artifact_key")) != _text(resolved.get("artifactKey")),
-                    unit.get("baseline_score") != score["score"],
-                    _text(unit.get("baseline_rule_hash")) != rule_hash,
-                )) and not self._is_subscription_target(unit):
-                    self.watch_repository.save_baseline(
-                        [unit["unit_key"]],
-                        resolved.get("artifactKey"),
-                        score["score"],
-                        rule_hash,
-                        summary,
-                    )
-                return score["score"], summary, ""
+                if score.get("versionState") == "unconfirmed":
+                    resolved = {
+                        "status": "unconfirmed",
+                        "reason": "baseline_version_unconfirmed",
+                    }
+                else:
+                    summary = {
+                        **self._score_summary(score, resolved.get("versionSummary")),
+                        "artifactKey": resolved.get("artifactKey"),
+                        "sources": list(resolved.get("sources") or []),
+                    }
+                    if any((
+                        _text(unit.get("baseline_artifact_key")) != _text(resolved.get("artifactKey")),
+                        unit.get("baseline_score") != score["score"],
+                        _text(unit.get("baseline_rule_hash")) != rule_hash,
+                    )) and not self._is_subscription_target(unit):
+                        self.watch_repository.save_baseline(
+                            [unit["unit_key"]],
+                            resolved.get("artifactKey"),
+                            score["score"],
+                            rule_hash,
+                            summary,
+                        )
+                    return score["score"], summary, ""
 
         persisted_score = unit.get("baseline_score")
         persisted_hash = _text(unit.get("baseline_rule_hash"))
@@ -1352,7 +1359,11 @@ class RssSubscriptionMatchRuntime:
             results.append({
                 "status": "scored",
                 "decision": decision,
-                "reason": baseline_reason or "shadow_only_no_download",
+                "reason": (
+                    "version_fields_unconfirmed"
+                    if score["versionState"] == "unconfirmed"
+                    else baseline_reason or "shadow_only_no_download"
+                ),
                 "candidateScore": score["score"],
                 "baselineScore": baseline_score,
                 "candidateSummary": candidate_summary,
@@ -1558,7 +1569,17 @@ class RssSubscriptionMatchRuntime:
             updates.append({
                 "matchIds": [match["id"] for match in matches],
                 "decision": decision,
-                "reason": "shadow_only_no_download" if wins_all else "higher_scored_candidate",
+                "reason": (
+                    "version_fields_unconfirmed"
+                    if wins_all and any(
+                        isinstance(match.get("candidateSummary"), dict)
+                        and match["candidateSummary"].get("versionState") == "unconfirmed"
+                        for match in matches
+                    )
+                    else "shadow_only_no_download"
+                    if wins_all
+                    else "higher_scored_candidate"
+                ),
                 "bestCandidate": wins_all,
             })
         self.rss_repository.save_candidate_decisions(updates)
@@ -1655,6 +1676,16 @@ class RssSubscriptionMatchRuntime:
         )
         if match.get("evaluationStatus") != "scored":
             add_blocker("RSS_EXACT_SCORE_UNCONFIRMED", "候选评分暂未确认")
+        candidate_summary = (
+            match.get("candidateSummary")
+            if isinstance(match.get("candidateSummary"), dict)
+            else {}
+        )
+        if candidate_summary.get("versionState") != "accepted":
+            add_blocker(
+                "RSS_EXACT_VERSION_UNCONFIRMED",
+                "候选版本条件尚未完全确认",
+            )
         if not match.get("bestCandidate") or match.get("decision") not in {
             "current_best",
             "best_available",
@@ -1742,6 +1773,11 @@ class RssSubscriptionMatchRuntime:
                             else:
                                 if candidate_score is None or float(current_candidate["score"]) != candidate_score:
                                     add_blocker("RSS_EXACT_SCORE_CHANGED", "候选评分已经变化，需要重新确认冠军")
+                                if current_candidate.get("versionState") != "accepted":
+                                    add_blocker(
+                                        "RSS_EXACT_VERSION_UNCONFIRMED",
+                                        "候选版本条件尚未完全确认",
+                                    )
 
                             qb_summary = {}
                             if qb is None:
@@ -1798,6 +1834,11 @@ class RssSubscriptionMatchRuntime:
                                 except ShadowScoringUnsupported:
                                     add_blocker("RSS_EXACT_BASELINE_UNCONFIRMED", "当前版本无法使用最新 Torra 规则评分")
                                 else:
+                                    if current_baseline.get("versionState") == "unconfirmed":
+                                        add_blocker(
+                                            "RSS_EXACT_BASELINE_UNCONFIRMED",
+                                            "当前版本条件尚未完全确认",
+                                        )
                                     if baseline_score is None or float(current_baseline["score"]) != baseline_score:
                                         add_blocker("RSS_EXACT_BASELINE_CHANGED", "当前版本分数已经变化，需要重新建立基线")
 
@@ -1812,11 +1853,6 @@ class RssSubscriptionMatchRuntime:
             "Torra 未提供订阅绑定的指定 RSS 资源入口",
         )
         observed_at = _as_utc(self.clock()) or datetime.now(timezone.utc)
-        candidate_summary = (
-            match.get("candidateSummary")
-            if isinstance(match.get("candidateSummary"), dict)
-            else {}
-        )
         return {
             "status": "blocked",
             "ready": False,

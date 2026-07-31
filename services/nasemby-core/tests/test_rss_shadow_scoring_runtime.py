@@ -104,11 +104,13 @@ class RssShadowScoringRuntimeTests(unittest.TestCase):
                 "size_bytes": 1,
             })
 
-        with self.assertRaisesRegex(ShadowScoringUnsupported, "version_fields_unconfirmed"):
-            score_rss_candidate(rule(), {
-                "title": "Show.S01E01.2160p.WEB-DL",
-                "size_bytes": 1,
-            })
+        unconfirmed = score_rss_candidate(rule(), {
+            "title": "Show.S01E01.2160p.WEB-DL",
+            "size_bytes": 1,
+        })
+        self.assertEqual(unconfirmed["score"], 28.0)
+        self.assertEqual(unconfirmed["versionState"], "unconfirmed")
+        self.assertEqual(unconfirmed["versionName"], "")
 
     def test_range_target_and_artifact_keys_are_stable(self):
         item = {
