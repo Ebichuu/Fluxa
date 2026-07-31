@@ -63,7 +63,7 @@ function emptySummary(): HomeSummaryResponse {
     detail: '正在汇总下载、入库和调度证据',
     counts: { ingestedToday: 0, archivedToday: null, completedTargetsToday: 0, playableToday: 0, downloading: 0, activeDownloadTasks: null, concurrentDownloadGroups: 0, pending: 0, waiting: 0, evidenceInsufficient: 0, identityPending: 0, actionRequired: 0, mediaActionRequired: 0, actionRequiredWorks: 0, actionRequiredResources: 0, actionRequiredGroups: 0, actionRequiredIdentityUnconfirmedResources: 0, auxiliaryAlerts: 0, inProgress: 0, suspectedBlocked: 0, protected: 0 },
     resourceCenter: {
-      counts: { newToday: null, needsReview: null, upgradeAvailable: null },
+      counts: { newToday: null, needsReview: null, followNeedsReview: null, unlinkedItems: null, upgradeAvailable: null },
       confirmation: 'unknown',
       observedAt: ''
     },
@@ -134,7 +134,7 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
   const unloadedIssueCount = Math.max(0, groupedIssueTotal - groupedIssueRows.length);
   const StatusIcon = status === 'normal' ? CheckCircle2 : status === 'action_required' ? TriangleAlert : Clock3;
   const resourceCenter = summary.resourceCenter ?? {
-    counts: { newToday: null, needsReview: null, upgradeAvailable: null },
+    counts: { newToday: null, needsReview: null, followNeedsReview: null, unlinkedItems: null, upgradeAvailable: null },
     confirmation: 'unknown' as const,
     observedAt: ''
   };
@@ -268,7 +268,9 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
           {resourceCenterDefinitions.map(({ key, label, unit, icon: Icon }) => {
             const value = summaryUnavailable || resourceCenter.confirmation === 'unknown'
               ? null
-              : resourceCenter.counts[key];
+              : key === 'needsReview'
+                ? resourceCenter.counts.followNeedsReview ?? resourceCenter.counts.needsReview
+                : resourceCenter.counts[key];
             const href = key === 'newToday'
               ? `/rss-library?publishedDate=${shanghaiDateKey()}&window=all`
               : key === 'needsReview'
@@ -286,7 +288,7 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
                 }}
               >
                 <Icon aria-hidden="true" size={16} />
-                <span><strong>{label}</strong><small>{key === 'newToday' ? 'Asia/Shanghai 今日' : key === 'needsReview' ? '当前 RSS 台账' : '当前候选组'}</small></span>
+                <span><strong>{label}</strong><small>{key === 'newToday' ? 'Asia/Shanghai 今日' : key === 'needsReview' ? '已关联追更的 RSS 台账' : '当前候选组'}</small></span>
                 <b>{value ?? '—'}<em>{value == null ? '未知' : unit}</em></b>
                 <ArrowRight aria-hidden="true" size={15} />
               </a>

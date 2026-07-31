@@ -72,6 +72,7 @@ export interface RssSeedItem {
   seasonScopeState?: 'confirmed' | 'unknown' | 'not_applicable' | string;
   hasDownload: boolean;
   lastSeenAt: string;
+  followState?: 'linked' | 'unlinked';
 }
 
 export type RssIdentityStatus = '' | RssSeedItem['identityStatus'];
@@ -241,7 +242,7 @@ export interface RssMatchGroup {
   unitId: string;
   title: string;
   episodeLabel: string;
-  state: 'initial_best' | 'waiting_baseline' | 'monitoring_rss' | 'upgrade_available' | 'protected' | 'blocked' | string;
+  state: 'initial_best' | 'waiting_baseline' | 'monitoring_rss' | 'upgrade_available' | 'protected' | 'needs_cleanup' | 'blocked' | string;
   candidateCount: number;
   bestMatchId?: string;
   bestArtifactKey?: string;
@@ -266,11 +267,13 @@ export interface RssMatchGroupListResponse {
   offset: number;
   counts?: {
     total: number;
+    scoreableTotal?: number;
     initialBest: number;
     waitingBaseline: number;
     monitoringRss: number;
     upgradeAvailable: number;
     protected: number;
+    needsCleanup?: number;
     blocked: number;
   };
 }

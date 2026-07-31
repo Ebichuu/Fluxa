@@ -10,6 +10,45 @@ from app.private_rss_repository import FetchRunRecord, PrivateRssRepository
 
 
 class PrivateRssRepositoryTests(unittest.TestCase):
+    def test_subscription_missing_groups_move_to_cleanup_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "Cleanup", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "scoreable",
+                "title": "Linked Show S01E03",
+            }, {
+                "fingerprint": "orphan",
+                "title": "Orphan Show S01E03",
+            }])
+            items = {item["title"]: item for item in repository.search_items(limit=10)["items"]}
+            scoreable = repository.create_match(
+                items["Linked Show S01E03"]["id"], "tv:123:s1", "tv:123:s1:s1:e3", {},
+            )
+            orphan = repository.create_match(
+                items["Orphan Show S01E03"]["id"], "tv:missing:s1", "tv:missing:s1:s1:e3", {},
+            )
+            repository.save_match_evaluation([orphan["id"]], {
+                "status": "blocked",
+                "reason": "subscription_missing",
+            })
+
+            all_groups = repository.list_candidate_groups(limit=10)
+            scoreable_groups = repository.list_candidate_groups(group_scope="scoreable", limit=10)
+            cleanup_groups = repository.list_candidate_groups(group_scope="cleanup", limit=10)
+
+            self.assertEqual(all_groups["total"], 2)
+            self.assertEqual(all_groups["counts"]["total"], 2)
+            self.assertEqual(all_groups["counts"]["scoreable_total"], 1)
+            self.assertEqual(all_groups["counts"]["needs_cleanup"], 1)
+            self.assertEqual(scoreable_groups["total"], 1)
+            self.assertEqual(scoreable_groups["groups"][0]["candidates"][0]["id"], scoreable["id"])
+            self.assertEqual(cleanup_groups["total"], 1)
+            self.assertEqual(cleanup_groups["groups"][0]["state"], "needs_cleanup")
+            self.assertEqual(cleanup_groups["groups"][0]["candidates"][0]["id"], orphan["id"])
+            with self.assertRaisesRegex(ValueError, "候选组范围"):
+                repository.list_candidate_groups(group_scope="unknown")
+
     def test_candidate_group_paginates_units_and_keeps_all_versions_together(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
@@ -146,8 +185,15 @@ class PrivateRssRepositoryTests(unittest.TestCase):
                 "tmdb_id": "103",
                 "identity_status": "identified",
             }])
+            all_items = repository.search_items(limit=10)["items"]
+            conflict = next(item for item in all_items if item["title"] == "Conflict Show S01E01")
+            repository.create_match(
+                conflict["id"], "tv:linked:s1", "tv:linked:s1:s1:e1", {},
+            )
 
             pending = repository.search_items(review_state="needs_review", limit=2, offset=0)
+            linked_pending = repository.search_items(review_state="follow_needs_review", limit=10)
+            unlinked = repository.search_items(review_state="unlinked", limit=10)
             conflicts = repository.search_items(
                 review_state="needs_review",
                 identity_status="conflict",
@@ -156,6 +202,11 @@ class PrivateRssRepositoryTests(unittest.TestCase):
 
             self.assertEqual(pending["total"], 3)
             self.assertEqual(len(pending["items"]), 2)
+            self.assertEqual(linked_pending["total"], 1)
+            self.assertEqual(linked_pending["items"][0]["title"], "Conflict Show S01E01")
+            self.assertEqual(linked_pending["items"][0]["followState"], "linked")
+            self.assertEqual(unlinked["total"], 4)
+            self.assertTrue(all(item["followState"] == "unlinked" for item in unlinked["items"]))
             self.assertEqual(conflicts["total"], 1)
             self.assertEqual(conflicts["items"][0]["identityStatus"], "conflict")
             with self.assertRaisesRegex(ValueError, "复核状态"):
@@ -197,6 +248,8 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             self.assertEqual(summary, {
                 "newToday": 2,
                 "needsReview": 2,
+                "followNeedsReview": 0,
+                "unlinkedItems": 3,
                 "upgradeAvailable": 0,
             })
             self.assertEqual(page["total"], summary["newToday"])

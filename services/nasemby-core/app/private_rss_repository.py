@@ -16,13 +16,15 @@ from app.torra_subscription_keys import torra_public_storage_key
 
 MATCH_STATUSES = {"candidate", "ignored", "triggered", "confirmed", "expired"}
 IDENTITY_STATUSES = {"identified", "conflict", "unidentified"}
-RSS_REVIEW_STATES = {"needs_review"}
+RSS_REVIEW_STATES = {"needs_review", "follow_needs_review", "unlinked"}
+RSS_GROUP_SCOPES = {"scoreable", "cleanup"}
 RSS_GROUP_STATES = {
     "initial_best",
     "waiting_baseline",
     "monitoring_rss",
     "upgrade_available",
     "protected",
+    "needs_cleanup",
     "blocked",
 }
 MATCH_EVALUATION_COLUMNS = {
@@ -77,6 +79,22 @@ def _search_text(value):
 def _match_query(value):
     tokens = _search_text(value).split()
     return " AND ".join(f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens[:12])
+
+
+def _follow_link_exists_sql(item_alias="i"):
+    return (
+        "EXISTS (SELECT 1 FROM rss_subscription_matches follow_match "
+        f"WHERE follow_match.item_id={item_alias}.id "
+        "AND follow_match.match_status IN ('candidate','triggered','confirmed'))"
+    )
+
+
+def _review_required_sql(item_alias="i"):
+    return (
+        f"({item_alias}.identity_status IN ('unidentified', 'conflict') "
+        f"OR {item_alias}.media_type='' "
+        f"OR ({item_alias}.media_type='tv' AND {item_alias}.season_number IS NULL))"
+    )
 
 
 def _title_seasons(value):
@@ -384,7 +402,7 @@ class PrivateRssRepository:
 
     @staticmethod
     def _public_item(row):
-        return {
+        item = {
             "id": row["id"],
             "sourceId": row["source_id"],
             "sourceName": row["source_name"],
@@ -408,6 +426,9 @@ class PrivateRssRepository:
             "hasDownload": bool(row["download_url"]),
             "lastSeenAt": row["last_seen_at"],
         }
+        if "follow_state" in row.keys() and row["follow_state"] in {"linked", "unlinked"}:
+            item["followState"] = row["follow_state"]
+        return item
 
     def list_sources(self):
         with closing(self.runtime.connect()) as connection:
@@ -650,17 +671,21 @@ class PrivateRssRepository:
         if identity_status:
             base_where.append("i.identity_status=?")
             base_params.append(identity_status)
-        if review_state == "needs_review":
-            base_where.append(
-                "(i.identity_status IN ('unidentified', 'conflict') "
-                "OR i.media_type='' OR (i.media_type='tv' AND i.season_number IS NULL))"
-            )
+        if review_state in {"needs_review", "follow_needs_review"}:
+            base_where.append(_review_required_sql())
+        if review_state == "follow_needs_review":
+            base_where.append(_follow_link_exists_sql())
+        elif review_state == "unlinked":
+            base_where.append(f"NOT {_follow_link_exists_sql()}")
         if published_from:
             base_where.append("COALESCE(NULLIF(i.published_at, ''), i.created_at) >= ?")
             base_where.append("COALESCE(NULLIF(i.published_at, ''), i.created_at) < ?")
             base_params.extend((published_from, published_before))
 
         targeted = bool(target_tmdb_id or (query_text and (target_media_type or target_season is not None or target_year)))
+        follow_state_select = (
+            f"CASE WHEN {_follow_link_exists_sql()} THEN 'linked' ELSE 'unlinked' END AS follow_state"
+        )
         with closing(self.runtime.connect()) as connection:
             if targeted:
                 rows_by_id = {}
@@ -669,7 +694,8 @@ class PrivateRssRepository:
                     where = [*base_where, *extra_where]
                     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
                     rows = connection.execute(
-                        "SELECT i.*, s.name AS source_name, s.domain AS source_domain FROM rss_items i "
+                        "SELECT i.*, s.name AS source_name, s.domain AS source_domain, "
+                        f"{follow_state_select} FROM rss_items i "
                         f"JOIN rss_sources s ON s.id=i.source_id {' '.join(extra_joins)} {where_sql} "
                         "ORDER BY COALESCE(NULLIF(i.published_at, ''), i.created_at) DESC, i.id DESC",
                         (*base_params, *extra_params),
@@ -729,7 +755,8 @@ class PrivateRssRepository:
                 f"SELECT COUNT(DISTINCT i.id) AS count FROM rss_items i {join_sql} {where_sql}", params
             ).fetchone()["count"])
             rows = connection.execute(
-                f"SELECT i.*, s.name AS source_name, s.domain AS source_domain FROM rss_items i "
+                "SELECT i.*, s.name AS source_name, s.domain AS source_domain, "
+                f"{follow_state_select} FROM rss_items i "
                 f"JOIN rss_sources s ON s.id=i.source_id {join_sql} {where_sql} "
                 "ORDER BY COALESCE(NULLIF(i.published_at, ''), i.created_at) DESC, i.id DESC LIMIT ? OFFSET ?",
                 (*params, limit, offset),
@@ -751,7 +778,9 @@ class PrivateRssRepository:
     def get_item(self, item_id, public=True):
         with closing(self.runtime.connect()) as connection:
             row = connection.execute(
-                "SELECT i.*, s.name AS source_name, s.domain AS source_domain FROM rss_items i "
+                "SELECT i.*, s.name AS source_name, s.domain AS source_domain, "
+                f"CASE WHEN {_follow_link_exists_sql()} THEN 'linked' ELSE 'unlinked' END AS follow_state "
+                "FROM rss_items i "
                 "JOIN rss_sources s ON s.id=i.source_id WHERE i.id=?", (item_id,)
             ).fetchone()
         if not row:
@@ -1227,6 +1256,12 @@ class PrivateRssRepository:
                 return "waiting_baseline"
             if decision in {"same_score", "lower_score", "rule_rejected"}:
                 return "protected"
+        if candidates and all(
+            row.get("evaluationStatus") == "blocked"
+            and row.get("evaluationReason") == "subscription_missing"
+            for row in candidates
+        ):
+            return "needs_cleanup"
         if candidates and all(row.get("evaluationStatus") == "blocked" for row in candidates):
             return "blocked"
         return "monitoring_rss"
@@ -1257,6 +1292,7 @@ class PrivateRssRepository:
             "WHEN MAX(CASE WHEN is_best_candidate=1 AND decision='best_available' THEN 1 ELSE 0 END)=1 THEN 'initial_best' "
             "WHEN MAX(CASE WHEN is_best_candidate=1 AND decision='best_waiting_baseline' THEN 1 ELSE 0 END)=1 THEN 'waiting_baseline' "
             "WHEN MAX(CASE WHEN is_best_candidate=1 AND decision IN ('same_score','lower_score','rule_rejected') THEN 1 ELSE 0 END)=1 THEN 'protected' "
+            "WHEN COUNT(*)>0 AND SUM(CASE WHEN evaluation_status='blocked' AND evaluation_reason='subscription_missing' THEN 1 ELSE 0 END)=COUNT(*) THEN 'needs_cleanup' "
             "WHEN COUNT(*)>0 AND SUM(CASE WHEN evaluation_status='blocked' THEN 1 ELSE 0 END)=COUNT(*) THEN 'blocked' "
             "ELSE 'monitoring_rss' END AS group_state "
             f"FROM rss_subscription_matches {where} GROUP BY subscription_key, unit_key"
@@ -1287,6 +1323,7 @@ class PrivateRssRepository:
         self,
         status="",
         group_state="",
+        group_scope="",
         subscription_id="",
         media_type="",
         season_number=None,
@@ -1301,6 +1338,9 @@ class PrivateRssRepository:
         group_state = str(group_state or "").strip().lower()
         if group_state and group_state not in RSS_GROUP_STATES:
             raise ValueError("RSS 候选组状态无效")
+        group_scope = str(group_scope or "").strip().lower()
+        if group_scope and group_scope not in RSS_GROUP_SCOPES:
+            raise ValueError("RSS 候选组范围无效")
         subscription_id = str(subscription_id or "").strip()
         if len(subscription_id) > 200:
             raise ValueError("RSS 订阅筛选无效")
@@ -1340,7 +1380,11 @@ class PrivateRssRepository:
                 if not match_row:
                     return {
                         "groups": [], "total": 0, "limit": limit, "offset": offset,
-                        "counts": {"total": 0, **{state: 0 for state in RSS_GROUP_STATES}},
+                        "counts": {
+                            "total": 0,
+                            "scoreable_total": 0,
+                            **{state: 0 for state in RSS_GROUP_STATES},
+                        },
                     }
                 where_parts.extend(("subscription_key=?", "unit_key=?"))
                 params.extend((match_row["subscription_key"], match_row["unit_key"]))
@@ -1364,8 +1408,17 @@ class PrivateRssRepository:
                         params.extend((prefix, prefix))
             where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
             grouped_query = self._candidate_groups_query(where)
-            state_where = "WHERE group_state=?" if group_state else ""
-            state_params = (*params, group_state) if group_state else tuple(params)
+            state_parts = []
+            state_params = list(params)
+            if group_state:
+                state_parts.append("group_state=?")
+                state_params.append(group_state)
+            if group_scope == "scoreable":
+                state_parts.append("group_state<>'needs_cleanup'")
+            elif group_scope == "cleanup":
+                state_parts.append("group_state='needs_cleanup'")
+            state_where = f"WHERE {' AND '.join(state_parts)}" if state_parts else ""
+            state_params = tuple(state_params)
             total = int(connection.execute(
                 grouped_query + f"SELECT COUNT(*) AS count FROM candidate_groups {state_where}",
                 state_params,
@@ -1388,7 +1441,11 @@ class PrivateRssRepository:
                     "total": total,
                     "limit": limit,
                     "offset": offset,
-                    "counts": {"total": sum(state_counts.values()), **state_counts},
+                    "counts": {
+                        "total": sum(state_counts.values()),
+                        "scoreable_total": sum(state_counts.values()) - state_counts["needs_cleanup"],
+                        **state_counts,
+                    },
                 }
             clauses = " OR ".join("(m.subscription_key=? AND m.unit_key=?)" for _ in refs)
             ref_params = [value for row in refs for value in (row["subscription_key"], row["unit_key"])]
@@ -1447,7 +1504,11 @@ class PrivateRssRepository:
             "total": total,
             "limit": limit,
             "offset": offset,
-            "counts": {"total": sum(state_counts.values()), **state_counts},
+            "counts": {
+                "total": sum(state_counts.values()),
+                "scoreable_total": sum(state_counts.values()) - state_counts["needs_cleanup"],
+                **state_counts,
+            },
         }
 
     def resource_center_summary(self, published_from, published_before):
@@ -1455,17 +1516,17 @@ class PrivateRssRepository:
         published_before = str(published_before or "").strip()
         if not published_from or not published_before or published_from >= published_before:
             raise ValueError("资源中心统计时间范围无效")
-        review_sql = (
-            "identity_status IN ('unidentified', 'conflict') OR media_type='' "
-            "OR (media_type='tv' AND season_number IS NULL)"
-        )
+        review_sql = _review_required_sql()
+        follow_sql = _follow_link_exists_sql()
         with closing(self.runtime.connect()) as connection:
             item_counts = connection.execute(
                 "SELECT "
-                "SUM(CASE WHEN COALESCE(NULLIF(published_at, ''), created_at) >= ? "
-                "AND COALESCE(NULLIF(published_at, ''), created_at) < ? THEN 1 ELSE 0 END) AS new_today, "
-                f"SUM(CASE WHEN {review_sql} THEN 1 ELSE 0 END) AS needs_review "
-                "FROM rss_items",
+                "SUM(CASE WHEN COALESCE(NULLIF(i.published_at, ''), i.created_at) >= ? "
+                "AND COALESCE(NULLIF(i.published_at, ''), i.created_at) < ? THEN 1 ELSE 0 END) AS new_today, "
+                f"SUM(CASE WHEN {review_sql} THEN 1 ELSE 0 END) AS needs_review, "
+                f"SUM(CASE WHEN {review_sql} AND {follow_sql} THEN 1 ELSE 0 END) AS follow_needs_review, "
+                f"SUM(CASE WHEN NOT {follow_sql} THEN 1 ELSE 0 END) AS unlinked_items "
+                "FROM rss_items i",
                 (published_from, published_before),
             ).fetchone()
             grouped_query = self._candidate_groups_query()
@@ -1476,6 +1537,8 @@ class PrivateRssRepository:
         return {
             "newToday": int(item_counts["new_today"] or 0),
             "needsReview": int(item_counts["needs_review"] or 0),
+            "followNeedsReview": int(item_counts["follow_needs_review"] or 0),
+            "unlinkedItems": int(item_counts["unlinked_items"] or 0),
             "upgradeAvailable": upgrade_count,
         }
 

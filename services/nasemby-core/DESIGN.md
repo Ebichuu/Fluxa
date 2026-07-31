@@ -244,6 +244,14 @@ Compose 通过 `MCC_DATA_ROOT` 把三个目录映射到同一个 fnOS 根目录�
 
 ## 13. 变更历史
 
+### 2026-08-01 — RSS 追更关联待识别与孤立候选分流
+
+**变更内容**：`GET /api/v2/rss-items` 兼容增加 `follow_needs_review/unlinked` 只读筛选和可选 `followState`；首页资源摘要增加可选 `followNeedsReview/unlinkedItems`。候选组新增 `needs_cleanup` 派生状态、`scoreable/cleanup` 范围和可选计数，只有整组均因 `subscription_missing` 阻断时才进入待整理。
+
+**变更理由**：全库 RSS 身份缺口不等于用户追更待办；已经失去订阅归属的孤立候选也不应继续占用正常评分主列表。新口径以已持久化匹配关系为边界，不使用标题模糊匹配。
+
+**影响范围**：私人 RSS 仓储、v2 只读查询、首页资源摘要、React 资源中心、公开类型、机器契约和临时 SQLite 回归测试。旧 `needs_review`、候选 `counts.total`、默认分页、状态码和外部写权限保持不变；不调用 Torra、qB、115、Symedia 或 Emby。
+
 ### 2026-07-30 — Torra 搜索策略与批次只读识别
 
 **变更内容**：`/api/torra/summary` 兼容增加可选 `searchAutomation`，读取 Torra 正式 jobs、job detail 和 schedules 端点，展示明确 `auto/rss` 批次、实际订阅数、上游明确的站点请求数与调度状态；控制室增加最近批次、订阅模式边界和 RSS 优先只读预览。

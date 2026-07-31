@@ -248,11 +248,13 @@ def _present_rss_match_group_list(payload):
     counts = value.get("counts") if isinstance(value.get("counts"), dict) else {}
     value["counts"] = {
         "total": max(0, int(counts.get("total") or 0)),
+        "scoreableTotal": max(0, int(counts.get("scoreable_total") or 0)),
         "initialBest": max(0, int(counts.get("initial_best") or 0)),
         "waitingBaseline": max(0, int(counts.get("waiting_baseline") or 0)),
         "monitoringRss": max(0, int(counts.get("monitoring_rss") or 0)),
         "upgradeAvailable": max(0, int(counts.get("upgrade_available") or 0)),
         "protected": max(0, int(counts.get("protected") or 0)),
+        "needsCleanup": max(0, int(counts.get("needs_cleanup") or 0)),
         "blocked": max(0, int(counts.get("blocked") or 0)),
     }
     return value
@@ -523,6 +525,7 @@ def register_private_rss(
                     service.repository.list_candidate_groups(
                         status=request.args.get("status") or "",
                         group_state=request.args.get("groupState") or "",
+                        group_scope=request.args.get("groupScope") or "",
                         subscription_id=request.args.get("subscriptionId") or "",
                         media_type=request.args.get("mediaType") or "",
                         season_number=request.args.get("seasonNumber") or None,

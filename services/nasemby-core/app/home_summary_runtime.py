@@ -481,7 +481,13 @@ class HomeSummaryService:
 
         rss_evidence = None
         rss_resource_center = {
-            "counts": {"newToday": None, "needsReview": None, "upgradeAvailable": None},
+            "counts": {
+                "newToday": None,
+                "needsReview": None,
+                "followNeedsReview": None,
+                "unlinkedItems": None,
+                "upgradeAvailable": None,
+            },
             "confirmation": "unknown",
             "observedAt": now,
         }
@@ -500,6 +506,13 @@ class HomeSummaryService:
                         "counts": {
                             "newToday": max(0, int(resource_counts.get("newToday") or 0)),
                             "needsReview": max(0, int(resource_counts.get("needsReview") or 0)),
+                            "followNeedsReview": max(0, int(
+                                resource_counts.get("followNeedsReview", resource_counts.get("needsReview")) or 0
+                            )),
+                            "unlinkedItems": (
+                                max(0, int(resource_counts.get("unlinkedItems") or 0))
+                                if "unlinkedItems" in resource_counts else None
+                            ),
                             "upgradeAvailable": max(0, int(resource_counts.get("upgradeAvailable") or 0)),
                         },
                         "confirmation": "confirmed",

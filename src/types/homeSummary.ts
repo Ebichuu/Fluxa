@@ -79,6 +79,8 @@ export interface HomeSummaryResponse {
     counts: {
       newToday: number | null;
       needsReview: number | null;
+      followNeedsReview?: number | null;
+      unlinkedItems?: number | null;
       upgradeAvailable: number | null;
     };
     confirmation: 'confirmed' | 'unknown';

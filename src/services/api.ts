@@ -593,7 +593,7 @@ export function getRssSeedItems(input: {
   sourceId?: string;
   window?: '' | '1h' | '24h' | '7d';
   identityStatus?: '' | 'identified' | 'conflict' | 'unidentified';
-  reviewState?: '' | 'needs_review';
+  reviewState?: '' | 'needs_review' | 'follow_needs_review' | 'unlinked';
   publishedDate?: string;
   tmdbId?: string;
   mediaType?: 'movie' | 'tv';
@@ -641,6 +641,7 @@ export function getRssMatches(input: { status?: string; limit?: number; offset?:
 export function getRssMatchGroups(input: {
   status?: string;
   groupState?: RssMatchGroup['state'];
+  groupScope?: 'scoreable' | 'cleanup';
   subscriptionId?: string;
   mediaType?: 'movie' | 'tv';
   seasonNumber?: number;
@@ -652,6 +653,7 @@ export function getRssMatchGroups(input: {
   const query = new URLSearchParams({ view: 'groups' });
   if (input.status) query.set('status', input.status);
   if (input.groupState) query.set('groupState', input.groupState);
+  if (input.groupScope) query.set('groupScope', input.groupScope);
   if (input.subscriptionId) query.set('subscriptionId', input.subscriptionId);
   if (input.mediaType) query.set('mediaType', input.mediaType);
   if (input.seasonNumber != null) query.set('seasonNumber', String(input.seasonNumber));

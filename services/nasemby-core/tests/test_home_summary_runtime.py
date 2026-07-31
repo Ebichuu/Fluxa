@@ -43,8 +43,9 @@ class FakeQbClient:
 
 
 class FakeRssRepository:
-    def __init__(self, error_sources=0):
+    def __init__(self, error_sources=0, resource_counts=None):
         self.error_sources = error_sources
+        self.resource_counts = resource_counts or {"newToday": 12, "needsReview": 3, "upgradeAvailable": 2}
         self.resource_bounds = None
 
     def summary(self, enabled):
@@ -52,12 +53,12 @@ class FakeRssRepository:
 
     def resource_center_summary(self, published_from, published_before):
         self.resource_bounds = (published_from, published_before)
-        return {"newToday": 12, "needsReview": 3, "upgradeAvailable": 2}
+        return dict(self.resource_counts)
 
 
 class FakeRssService:
-    def __init__(self, error_sources=0):
-        self.repository = FakeRssRepository(error_sources)
+    def __init__(self, error_sources=0, resource_counts=None):
+        self.repository = FakeRssRepository(error_sources, resource_counts)
 
     def collection_enabled(self):
         return True
@@ -211,13 +212,25 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
 
     def test_resource_center_summary_uses_shanghai_day_and_stays_neutral(self):
         app = self.build_app([])
-        rss = FakeRssService()
+        rss = FakeRssService(resource_counts={
+            "newToday": 12,
+            "needsReview": 3,
+            "followNeedsReview": 1,
+            "unlinkedItems": 346,
+            "upgradeAvailable": 2,
+        })
         app.extensions["mcc_private_rss"] = rss
 
         result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
 
         self.assertEqual(result["resourceCenter"], {
-            "counts": {"newToday": 12, "needsReview": 3, "upgradeAvailable": 2},
+            "counts": {
+                "newToday": 12,
+                "needsReview": 3,
+                "followNeedsReview": 1,
+                "unlinkedItems": 346,
+                "upgradeAvailable": 2,
+            },
             "confirmation": "confirmed",
             "observedAt": "2026-07-22T02:00:00Z",
         })
@@ -226,6 +239,16 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
             "2026-07-22T16:00:00Z",
         ))
         self.assertNotEqual(result["healthState"], "action_required")
+
+    def test_resource_center_summary_falls_back_to_legacy_review_count(self):
+        app = self.build_app([])
+        app.extensions["mcc_private_rss"] = FakeRssService()
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+
+        self.assertEqual(result["resourceCenter"]["counts"]["needsReview"], 3)
+        self.assertEqual(result["resourceCenter"]["counts"]["followNeedsReview"], 3)
+        self.assertIsNone(result["resourceCenter"]["counts"]["unlinkedItems"])
 
     def test_today_ingest_uses_library_evidence_and_deduplicates_target(self):
         app = self.build_app([
