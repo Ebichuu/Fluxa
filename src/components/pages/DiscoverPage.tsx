@@ -1304,7 +1304,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       ? manualFollow.state === 'write_disabled'
         ? '追更写入已关闭'
         : manualFollow.state === 'saved_only'
-          ? '加入后仅保存，暂无后续获取能力'
+          ? '只保存到 Fluxa · Torra 自动推送关闭'
           : `加入后交给${manualFollowProviderLabel || '后续能力'}处理`
       : !torraPushEnabled
         ? '保存追更 · Torra 自动推送关闭'

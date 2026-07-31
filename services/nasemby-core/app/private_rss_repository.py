@@ -775,6 +775,31 @@ class PrivateRssRepository:
         return cursor.rowcount > 0
 
     @staticmethod
+    def supplement_item_tmdb_identity(
+        connection,
+        item_id,
+        tmdb_id,
+        source="subscription_match",
+        confidence="fallback",
+    ):
+        tmdb_id = str(tmdb_id or "").strip()[:24]
+        if not tmdb_id:
+            return False
+        cursor = connection.execute(
+            "UPDATE rss_items SET tmdb_id=?, identity_status='identified', identity_source=?, "
+            "identity_confidence=?, identity_updated_at=? "
+            "WHERE id=? AND identity_status<>'conflict' AND tmdb_id=''",
+            (
+                tmdb_id,
+                str(source or "")[:160],
+                str(confidence or "")[:40],
+                _iso(),
+                str(item_id),
+            ),
+        )
+        return cursor.rowcount > 0
+
+    @staticmethod
     def mark_item_identity_conflict(connection, item_id, source="subscription_match", confidence="conflict"):
         cursor = connection.execute(
             "UPDATE rss_items SET identity_status='conflict', identity_source=?, "
@@ -1142,6 +1167,8 @@ class PrivateRssRepository:
             decision = str(best.get("decision") or "")
             if decision == "current_best":
                 return "upgrade_available"
+            if decision == "best_available":
+                return "initial_best"
             if decision == "best_waiting_baseline":
                 return "waiting_baseline"
             if decision in {"same_score", "lower_score", "rule_rejected"}:

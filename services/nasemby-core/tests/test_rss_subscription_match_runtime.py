@@ -211,6 +211,96 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(repeated["inserted"], 0)
         self.assertEqual(self.rss.list_matches()["total"], 2)
 
+    def test_torra_subscription_scores_initial_rss_candidates_without_watch_units(self):
+        torra, _qb = self._enable_analysis()
+        self._configure_shadow_torra(torra)
+        for title, fingerprint in (
+            ("测试剧.S01E03.1080p.WEB-DL.mkv", "initial-low"),
+            ("测试剧.S01E03.2160p.WEB-DL.mkv", "initial-high"),
+        ):
+            self.rss.upsert_items(self.source["id"], [{
+                "fingerprint": fingerprint,
+                "title": title,
+                "published_at": "2026-07-18T01:00:00Z",
+                "media_type": "tv",
+                "season_number": 1,
+                "episode_start": 3,
+                "episode_end": 3,
+                "tmdb_id": "202",
+                "identity_status": "identified",
+                "size_bytes": 4 * 1024 * 1024 * 1024,
+            }], on_insert=self.runtime.match_inserted_rows)
+
+        matches = self.rss.list_matches()["items"]
+        self.assertEqual(len(matches), 2)
+        self.assertEqual(self.watch.list_candidate_watch_units(self.now[0]), [])
+
+        evaluated = self.runtime.evaluate_matches([match["id"] for match in matches])
+        self.assertEqual({match["evaluationStatus"] for match in evaluated}, {"scored"})
+        best = next(match for match in evaluated if match["bestCandidate"])
+        self.assertEqual(best["decision"], "best_available")
+        self.assertIn("2160p", best["candidateSummary"]["versionSummary"])
+        self.assertTrue(best["torraLinked"])
+        self.assertEqual(best["baselineScore"], None)
+
+        groups = self.rss.list_candidate_groups()["groups"]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["state"], "initial_best")
+        self.assertEqual(groups[0]["candidateCount"], 2)
+        self.assertEqual(self.watch.list_candidate_watch_units(self.now[0]), [])
+
+    def test_torra_subscription_range_uses_one_artifact_across_explicit_episodes(self):
+        torra, _qb = self._enable_analysis()
+        self._configure_shadow_torra(torra)
+        torra.rows[0]["name"] = "测试剧"
+        self.rss.upsert_items(self.source["id"], [{
+            "fingerprint": "initial-range",
+            "title": "测试剧.S01E03-E04.2160p.WEB-DL.mkv",
+            "published_at": "2026-07-18T01:00:00Z",
+            "media_type": "tv",
+            "season_number": 1,
+            "episode_start": 3,
+            "episode_end": 4,
+            "tmdb_id": "202",
+            "identity_status": "identified",
+            "size_bytes": 8 * 1024 * 1024 * 1024,
+        }], on_insert=self.runtime.match_inserted_rows)
+
+        matches = self.rss.list_matches()["items"]
+        evaluated = self.runtime.evaluate_matches([match["id"] for match in matches])
+
+        self.assertEqual(len(evaluated), 2)
+        self.assertEqual(len({match["artifactKey"] for match in evaluated}), 1)
+        self.assertEqual({match["decision"] for match in evaluated}, {"best_available"})
+        self.assertEqual({match["bestCandidate"] for match in evaluated}, {True})
+        self.assertEqual(
+            {match["reason"]["episode"]["unit"] for match in evaluated},
+            {3, 4},
+        )
+
+    def test_torra_subscription_can_supplement_tmdb_for_imdb_identified_item(self):
+        torra, _qb = self._enable_analysis()
+        self._configure_shadow_torra(torra)
+        torra.rows[0]["name"] = "测试剧"
+        self.rss.upsert_items(self.source["id"], [{
+            "fingerprint": "imdb-only-candidate",
+            "title": "测试剧.S01E03.2160p.WEB-DL.mkv",
+            "published_at": "2026-07-18T01:00:00Z",
+            "media_type": "tv",
+            "season_number": 1,
+            "episode_start": 3,
+            "episode_end": 3,
+            "imdb_id": "tt1234567",
+            "identity_status": "identified",
+            "identity_source": "rss_description",
+        }], on_insert=self.runtime.match_inserted_rows)
+
+        item = self.rss.search_items(query="测试剧")["items"][0]
+        self.assertEqual(item["imdbId"], "tt1234567")
+        self.assertEqual(item["tmdbId"], "202")
+        self.assertEqual(item["identitySource"], "torra_subscription_match")
+        self.assertEqual(self.rss.list_matches()["total"], 1)
+
     def test_executable_candidate_requires_bound_unique_strict_upgrade_for_episode(self):
         unit = self._watch("tv:202:s1", episode=3)
         self._insert("[Group] 测试剧.S01E03.2160p", start=3, end=3)

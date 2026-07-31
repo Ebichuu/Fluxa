@@ -195,8 +195,8 @@ LEGACY_DEFAULT_SUBSCRIPTION_SOURCES = [
     "showing", "domestic_tv", "japanese_tv", "korean_tv", "american_tv", "anime_tv",
 ]
 DEFAULT_SUBSCRIPTION_SOURCES = [
-    "hot_movie", "movie_realtime", "hot_tv", "tv_realtime", "global_tv", "daily_airing",
-    "showing", "domestic_tv", "japanese_tv", "korean_tv", "american_tv", "anime_tv",
+    "hot_tv", "tv_realtime", "global_tv", "daily_airing", "domestic_tv",
+    "japanese_tv", "korean_tv", "american_tv", "anime_tv",
 ]
 
 DEFAULT_SUBSCRIPTION_CONFIG = {
@@ -211,7 +211,7 @@ DEFAULT_SUBSCRIPTION_CONFIG = {
     "torra_quality_scheduler_batch_size": 2,
     "douban": {
         "enabled": True,
-        "movie_enabled": True,
+        "movie_enabled": False,
         "tv_enabled": True,
         "movie_years": ["2026", "2025", "2024"],
         "tv_min_rating": 0.0,

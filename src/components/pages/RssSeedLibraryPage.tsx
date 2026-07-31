@@ -271,6 +271,7 @@ function scoreLabel(value: number | null | undefined) {
 function shadowEvaluationLabel(match: RssMatch) {
   if (match.evaluationStatus === 'scored' && typeof match.candidateScore === 'number') {
     const candidate = `候选 ${scoreLabel(match.candidateScore)} 分`;
+    if (['initial_candidate', 'best_available'].includes(match.decision || '')) return `${candidate} · 当前首轮最高分`;
     if (['waiting_baseline', 'best_waiting_baseline'].includes(match.decision || '')) return `${candidate} · 等待当前版本基线`;
     if (match.decision === 'rule_rejected') return `${candidate} · Torra 规则未接受`;
     if (match.decision === 'superseded') return `${candidate} · 已被更高分候选取代`;
@@ -291,6 +292,12 @@ function shadowEvaluationLabel(match: RssMatch) {
 }
 
 function candidateGroupScoreLabel(group: RssMatchGroup) {
+  if (group.state === 'initial_best') {
+    const candidate = typeof group.bestCandidateScore === 'number'
+      ? `首轮最高 ${scoreLabel(group.bestCandidateScore)} 分`
+      : '首轮最高分暂未确认';
+    return `${candidate} · ${group.candidateCount} 个版本`;
+  }
   const baseline = typeof group.baselineScore === 'number'
     ? `当前版本 ${scoreLabel(group.baselineScore)} 分`
     : '当前版本暂未确认';
@@ -957,11 +964,11 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                       <strong>{group.title || match.itemTitle || seed?.title || '已匹配到一条追更内容'} · {group.episodeLabel}</strong>
                       <small>{candidateGroupScoreLabel(group)}</small>
                       <span className="rss-match-status">{shadowEvaluationLabel(match)}</span>
-                      {group.state === 'upgrade_available' && (
+                      {['upgrade_available', 'initial_best'].includes(group.state) && (
                         <button
                           className="ops-link rss-exact-preview"
                           disabled={Boolean(matchBusy)}
-                          title="只读复核订阅、规则、基线和下载器状态"
+                          title="只读复核订阅、规则、版本和下载器状态"
                           type="button"
                           onClick={() => previewExactDownload(match)}
                         >
