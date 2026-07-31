@@ -120,6 +120,9 @@ def _public_score_summary(summary, baseline=False):
     version_summary = safe_public_text(source.get("versionSummary"))
     if version_summary:
         result["versionSummary"] = version_summary[:240]
+    version_state = str(source.get("versionState") or "").strip().lower()
+    if version_state in {"accepted", "unconfirmed", "rejected"}:
+        result["versionState"] = version_state
     version_name = safe_public_text(source.get("versionName"))
     if version_name:
         result["versionName"] = version_name[:120]

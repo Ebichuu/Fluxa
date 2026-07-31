@@ -72,6 +72,23 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
                 (item_id, public_key, f"{public_key}:s1:e1"),
                 (item_id, public_key, f"{public_key}:s1:e1"),
             ])
+            repository.save_match_evaluation([created.get_json()["id"]], {
+                "status": "scored",
+                "decision": "best_available",
+                "reason": "version_fields_unconfirmed",
+                "candidateScore": 28,
+                "candidateSummary": {
+                    "versionSummary": "测试条目 2160p WEB-DL",
+                    "versionState": "unconfirmed",
+                    "privateField": "must-not-leak",
+                },
+            })
+            presented = client.get(created.headers["Location"]).get_json()
+            self.assertEqual(
+                presented["candidateSummary"]["versionState"],
+                "unconfirmed",
+            )
+            self.assertNotIn("privateField", presented["candidateSummary"])
 
     def test_manual_match_location_resolves_to_same_public_dto_without_secrets(self):
         with tempfile.TemporaryDirectory() as directory:
