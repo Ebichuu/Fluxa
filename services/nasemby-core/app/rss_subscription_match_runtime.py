@@ -839,6 +839,7 @@ class RssSubscriptionMatchRuntime:
                 )
                 if match:
                     created.append(match)
+            self.rss_repository.touch_item_match_check(connection, item.get("id"))
         self.rss_repository.record_match_run(len(rows), len(created), connection=connection)
         return created
 
