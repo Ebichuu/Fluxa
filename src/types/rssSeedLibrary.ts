@@ -239,7 +239,7 @@ export interface RssMatchGroup {
   unitId: string;
   title: string;
   episodeLabel: string;
-  state: 'waiting_baseline' | 'monitoring_rss' | 'upgrade_available' | 'protected' | 'blocked' | string;
+  state: 'initial_best' | 'waiting_baseline' | 'monitoring_rss' | 'upgrade_available' | 'protected' | 'blocked' | string;
   candidateCount: number;
   bestMatchId?: string;
   bestArtifactKey?: string;
