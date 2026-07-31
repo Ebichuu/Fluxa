@@ -41,7 +41,7 @@ const activityActionLabels: Record<string, string> = {
   torra_sync_import: '导入订阅',
   torra_sync_run: '状态同步',
   torra_push_v2: '订阅推送',
-  private_rss_request: '种子库操作'
+  private_rss_request: '资源中心操作'
 };
 
 const stageStatusLabel: Record<string, string> = {
@@ -990,7 +990,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
               : <>已显示 {items.length} / {chain.page?.total ?? chain.counts.total} 条 · <RelativeTime value={chain.generatedAt} /></>
               : qbActiveView ? '正在读取 qB 活跃任务' : '正在读取统一任务链'}</span>
             {!qbActiveView && <button className="tool-link ops-task-advanced-link" type="button" onClick={() => changeAdvancedVisibility(!advancedOpenRef.current)}><Braces aria-hidden="true" size={14} />高级诊断</button>}
-            {!qbActiveView && <button aria-label="打开 RSS 种子库" className="ops-icon-button" title="RSS 种子库" type="button" onClick={() => onNavigate('rss-library')}><Rss aria-hidden="true" size={14} /></button>}
+            {!qbActiveView && <button aria-label="打开资源中心" className="ops-icon-button" title="资源中心" type="button" onClick={() => onNavigate('rss-library')}><Rss aria-hidden="true" size={14} /></button>}
             <button aria-label="刷新任务链" aria-busy={loading} className="ops-icon-button" disabled={loading} title="刷新任务链" type="button" onClick={refreshChain}><RefreshCcw aria-hidden="true" size={16} /></button>
           </div>
         </header>
@@ -1220,6 +1220,24 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
               <div className="ops-task-card__foot">
                 <span>{item.relatedRecords && item.relatedRecords > 1 ? `已合并 ${item.relatedRecords} 条来源记录` : item.playableAt ? <>可播放于 <RelativeTime value={item.playableAt} /></> : '唯一资源链路'}</span>
                 <div className="ops-task-card__actions">
+                  {expanded && detail?.rssSourceMatch?.matchId && (
+                    <button
+                      className="ops-action-button"
+                      type="button"
+                      onClick={() => onNavigate('rss-library', {
+                        resourceView: 'scoring',
+                        rssMatchId: detail.rssSourceMatch?.matchId,
+                        subscriptionId: detail.subscriptionId || detail.sourceIds.subscriptionId,
+                        tmdbId: detail.tmdbId,
+                        mediaType: detail.mediaType === 'movie' ? 'movie' : 'tv',
+                        title: detail.title,
+                        seasonNumber: detail.seasonNumber || null,
+                        episodeNumber: detail.episodeNumber || null
+                      })}
+                    >
+                      <Rss aria-hidden="true" size={14} />查看来源候选
+                    </button>
+                  )}
                   <button
                     className={detailsArePrimaryAction ? 'ops-action-button ops-action-button--primary' : 'ops-action-button'}
                     disabled={detailLoading === chainId}

@@ -2988,6 +2988,20 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             (total, issue) => total + Math.max(1, issue.resourceCount || 1),
             0,
           );
+          const currentQualityWatch = qualityWatch?.subscriptionId === item.id ? qualityWatch : null;
+          const selectedWatchUnit = currentQualityWatch
+            ? currentQualityWatch.units.find((unit) => unit.id === selectedUnitId) ?? currentQualityWatch.units[0]
+            : undefined;
+          const resourceTmdbId = detailInfo?.tmdbId || item.tmdbId || '';
+          const resourceSeasonNumber = item.mediaType === 'tv'
+            ? selectedWatchUnit?.seasonNumber || activeSeasonNumber || item.seasonNumber || null
+            : null;
+          const resourceEpisodeNumber = selectedWatchUnit?.episodeNumber || null;
+          const resourceIdentityReady = Boolean(
+            resourceTmdbId
+            && (item.mediaType === 'movie' || item.mediaType === 'tv')
+            && (item.mediaType === 'movie' || resourceSeasonNumber)
+          );
           return (
             <div
               className={detailId === item.id ? 'discover-sub discover-sub--open' : 'discover-sub'}
@@ -3151,12 +3165,20 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                         <footer>
                           <button
                             className="tool-link"
-                            disabled={resourceWorkflowLocked}
-                            title={resourceWorkflowLocked ? '当前追更操作完成后可切换资源' : '只读搜索资源'}
+                            disabled={!resourceIdentityReady}
+                            title={resourceIdentityReady ? '在资源中心查看同一追更范围的候选' : '媒体身份或追更季号尚未确认'}
                             type="button"
-                            onClick={() => searchSubscriptionResources(item)}
+                            onClick={() => onNavigate('rss-library', {
+                              resourceView: 'scoring',
+                              subscriptionId: item.id,
+                              tmdbId: resourceTmdbId,
+                              mediaType: item.mediaType === 'movie' ? 'movie' : 'tv',
+                              title: detailInfo?.title || item.title,
+                              seasonNumber: resourceSeasonNumber,
+                              episodeNumber: resourceEpisodeNumber
+                            })}
                           >
-                            <FileSearch aria-hidden="true" size={13} />搜索资源
+                            <FileSearch aria-hidden="true" size={13} />查看可用资源
                           </button>
                           <button
                             className="tool-link"

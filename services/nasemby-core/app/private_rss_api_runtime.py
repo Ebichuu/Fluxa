@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import re
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from flask import jsonify, request
 
@@ -55,6 +57,25 @@ RSS_MATCH_NUMBER_FIELDS = {
     "season": ("item", "unit"),
     "episode": ("start", "end", "unit"),
 }
+SHANGHAI_TZ = timezone(timedelta(hours=8))
+
+
+def _published_date_bounds(value):
+    text = str(value or "").strip()
+    if not text:
+        return "", ""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        raise ValueError("发布日期无效")
+    try:
+        day = datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=SHANGHAI_TZ)
+    except ValueError as exc:
+        raise ValueError("发布日期无效") from exc
+    start = day.astimezone(timezone.utc)
+    end = (day + timedelta(days=1)).astimezone(timezone.utc)
+    return (
+        start.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        end.isoformat(timespec="seconds").replace("+00:00", "Z"),
+    )
 
 
 def _public_reason_number(value):
@@ -224,6 +245,16 @@ def _present_rss_match_group_list(payload):
         )
         if presented is not None
     ]
+    counts = value.get("counts") if isinstance(value.get("counts"), dict) else {}
+    value["counts"] = {
+        "total": max(0, int(counts.get("total") or 0)),
+        "initialBest": max(0, int(counts.get("initial_best") or 0)),
+        "waitingBaseline": max(0, int(counts.get("waiting_baseline") or 0)),
+        "monitoringRss": max(0, int(counts.get("monitoring_rss") or 0)),
+        "upgradeAvailable": max(0, int(counts.get("upgrade_available") or 0)),
+        "protected": max(0, int(counts.get("protected") or 0)),
+        "blocked": max(0, int(counts.get("blocked") or 0)),
+    }
     return value
 
 
@@ -418,11 +449,15 @@ def register_private_rss(
         window = str(request.args.get("window") or "").lower()
         window_hours = {"1h": 1, "24h": 24, "7d": 168}.get(window)
         try:
+            published_from, published_before = _published_date_bounds(request.args.get("publishedDate"))
             payload = service.repository.search_items(
                 query=request.args.get("query") or "",
                 source_id=request.args.get("sourceId") or "",
                 window_hours=window_hours,
                 identity_status=request.args.get("identityStatus") or "",
+                review_state=request.args.get("reviewState") or "",
+                published_from=published_from,
+                published_before=published_before,
                 limit=request.args.get("limit") or 50,
                 offset=request.args.get("offset") or 0,
                 tmdb_id=request.args.get("tmdbId") or "",
@@ -431,7 +466,7 @@ def register_private_rss(
                 year=request.args.get("year") or "",
             )
         except (TypeError, ValueError):
-            return _error("RSS_QUERY_INVALID", "种子库查询参数无效", 422)
+            return _error("RSS_QUERY_INVALID", "资源中心查询参数无效", 422)
         return jsonify(payload)
 
     @app.post("/api/v2/rss-items/identity-backfills")
@@ -487,6 +522,12 @@ def register_private_rss(
                 return jsonify(_present_rss_match_group_list(
                     service.repository.list_candidate_groups(
                         status=request.args.get("status") or "",
+                        group_state=request.args.get("groupState") or "",
+                        subscription_id=request.args.get("subscriptionId") or "",
+                        media_type=request.args.get("mediaType") or "",
+                        season_number=request.args.get("seasonNumber") or None,
+                        episode_number=request.args.get("episodeNumber") or None,
+                        match_id=request.args.get("matchId") or "",
                         limit=request.args.get("limit") or 20,
                         offset=request.args.get("offset") or 0,
                     )

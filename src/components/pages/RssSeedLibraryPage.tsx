@@ -34,7 +34,7 @@ import {
   testRssSource
 } from '../../services/api';
 import { writeUrlQuery, type UrlHistoryMode } from '../../app/urlState';
-import type { AutomationAction, RssExactDownloadPreview, RssIdentityStatus, RssLibrarySummary, RssMatch, RssMatchGroup, RssSeedItem, RssSource, RssSourceInput } from '../../types/rssSeedLibrary';
+import type { AutomationAction, RssExactDownloadPreview, RssIdentityStatus, RssLibrarySummary, RssMatch, RssMatchGroup, RssMatchGroupListResponse, RssSeedItem, RssSource, RssSourceInput } from '../../types/rssSeedLibrary';
 import {
   classifyRssResourceScope,
   countRssResourceScopes,
@@ -49,30 +49,61 @@ import { RelativeTime } from '../status/RelativeTime';
 import type { AppNavigate } from '../layout/AppTopNav';
 
 type WindowFilter = '' | '1h' | '24h' | '7d';
+type ResourceView = 'new' | 'identify' | 'scoring' | 'upgrades';
 const RSS_INTERVAL_PRESETS = [1, 3, 5] as const;
 const rssPageSize = 50;
 
 interface RssLibraryUrlState {
+  view: ResourceView;
   query: string;
   sourceId: string;
   identityStatus: RssIdentityStatus;
   windowFilter: WindowFilter;
   offset: number;
+  publishedDate: string;
+  subscriptionId: string;
+  tmdbId: string;
+  mediaType: '' | 'movie' | 'tv';
+  contextTitle: string;
+  seasonNumber: number | null;
+  episodeNumber: number | null;
+  matchId: string;
 }
+
+type RssResourceContext = Pick<RssLibraryUrlState,
+  'publishedDate' | 'subscriptionId' | 'tmdbId' | 'mediaType' | 'contextTitle' | 'seasonNumber' | 'episodeNumber' | 'matchId'
+>;
+
+const emptyResourceContext: RssResourceContext = {
+  publishedDate: '',
+  subscriptionId: '',
+  tmdbId: '',
+  mediaType: '',
+  contextTitle: '',
+  seasonNumber: null,
+  episodeNumber: null,
+  matchId: ''
+};
 
 function readRssLibraryUrlState(location: Location = window.location): RssLibraryUrlState {
   const params = new URLSearchParams(location.search);
   const windowValue = params.get('window');
   const identityValue = params.get('identityStatus');
+  const viewValue = params.get('view');
+  const mediaTypeValue = params.get('mediaType');
+  const publishedDateValue = params.get('publishedDate') ?? '';
   const parsedOffset = Number(params.get('offset'));
+  const parsedSeason = Number(params.get('seasonNumber'));
+  const parsedEpisode = Number(params.get('episodeNumber'));
   return {
+    view: ['identify', 'scoring', 'upgrades'].includes(viewValue ?? '') ? viewValue as ResourceView : 'new',
     query: params.get('q') ?? '',
     sourceId: params.get('sourceId') ?? '',
     identityStatus: ['identified', 'conflict', 'unidentified'].includes(identityValue ?? '')
       ? identityValue as RssIdentityStatus
       : '',
     windowFilter: windowValue === null
-      ? '24h'
+      ? publishedDateValue ? '' : '24h'
       : windowValue === 'all'
         ? ''
         : ['1h', '24h', '7d'].includes(windowValue)
@@ -80,17 +111,34 @@ function readRssLibraryUrlState(location: Location = window.location): RssLibrar
           : '24h',
     offset: Number.isInteger(parsedOffset) && parsedOffset >= 0
       ? Math.floor(parsedOffset / rssPageSize) * rssPageSize
-      : 0
+      : 0,
+    publishedDate: /^\d{4}-\d{2}-\d{2}$/.test(publishedDateValue) ? publishedDateValue : '',
+    subscriptionId: params.get('subscriptionId')?.trim() || '',
+    tmdbId: /^\d{1,24}$/.test(params.get('tmdbId') ?? '') ? params.get('tmdbId') ?? '' : '',
+    mediaType: mediaTypeValue === 'movie' || mediaTypeValue === 'tv' ? mediaTypeValue : '',
+    contextTitle: params.get('title')?.trim().slice(0, 240) || '',
+    seasonNumber: Number.isInteger(parsedSeason) && parsedSeason > 0 ? parsedSeason : null,
+    episodeNumber: Number.isInteger(parsedEpisode) && parsedEpisode > 0 ? parsedEpisode : null,
+    matchId: params.get('matchId')?.trim().slice(0, 80) || ''
   };
 }
 
 function writeRssLibraryUrlState(state: RssLibraryUrlState, mode: UrlHistoryMode = 'replace') {
   writeUrlQuery({
+    view: state.view === 'new' ? null : state.view,
     q: state.query || null,
     sourceId: state.sourceId || null,
     identityStatus: state.identityStatus || null,
     window: state.windowFilter === '24h' ? null : state.windowFilter || 'all',
-    offset: state.offset > 0 ? state.offset : null
+    offset: state.offset > 0 ? state.offset : null,
+    publishedDate: state.publishedDate || null,
+    subscriptionId: state.subscriptionId || null,
+    tmdbId: state.tmdbId || null,
+    mediaType: state.mediaType || null,
+    title: state.contextTitle || null,
+    seasonNumber: state.seasonNumber,
+    episodeNumber: state.episodeNumber,
+    matchId: state.matchId || null
   }, mode);
 }
 
@@ -331,12 +379,33 @@ function seedPriorityReason(item: RssSeedItem, scope: ReturnType<typeof classify
 
 export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) {
   const [initialUrlState] = useState(readRssLibraryUrlState);
+  const [resourceView, setResourceView] = useState<ResourceView>(initialUrlState.view);
+  const [resourceContext, setResourceContext] = useState<RssResourceContext>({
+    publishedDate: initialUrlState.publishedDate,
+    subscriptionId: initialUrlState.subscriptionId,
+    tmdbId: initialUrlState.tmdbId,
+    mediaType: initialUrlState.mediaType,
+    contextTitle: initialUrlState.contextTitle,
+    seasonNumber: initialUrlState.seasonNumber,
+    episodeNumber: initialUrlState.episodeNumber,
+    matchId: initialUrlState.matchId
+  });
   const [sources, setSources] = useState<RssSource[]>([]);
   const [summary, setSummary] = useState<RssLibrarySummary>(emptySummary);
   const [items, setItems] = useState<RssSeedItem[]>([]);
   const [total, setTotal] = useState(0);
   const [matchGroups, setMatchGroups] = useState<RssMatchGroup[]>([]);
   const [matchesTotal, setMatchesTotal] = useState(0);
+  const [reviewTotal, setReviewTotal] = useState(0);
+  const [matchGroupCounts, setMatchGroupCounts] = useState<NonNullable<RssMatchGroupListResponse['counts']>>({
+    total: 0,
+    initialBest: 0,
+    waitingBaseline: 0,
+    monitoringRss: 0,
+    upgradeAvailable: 0,
+    protected: 0,
+    blocked: 0
+  });
   const [matchesOffset, setMatchesOffset] = useState(0);
   const [matchesLoading, setMatchesLoading] = useState(false);
   const [matchActions, setMatchActions] = useState<Record<string, AutomationAction>>({});
@@ -376,6 +445,8 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
 
   const syncUrlState = (patch: Partial<RssLibraryUrlState>) => {
     writeRssLibraryUrlState({
+      view: resourceView,
+      ...resourceContext,
       query,
       sourceId,
       identityStatus,
@@ -396,6 +467,15 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     itemsRequestRef.current = controller;
     setItemsLoading(true);
     const requestedState: RssLibraryUrlState = {
+      view: input.view ?? resourceView,
+      publishedDate: input.publishedDate ?? resourceContext.publishedDate,
+      subscriptionId: input.subscriptionId ?? resourceContext.subscriptionId,
+      tmdbId: input.tmdbId ?? resourceContext.tmdbId,
+      mediaType: input.mediaType ?? resourceContext.mediaType,
+      contextTitle: input.contextTitle ?? resourceContext.contextTitle,
+      seasonNumber: input.seasonNumber ?? resourceContext.seasonNumber,
+      episodeNumber: input.episodeNumber ?? resourceContext.episodeNumber,
+      matchId: input.matchId ?? resourceContext.matchId,
       query: input.query ?? query,
       sourceId: input.sourceId ?? sourceId,
       identityStatus: input.identityStatus ?? identityStatus,
@@ -409,6 +489,11 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
           sourceId: requestedState.sourceId,
           window: requestedState.windowFilter,
           identityStatus: requestedState.identityStatus,
+          reviewState: requestedState.view === 'identify' ? 'needs_review' : '',
+          publishedDate: requestedState.publishedDate,
+          tmdbId: requestedState.tmdbId,
+          mediaType: requestedState.mediaType || undefined,
+          seasonNumber: requestedState.seasonNumber ?? undefined,
           limit: pageSize,
           offset: requestedState.offset
         },
@@ -421,20 +506,29 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       writeRssLibraryUrlState({ ...requestedState, offset: payload.offset });
     } catch (reason) {
       if (!controller.signal.aborted) {
-        setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : '种子库读取失败' });
+        setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : '资源中心读取失败' });
       }
     } finally {
       if (!controller.signal.aborted) setItemsLoading(false);
     }
   };
 
-  const loadMatches = async (nextOffset = matchesOffset): Promise<Record<string, AutomationAction>> => {
+  const loadMatches = async (nextOffset = matchesOffset, view = resourceView): Promise<Record<string, AutomationAction>> => {
     matchesRequestRef.current?.abort();
     const controller = new AbortController();
     matchesRequestRef.current = controller;
     setMatchesLoading(true);
     try {
-      const payload = await getRssMatchGroups({ limit: 10, offset: nextOffset }, { signal: controller.signal });
+      const payload = await getRssMatchGroups({
+        groupState: view === 'upgrades' ? 'upgrade_available' : undefined,
+        subscriptionId: resourceContext.subscriptionId || undefined,
+        mediaType: resourceContext.mediaType || undefined,
+        seasonNumber: resourceContext.seasonNumber ?? undefined,
+        episodeNumber: resourceContext.episodeNumber ?? undefined,
+        matchId: resourceContext.matchId || undefined,
+        limit: 10,
+        offset: nextOffset
+      }, { signal: controller.signal });
       if (controller.signal.aborted) return {};
       if (!Array.isArray(payload.groups)) {
         throw new Error('候选组接口暂未可用，请确认前后端版本一致');
@@ -442,6 +536,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       setMatchGroups(payload.groups);
       setExactPreviews({});
       setMatchesTotal(payload.total);
+      if (payload.counts) setMatchGroupCounts(payload.counts);
       setMatchesOffset(payload.offset);
       const groupedMatches = payload.groups.flatMap((group) => group.candidates);
       const linkedActions = await Promise.all(groupedMatches.map(async (match) => {
@@ -476,9 +571,14 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     setLoading(true);
     setFeedback(null);
     try {
-        await Promise.all([loadSources(), loadItems(), loadMatches(0)]);
+        await Promise.all([
+          loadSources(),
+          loadItems(),
+          loadMatches(0),
+          getRssSeedItems({ reviewState: 'needs_review', limit: 1, offset: 0 }).then((payload) => setReviewTotal(payload.total))
+        ]);
     } catch (reason) {
-      setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : '种子库读取失败' });
+      setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : '资源中心读取失败' });
     } finally {
       setLoading(false);
     }
@@ -519,11 +619,22 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   useEffect(() => {
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceId, windowFilter, identityStatus, urlRevision]);
+  }, [sourceId, windowFilter, identityStatus, resourceView, resourceContext, urlRevision]);
 
   useEffect(() => {
     const restoreUrlState = () => {
       const next = readRssLibraryUrlState();
+      setResourceView(next.view);
+      setResourceContext({
+        publishedDate: next.publishedDate,
+        subscriptionId: next.subscriptionId,
+        tmdbId: next.tmdbId,
+        mediaType: next.mediaType,
+        contextTitle: next.contextTitle,
+        seasonNumber: next.seasonNumber,
+        episodeNumber: next.episodeNumber,
+        matchId: next.matchId
+      });
       setQuery(next.query);
       setSourceId(next.sourceId);
       setIdentityStatus(next.identityStatus);
@@ -728,7 +839,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       setFormOpen(false);
       setEditing(null);
       setForm(defaultForm);
-      setFeedback({ tone: 'ok', message: editing ? '来源设置已保存' : 'RSS 来源已加入种子库' });
+      setFeedback({ tone: 'ok', message: editing ? '来源设置已保存' : 'RSS 来源已加入资源中心' });
       await loadSources();
     } catch (reason) {
       setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : 'RSS 来源保存失败' });
@@ -775,14 +886,69 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     }
   };
 
+  const changeResourceView = (nextView: ResourceView) => {
+    if (nextView === resourceView) return;
+    setResourceView(nextView);
+    setOffset(0);
+    setMatchesOffset(0);
+    setFeedback(null);
+    writeRssLibraryUrlState({
+      view: nextView,
+      ...resourceContext,
+      query,
+      sourceId,
+      identityStatus,
+      windowFilter,
+      offset: 0
+    });
+  };
+
+  const resourceViews: Array<{ id: ResourceView; label: string; count: number }> = [
+    { id: 'new', label: '新资源', count: summary.items },
+    { id: 'identify', label: '待识别', count: reviewTotal },
+    { id: 'scoring', label: '候选评分', count: matchGroupCounts.total },
+    { id: 'upgrades', label: '追更洗版', count: matchGroupCounts.upgradeAvailable }
+  ];
+  const hasResourceContext = Boolean(
+    resourceContext.publishedDate || resourceContext.subscriptionId || resourceContext.tmdbId || resourceContext.matchId
+  );
+  const resourceContextTitle = resourceContext.matchId
+    ? '任务来源候选'
+    : resourceContext.publishedDate
+      ? `${resourceContext.publishedDate} 新资源`
+      : resourceContext.contextTitle || '当前追更资源';
+  const resourceContextScope = [
+    resourceContext.mediaType === 'movie' ? '电影' : resourceContext.mediaType === 'tv' ? '剧集' : '',
+    resourceContext.seasonNumber != null ? `S${String(resourceContext.seasonNumber).padStart(2, '0')}` : '',
+    resourceContext.episodeNumber != null ? `E${String(resourceContext.episodeNumber).padStart(2, '0')}` : '',
+    resourceContext.tmdbId ? `TMDB ${resourceContext.tmdbId}` : ''
+  ].filter(Boolean).join(' · ');
+
+  const clearResourceContext = () => {
+    const nextWindow = resourceContext.publishedDate && windowFilter === '' ? '24h' : windowFilter;
+    setResourceContext(emptyResourceContext);
+    setWindowFilter(nextWindow);
+    setOffset(0);
+    setMatchesOffset(0);
+    writeRssLibraryUrlState({
+      view: resourceView,
+      ...emptyResourceContext,
+      query,
+      sourceId,
+      identityStatus,
+      windowFilter: nextWindow,
+      offset: 0
+    });
+  };
+
   return (
     <main className="work-page ops-page rss-library-page">
       <section className="ops-hero ops-hero--compact rss-library-hero">
         <div>
-          <p className="ops-eyebrow">PT 本地索引</p>
-          <h1>种子库</h1>
-          <p className="ops-page-subtitle">在本地汇总和筛选最近发布的种子。</p>
-          <p className="ops-deck">集中保存最近发布的 PT RSS 内容，在本地完成搜索和筛选，再由 Torra 判断是否需要下载。</p>
+          <p className="ops-eyebrow">PT RSS · 候选决策</p>
+          <h1>资源中心</h1>
+          <p className="ops-page-subtitle">查看站点新资源、身份关联与候选评分。</p>
+          <p className="ops-deck">PT RSS 内容在本地搜索和评分；只有通过订阅身份与安全预检的候选才能进入后续流程。</p>
         </div>
         <button aria-busy={loading} className="ops-action-button" disabled={loading} type="button" onClick={refresh}>
           <RefreshCcw aria-hidden="true" className={loading ? 'rss-spin' : ''} size={15} />
@@ -790,7 +956,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
         </button>
       </section>
 
-      <section className="rss-ledger-strip" aria-label="种子库状态">
+      <section className="rss-ledger-strip" aria-label="资源中心状态">
         <div><span>本地种子</span><strong>{summary.items}</strong></div>
         <div><span>RSS 来源</span><strong className="rss-source-count">已启用 {summary.activeSources}/{summary.sources} · <em className={summary.errorSources ? 'rss-value--warn' : ''}>健康 {Math.max(0, summary.sources - summary.errorSources)}/{summary.sources}</em></strong></div>
         <div><span>异常来源</span><strong className={summary.errorSources ? 'rss-value--warn' : ''}>{summary.errorSources}</strong></div>
@@ -804,8 +970,38 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
         </div>
       )}
 
+      <nav aria-label="资源中心视图" className="rss-resource-views" role="tablist">
+        {resourceViews.map((view) => (
+          <button
+            aria-selected={resourceView === view.id}
+            className={resourceView === view.id ? 'rss-resource-view rss-resource-view--active' : 'rss-resource-view'}
+            key={view.id}
+            role="tab"
+            type="button"
+            onClick={() => changeResourceView(view.id)}
+          >
+            <span>{view.label}</span>
+            <strong>{view.count}</strong>
+          </button>
+        ))}
+      </nav>
+
+      {hasResourceContext && (
+        <section aria-label="当前资源范围" className="rss-context-scope">
+          <div>
+            <span>当前范围</span>
+            <strong>{resourceContextTitle}</strong>
+            <small>{resourceContextScope || '按可靠来源证据定位'}</small>
+          </div>
+          <button aria-label="清除当前资源范围" className="ops-icon-button" title="清除当前资源范围" type="button" onClick={clearResourceContext}>
+            <X aria-hidden="true" size={15} />
+          </button>
+        </section>
+      )}
+
       <section className="rss-library-layout">
         <div className="rss-index-panel">
+          <div className="rss-items-view" hidden={resourceView === 'scoring' || resourceView === 'upgrades'}>
           <div className="rss-toolbar">
             <form
               className="rss-search"
@@ -832,7 +1028,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
           </div>
 
           <div className="rss-index-head">
-            <span>{loading || itemsLoading ? '正在读取本地索引' : `找到 ${total} 条内容`}</span>
+            <span>{loading || itemsLoading ? '正在读取本地索引' : resourceView === 'identify' ? `待复核 ${total} 条内容` : `找到 ${total} 条内容`}</span>
             <div className="rss-index-filters">
               <select aria-label="按 RSS 来源筛选" value={sourceId} onChange={(event) => { const next = event.target.value; setSourceId(next); setOffset(0); syncUrlState({ sourceId: next, offset: 0 }); }}>
                 <option value="">全部来源</option>
@@ -859,8 +1055,8 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
             {!loading && timeline.length === 0 && (
               <div className="ops-empty rss-empty">
                 <Database aria-hidden="true" size={22} />
-                <strong>{query.trim() ? `没有找到“${query.trim()}”` : sources.length ? '当前范围内没有种子' : '还没有添加 RSS 来源'}</strong>
-                <span>{sources.length ? (sourceSearchSummary || '当前没有可搜索的 RSS 来源。') : '先添加 RSS 来源；开启收集后，新发布内容会保存在这里。'}</span>
+                <strong>{query.trim() ? `没有找到“${query.trim()}”` : resourceView === 'identify' ? '当前没有待识别资源' : sources.length ? '当前范围内没有资源' : '还没有添加 RSS 来源'}</strong>
+                <span>{resourceView === 'identify' ? '身份、媒体类型和电视剧季号均已确认。' : sources.length ? (sourceSearchSummary || '当前没有可搜索的 RSS 来源。') : '先添加 RSS 来源；开启收集后，新发布内容会保存在这里。'}</span>
               </div>
             )}
             {timeline.map((item) => {
@@ -918,7 +1114,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
             })}
           </div>
           {total > pageSize && (
-            <nav className="rss-pagination" aria-label="种子库分页">
+            <nav className="rss-pagination" aria-label="资源中心分页">
               <button
                 aria-label="上一页"
                 disabled={itemsLoading || offset <= 0}
@@ -940,13 +1136,19 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
               </button>
             </nav>
           )}
-          <section className="rss-match-panel" aria-label="RSS 候选匹配">
+          </div>
+          <section className="rss-match-panel" aria-label={resourceView === 'upgrades' ? '追更洗版' : 'RSS 候选匹配'} hidden={resourceView === 'new' || resourceView === 'identify'}>
             <header className="rss-match-panel__head">
-              <div><strong>Torra 规则候选决策</strong><small>{matchesTotal ? `最近 ${matchesTotal} 个季集候选组 · 只读评估，不会自动下载` : '新种子会自动匹配并评分，不会自动下载'}</small></div>
+              <div>
+                <strong>{resourceView === 'upgrades' ? '追更洗版候选' : 'Torra 规则候选决策'}</strong>
+                <small>{resourceView === 'upgrades'
+                  ? matchesTotal ? `${matchesTotal} 个严格高于当前基线的季集候选组` : '当前没有可洗版的更高分候选'
+                  : matchesTotal ? `最近 ${matchesTotal} 个季集候选组 · 只读评估，不会自动下载` : '新资源会自动匹配并评分，不会自动下载'}</small>
+              </div>
               <button className="ops-link" disabled={matchesLoading} type="button" onClick={() => void loadMatches(matchesOffset)}><RefreshCcw size={13} />刷新</button>
             </header>
             {matchesLoading && <small className="sub-detail__hint">正在查看是否有种子匹配到追更作品…</small>}
-            {!matchesLoading && matchGroups.length === 0 && <div className="rss-match-empty"><CheckCircle2 size={15} /><span><strong>{summary.enabled && summary.errorSources === 0 ? 'RSS 正常收集，但暂未匹配到追更作品' : '暂未匹配到追更作品'}</strong><small>{summary.enabled ? '可用来源会继续自动检查；现在无需处理。' : '开启收集后，新种子会自动尝试匹配。'}</small></span></div>}
+            {!matchesLoading && matchGroups.length === 0 && <div className="rss-match-empty"><CheckCircle2 size={15} /><span><strong>{resourceView === 'upgrades' ? '当前没有可洗版的更高分候选' : summary.enabled && summary.errorSources === 0 ? 'RSS 正常收集，但暂未匹配到追更作品' : '暂未匹配到追更作品'}</strong><small>{resourceView === 'upgrades' ? '已评分候选均未严格高于当前入库版本。' : summary.enabled ? '可用来源会继续自动检查；现在无需处理。' : '开启收集后，新资源会自动尝试匹配。'}</small></span></div>}
             <div className="rss-match-list">
               {matchGroups.map((group) => {
                 const match = group.candidates.find((candidate) => candidate.bestCandidate) || group.candidates[0];
@@ -961,8 +1163,11 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                 const canAnalyze = match.status === 'candidate' || action?.status === 'failed' || action?.status === 'cancelled';
                 const downloadFailed = action?.type === 'rewash-download' && ['failed', 'cancelled'].includes(action.status);
                 const downloadConfirmed = !downloadFailed && (action?.type === 'rewash-download' || match.status === 'confirmed');
+                const sourceFocused = Boolean(
+                  resourceContext.matchId && group.candidates.some((candidate) => candidate.id === resourceContext.matchId)
+                );
                 return (
-                  <article className="rss-match-row" key={group.id}>
+                  <article className={sourceFocused ? 'rss-match-row rss-match-row--focused' : 'rss-match-row'} key={group.id}>
                     <div className="rss-match-row__content">
                       <strong>{group.title || match.itemTitle || seed?.title || '已匹配到一条追更内容'} · {group.episodeLabel}</strong>
                       <small>{candidateGroupScoreLabel(group)}</small>
@@ -994,7 +1199,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                         <summary>查看 {group.candidateCount} 个候选版本</summary>
                         <div className="rss-candidate-group__versions">
                           {group.candidates.map((candidate) => (
-                            <div className="rss-candidate-version" key={candidate.id}>
+                            <div className={candidate.id === resourceContext.matchId ? 'rss-candidate-version rss-candidate-version--focused' : 'rss-candidate-version'} key={candidate.id}>
                               <span>
                                 <strong>{candidate.candidateSummary?.versionSummary || '版本信息暂未确认'}</strong>
                                 <small>{shadowEvaluationLabel(candidate)}</small>

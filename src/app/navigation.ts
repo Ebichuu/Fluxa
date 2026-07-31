@@ -60,6 +60,7 @@ export function readNavigation(location: Location = window.location): Navigation
     ?? 'overview';
   const query = new URLSearchParams(location.search);
   const season = Number(query.get('seasonNumber'));
+  const episode = Number(query.get('episodeNumber'));
   const explicitOutcomeStates = query.getAll('outcomeState').filter(isOutcomeState);
   const outcomeStates = [...new Set(
     explicitOutcomeStates.length
@@ -69,18 +70,25 @@ export function readNavigation(location: Location = window.location): Navigation
   const target: TaskNavigationTarget | null = page === 'media' && mediaRoute ? {
     mediaType: mediaRoute[1] as 'movie' | 'tv',
     tmdbId: mediaRoute[2]
-  } : ['tasks', 'subscriptions'].includes(page) && (
+  } : ['tasks', 'subscriptions', 'rss-library'].includes(page) && (
     query.has('chainId') || query.has('targetKey') || query.has('subscriptionId') || query.has('tmdbId') || query.has('title')
     || query.has('outcomeState') || query.has('userState') || query.has('completedDate') || query.has('advanced') || query.has('identityState')
     || query.has('systemIssue') || query.has('archivedDate') || query.get('qbActive') === '1'
+    || query.has('view') || query.has('episodeNumber') || query.has('matchId') || query.has('publishedDate')
   ) ? {
     mediaType: query.get('mediaType') === 'movie' ? 'movie' : query.get('mediaType') === 'tv' ? 'tv' : undefined,
+    resourceView: ['new', 'identify', 'scoring', 'upgrades'].includes(query.get('view') || '')
+      ? query.get('view') as TaskNavigationTarget['resourceView']
+      : undefined,
     chainId: optionalString(query.get('chainId')),
     targetKey: optionalString(query.get('targetKey')),
     subscriptionId: optionalString(query.get('subscriptionId')),
     tmdbId: optionalString(query.get('tmdbId')),
     title: optionalString(query.get('title')),
     seasonNumber: Number.isFinite(season) && season > 0 ? season : undefined,
+    episodeNumber: Number.isFinite(episode) && episode > 0 ? episode : undefined,
+    rssMatchId: optionalString(query.get('matchId')),
+    publishedDate: optionalString(query.get('publishedDate')),
     outcomeState: outcomeStates[0],
     outcomeStates,
     userState: ['action_required', 'in_progress', 'completed', 'no_action'].includes(query.get('userState') || '')
@@ -110,6 +118,20 @@ export function pathForNavigation(page: PageId, target?: TaskNavigationTarget | 
   }
   const route = canonicalRoutes[page];
   const query = new URLSearchParams();
+  if (page === 'rss-library' && target) {
+    if (target.resourceView && target.resourceView !== 'new') query.set('view', target.resourceView);
+    if (target.subscriptionId) query.set('subscriptionId', target.subscriptionId);
+    if (target.tmdbId) query.set('tmdbId', target.tmdbId);
+    if (target.mediaType) query.set('mediaType', target.mediaType);
+    if (target.title) query.set('title', target.title);
+    if (target.seasonNumber != null) query.set('seasonNumber', String(target.seasonNumber));
+    if (target.episodeNumber != null) query.set('episodeNumber', String(target.episodeNumber));
+    if (target.rssMatchId) query.set('matchId', target.rssMatchId);
+    if (target.publishedDate) {
+      query.set('publishedDate', target.publishedDate);
+      query.set('window', 'all');
+    }
+  }
   if (['tasks', 'subscriptions'].includes(page) && target) {
     if (target.mediaType) query.set('mediaType', target.mediaType);
     if (target.chainId) query.set('chainId', target.chainId);

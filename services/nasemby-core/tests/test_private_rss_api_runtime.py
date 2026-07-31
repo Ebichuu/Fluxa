@@ -101,6 +101,7 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             repository.upsert_items(source["id"], [{
                 "fingerprint": "manual-match",
                 "title": "测试条目 S01E01",
+                "published_at": "2026-07-30T16:00:00Z",
                 "download_url": "https://tracker.example/download?passkey=item-secret",
                 "detail_url": "https://tracker.example/details?token=detail-secret",
             }])
@@ -123,7 +124,19 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             detail = client.get(created.headers["Location"])
             legacy_list = client.get("/api/v2/rss-matches?limit=10")
             grouped = client.get("/api/v2/rss-matches?view=groups&limit=10")
+            grouped_monitoring = client.get("/api/v2/rss-matches?view=groups&groupState=monitoring_rss&limit=10")
+            grouped_upgrade = client.get("/api/v2/rss-matches?view=groups&groupState=upgrade_available&limit=10")
+            grouped_subscription = client.get(
+                f"/api/v2/rss-matches?view=groups&subscriptionId={public_key}"
+                "&mediaType=tv&seasonNumber=1&episodeNumber=1"
+            )
+            grouped_match = client.get(
+                f"/api/v2/rss-matches?view=groups&matchId={created.get_json()['id']}"
+            )
+            published_today = client.get("/api/v2/rss-items?publishedDate=2026-07-31&window=all")
+            invalid_published_date = client.get("/api/v2/rss-items?publishedDate=2026-7-31")
             invalid_view = client.get("/api/v2/rss-matches?view=unknown")
+            invalid_group_state = client.get("/api/v2/rss-matches?view=groups&groupState=unknown")
 
             self.assertEqual(created.status_code, 201)
             self.assertEqual(detail.status_code, 200)
@@ -135,12 +148,23 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             self.assertEqual(grouped.get_json()["total"], 1)
             self.assertEqual(len(grouped.get_json()["groups"]), 1)
             self.assertEqual(grouped.get_json()["groups"][0]["candidateCount"], 1)
+            self.assertEqual(grouped.get_json()["counts"]["total"], 1)
+            self.assertEqual(grouped.get_json()["counts"]["monitoringRss"], 1)
+            self.assertEqual(grouped_monitoring.get_json()["total"], 1)
+            self.assertEqual(grouped_upgrade.get_json()["total"], 0)
+            self.assertEqual(grouped_subscription.get_json()["total"], 1)
+            self.assertEqual(grouped_match.get_json()["groups"][0]["candidates"][0]["id"], created.get_json()["id"])
+            self.assertEqual(published_today.get_json()["total"], 1)
+            self.assertEqual(invalid_published_date.status_code, 422)
+            self.assertEqual(invalid_published_date.get_json()["code"], "RSS_QUERY_INVALID")
             self.assertEqual(
                 grouped.get_json()["groups"][0]["candidates"][0],
                 detail.get_json(),
             )
             self.assertEqual(invalid_view.status_code, 422)
             self.assertEqual(invalid_view.get_json()["code"], "RSS_MATCH_QUERY_INVALID")
+            self.assertEqual(invalid_group_state.status_code, 422)
+            self.assertEqual(invalid_group_state.get_json()["code"], "RSS_MATCH_QUERY_INVALID")
             self.assertEqual(detail.get_json(), created.get_json())
             self.assertEqual(detail.get_json(), repository.get_match(created.get_json()["id"]))
             self.assertEqual(set(detail.get_json()), {
@@ -317,7 +341,9 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             self.assertNotIn("download_url", item_detail.get_data(as_text=True))
             self.assertNotIn("detail_url", item_detail.get_data(as_text=True))
             self.assertEqual(client.get("/api/v2/rss-items?identityStatus=unidentified").get_json()["total"], 1)
+            self.assertEqual(client.get("/api/v2/rss-items?reviewState=needs_review").get_json()["total"], 1)
             self.assertEqual(client.get("/api/v2/rss-items?identityStatus=invalid").status_code, 422)
+            self.assertEqual(client.get("/api/v2/rss-items?reviewState=invalid").status_code, 422)
             self.assertEqual(client.post("/api/v2/rss-items/identity-backfills", json={"limit": 201}).status_code, 422)
             repository.upsert_items(source_id, [{
                 "fingerprint": "history-imdb",

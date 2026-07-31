@@ -73,6 +73,135 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             self.assertEqual(group["bestMatchId"], winner["id"])
             self.assertEqual(group["bestCandidateScore"], 90)
             self.assertEqual([row["candidateScore"] for row in group["candidates"]], [90, 60])
+            self.assertEqual(payload["counts"]["total"], 1)
+            self.assertEqual(payload["counts"]["upgrade_available"], 1)
+            self.assertEqual(
+                repository.list_candidate_groups(group_state="upgrade_available")["total"],
+                1,
+            )
+            self.assertEqual(
+                repository.list_candidate_groups(group_state="protected")["total"],
+                0,
+            )
+            scoped = repository.list_candidate_groups(
+                subscription_id="tv:123:s1",
+                media_type="tv",
+                season_number=1,
+                episode_number=2,
+            )
+            self.assertEqual(scoped["total"], 1)
+            self.assertEqual(
+                repository.list_candidate_groups(match_id=winner["id"])["groups"][0]["bestMatchId"],
+                winner["id"],
+            )
+            self.assertEqual(
+                repository.find_unique_source_match(
+                    [f"rss:{winner['itemId']}"],
+                    ["tv:123:s1"],
+                    "tv:tmdb:123:season:1:episodes:2-2",
+                ),
+                {"matchId": winner["id"]},
+            )
+            self.assertIsNone(repository.find_unique_source_match(
+                [f"rss:{match['itemId']}" for match, _score in matches],
+                ["tv:123:s1"],
+                "tv:tmdb:123:season:1:episodes:2-2",
+            ))
+            with self.assertRaisesRegex(ValueError, "候选组状态"):
+                repository.list_candidate_groups(group_state="unknown")
+
+    def test_needs_review_filter_uses_full_repository_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "Review", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "ready-tv",
+                "title": "Ready Show S01E01",
+                "media_type": "tv",
+                "season_number": 1,
+                "tmdb_id": "101",
+                "identity_status": "identified",
+            }, {
+                "fingerprint": "identity-conflict",
+                "title": "Conflict Show S01E01",
+                "media_type": "tv",
+                "season_number": 1,
+                "identity_status": "conflict",
+            }, {
+                "fingerprint": "identity-missing",
+                "title": "Unknown Show S01E01",
+                "media_type": "tv",
+                "season_number": 1,
+                "identity_status": "unidentified",
+            }, {
+                "fingerprint": "season-missing",
+                "title": "Season Unknown",
+                "media_type": "tv",
+                "tmdb_id": "102",
+                "identity_status": "identified",
+            }, {
+                "fingerprint": "ready-movie",
+                "title": "Ready Movie 2026",
+                "media_type": "movie",
+                "tmdb_id": "103",
+                "identity_status": "identified",
+            }])
+
+            pending = repository.search_items(review_state="needs_review", limit=2, offset=0)
+            conflicts = repository.search_items(
+                review_state="needs_review",
+                identity_status="conflict",
+                limit=10,
+            )
+
+            self.assertEqual(pending["total"], 3)
+            self.assertEqual(len(pending["items"]), 2)
+            self.assertEqual(conflicts["total"], 1)
+            self.assertEqual(conflicts["items"][0]["identityStatus"], "conflict")
+            with self.assertRaisesRegex(ValueError, "复核状态"):
+                repository.search_items(review_state="unknown")
+
+    def test_resource_center_summary_and_date_filter_share_same_item_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "Today", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "today-ready",
+                "title": "Today Ready S01E01",
+                "published_at": "2026-07-30T16:00:00Z",
+                "media_type": "tv",
+                "season_number": 1,
+                "tmdb_id": "201",
+                "identity_status": "identified",
+            }, {
+                "fingerprint": "today-review",
+                "title": "Today Review",
+                "published_at": "2026-07-31T03:00:00Z",
+                "identity_status": "unidentified",
+            }, {
+                "fingerprint": "old-review",
+                "title": "Old Review",
+                "published_at": "2026-07-30T15:59:59Z",
+                "identity_status": "unidentified",
+            }])
+            start = "2026-07-30T16:00:00Z"
+            end = "2026-07-31T16:00:00Z"
+
+            summary = repository.resource_center_summary(start, end)
+            page = repository.search_items(
+                published_from=start,
+                published_before=end,
+                limit=10,
+            )
+
+            self.assertEqual(summary, {
+                "newToday": 2,
+                "needsReview": 2,
+                "upgradeAvailable": 0,
+            })
+            self.assertEqual(page["total"], summary["newToday"])
+            with self.assertRaisesRegex(ValueError, "发布时间范围"):
+                repository.search_items(published_from=end, published_before=start)
 
     def test_match_shadow_fields_and_rule_snapshots_are_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:

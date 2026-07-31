@@ -11,10 +11,20 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 from app.sqlite_runtime import SQLiteRuntime
+from app.torra_subscription_keys import torra_public_storage_key
 
 
 MATCH_STATUSES = {"candidate", "ignored", "triggered", "confirmed", "expired"}
 IDENTITY_STATUSES = {"identified", "conflict", "unidentified"}
+RSS_REVIEW_STATES = {"needs_review"}
+RSS_GROUP_STATES = {
+    "initial_best",
+    "waiting_baseline",
+    "monitoring_rss",
+    "upgrade_available",
+    "protected",
+    "blocked",
+}
 MATCH_EVALUATION_COLUMNS = {
     "torra_subscription_id": "TEXT NOT NULL DEFAULT ''",
     "target_key": "TEXT NOT NULL DEFAULT ''",
@@ -583,6 +593,9 @@ class PrivateRssRepository:
         source_id="",
         window_hours=None,
         identity_status="",
+        review_state="",
+        published_from="",
+        published_before="",
         limit=50,
         offset=0,
         tmdb_id="",
@@ -612,6 +625,15 @@ class PrivateRssRepository:
         identity_status = str(identity_status or "").strip().lower()
         if identity_status and identity_status not in IDENTITY_STATUSES:
             raise ValueError("身份状态无效")
+        review_state = str(review_state or "").strip().lower()
+        if review_state and review_state not in RSS_REVIEW_STATES:
+            raise ValueError("复核状态无效")
+        published_from = str(published_from or "").strip()
+        published_before = str(published_before or "").strip()
+        if bool(published_from) != bool(published_before) or (
+            published_from and published_from >= published_before
+        ):
+            raise ValueError("发布时间范围无效")
 
         if query_text and not match:
             return {"items": [], "total": 0, "limit": limit, "offset": offset}
@@ -628,6 +650,15 @@ class PrivateRssRepository:
         if identity_status:
             base_where.append("i.identity_status=?")
             base_params.append(identity_status)
+        if review_state == "needs_review":
+            base_where.append(
+                "(i.identity_status IN ('unidentified', 'conflict') "
+                "OR i.media_type='' OR (i.media_type='tv' AND i.season_number IS NULL))"
+            )
+        if published_from:
+            base_where.append("COALESCE(NULLIF(i.published_at, ''), i.created_at) >= ?")
+            base_where.append("COALESCE(NULLIF(i.published_at, ''), i.created_at) < ?")
+            base_params.extend((published_from, published_before))
 
         targeted = bool(target_tmdb_id or (query_text and (target_media_type or target_season is not None or target_year)))
         with closing(self.runtime.connect()) as connection:
@@ -1216,30 +1247,149 @@ class PrivateRssRepository:
             return f"S{season_number:02d}E{episode_number:02d}"
         return "季集暂未确认"
 
-    def list_candidate_groups(self, status="", limit=20, offset=0):
+    @staticmethod
+    def _candidate_groups_query(where=""):
+        return (
+            "WITH candidate_groups AS ("
+            "SELECT subscription_key, unit_key, MAX(created_at) AS latest_at, "
+            "CASE "
+            "WHEN MAX(CASE WHEN is_best_candidate=1 AND decision='current_best' THEN 1 ELSE 0 END)=1 THEN 'upgrade_available' "
+            "WHEN MAX(CASE WHEN is_best_candidate=1 AND decision='best_available' THEN 1 ELSE 0 END)=1 THEN 'initial_best' "
+            "WHEN MAX(CASE WHEN is_best_candidate=1 AND decision='best_waiting_baseline' THEN 1 ELSE 0 END)=1 THEN 'waiting_baseline' "
+            "WHEN MAX(CASE WHEN is_best_candidate=1 AND decision IN ('same_score','lower_score','rule_rejected') THEN 1 ELSE 0 END)=1 THEN 'protected' "
+            "WHEN COUNT(*)>0 AND SUM(CASE WHEN evaluation_status='blocked' THEN 1 ELSE 0 END)=COUNT(*) THEN 'blocked' "
+            "ELSE 'monitoring_rss' END AS group_state "
+            f"FROM rss_subscription_matches {where} GROUP BY subscription_key, unit_key"
+            ") "
+        )
+
+    @staticmethod
+    def _stored_subscription_key(connection, requested):
+        requested = str(requested or "").strip()
+        if not requested:
+            return ""
+        rows = connection.execute(
+            "SELECT DISTINCT subscription_key FROM rss_subscription_matches"
+        ).fetchall()
+        matches = {
+            str(row["subscription_key"] or "")
+            for row in rows
+            if requested in {
+                str(row["subscription_key"] or ""),
+                torra_public_storage_key(row["subscription_key"]),
+            }
+        }
+        if len(matches) > 1:
+            raise ValueError("RSS 订阅筛选存在冲突")
+        return next(iter(matches), requested)
+
+    def list_candidate_groups(
+        self,
+        status="",
+        group_state="",
+        subscription_id="",
+        media_type="",
+        season_number=None,
+        episode_number=None,
+        match_id="",
+        limit=20,
+        offset=0,
+    ):
         status = str(status or "").strip().lower()
         if status and status not in MATCH_STATUSES:
             raise ValueError("RSS 匹配状态无效")
+        group_state = str(group_state or "").strip().lower()
+        if group_state and group_state not in RSS_GROUP_STATES:
+            raise ValueError("RSS 候选组状态无效")
+        subscription_id = str(subscription_id or "").strip()
+        if len(subscription_id) > 200:
+            raise ValueError("RSS 订阅筛选无效")
+        media_type = str(media_type or "").strip().lower()
+        if media_type and media_type not in {"movie", "tv"}:
+            raise ValueError("媒体类型无效")
+        match_id = str(match_id or "").strip()
+        if len(match_id) > 80:
+            raise ValueError("RSS 匹配 ID 无效")
+        try:
+            season = int(season_number) if season_number not in (None, "") else None
+            episode = int(episode_number) if episode_number not in (None, "") else None
+        except (TypeError, ValueError) as exc:
+            raise ValueError("季集筛选无效") from exc
+        if season is not None and not 0 < season <= 999:
+            raise ValueError("季号无效")
+        if episode is not None and not 0 < episode <= 100_000:
+            raise ValueError("集号无效")
+        if episode is not None and season is None:
+            raise ValueError("集号筛选需要季号")
+        if media_type == "movie" and (season is not None or episode is not None):
+            raise ValueError("电影不接受季集筛选")
         limit = max(1, min(int(limit or 20), 50))
         offset = max(0, int(offset or 0))
-        where = "WHERE match_status=?" if status else ""
-        params = (status,) if status else ()
         with closing(self.runtime.connect()) as connection:
+            where_parts = []
+            params = []
+            if status:
+                where_parts.append("match_status=?")
+                params.append(status)
+            selected_subscription = self._stored_subscription_key(connection, subscription_id)
+            if match_id:
+                match_row = connection.execute(
+                    "SELECT subscription_key, unit_key FROM rss_subscription_matches WHERE id=?",
+                    (match_id,),
+                ).fetchone()
+                if not match_row:
+                    return {
+                        "groups": [], "total": 0, "limit": limit, "offset": offset,
+                        "counts": {"total": 0, **{state: 0 for state in RSS_GROUP_STATES}},
+                    }
+                where_parts.extend(("subscription_key=?", "unit_key=?"))
+                params.extend((match_row["subscription_key"], match_row["unit_key"]))
+                selected_subscription = str(match_row["subscription_key"] or "")
+            if subscription_id:
+                where_parts.append("subscription_key=?")
+                params.append(selected_subscription)
+            if media_type or season is not None or episode is not None:
+                if not selected_subscription:
+                    raise ValueError("季集筛选需要订阅 ID")
+                if media_type == "movie":
+                    where_parts.append("unit_key=?")
+                    params.append(f"{selected_subscription}:movie")
+                elif season is not None:
+                    if episode is not None:
+                        where_parts.append("unit_key=?")
+                        params.append(f"{selected_subscription}:s{season}:e{episode}")
+                    else:
+                        prefix = f"{selected_subscription}:s{season}:"
+                        where_parts.append("substr(unit_key, 1, length(?))=?")
+                        params.extend((prefix, prefix))
+            where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+            grouped_query = self._candidate_groups_query(where)
+            state_where = "WHERE group_state=?" if group_state else ""
+            state_params = (*params, group_state) if group_state else tuple(params)
             total = int(connection.execute(
-                "SELECT COUNT(*) AS count FROM ("
-                "SELECT 1 FROM rss_subscription_matches "
-                f"{where} GROUP BY subscription_key, unit_key)",
-                params,
+                grouped_query + f"SELECT COUNT(*) AS count FROM candidate_groups {state_where}",
+                state_params,
             ).fetchone()["count"])
+            count_rows = connection.execute(
+                grouped_query + "SELECT group_state, COUNT(*) AS count FROM candidate_groups GROUP BY group_state",
+                tuple(params),
+            ).fetchall()
+            state_counts = {state: 0 for state in RSS_GROUP_STATES}
+            state_counts.update({str(row["group_state"]): int(row["count"] or 0) for row in count_rows})
             refs = connection.execute(
-                "SELECT subscription_key, unit_key, MAX(created_at) AS latest_at "
-                f"FROM rss_subscription_matches {where} "
-                "GROUP BY subscription_key, unit_key "
+                grouped_query
+                + f"SELECT subscription_key, unit_key, latest_at FROM candidate_groups {state_where} "
                 "ORDER BY latest_at DESC, subscription_key, unit_key LIMIT ? OFFSET ?",
-                (*params, limit, offset),
+                (*state_params, limit, offset),
             ).fetchall()
             if not refs:
-                return {"groups": [], "total": total, "limit": limit, "offset": offset}
+                return {
+                    "groups": [],
+                    "total": total,
+                    "limit": limit,
+                    "offset": offset,
+                    "counts": {"total": sum(state_counts.values()), **state_counts},
+                }
             clauses = " OR ".join("(m.subscription_key=? AND m.unit_key=?)" for _ in refs)
             ref_params = [value for row in refs for value in (row["subscription_key"], row["unit_key"])]
             rows = connection.execute(
@@ -1292,7 +1442,67 @@ class PrivateRssRepository:
                 ), default=""),
                 "candidates": candidates,
             })
-        return {"groups": groups, "total": total, "limit": limit, "offset": offset}
+        return {
+            "groups": groups,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "counts": {"total": sum(state_counts.values()), **state_counts},
+        }
+
+    def resource_center_summary(self, published_from, published_before):
+        published_from = str(published_from or "").strip()
+        published_before = str(published_before or "").strip()
+        if not published_from or not published_before or published_from >= published_before:
+            raise ValueError("资源中心统计时间范围无效")
+        review_sql = (
+            "identity_status IN ('unidentified', 'conflict') OR media_type='' "
+            "OR (media_type='tv' AND season_number IS NULL)"
+        )
+        with closing(self.runtime.connect()) as connection:
+            item_counts = connection.execute(
+                "SELECT "
+                "SUM(CASE WHEN COALESCE(NULLIF(published_at, ''), created_at) >= ? "
+                "AND COALESCE(NULLIF(published_at, ''), created_at) < ? THEN 1 ELSE 0 END) AS new_today, "
+                f"SUM(CASE WHEN {review_sql} THEN 1 ELSE 0 END) AS needs_review "
+                "FROM rss_items",
+                (published_from, published_before),
+            ).fetchone()
+            grouped_query = self._candidate_groups_query()
+            upgrade_count = int(connection.execute(
+                grouped_query
+                + "SELECT COUNT(*) AS count FROM candidate_groups WHERE group_state='upgrade_available'"
+            ).fetchone()["count"])
+        return {
+            "newToday": int(item_counts["new_today"] or 0),
+            "needsReview": int(item_counts["needs_review"] or 0),
+            "upgradeAvailable": upgrade_count,
+        }
+
+    def find_unique_source_match(self, artifact_keys, subscription_keys, target_key):
+        artifacts = sorted({str(value or "").strip() for value in artifact_keys or [] if str(value or "").strip()})
+        subscriptions = sorted({str(value or "").strip() for value in subscription_keys or [] if str(value or "").strip()})
+        target_key = str(target_key or "").strip()
+        if not artifacts or not subscriptions or not target_key:
+            return None
+        artifacts = artifacts[:100]
+        with closing(self.runtime.connect()) as connection:
+            stored_subscriptions = sorted({
+                self._stored_subscription_key(connection, value) for value in subscriptions
+            })
+            artifact_marks = ",".join("?" for _ in artifacts)
+            subscription_marks = ",".join("?" for _ in stored_subscriptions)
+            rows = connection.execute(
+                "SELECT id, artifact_key FROM rss_subscription_matches "
+                f"WHERE target_key=? AND artifact_key IN ({artifact_marks}) "
+                f"AND subscription_key IN ({subscription_marks}) "
+                "ORDER BY is_best_candidate DESC, created_at DESC, id DESC",
+                (target_key, *artifacts, *stored_subscriptions),
+            ).fetchall()
+        matched_artifacts = {str(row["artifact_key"] or "") for row in rows if row["artifact_key"]}
+        if len(matched_artifacts) != 1 or not rows:
+            return None
+        return {"matchId": str(rows[0]["id"] or "")}
 
     def list_pending_evaluation_matches(self, limit=20):
         limit = max(1, min(int(limit or 20), 50))

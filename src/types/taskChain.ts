@@ -209,6 +209,7 @@ export interface TaskChainItem {
   mediaType: 'movie' | 'tv' | 'unknown';
   tmdbId: string;
   seasonNumber: number;
+  episodeNumber?: number;
   posterUrl: string;
   origin: 'subscription' | 'download' | 'library';
   channel: 'PT';
@@ -286,6 +287,9 @@ export interface TaskChainItem {
   pipelineOutcome?: PipelineOutcome;
   mediaResult?: MediaResult;
   residualIssues?: ResidualIssue[];
+  rssSourceMatch?: {
+    matchId: string;
+  };
 }
 
 export type TaskChainListItem = Omit<TaskChainItem, 'steps' | 'sourceIds' | 'suggestion' | 'artifactKeys' | 'stages'> & {

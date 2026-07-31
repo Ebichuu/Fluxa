@@ -14,6 +14,7 @@ import type {
   RssExactDownloadPreview,
   RssIdentityBackfillResponse,
   RssMatch,
+  RssMatchGroup,
   RssMatchGroupListResponse,
   RssMatchListResponse,
   RssMatchRunResponse,
@@ -592,6 +593,8 @@ export function getRssSeedItems(input: {
   sourceId?: string;
   window?: '' | '1h' | '24h' | '7d';
   identityStatus?: '' | 'identified' | 'conflict' | 'unidentified';
+  reviewState?: '' | 'needs_review';
+  publishedDate?: string;
   tmdbId?: string;
   mediaType?: 'movie' | 'tv';
   seasonNumber?: number;
@@ -604,6 +607,8 @@ export function getRssSeedItems(input: {
   if (input.sourceId) query.set('sourceId', input.sourceId);
   if (input.window) query.set('window', input.window);
   if (input.identityStatus) query.set('identityStatus', input.identityStatus);
+  if (input.reviewState) query.set('reviewState', input.reviewState);
+  if (input.publishedDate) query.set('publishedDate', input.publishedDate);
   if (input.tmdbId) query.set('tmdbId', input.tmdbId);
   if (input.mediaType) query.set('mediaType', input.mediaType);
   if (input.seasonNumber != null) query.set('seasonNumber', String(input.seasonNumber));
@@ -633,9 +638,25 @@ export function getRssMatches(input: { status?: string; limit?: number; offset?:
   return readJson<RssMatchListResponse>(`/api/v2/rss-matches?${query.toString()}`, options);
 }
 
-export function getRssMatchGroups(input: { status?: string; limit?: number; offset?: number } = {}, options?: RequestOptions): Promise<RssMatchGroupListResponse> {
+export function getRssMatchGroups(input: {
+  status?: string;
+  groupState?: RssMatchGroup['state'];
+  subscriptionId?: string;
+  mediaType?: 'movie' | 'tv';
+  seasonNumber?: number;
+  episodeNumber?: number;
+  matchId?: string;
+  limit?: number;
+  offset?: number;
+} = {}, options?: RequestOptions): Promise<RssMatchGroupListResponse> {
   const query = new URLSearchParams({ view: 'groups' });
   if (input.status) query.set('status', input.status);
+  if (input.groupState) query.set('groupState', input.groupState);
+  if (input.subscriptionId) query.set('subscriptionId', input.subscriptionId);
+  if (input.mediaType) query.set('mediaType', input.mediaType);
+  if (input.seasonNumber != null) query.set('seasonNumber', String(input.seasonNumber));
+  if (input.episodeNumber != null) query.set('episodeNumber', String(input.episodeNumber));
+  if (input.matchId) query.set('matchId', input.matchId);
   query.set('limit', String(input.limit ?? 20));
   query.set('offset', String(input.offset ?? 0));
   return readJson<RssMatchGroupListResponse>(`/api/v2/rss-matches?${query.toString()}`, options);

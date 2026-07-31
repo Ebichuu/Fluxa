@@ -480,10 +480,31 @@ class HomeSummaryService:
                 ))
 
         rss_evidence = None
+        rss_resource_center = {
+            "counts": {"newToday": None, "needsReview": None, "upgradeAvailable": None},
+            "confirmation": "unknown",
+            "observedAt": now,
+        }
         rss_service = self.app.extensions.get("mcc_private_rss")
         if rss_service:
             try:
                 rss_summary = rss_service.repository.summary(rss_service.collection_enabled())
+                resource_summary_reader = getattr(rss_service.repository, "resource_center_summary", None)
+                if callable(resource_summary_reader):
+                    shanghai_now = now_value.astimezone(SHANGHAI_TZ)
+                    day_start = shanghai_now.replace(hour=0, minute=0, second=0, microsecond=0)
+                    resource_counts = resource_summary_reader(
+                        _iso(day_start), _iso(day_start + timedelta(days=1))
+                    )
+                    rss_resource_center = {
+                        "counts": {
+                            "newToday": max(0, int(resource_counts.get("newToday") or 0)),
+                            "needsReview": max(0, int(resource_counts.get("needsReview") or 0)),
+                            "upgradeAvailable": max(0, int(resource_counts.get("upgradeAvailable") or 0)),
+                        },
+                        "confirmation": "confirmed",
+                        "observedAt": now,
+                    }
                 if not rss_summary.get("enabled"):
                     rss_evidence = evidence(
                         state="normal", source="private-rss", reason_code="RSS_DISABLED",
@@ -885,6 +906,7 @@ class HomeSummaryService:
             "detail": detail,
             "counts": counts,
             "statisticsMeta": statistics_meta,
+            "resourceCenter": rss_resource_center,
             "archiveSummary": archive_summary,
             "problemGroupSummary": problem_group_summary,
             "problemGroupTotal": len(media_problem_groups),

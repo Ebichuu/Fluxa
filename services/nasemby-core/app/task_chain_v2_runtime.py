@@ -1009,6 +1009,28 @@ class TaskChainV2Service:
         )
         return projection["summary"]
 
+    def _rss_source_match(self, item):
+        rss_service = self.app.extensions.get("mcc_private_rss")
+        finder = getattr(getattr(rss_service, "repository", None), "find_unique_source_match", None)
+        if not callable(finder) or not isinstance(item, dict):
+            return None
+        source_ids = item.get("sourceIds") if isinstance(item.get("sourceIds"), dict) else {}
+        subscription_ids = source_ids.get("subscriptionIds")
+        subscription_ids = subscription_ids if isinstance(subscription_ids, list) else []
+        subscriptions = [
+            item.get("subscriptionId"),
+            source_ids.get("subscriptionId"),
+            *subscription_ids,
+        ]
+        try:
+            return finder(
+                item.get("artifactKeys") or [],
+                subscriptions,
+                item.get("targetKey"),
+            )
+        except Exception:
+            return None
+
     def list_items(
         self,
         *,
@@ -1124,6 +1146,11 @@ class TaskChainV2Service:
             item for item in payload.get("items") or []
             if item.get("chainId") == chain_id_value
         ), None)
+        if item:
+            item = dict(item)
+            rss_source_match = self._rss_source_match(item)
+            if rss_source_match:
+                item["rssSourceMatch"] = rss_source_match
         return {
             **self.summary(force=False),
             "item": present_task_item(item) if item else None,

@@ -4,6 +4,7 @@ import unittest
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from flask import Flask
 
@@ -764,6 +765,33 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertTrue(detail["item"]["artifactKeys"])
         self.assertEqual(detail["item"]["episodeEvidence"][0]["episodeStart"], 3)
         self.assertEqual(fake.calls, 1)
+
+    def test_detail_exposes_only_verified_unique_rss_source_match(self):
+        class RssRepository:
+            def __init__(self):
+                self.calls = []
+
+            def find_unique_source_match(self, artifacts, subscriptions, target_key):
+                self.calls.append((artifacts, subscriptions, target_key))
+                return {"matchId": "rss-match-101"}
+
+        app = Flask(f"{__name__}-rss-source")
+        fake = FakeTaskChain()
+        rss_repository = RssRepository()
+        app.extensions["mcc_task_chain_service"] = fake
+        app.extensions["mcc_private_rss"] = SimpleNamespace(repository=rss_repository)
+        register_task_chain_v2(app, clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc))
+        client = app.test_client()
+        chain_id_value = client.get("/api/v2/tasks/chains?limit=1").get_json()["items"][0]["chainId"]
+
+        detail = client.get(f"/api/v2/tasks/chains/{chain_id_value}").get_json()["item"]
+
+        self.assertEqual(detail["rssSourceMatch"], {"matchId": "rss-match-101"})
+        self.assertEqual(len(rss_repository.calls), 1)
+        artifacts, subscriptions, target_key = rss_repository.calls[0]
+        self.assertEqual(artifacts, ["artifact:hash-1"])
+        self.assertIn("sub-1", subscriptions)
+        self.assertEqual(target_key, "tv:tmdb:101:season:2")
 
     def test_public_list_and_detail_redact_external_ids_paths_jobs_and_urls(self):
         raw_qb = "c" * 40

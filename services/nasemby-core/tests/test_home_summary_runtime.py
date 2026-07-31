@@ -45,9 +45,14 @@ class FakeQbClient:
 class FakeRssRepository:
     def __init__(self, error_sources=0):
         self.error_sources = error_sources
+        self.resource_bounds = None
 
     def summary(self, enabled):
         return {"enabled": enabled, "items": 347, "matches": 0, "matcherRan": False, "errorSources": self.error_sources, "lastSuccessAt": "2026-07-22T01:55:00Z"}
+
+    def resource_center_summary(self, published_from, published_before):
+        self.resource_bounds = (published_from, published_before)
+        return {"newToday": 12, "needsReview": 3, "upgradeAvailable": 2}
 
 
 class FakeRssService:
@@ -203,6 +208,24 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
             registry.mark_started("subscription-task")
         app.extensions["mcc_scheduler_status"] = registry
         return app
+
+    def test_resource_center_summary_uses_shanghai_day_and_stays_neutral(self):
+        app = self.build_app([])
+        rss = FakeRssService()
+        app.extensions["mcc_private_rss"] = rss
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+
+        self.assertEqual(result["resourceCenter"], {
+            "counts": {"newToday": 12, "needsReview": 3, "upgradeAvailable": 2},
+            "confirmation": "confirmed",
+            "observedAt": "2026-07-22T02:00:00Z",
+        })
+        self.assertEqual(rss.repository.resource_bounds, (
+            "2026-07-21T16:00:00Z",
+            "2026-07-22T16:00:00Z",
+        ))
+        self.assertNotEqual(result["healthState"], "action_required")
 
     def test_today_ingest_uses_library_evidence_and_deduplicates_target(self):
         app = self.build_app([

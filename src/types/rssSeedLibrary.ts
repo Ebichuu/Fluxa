@@ -264,6 +264,15 @@ export interface RssMatchGroupListResponse {
   total: number;
   limit: number;
   offset: number;
+  counts?: {
+    total: number;
+    initialBest: number;
+    waitingBaseline: number;
+    monitoringRss: number;
+    upgradeAvailable: number;
+    protected: number;
+    blocked: number;
+  };
 }
 
 export interface RssExactDownloadPreview {

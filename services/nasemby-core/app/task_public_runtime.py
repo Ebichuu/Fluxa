@@ -384,6 +384,10 @@ def present_task_item(value) -> dict:
         "residualIssues": present_residual_issues(item.get("residualIssues")),
         "primaryAction": _present_primary_action(item.get("primaryAction")),
     })
+    rss_source_match = item.get("rssSourceMatch") if isinstance(item.get("rssSourceMatch"), dict) else {}
+    match_id = str(rss_source_match.get("matchId") or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9:_-]{1,80}", match_id):
+        result["rssSourceMatch"] = {"matchId": match_id}
     if isinstance(item.get("acquisition"), dict):
         result["acquisition"] = {
             key: item["acquisition"].get(key)

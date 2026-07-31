@@ -75,6 +75,15 @@ export interface HomeSummaryResponse {
   detail: string;
   counts: HomeSummaryCounts;
   statisticsMeta?: Partial<Record<'archivedToday' | 'playableToday' | 'activeDownloadTasks' | 'actionRequiredGroups', StatisticMetadata>>;
+  resourceCenter?: {
+    counts: {
+      newToday: number | null;
+      needsReview: number | null;
+      upgradeAvailable: number | null;
+    };
+    confirmation: 'confirmed' | 'unknown';
+    observedAt: string;
+  };
   archiveSummary?: {
     date: string;
     timezone: 'Asia/Shanghai';

@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Activity, Bookmark, CalendarDays, Compass, Film, Home, ListChecks, Moon, Search, Settings, Sun } from 'lucide-react';
+import { Activity, Bookmark, CalendarDays, Compass, Film, Home, ListChecks, Moon, Rss, Search, Settings, Sun } from 'lucide-react';
 import type { HomeSummaryResponse } from '../../types/homeSummary';
 import type { PipelineOutcomeState } from '../../types/taskChain';
 import { healthStatusLabel } from '../status/HealthBadge';
@@ -10,12 +10,16 @@ export type ThemeMode = 'dark' | 'light';
 
 export interface TaskNavigationTarget {
   mediaType?: 'movie' | 'tv';
+  resourceView?: 'new' | 'identify' | 'scoring' | 'upgrades';
   chainId?: string;
   targetKey?: string;
   subscriptionId?: string;
   tmdbId?: string;
   title?: string;
   seasonNumber?: number | null;
+  episodeNumber?: number | null;
+  rssMatchId?: string;
+  publishedDate?: string;
   outcomeState?: PipelineOutcomeState;
   outcomeStates?: PipelineOutcomeState[];
   userState?: 'action_required' | 'in_progress' | 'completed' | 'no_action';
@@ -33,12 +37,14 @@ export type AppPathNavigate = (path: string) => void;
 const navItems: Array<{
   id: PageId;
   label: string;
+  mobileLabel?: string;
   icon: typeof Home;
   mobileHidden?: boolean;
 }> = [
   { id: 'overview', label: '首页', icon: Home },
-  { id: 'discover', label: '发现', icon: Compass },
+  { id: 'discover', label: '发现', icon: Compass, mobileHidden: true },
   { id: 'subscriptions', label: '追更', icon: Bookmark },
+  { id: 'rss-library', label: '资源中心', mobileLabel: '资源', icon: Rss },
   { id: 'tasks', label: '任务中心', icon: ListChecks },
   { id: 'calendar', label: '日历', icon: CalendarDays }
 ];
@@ -216,6 +222,7 @@ export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, 
 
             return (
               <button
+                aria-label={item.label}
                 aria-current={isActive ? 'page' : undefined}
                 className={isActive ? 'nav-item nav-item--active' : 'nav-item'}
                 data-mobile-hidden={item.mobileHidden || undefined}
@@ -234,7 +241,8 @@ export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, 
                 }}
               >
                 <Icon aria-hidden="true" size={15} strokeWidth={1.8} />
-                <span>{item.label}</span>
+                <span className="nav-item__label nav-item__label--desktop">{item.label}</span>
+                <span className="nav-item__label nav-item__label--mobile">{item.mobileLabel ?? item.label}</span>
                 {showTaskBadge && (
                   <span aria-label={`${actionRequiredCount} 个资源需要处理`} className="nav-item__badge">{actionRequiredBadge}</span>
                 )}
@@ -309,6 +317,10 @@ export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, 
           </button>
           {managementOpen && (
             <div className="nav-management__menu" role="menu">
+              <button role="menuitem" type="button" onClick={() => onNavigate('hall')}>
+                <Film aria-hidden="true" size={16} />
+                <span><strong>影视大厅</strong><small>浏览与播放</small></span>
+              </button>
               <button role="menuitem" type="button" onClick={() => onNavigate('control')}>
                 <Activity aria-hidden="true" size={16} />
                 <span><strong>控制室</strong><small>连接、能力与诊断</small></span>
@@ -317,6 +329,12 @@ export function AppTopNav({ activePage, homeSummary, onNavigate, onToggleTheme, 
                 <Settings aria-hidden="true" size={16} />
                 <span><strong>设置</strong><small>偏好与通知</small></span>
               </button>
+              {showThemeToggle && (
+                <button role="menuitem" type="button" onClick={() => { onToggleTheme(); setManagementOpen(false); }}>
+                  {theme === 'dark' ? <Sun aria-hidden="true" size={16} /> : <Moon aria-hidden="true" size={16} />}
+                  <span><strong>{theme === 'dark' ? '切换到白天模式' : '切换到夜间模式'}</strong><small>调整工作台外观</small></span>
+                </button>
+              )}
             </div>
           )}
         </div>

@@ -8,8 +8,11 @@ import {
   Clock3,
   Download,
   Library,
+  Rss,
   RefreshCw,
+  ScanSearch,
   ShieldCheck,
+  Sparkles,
   TriangleAlert
 } from 'lucide-react';
 import { usePolling } from '../../hooks/usePolling';
@@ -33,6 +36,12 @@ const metricDefinitions = [
   { key: 'actionRequiredGroups', label: '需处理问题组', unit: '个', icon: TriangleAlert, target: 'action_required' }
 ] as const;
 
+const resourceCenterDefinitions = [
+  { key: 'newToday', label: '今日新资源', unit: '条', icon: Rss },
+  { key: 'needsReview', label: '待识别', unit: '条', icon: ScanSearch },
+  { key: 'upgradeAvailable', label: '可洗版', unit: '组', icon: Sparkles }
+] as const;
+
 function shanghaiDateKey(value = new Date()) {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
@@ -53,6 +62,11 @@ function emptySummary(): HomeSummaryResponse {
     headline: '正在读取影音中心状态',
     detail: '正在汇总下载、入库和调度证据',
     counts: { ingestedToday: 0, archivedToday: null, completedTargetsToday: 0, playableToday: 0, downloading: 0, activeDownloadTasks: null, concurrentDownloadGroups: 0, pending: 0, waiting: 0, evidenceInsufficient: 0, identityPending: 0, actionRequired: 0, mediaActionRequired: 0, actionRequiredWorks: 0, actionRequiredResources: 0, actionRequiredGroups: 0, actionRequiredIdentityUnconfirmedResources: 0, auxiliaryAlerts: 0, inProgress: 0, suspectedBlocked: 0, protected: 0 },
+    resourceCenter: {
+      counts: { newToday: null, needsReview: null, upgradeAvailable: null },
+      confirmation: 'unknown',
+      observedAt: ''
+    },
     focusItems: [
       emptyFocusItem('current_downloads', 'qB 活跃任务', '个', '/tasks?qbActive=1'),
       emptyFocusItem('secupload_failures', '秒传失败', '个', '/tasks?systemIssue=secupload_failures'),
@@ -119,6 +133,11 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
     : (summary.issueTotal ?? summary.issues.length);
   const unloadedIssueCount = Math.max(0, groupedIssueTotal - groupedIssueRows.length);
   const StatusIcon = status === 'normal' ? CheckCircle2 : status === 'action_required' ? TriangleAlert : Clock3;
+  const resourceCenter = summary.resourceCenter ?? {
+    counts: { newToday: null, needsReview: null, upgradeAvailable: null },
+    confirmation: 'unknown' as const,
+    observedAt: ''
+  };
 
   const openMetric = (target: typeof metricDefinitions[number]['target']) => {
     if (target === 'archived') {
@@ -235,6 +254,45 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
             </button>
           );
         })}
+      </section>
+
+      <section className="home-resource-center" aria-labelledby="home-resource-center-title">
+        <header className="home-section-heading">
+          <div>
+            <p className="ops-eyebrow">PT RSS</p>
+            <h2 id="home-resource-center-title">资源中心</h2>
+          </div>
+          <small>{resourceCenter.observedAt ? <>最近读取 <RelativeTime value={resourceCenter.observedAt} /></> : '等待资源证据'}</small>
+        </header>
+        <div className="home-resource-center__list">
+          {resourceCenterDefinitions.map(({ key, label, unit, icon: Icon }) => {
+            const value = summaryUnavailable || resourceCenter.confirmation === 'unknown'
+              ? null
+              : resourceCenter.counts[key];
+            const href = key === 'newToday'
+              ? `/rss-library?publishedDate=${shanghaiDateKey()}&window=all`
+              : key === 'needsReview'
+                ? '/rss-library?view=identify'
+                : '/rss-library?view=upgrades';
+            return (
+              <a
+                className="home-resource-center__item"
+                href={href}
+                key={key}
+                onClick={(event) => {
+                  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                  event.preventDefault();
+                  onNavigatePath(href);
+                }}
+              >
+                <Icon aria-hidden="true" size={16} />
+                <span><strong>{label}</strong><small>{key === 'newToday' ? 'Asia/Shanghai 今日' : key === 'needsReview' ? '当前 RSS 台账' : '当前候选组'}</small></span>
+                <b>{value ?? '—'}<em>{value == null ? '未知' : unit}</em></b>
+                <ArrowRight aria-hidden="true" size={15} />
+              </a>
+            );
+          })}
+        </div>
       </section>
 
       <section className="home-focus" aria-labelledby="home-focus-title">
