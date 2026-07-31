@@ -148,6 +148,7 @@ export interface RssMatchRunResponse {
   created: number;
   evaluated?: number;
   remaining: number;
+  uncheckedRemaining?: number;
   limit: number;
 }
 
