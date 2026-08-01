@@ -1316,7 +1316,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                 <strong>{item.message || activityActionLabels[item.action] || '系统操作'}</strong>
                 <small>
                   {activityCategoryLabels[item.category] || '系统'} · {activityActionLabels[item.action] || '系统操作'}
-                  {(item.repeatCount ?? 0) > 1 && ` · 重复 ${item.repeatCount} 次`}
+                  {(item.repeatCount ?? 0) > 1 && ` · 累计后台同步 ${item.repeatCount} 次`}
                 </small>
                 {advancedOpen && (typeof item.meta?.code === 'string' || typeof item.meta?.request_id === 'string') && (
                   <small className="ops-activity-item__technical">

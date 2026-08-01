@@ -265,6 +265,8 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
             saved_douban = write_config.call_args.args[0]["douban"]
             self.assertEqual(result["stats"]["total"], 0)
             self.assertEqual(len(result["errors"]), 1)
+            self.assertEqual(result["skippedCount"], 1)
+            self.assertEqual(result["errorCount"], 0)
             self.assertTrue(saved_douban["last_success_at"])
             self.assertEqual(saved_douban["last_error"], "")
 
@@ -305,6 +307,8 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result["sourceCounts"], {"configured": 2, "succeeded": 1, "failed": 1})
         self.assertEqual(result["candidates"]["added"], 1)
+        self.assertEqual(result["skippedCount"], 0)
+        self.assertEqual(result["errorCount"], 1)
         self.assertNotIn("tracker.example", str(result["errors"]))
         self.assertNotIn("secret", str(result["errors"]))
         self.assertNotIn("private", str(result["errors"]))

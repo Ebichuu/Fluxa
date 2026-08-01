@@ -727,6 +727,8 @@ export function runSubscriptionSweep(): Promise<{
   added: number;
   updated: number;
   skipped: number;
+  skippedCount?: number;
+  errorCount?: number;
   pushed: 0;
   errors: string[];
   candidates: { scanned: number; added: number; updated: number; skipped: number; expired: number };

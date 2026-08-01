@@ -43,7 +43,7 @@ const COMMON_GROUPS: Array<{ id: string; title: string; note: string; keys: stri
   {
     id: 'automation',
     title: '自动化',
-    note: '追更扫描、Torra 同步、RSS、质量观察、推送和云盘能力',
+    note: '候选来源更新、Torra 订阅搜索、同步、RSS、质量观察、推送和云盘能力',
     keys: [
       'MCC_SUBSCRIPTION_SCHEDULER_ENABLED', 'MCC_TORRA_SUBSCRIPTION_SYNC_ENABLED',
       'MCC_PRIVATE_RSS_ENABLED', 'MCC_TORRA_QUALITY_WATCH_ENABLED', 'MCC_TORRA_REWASH_DOWNLOAD_ENABLED',
@@ -107,7 +107,7 @@ function fieldMatches(field: RuntimeSettingField, query: string) {
 }
 
 const disabledEffects: Record<string, string> = {
-  MCC_SUBSCRIPTION_SCHEDULER_ENABLED: '关闭后停止后台定时扫描，仍可手动更新追更。',
+  MCC_SUBSCRIPTION_SCHEDULER_ENABLED: '关闭后停止 Torra 订阅搜索和频道轮询，不影响候选来源更新。',
   MCC_TORRA_SUBSCRIPTION_SYNC_ENABLED: '关闭后停止刷新 Torra 镜像状态，不会删除两边已有订阅。',
   NASEMBY_CORE_WRITE_ENABLED: '关闭后进入只读模式，已有追更和历史记录保留。',
   MCC_PRIVATE_RSS_ENABLED: '关闭后停止 RSS 采集，已收集的种子记录保留。',

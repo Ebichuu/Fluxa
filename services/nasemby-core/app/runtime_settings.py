@@ -35,7 +35,7 @@ RESTART_REQUIRED = {
 
 
 FIELD_LABELS = {
-    "MCC_SUBSCRIPTION_SCHEDULER_ENABLED": "启用后台订阅定时扫描",
+    "MCC_SUBSCRIPTION_SCHEDULER_ENABLED": "Torra 订阅搜索",
     "MCC_TORRA_SUBSCRIPTION_SYNC_ENABLED": "Torra 订阅状态同步",
     "NASEMBY_CORE_WRITE_ENABLED": "允许订阅写入",
     "MCC_PRIVATE_RSS_ENABLED": "启用私人 RSS 采集",
@@ -134,7 +134,7 @@ FIELD_LABELS = {
 }
 
 FIELD_DESCRIPTIONS = {
-    "MCC_SUBSCRIPTION_SCHEDULER_ENABLED": "定时运行 Fluxa 的订阅扫描任务；关闭后仍可手动执行。",
+    "MCC_SUBSCRIPTION_SCHEDULER_ENABLED": "定时运行 Torra 订阅搜索和频道轮询；关闭不影响候选来源更新。",
     "MCC_TORRA_SUBSCRIPTION_SYNC_ENABLED": "定时刷新已镜像到 Fluxa 的 Torra 订阅状态，不会删除 Torra 订阅。",
     "NASEMBY_CORE_WRITE_ENABLED": "允许新增、修改和运行 Fluxa 订阅；只读查看时可关闭。",
     "MCC_PRIVATE_RSS_ENABLED": "允许添加私人 RSS 来源并采集种子；修改后需要重启。",

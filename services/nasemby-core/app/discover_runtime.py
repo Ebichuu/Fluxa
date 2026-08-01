@@ -3586,6 +3586,8 @@ def run_subscription_now(*, trigger="manual", run_id="", persist_legacy_state=Tr
     candidate_run = subscription_repository().upsert_discover_candidates(items)
     candidate_run["expired"] = subscription_repository().expire_discover_candidates()
     candidate_run.pop("candidateIds", None)
+    skipped_count = max(0, len(errors) - failed_sources) + candidate_run["skipped"]
+    error_count = failed_sources
     payload = {
         "success": True,
         "last_run_at": now_text,
@@ -3596,6 +3598,8 @@ def run_subscription_now(*, trigger="manual", run_id="", persist_legacy_state=Tr
         "added": candidate_run["added"],
         "updated": candidate_run["updated"],
         "skipped": len(errors) + candidate_run["skipped"],
+        "skippedCount": skipped_count,
+        "errorCount": error_count,
         "pushed": 0,
         "sourceCounts": {
             "configured": 1 if daily_only else len(selected_sources),
@@ -3617,14 +3621,15 @@ def run_subscription_now(*, trigger="manual", run_id="", persist_legacy_state=Tr
         summary_status,
         (
             f"候选来源更新完成：新增 {candidate_run['added']} 条，"
-            f"更新 {candidate_run['updated']} 条，跳过/错误 {payload['skipped']} 条"
+            f"更新 {candidate_run['updated']} 条，跳过 {skipped_count} 条，错误 {error_count} 条"
         ),
         total=len(items),
         added=candidate_run["added"],
         updated=candidate_run["updated"],
         movie=stats.get("movie"),
         tv=stats.get("tv"),
-        skipped=len(errors),
+        skipped=skipped_count,
+        error_count=error_count,
         mode=subscription_mode_label(config.get("mode")),
         task=subscription_mode_task_label(config.get("mode")),
         first_error=errors[0] if errors else "",
