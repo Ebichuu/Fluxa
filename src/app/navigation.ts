@@ -77,7 +77,7 @@ export function readNavigation(location: Location = window.location): Navigation
     || query.has('view') || query.has('episodeNumber') || query.has('matchId') || query.has('publishedDate')
   ) ? {
     mediaType: query.get('mediaType') === 'movie' ? 'movie' : query.get('mediaType') === 'tv' ? 'tv' : undefined,
-    resourceView: ['new', 'identify', 'scoring', 'upgrades'].includes(query.get('view') || '')
+    resourceView: ['new', 'identify', 'scoring', 'upgrades', 'cleanup'].includes(query.get('view') || '')
       ? query.get('view') as TaskNavigationTarget['resourceView']
       : undefined,
     chainId: optionalString(query.get('chainId')),

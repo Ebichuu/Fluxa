@@ -10,7 +10,7 @@ export type ThemeMode = 'dark' | 'light';
 
 export interface TaskNavigationTarget {
   mediaType?: 'movie' | 'tv';
-  resourceView?: 'new' | 'identify' | 'scoring' | 'upgrades';
+  resourceView?: 'new' | 'identify' | 'scoring' | 'upgrades' | 'cleanup';
   chainId?: string;
   targetKey?: string;
   subscriptionId?: string;

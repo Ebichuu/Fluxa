@@ -159,7 +159,7 @@ export function App() {
       const next = readNavigation();
       pendingScrollRef.current = scrollPositionFromHistoryState(event.state) ?? 0;
       setPage(next.page);
-      setNavigationTarget(['tasks', 'subscriptions', 'media'].includes(next.page) ? next.target : null);
+      setNavigationTarget(['tasks', 'subscriptions', 'rss-library', 'media'].includes(next.page) ? next.target : null);
       setHistoryRevision((current) => current + 1);
     };
     window.addEventListener('popstate', handlePopState);
@@ -173,7 +173,7 @@ export function App() {
   const navigate: AppNavigate = (nextPage, target) => {
     pendingScrollRef.current = 0;
     setPage(nextPage);
-    const nextTarget = ['tasks', 'subscriptions', 'media'].includes(nextPage) ? target ?? null : null;
+    const nextTarget = ['tasks', 'subscriptions', 'rss-library', 'media'].includes(nextPage) ? target ?? null : null;
     setNavigationTarget(nextTarget);
     writePath(pathForNavigation(nextPage, nextTarget), 'push');
     setHistoryRevision((current) => current + 1);
@@ -189,7 +189,7 @@ export function App() {
     writePath(`${url.pathname}${url.search}${url.hash}`, 'push');
     const next = readNavigation();
     setPage(next.page);
-    setNavigationTarget(['tasks', 'subscriptions', 'media'].includes(next.page) ? next.target : null);
+    setNavigationTarget(['tasks', 'subscriptions', 'rss-library', 'media'].includes(next.page) ? next.target : null);
     setHistoryRevision((current) => current + 1);
   };
 

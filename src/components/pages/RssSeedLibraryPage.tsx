@@ -911,7 +911,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       identityStatus,
       windowFilter,
       offset: 0
-    });
+    }, 'push');
   };
 
   const resourceViews: Array<{ id: ResourceView; label: string; count: number }> = [
@@ -921,6 +921,9 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     { id: 'upgrades', label: '追更洗版', count: matchGroupCounts.upgradeAvailable },
     { id: 'cleanup', label: '待整理', count: matchGroupCounts.needsCleanup ?? 0 }
   ];
+  const currentRangeText = windowFilter
+    ? `当前范围 ${total} 条 · 最近 ${windowFilter === '1h' ? '1 小时' : windowFilter === '24h' ? '24 小时' : '7 天'}`
+    : `当前范围 ${total} 条`;
   const matchPanelTitle = resourceView === 'upgrades'
     ? '追更洗版候选'
     : resourceView === 'cleanup'
@@ -1050,7 +1053,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
           </div>
 
           <div className="rss-index-head">
-            <span>{loading || itemsLoading ? '正在读取本地索引' : resourceView === 'identify' ? `与追更相关待识别 ${total} 条` : `找到 ${total} 条内容`}</span>
+            <span>{loading || itemsLoading ? '正在读取本地索引' : currentRangeText}</span>
             <div className="rss-index-filters">
               <select aria-label="按 RSS 来源筛选" value={sourceId} onChange={(event) => { const next = event.target.value; setSourceId(next); setOffset(0); syncUrlState({ sourceId: next, offset: 0 }); }}>
                 <option value="">全部来源</option>
