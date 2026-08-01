@@ -14,6 +14,77 @@ def item_key(item):
 
 
 class SubscriptionRepositoryTests(unittest.TestCase):
+    def test_candidate_scheduler_state_claim_complete_and_recover_are_atomic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SubscriptionRepository(Path(directory) / "media_control_center.sqlite3")
+
+            empty = repository.get_candidate_scheduler_state()
+            self.assertFalse(empty["enabled"])
+            self.assertFalse(empty["running"])
+            self.assertEqual(empty["version"], 0)
+
+            synced = repository.sync_candidate_scheduler_state(
+                enabled=True,
+                next_run_at="2026-08-01T00:30:00Z",
+                observed_at="2026-08-01T00:00:00Z",
+            )
+            claimed = repository.claim_candidate_refresh(
+                run_id="candidate-run-1",
+                schedule_key="2026-08-01@08:30",
+                enabled=True,
+                started_at="2026-08-01T00:31:00Z",
+                next_run_at="2026-08-01T00:30:00Z",
+            )
+            duplicate = repository.claim_candidate_refresh(
+                run_id="candidate-run-2",
+                schedule_key="2026-08-01@08:30",
+                enabled=True,
+                started_at="2026-08-01T00:32:00Z",
+                next_run_at="2026-08-01T00:30:00Z",
+            )
+
+            self.assertTrue(synced["enabled"])
+            self.assertTrue(claimed["claimed"])
+            self.assertTrue(claimed["state"]["running"])
+            self.assertFalse(duplicate["claimed"])
+            self.assertEqual(duplicate["reason"], "already_running")
+
+            completed = repository.complete_candidate_refresh(
+                run_id="candidate-run-1",
+                finished_at="2026-08-01T00:33:00Z",
+                next_run_at="2026-08-02T00:30:00Z",
+                last_result={"succeededSources": 2, "failedSources": 0},
+                succeeded=True,
+            )
+            repeated = repository.claim_candidate_refresh(
+                run_id="candidate-run-3",
+                schedule_key="2026-08-01@08:30",
+                enabled=True,
+                started_at="2026-08-01T00:34:00Z",
+                next_run_at="2026-08-02T00:30:00Z",
+            )
+
+            self.assertFalse(completed["running"])
+            self.assertEqual(completed["lastSuccessAt"], "2026-08-01T00:33:00Z")
+            self.assertEqual(completed["lastResult"]["succeededSources"], 2)
+            self.assertFalse(repeated["claimed"])
+            self.assertEqual(repeated["reason"], "already_attempted")
+
+            manual = repository.claim_candidate_refresh(
+                run_id="candidate-run-manual",
+                schedule_key="",
+                enabled=True,
+                started_at="2026-08-01T01:00:00Z",
+                next_run_at="2026-08-02T00:30:00Z",
+            )
+            self.assertTrue(manual["claimed"])
+            recovered = repository.recover_interrupted_candidate_refresh(
+                observed_at="2026-08-01T01:05:00Z"
+            )
+            self.assertFalse(recovered["running"])
+            self.assertEqual(recovered["lastRunAt"], "2026-08-01T01:00:00Z")
+            self.assertEqual(recovered["lastError"], "上次候选来源更新中断")
+
     def test_existing_v5_candidate_table_adds_follow_columns_without_data_loss(self):
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "media_control_center.sqlite3"

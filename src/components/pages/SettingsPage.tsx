@@ -147,7 +147,7 @@ export function SubscriptionHubSettings({ onModeChange }: SubscriptionHubSetting
         </label>
         <label>
           <input checked={douban.task_enabled} disabled={saving} type="checkbox" onChange={(event) => patch({ task_enabled: event.target.checked })} />
-          <span><strong>每日候选更新</strong><small>开启后按下方时间刷新候选；服务端调度仍由部署开关独立控制。</small></span>
+          <span><strong>每日候选更新</strong><small>开启后由独立服务端调度按下方时间刷新本地候选池。</small></span>
         </label>
         <label className="sub-config__time">
           任务时间

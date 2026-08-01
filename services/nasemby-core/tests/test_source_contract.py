@@ -472,6 +472,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "_hdhive_scheduler_started",
             "_discover_preload_started",
             "_subscription_scheduler_started",
+            "_candidate_source_scheduler_started",
             "_private_rss_collector_started",
             "_quality_watch_scheduler_started",
             "_torra_subscription_sync_started",
@@ -494,12 +495,12 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
 
         self.assertEqual(
             [thread.name for thread in started_threads],
-            ["hdhive-checkin", "discover-cache-preload", "torra-subscription-sync"],
+            ["hdhive-checkin", "discover-cache-preload", "torra-subscription-sync", "candidate-source"],
         )
         self.assertTrue(all(thread.daemon for thread in started_threads))
         self.assertEqual(
             started,
-            ["hdhive-checkin", "discover-cache-preload", "torra-subscription-sync"],
+            ["hdhive-checkin", "discover-cache-preload", "torra-subscription-sync", "candidate-source"],
         )
         self.assertEqual(repeated, [])
 
@@ -519,6 +520,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "_hdhive_scheduler_started",
             "_discover_preload_started",
             "_subscription_scheduler_started",
+            "_candidate_source_scheduler_started",
             "_private_rss_collector_started",
             "_quality_watch_scheduler_started",
             "_torra_subscription_sync_started",
@@ -544,6 +546,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
                 "hdhive-checkin",
                 "discover-cache-preload",
                 "torra-subscription-sync",
+                "candidate-source",
                 "subscription-task",
             ],
         )
@@ -565,6 +568,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "_hdhive_scheduler_started",
             "_discover_preload_started",
             "_subscription_scheduler_started",
+            "_candidate_source_scheduler_started",
             "_private_rss_collector_started",
             "_quality_watch_scheduler_started",
             "_torra_subscription_sync_started",
@@ -590,6 +594,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
                 "hdhive-checkin",
                 "discover-cache-preload",
                 "torra-subscription-sync",
+                "candidate-source",
                 "quality-watch",
             ],
         )

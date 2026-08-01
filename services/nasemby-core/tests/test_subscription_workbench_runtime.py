@@ -267,6 +267,50 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
             self.assertTrue(saved_douban["last_success_at"])
             self.assertEqual(saved_douban["last_error"], "")
 
+    def test_candidate_refresh_continues_after_one_source_failure_and_redacts_error(self):
+        config = {
+            "douban": {
+                "enabled": True,
+                "task_enabled": True,
+                "movie_enabled": True,
+                "tv_enabled": True,
+                "sources": ["hot_movie", "hot_tv"],
+            },
+        }
+        candidate = {
+            "title": "可用来源候选",
+            "media_type": "movie",
+            "tmdb_id": "200",
+            "source_key": "hot_movie",
+        }
+
+        def fetch(source_key, _limit):
+            if source_key == "hot_tv":
+                raise RuntimeError("https://tracker.example/api?passkey=secret C:/private/file")
+            return [candidate]
+
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SubscriptionRepository(Path(directory) / "subscriptions.sqlite3")
+            with patch.object(discover_runtime, "subscription_repository", return_value=repository), patch.object(
+                discover_runtime, "load_subscription_config", return_value=deepcopy(config)
+            ), patch.object(
+                discover_runtime, "fetch_subscription_source", side_effect=fetch
+            ), patch.object(
+                discover_runtime, "normalize_subscription_item_metadata", side_effect=lambda row, **_kwargs: dict(row)
+            ), patch.object(discover_runtime, "write_subscription_config_data") as write_config, patch.object(
+                discover_runtime, "write_activity"
+            ) as write_activity:
+                result = discover_runtime.run_subscription_now()
+
+        self.assertEqual(result["sourceCounts"], {"configured": 2, "succeeded": 1, "failed": 1})
+        self.assertEqual(result["candidates"]["added"], 1)
+        self.assertNotIn("tracker.example", str(result["errors"]))
+        self.assertNotIn("secret", str(result["errors"]))
+        self.assertNotIn("private", str(result["errors"]))
+        self.assertEqual(write_config.call_args.args[0]["douban"]["last_error"], "候选来源更新存在错误")
+        self.assertEqual(write_activity.call_count, 1)
+        self.assertEqual(write_activity.call_args.args[:3], ("subscription", "run_subscription", "skip"))
+
     def test_snapshot_returns_real_capabilities_stats_and_chain_evidence(self):
         app = Flask(__name__)
         app.extensions.update({
@@ -312,7 +356,7 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
             "torra_connection": "ready",
             "torra_mirror": "ready",
             "rss": "ready",
-            "scheduler": "unknown",
+            "scheduler": "disabled",
         })
         mirror = next(item for item in snapshot["capabilities"] if item["key"] == "torra_mirror")
         self.assertIn("当前对账已关联 0 条", mirror["detail"])
@@ -596,9 +640,9 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         self.assertTrue(payload["sourceScan"]["ruleEnabled"])
         self.assertFalse(payload["sourceScan"]["schedulerEnabled"])
         self.assertFalse(payload["sourceScan"]["running"])
-        self.assertEqual(payload["sourceScan"]["state"], "scheduler_stopped")
-        self.assertEqual(payload["sourceScan"]["label"], "候选规则已启用")
-        self.assertEqual(payload["sourceScan"]["detail"], "服务端调度未启动")
+        self.assertEqual(payload["sourceScan"]["state"], "scheduler_disabled")
+        self.assertEqual(payload["sourceScan"]["label"], "候选自动更新未开启")
+        self.assertEqual(payload["sourceScan"]["detail"], "")
 
     def test_scheduler_state_uses_global_runtime_gate_instead_of_source_config(self):
         app = Flask(__name__)
@@ -615,9 +659,41 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
             snapshot = service.snapshot()
 
         scheduler = next(item for item in snapshot["capabilities"] if item["key"] == "scheduler")
-        self.assertEqual(scheduler["state"], "unknown")
-        self.assertEqual(scheduler["detail"], "候选规则已启用 · 服务端调度未启动")
+        self.assertEqual(scheduler["state"], "disabled")
+        self.assertEqual(scheduler["detail"], "候选自动更新未开启")
         self.assertFalse(snapshot["scheduler"]["enabled"])
+
+    def test_candidate_source_runtime_replaces_dangerous_global_scheduler_status(self):
+        app = Flask(__name__)
+        registry = SchedulerStatusRegistry(clock=lambda: "2026-08-01T01:00:00Z")
+        registry.register("candidate-source", enabled=True)
+        registry.mark_started("candidate-source")
+        app.extensions["mcc_scheduler_status"] = registry
+        app.extensions["mcc_candidate_source_scheduler"] = type("CandidateScheduler", (), {
+            "snapshot": lambda _self, now=None: {
+                "enabled": True,
+                "rulesEnabled": True,
+                "running": False,
+                "lastRunAt": "2026-08-01T00:31:00Z",
+                "lastSuccessAt": "2026-08-01T00:31:00Z",
+                "nextRunAt": "2026-08-02T00:30:00Z",
+                "lastError": "",
+                "lastResult": {"succeededSources": 2, "failedSources": 0},
+                "overdue": False,
+            },
+        })()
+        service = SubscriptionWorkbenchService(app, {
+            "MCC_SUBSCRIPTION_SCHEDULER_ENABLED": "false",
+        })
+        config = {"douban": {"enabled": True, "task_enabled": True, "task_time": "08:30"}}
+
+        with patch.object(discover_runtime, "load_subscription_config", return_value=config):
+            payload = service.capability_snapshot()
+
+        self.assertTrue(payload["scheduler"]["running"])
+        self.assertEqual(payload["sourceScan"]["state"], "healthy")
+        self.assertEqual(payload["sourceScan"]["lastResult"]["succeededSources"], 2)
+        self.assertEqual(payload["sourceScan"]["nextRunAt"], "2026-08-02T00:30:00Z")
 
     def test_candidate_schedule_uses_shanghai_time_two_hour_grace_and_real_runs(self):
         environment = {"MCC_SUBSCRIPTION_SCHEDULER_ENABLED": "true"}
@@ -652,8 +728,8 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         self.assertFalse(in_grace["overdue"])
         self.assertEqual(overdue["state"], "overdue")
         self.assertTrue(overdue["overdue"])
-        self.assertEqual(waiting["state"], "waiting_first_run")
-        self.assertEqual(waiting["detail"], "等待首次运行")
+        self.assertEqual(waiting["state"], "overdue")
+        self.assertTrue(waiting["overdue"])
         self.assertEqual(failed["state"], "error")
         self.assertEqual(failed["detail"], "最近运行失败")
 

@@ -51,6 +51,10 @@ from app.secupload_issue_runtime import SecuploadIssueService, register_secuploa
 from app.private_rss_api_runtime import register_private_rss
 from app.automation_action_runtime import register_automation_actions
 from app.health_state_runtime import SchedulerStatusRegistry
+from app.candidate_source_scheduler import (
+    CandidateSourceScheduler,
+    register_candidate_source_scheduler,
+)
 from app.quality_watch_repository import QualityWatchRepository
 from app.quality_watch_bridge_runtime import QualityWatchBridgeRuntime
 from app.quality_watch_baseline_init_runtime import QualityWatchBaselineInitializationService
@@ -120,6 +124,7 @@ core_routes = Blueprint("nasemby_core_routes", __name__)
 _hdhive_scheduler_started = False
 _discover_preload_started = False
 _subscription_scheduler_started = False
+_candidate_source_scheduler_started = False
 _torra_subscription_sync_started = False
 _private_rss_collector_started = False
 _quality_watch_scheduler_started = False
@@ -446,6 +451,43 @@ def start_subscription_scheduler():
     thread.start()
 
 
+def _candidate_source_scheduler_loop():
+    time.sleep(5)
+    while True:
+        registry = app.extensions.get("mcc_scheduler_status")
+        try:
+            scheduler = app.extensions.get("mcc_candidate_source_scheduler")
+            result = scheduler.run_due() if scheduler else {"ran": False}
+            if registry and result.get("ran"):
+                registry.mark_run("candidate-source")
+        except Exception as exc:
+            if registry:
+                registry.mark_run("candidate-source", error=type(exc).__name__)
+            logger.error("background scheduler failed scheduler=candidate-source error_type=%s", type(exc).__name__)
+        time.sleep(60)
+
+
+def start_candidate_source_scheduler():
+    global _candidate_source_scheduler_started
+    if _candidate_source_scheduler_started:
+        return
+    scheduler = app.extensions.get("mcc_candidate_source_scheduler")
+    if not scheduler:
+        return
+    scheduler.recover()
+    _candidate_source_scheduler_started = True
+    registry = app.extensions.get("mcc_scheduler_status")
+    if registry:
+        registry.register("candidate-source", enabled=scheduler.snapshot().get("enabled", False), configured=True)
+        registry.mark_started("candidate-source")
+    thread = threading.Thread(
+        target=_candidate_source_scheduler_loop,
+        name="candidate-source",
+        daemon=True,
+    )
+    thread.start()
+
+
 def _torra_subscription_sync_loop():
     time.sleep(10)
     while True:
@@ -524,6 +566,9 @@ def start_background_runtime():
     started.append("discover-cache-preload")
     start_torra_subscription_sync_scheduler()
     started.append("torra-subscription-sync")
+    start_candidate_source_scheduler()
+    if _candidate_source_scheduler_started:
+        started.append("candidate-source")
     environment = app.extensions.get("mcc_environment") or os.environ
     subscription_enabled = _environment_flag_enabled(
         "MCC_SUBSCRIPTION_SCHEDULER_ENABLED",
@@ -1045,7 +1090,9 @@ def api_subscriptions_calendar():
 @core_routes.post("/api/subscriptions/run")
 def api_subscriptions_run():
     try:
-        return jsonify(discover_runtime.run_subscription_now())
+        scheduler = current_app.extensions.get("mcc_candidate_source_scheduler")
+        result = scheduler.run(trigger="manual") if scheduler else discover_runtime.run_subscription_now()
+        return jsonify(result), 409 if result.get("status") == "already_running" else 200
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 502
 
@@ -1443,6 +1490,16 @@ def create_app(
             clock=torra_clock,
         ),
     )
+    candidate_scheduler = CandidateSourceScheduler(
+        discover_runtime.subscription_repository(),
+        lambda **context: discover_runtime.run_subscription_now(
+            persist_legacy_state=False,
+            **context,
+        ),
+        discover_runtime.load_subscription_config,
+        legacy_projector=discover_runtime.project_candidate_scheduler_state,
+    )
+    register_candidate_source_scheduler(application, candidate_scheduler)
     quality_repository = quality_watch_repository or QualityWatchRepository(
         discover_runtime.subscription_database_path()
     )

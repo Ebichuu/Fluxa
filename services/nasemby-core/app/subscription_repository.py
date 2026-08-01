@@ -151,6 +151,172 @@ class SubscriptionRepository:
                 "compensation_json TEXT NOT NULL DEFAULT '[]', response_json TEXT NOT NULL DEFAULT '{}', "
                 "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
             )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS candidate_source_scheduler_state ("
+                "id INTEGER PRIMARY KEY CHECK (id = 1), enabled INTEGER NOT NULL DEFAULT 0, "
+                "running INTEGER NOT NULL DEFAULT 0, schedule_key TEXT NOT NULL DEFAULT '', "
+                "last_attempted_schedule_key TEXT NOT NULL DEFAULT '', run_id TEXT NOT NULL DEFAULT '', "
+                "started_at TEXT NOT NULL DEFAULT '', finished_at TEXT NOT NULL DEFAULT '', "
+                "last_run_at TEXT NOT NULL DEFAULT '', last_success_at TEXT NOT NULL DEFAULT '', "
+                "next_run_at TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '', "
+                "last_result_json TEXT NOT NULL DEFAULT '{}', observed_at TEXT NOT NULL DEFAULT '', "
+                "version INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL)"
+            )
+
+    @staticmethod
+    def _candidate_scheduler_state(row):
+        if not row:
+            return {
+                "enabled": False,
+                "running": False,
+                "scheduleKey": "",
+                "lastAttemptedScheduleKey": "",
+                "runId": "",
+                "startedAt": "",
+                "finishedAt": "",
+                "lastRunAt": "",
+                "lastSuccessAt": "",
+                "nextRunAt": "",
+                "lastError": "",
+                "lastResult": {},
+                "observedAt": "",
+                "version": 0,
+            }
+        return {
+            "enabled": bool(row["enabled"]),
+            "running": bool(row["running"]),
+            "scheduleKey": str(row["schedule_key"] or ""),
+            "lastAttemptedScheduleKey": str(row["last_attempted_schedule_key"] or ""),
+            "runId": str(row["run_id"] or ""),
+            "startedAt": str(row["started_at"] or ""),
+            "finishedAt": str(row["finished_at"] or ""),
+            "lastRunAt": str(row["last_run_at"] or ""),
+            "lastSuccessAt": str(row["last_success_at"] or ""),
+            "nextRunAt": str(row["next_run_at"] or ""),
+            "lastError": str(row["last_error"] or ""),
+            "lastResult": _json_load(row["last_result_json"], {}),
+            "observedAt": str(row["observed_at"] or ""),
+            "version": int(row["version"] or 0),
+        }
+
+    def get_candidate_scheduler_state(self):
+        with closing(self.runtime.connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM candidate_source_scheduler_state WHERE id=1"
+            ).fetchone()
+        return self._candidate_scheduler_state(row)
+
+    def sync_candidate_scheduler_state(self, *, enabled, next_run_at, observed_at):
+        now = str(observed_at or _now_text())
+        next_run_at = str(next_run_at or "")
+        with self.runtime.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT enabled, next_run_at FROM candidate_source_scheduler_state WHERE id=1"
+            ).fetchone()
+            if not row:
+                connection.execute(
+                    "INSERT INTO candidate_source_scheduler_state "
+                    "(id, enabled, next_run_at, observed_at, updated_at) VALUES (1, ?, ?, ?, ?)",
+                    (int(bool(enabled)), next_run_at, now, now),
+                )
+            elif bool(row["enabled"]) != bool(enabled) or str(row["next_run_at"] or "") != next_run_at:
+                connection.execute(
+                    "UPDATE candidate_source_scheduler_state SET enabled=?, next_run_at=?, "
+                    "observed_at=?, updated_at=?, version=version+1 WHERE id=1",
+                    (int(bool(enabled)), next_run_at, now, now),
+                )
+        return self.get_candidate_scheduler_state()
+
+    def claim_candidate_refresh(self, *, run_id, schedule_key, enabled, started_at, next_run_at):
+        run_id = str(run_id or "").strip()
+        if not run_id:
+            raise ValueError("候选刷新运行 ID 不能为空")
+        schedule_key = str(schedule_key or "").strip()
+        now = str(started_at or _now_text())
+        with self.runtime.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM candidate_source_scheduler_state WHERE id=1"
+            ).fetchone()
+            if not row:
+                connection.execute(
+                    "INSERT INTO candidate_source_scheduler_state "
+                    "(id, enabled, next_run_at, observed_at, updated_at) VALUES (1, ?, ?, ?, ?)",
+                    (int(bool(enabled)), str(next_run_at or ""), now, now),
+                )
+                row = connection.execute(
+                    "SELECT * FROM candidate_source_scheduler_state WHERE id=1"
+                ).fetchone()
+            state = self._candidate_scheduler_state(row)
+            if state["running"]:
+                return {"claimed": False, "reason": "already_running", "state": state}
+            if schedule_key and state["lastAttemptedScheduleKey"] == schedule_key:
+                return {"claimed": False, "reason": "already_attempted", "state": state}
+            attempted_key = schedule_key or state["lastAttemptedScheduleKey"]
+            connection.execute(
+                "UPDATE candidate_source_scheduler_state SET enabled=?, running=1, schedule_key=?, "
+                "last_attempted_schedule_key=?, run_id=?, started_at=?, finished_at='', "
+                "next_run_at=?, observed_at=?, updated_at=?, version=version+1 WHERE id=1",
+                (
+                    int(bool(enabled)), schedule_key, attempted_key, run_id, now,
+                    str(next_run_at or ""), now, now,
+                ),
+            )
+            claimed = connection.execute(
+                "SELECT * FROM candidate_source_scheduler_state WHERE id=1"
+            ).fetchone()
+        return {"claimed": True, "reason": "", "state": self._candidate_scheduler_state(claimed)}
+
+    def complete_candidate_refresh(
+        self,
+        *,
+        run_id,
+        finished_at,
+        next_run_at,
+        last_error="",
+        last_result=None,
+        succeeded=False,
+    ):
+        now = str(finished_at or _now_text())
+        with self.runtime.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM candidate_source_scheduler_state WHERE id=1"
+            ).fetchone()
+            if not row or not bool(row["running"]) or str(row["run_id"] or "") != str(run_id or ""):
+                raise RuntimeError("候选刷新运行槽位已变更")
+            last_success_at = now if succeeded else str(row["last_success_at"] or "")
+            connection.execute(
+                "UPDATE candidate_source_scheduler_state SET running=0, finished_at=?, last_run_at=?, "
+                "last_success_at=?, next_run_at=?, last_error=?, last_result_json=?, "
+                "observed_at=?, updated_at=?, version=version+1 WHERE id=1",
+                (
+                    now, now, last_success_at, str(next_run_at or ""), str(last_error or "")[:500],
+                    _json_dump(dict(last_result or {})), now, now,
+                ),
+            )
+            completed = connection.execute(
+                "SELECT * FROM candidate_source_scheduler_state WHERE id=1"
+            ).fetchone()
+        return self._candidate_scheduler_state(completed)
+
+    def recover_interrupted_candidate_refresh(self, *, observed_at):
+        now = str(observed_at or _now_text())
+        with self.runtime.transaction(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM candidate_source_scheduler_state WHERE id=1"
+            ).fetchone()
+            if not row or not bool(row["running"]):
+                return self._candidate_scheduler_state(row)
+            connection.execute(
+                "UPDATE candidate_source_scheduler_state SET running=0, finished_at=?, "
+                "last_run_at=CASE WHEN started_at<>'' THEN started_at ELSE ? END, "
+                "last_error='上次候选来源更新中断', observed_at=?, updated_at=?, "
+                "version=version+1 WHERE id=1",
+                (now, now, now, now),
+            )
+            recovered = connection.execute(
+                "SELECT * FROM candidate_source_scheduler_state WHERE id=1"
+            ).fetchone()
+        return self._candidate_scheduler_state(recovered)
 
     @staticmethod
     def _identity(item):

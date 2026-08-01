@@ -51,13 +51,19 @@ def _candidate_scan_snapshot(environment, douban, scheduler, now_value=None):
     local_now = now_value.astimezone(SHANGHAI_TZ)
     douban = douban if isinstance(douban, dict) else {}
     scheduler = scheduler if isinstance(scheduler, dict) else {}
-    rule_enabled = bool(douban.get("enabled") and douban.get("task_enabled"))
-    scheduler_configured = "MCC_SUBSCRIPTION_SCHEDULER_ENABLED" in environment
-    scheduler_enabled = (
-        _truthy(environment.get("MCC_SUBSCRIPTION_SCHEDULER_ENABLED"))
-        if scheduler_configured else bool(scheduler.get("enabled"))
-    )
-    scheduler_started = bool(scheduler.get("started"))
+    candidate_scheduler = bool(scheduler.get("candidateSource"))
+    rule_enabled = bool(douban.get("enabled"))
+    if candidate_scheduler:
+        scheduler_configured = True
+        scheduler_enabled = bool(scheduler.get("enabled"))
+        scheduler_started = bool(scheduler.get("schedulerStarted"))
+    else:
+        scheduler_configured = "MCC_SUBSCRIPTION_SCHEDULER_ENABLED" in environment
+        scheduler_enabled = (
+            _truthy(environment.get("MCC_SUBSCRIPTION_SCHEDULER_ENABLED"))
+            if scheduler_configured else bool(scheduler.get("enabled"))
+        )
+        scheduler_started = bool(scheduler.get("started"))
     scheduler_running = bool(scheduler_enabled and scheduler_started)
     task_time = str(douban.get("task_time") or "08:30")
     try:
@@ -70,23 +76,34 @@ def _candidate_scan_snapshot(environment, douban, scheduler, now_value=None):
     today_schedule = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     grace_until = today_schedule + CANDIDATE_SCHEDULE_GRACE
     expected = today_schedule if local_now > grace_until else today_schedule - timedelta(days=1)
-    last_run_at = str(douban.get("last_run_at") or "")
-    last_success_at = str(douban.get("last_success_at") or "")
+    last_run_at = str(scheduler.get("lastRunAt") or douban.get("last_run_at") or "")
+    last_success_at = str(scheduler.get("lastSuccessAt") or douban.get("last_success_at") or "")
     configured_error = str(douban.get("last_error") or "")
     scheduler_error = str(scheduler.get("lastError") or "")
-    last_error = configured_error or scheduler_error
+    last_error = scheduler_error or configured_error
     if not last_success_at and last_run_at and not configured_error:
         last_success_at = last_run_at
     last_success = _as_datetime(last_success_at)
-    overdue = bool(last_success and last_success < expected.astimezone(timezone.utc))
+    overdue = (
+        bool(scheduler.get("overdue"))
+        if candidate_scheduler else bool(last_success and last_success < expected.astimezone(timezone.utc))
+    )
     if not rule_enabled:
         state = "rules_disabled"
         label = "候选规则未启用"
         detail = ""
+    elif not scheduler_enabled:
+        state = "scheduler_disabled"
+        label = "候选自动更新未开启"
+        detail = ""
     elif not scheduler_running:
         state = "scheduler_stopped"
-        label = "候选规则已启用"
+        label = "候选自动更新已开启"
         detail = "服务端调度未启动"
+    elif candidate_scheduler and scheduler.get("running"):
+        state = "running"
+        label = "候选来源更新中"
+        detail = f"开始于 {scheduler.get('startedAt')}" if scheduler.get("startedAt") else ""
     elif last_error:
         state = "error"
         label = "候选调度异常"
@@ -110,6 +127,7 @@ def _candidate_scan_snapshot(environment, douban, scheduler, now_value=None):
         "schedulerEnabled": scheduler_enabled,
         "schedulerStarted": scheduler_started,
         "running": scheduler_running,
+        "refreshRunning": bool(scheduler.get("running")) if candidate_scheduler else False,
         "state": state,
         "label": label,
         "detail": detail,
@@ -120,6 +138,8 @@ def _candidate_scan_snapshot(environment, douban, scheduler, now_value=None):
         "expectedRunAt": expected.isoformat(timespec="seconds"),
         "graceUntil": grace_until.isoformat(timespec="seconds"),
         "overdue": overdue,
+        "nextRunAt": str(scheduler.get("nextRunAt") or ""),
+        "lastResult": scheduler.get("lastResult") if isinstance(scheduler.get("lastResult"), dict) else {},
     }
 
 
@@ -354,14 +374,22 @@ class SubscriptionWorkbenchService:
         self.environment = environment if environment is not None else {}
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
+    def _candidate_scheduler_snapshot(self):
+        registry = self.app.extensions.get("mcc_scheduler_status")
+        heartbeat = registry.snapshot("candidate-source") if registry else {}
+        runtime = self.app.extensions.get("mcc_candidate_source_scheduler")
+        if runtime:
+            return {
+                **runtime.snapshot(now=self.clock()),
+                "candidateSource": True,
+                "schedulerStarted": bool(heartbeat.get("started")),
+                "heartbeatAt": str(heartbeat.get("lastRunAt") or heartbeat.get("checkedAt") or ""),
+            }
+        return registry.snapshot("subscription-task") if registry else {}
+
     def capability_snapshot(self):
         checked_at = _now()
-        registry = self.app.extensions.get("mcc_scheduler_status")
-        scheduler = registry.snapshot("subscription-task") if registry else {}
-        scheduler_configured = "MCC_SUBSCRIPTION_SCHEDULER_ENABLED" in self.environment
-        scheduler_enabled = _truthy(self.environment.get("MCC_SUBSCRIPTION_SCHEDULER_ENABLED"))
-        scheduler_started = bool(scheduler.get("started"))
-        scheduler_error = str(scheduler.get("lastError") or "")
+        scheduler = self._candidate_scheduler_snapshot()
         try:
             config = discover_runtime.load_subscription_config() or {}
         except Exception:
@@ -381,13 +409,13 @@ class SubscriptionWorkbenchService:
                 "enabled": _truthy(self.environment.get("TORRA_PUSH_ENABLED")),
             },
             "scheduler": {
-                "configured": scheduler_configured,
-                "enabled": scheduler_enabled,
-                "started": scheduler_started,
-                "running": bool(scheduler_enabled and scheduler_started and not scheduler_error),
+                "configured": source_scan["schedulerConfigured"],
+                "enabled": source_scan["schedulerEnabled"],
+                "started": source_scan["schedulerStarted"],
+                "running": source_scan["running"],
                 "lastRunAt": source_scan["lastRunAt"],
-                "heartbeatAt": str(scheduler.get("lastRunAt") or ""),
-                "lastError": scheduler_error,
+                "heartbeatAt": str(scheduler.get("heartbeatAt") or scheduler.get("lastRunAt") or ""),
+                "lastError": source_scan["lastError"],
             },
             # 手动加入结果只看 manualFollow；sourceScan 只描述后台来源扫描
             "manualFollow": manual_follow_snapshot(self.environment, config),
@@ -751,15 +779,16 @@ class SubscriptionWorkbenchService:
         config = discover_runtime.load_subscription_config() or {}
         douban = config.get("douban") if isinstance(config, dict) else {}
         douban = douban if isinstance(douban, dict) else {}
-        scheduler_registry = self.app.extensions.get("mcc_scheduler_status")
-        scheduler_runtime = scheduler_registry.snapshot("subscription-task") if scheduler_registry else {}
+        scheduler_runtime = self._candidate_scheduler_snapshot()
         source_scan = _candidate_scan_snapshot(
             self.environment, douban, scheduler_runtime, self.clock()
         )
         scheduler_enabled = bool(source_scan["ruleEnabled"] and source_scan["running"])
         scheduler_state = {
             "rules_disabled": "disabled",
+            "scheduler_disabled": "disabled",
             "scheduler_stopped": "unknown",
+            "running": "ready",
             "waiting_first_run": "unknown",
             "error": "error",
             "overdue": "error",

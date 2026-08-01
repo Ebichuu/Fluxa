@@ -287,7 +287,8 @@ export interface SourceScanCapability {
   schedulerEnabled: boolean;
   schedulerStarted: boolean;
   running: boolean;
-  state: 'rules_disabled' | 'scheduler_stopped' | 'waiting_first_run' | 'error' | 'overdue' | 'healthy';
+  refreshRunning?: boolean;
+  state: 'rules_disabled' | 'scheduler_disabled' | 'scheduler_stopped' | 'running' | 'waiting_first_run' | 'error' | 'overdue' | 'healthy';
   label: string;
   detail: string;
   taskTime: string;
@@ -297,6 +298,14 @@ export interface SourceScanCapability {
   expectedRunAt: string;
   graceUntil: string;
   overdue: boolean;
+  nextRunAt?: string;
+  lastResult?: {
+    succeededSources?: number;
+    failedSources?: number;
+    skippedItems?: number;
+    addedCandidates?: number;
+    updatedCandidates?: number;
+  };
 }
 
 export type TorraPushState = 'queued' | 'submitted' | 'linked' | 'failed' | 'disabled' | 'unknown' | 'not_applicable';

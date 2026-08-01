@@ -369,9 +369,11 @@ export function ControlRoom() {
         detail: sourceScan.detail || `计划时间 ${sourceScan.taskTime}`,
         tone: sourceScan.state === 'healthy'
           ? 'ok' as const
-          : sourceScan.state === 'rules_disabled'
+          : ['rules_disabled', 'scheduler_disabled', 'waiting_first_run'].includes(sourceScan.state)
             ? 'idle' as const
-            : 'warn' as const
+            : sourceScan.state === 'running'
+              ? 'configured' as const
+              : 'warn' as const
       };
   const torraPushLabel = !subscriptionCapabilities ? '读取中' : subscriptionCapabilities.torraPush.enabled ? '已开启' : '已关闭';
 

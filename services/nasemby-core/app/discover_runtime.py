@@ -2972,13 +2972,23 @@ def subscription_row_rating(row):
     return 0.0
 
 
-def add_subscription_run_issue(errors, message, status="skip", action="skip_subscription", category="subscription", **meta):
+def add_subscription_run_issue(
+    errors,
+    message,
+    status="skip",
+    action="skip_subscription",
+    category="subscription",
+    *,
+    record_activity=True,
+    **meta,
+):
     text = str(message or "").strip()
     if not text:
         return
     if text not in errors:
         errors.append(text)
-        write_activity(category, action, status, text, **meta)
+        if record_activity:
+            write_activity(category, action, status, text, **meta)
 
 
 def _subscription_task_base(config, rules=None):
@@ -3413,8 +3423,7 @@ def _subscription_resource_rule_transfer_worker(items, keys, config, trigger):
                 SUBSCRIPTION_RESOURCE_TASK_KEYS.discard(key)
 
 
-def run_subscription_now():
-    write_activity("subscription", "run_subscription", "start", "开始刷新订阅")
+def run_subscription_now(*, trigger="manual", run_id="", persist_legacy_state=True):
     config = load_subscription_config()
     douban = config.get("douban") if isinstance(config, dict) else {}
     if not isinstance(douban, dict):
@@ -3439,12 +3448,24 @@ def run_subscription_now():
     seen = set()
     errors = []
     run_failed = False
+    succeeded_sources = 0
+    failed_sources = 0
     if daily_only:
         try:
             rows = fetch_daily_airing_subscription_source(72)
+            succeeded_sources += 1
         except Exception as exc:
             run_failed = True
-            add_subscription_run_issue(errors, f"全球日播: {exc}", "error", "fetch_subscription_source", source="全球日播", error=str(exc))
+            failed_sources += 1
+            add_subscription_run_issue(
+                errors,
+                "全球日播：来源暂时无法读取",
+                "error",
+                "fetch_subscription_source",
+                source="全球日播",
+                error_type=type(exc).__name__,
+                record_activity=False,
+            )
             rows = []
         for row in rows:
             row = normalize_subscription_item_metadata(row, resolve_tmdb=True)
@@ -3460,6 +3481,7 @@ def run_subscription_now():
                     source="全球日播",
                     reason="排除订阅",
                     exclude=exclude_match,
+                    record_activity=False,
                 )
                 continue
             if not subscription_has_required_tmdb(row):
@@ -3473,6 +3495,7 @@ def run_subscription_now():
                     source="全球日播",
                     reason="TMDB 未匹配",
                     source_title=row.get("source_title") or "",
+                    record_activity=False,
                 )
                 continue
             dedupe_key = get_subscription_dedupe_key(row)
@@ -3486,9 +3509,20 @@ def run_subscription_now():
         source = SUBSCRIPTION_SOURCES[source_key]
         try:
             rows = fetch_subscription_source(source_key, 24)
+            succeeded_sources += 1
         except Exception as exc:
             run_failed = True
-            add_subscription_run_issue(errors, f"{source['label']}: {exc}", "error", "fetch_subscription_source", source=source.get("label") or source_key, error=str(exc))
+            failed_sources += 1
+            source_label = source.get("label") or source_key
+            add_subscription_run_issue(
+                errors,
+                f"{source_label}：来源暂时无法读取",
+                "error",
+                "fetch_subscription_source",
+                source=source_label,
+                error_type=type(exc).__name__,
+                record_activity=False,
+            )
             continue
         for row in rows:
             if row["media_type"] == "tv" and not douban.get("tv_enabled", True):
@@ -3508,6 +3542,7 @@ def run_subscription_now():
                     source=source.get("label") or source_key,
                     reason="排除订阅",
                     exclude=exclude_match,
+                    record_activity=False,
                 )
                 continue
             if not subscription_has_required_tmdb(row):
@@ -3521,6 +3556,7 @@ def run_subscription_now():
                     source=source.get("label") or source_key,
                     reason="TMDB 未匹配",
                     source_title=row.get("source_title") or "",
+                    record_activity=False,
                 )
                 continue
             row_media_type = discover_item_media_type(row) or str(row.get("media_type") or row.get("type") or "").strip().lower()
@@ -3561,12 +3597,18 @@ def run_subscription_now():
         "updated": candidate_run["updated"],
         "skipped": len(errors) + candidate_run["skipped"],
         "pushed": 0,
+        "sourceCounts": {
+            "configured": 1 if daily_only else len(selected_sources),
+            "succeeded": succeeded_sources,
+            "failed": failed_sources,
+        },
     }
-    config["douban"]["last_run_at"] = now_text
-    config["douban"]["last_error"] = "候选来源更新存在错误" if run_failed else ""
-    if not run_failed:
-        config["douban"]["last_success_at"] = now_text
-    write_subscription_config_data(config)
+    if persist_legacy_state:
+        config["douban"]["last_run_at"] = now_text
+        config["douban"]["last_error"] = "候选来源更新存在错误" if run_failed else ""
+        if not run_failed:
+            config["douban"]["last_success_at"] = now_text
+        write_subscription_config_data(config)
     payload["config"] = config
     summary_status = "success" if not errors else ("skip" if items else "error")
     write_activity(
@@ -3586,8 +3628,24 @@ def run_subscription_now():
         mode=subscription_mode_label(config.get("mode")),
         task=subscription_mode_task_label(config.get("mode")),
         first_error=errors[0] if errors else "",
+        trigger=str(trigger or "manual"),
+        run_id=str(run_id or ""),
+        succeeded_sources=succeeded_sources,
+        failed_sources=failed_sources,
     )
     return payload
+
+
+def project_candidate_scheduler_state(state):
+    value = state if isinstance(state, dict) else {}
+    config = load_subscription_config()
+    douban = config.get("douban") if isinstance(config.get("douban"), dict) else {}
+    douban["last_run_at"] = str(value.get("lastRunAt") or "")
+    douban["last_success_at"] = str(value.get("lastSuccessAt") or "")
+    douban["last_error"] = str(value.get("lastError") or "")
+    config["douban"] = douban
+    write_subscription_config_data(config)
+    return config
 
 
 def run_due_subscription_task():
