@@ -33,6 +33,33 @@ class BrokenCollector:
         raise TimeoutError("stop")
 
 
+class EnvelopeCollector:
+    def snapshot_modules(self):
+        return {
+            "task_pipeline": {
+                "status": "failed",
+                "errorCode": "TimeoutError",
+                "errorText": "task pipeline unavailable",
+            },
+            "qb_activity": {
+                "status": "success",
+                "payload": {"activeDownloadTasks": 2},
+                "confirmation": "confirmed",
+            },
+            "subscription_progress": {
+                "status": "success",
+                "payload": {
+                    "focusItem": {
+                        "key": "missing_episodes",
+                        "value": 2,
+                        "confirmation": "partial",
+                    },
+                },
+                "confirmation": "partial",
+            },
+        }
+
+
 class FailingRepository(HomeSummaryRepository):
     def write_success(self, module_key, *args, **kwargs):
         if module_key == "secupload":
@@ -81,6 +108,21 @@ class HomeSummaryRefreshRuntimeTests(unittest.TestCase):
         self.assertIsNotNone(repository.get("task_pipeline", "global"))
         self.assertEqual(repository.get("secupload", "global")["confirmation"], "unknown")
         self.assertIsNotNone(repository.get("service_health", "global"))
+
+    def test_module_envelopes_write_success_and_failure_independently(self):
+        repository = self.make_repository()
+        result = HomeSummaryRefreshRuntime(
+            repository, EnvelopeCollector(), clock=lambda: NOW
+        ).run_once()
+
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["failedModules"], ["task_pipeline"])
+        self.assertEqual(repository.get("task_pipeline", "global")["confirmation"], "unknown")
+        self.assertEqual(repository.get("qb_activity", "global")["confirmation"], "confirmed")
+        self.assertEqual(
+            repository.get("subscription_progress", "global")["confirmation"],
+            "partial",
+        )
 
     def test_empty_cache_get_is_complete_and_does_not_collect_live_state(self):
         repository = self.make_repository()
@@ -139,6 +181,37 @@ class HomeSummaryRefreshRuntimeTests(unittest.TestCase):
         payload = app.test_client().get("/api/v2/home/summary").get_json()
         self.assertEqual(payload["modules"]["service_health"]["confirmation"], "partial")
         self.assertEqual(payload["healthState"], "evidence_insufficient")
+
+    def test_cached_focus_keeps_more_conservative_confirmation(self):
+        repository = self.make_repository()
+        repository.write_success(
+            "subscription_progress",
+            "global",
+            {
+                "focusItem": {
+                    "key": "missing_episodes",
+                    "label": "追更缺集",
+                    "unit": "集",
+                    "value": 0,
+                    "state": "unknown",
+                    "detail": "0 条已确认，88 条尚未确认",
+                    "href": "/following?missingEpisodes=1",
+                    "confirmation": "partial",
+                    "unconfirmedCount": 88,
+                },
+            },
+            observed_at=NOW,
+            fresh_until=NOW + timedelta(minutes=5),
+            confirmation="confirmed",
+        )
+        app = Flask(__name__)
+        register_home_summary(app, clock=lambda: NOW, repository=repository)
+
+        payload = app.test_client().get("/api/v2/home/summary").get_json()
+        focus = {item["key"]: item for item in payload["focusItems"]}
+
+        self.assertEqual(focus["missing_episodes"]["confirmation"], "partial")
+        self.assertEqual(focus["missing_episodes"]["unconfirmedCount"], 88)
 
 
 if __name__ == "__main__":

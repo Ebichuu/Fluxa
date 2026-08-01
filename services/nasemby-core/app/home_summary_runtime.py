@@ -18,6 +18,37 @@ from app.task_public_runtime import present_system_issue, safe_public_text
 
 TARGET_SCOPE_PATTERN = re.compile(r":season:(\d+)(?::episode:(\d+))?$")
 SHANGHAI_TZ = timezone(timedelta(hours=8))
+_UNSET = object()
+_CONFIRMATION_RANK = {"confirmed": 0, "partial": 1, "unknown": 2}
+
+
+def _merge_confirmation(*values, default="unknown") -> str:
+    confirmations = [
+        str(value or "").strip().lower()
+        for value in values
+        if str(value or "").strip().lower() in _CONFIRMATION_RANK
+    ]
+    if not confirmations:
+        return default
+    return max(confirmations, key=_CONFIRMATION_RANK.__getitem__)
+
+
+def _module_confirmation(payload: dict) -> str:
+    values = []
+
+    def collect(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key == "confirmation":
+                    values.append(child)
+                else:
+                    collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    collect(payload)
+    return _merge_confirmation(*values, default="confirmed")
 
 
 def _iso(value: datetime) -> str:
@@ -295,18 +326,22 @@ class HomeSummaryService:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.repository = app.extensions.get("mcc_home_summary_repository")
 
-    def live_snapshot(self) -> dict:
-        now_value = self.clock()
-        now = _iso(now_value)
+    def _load_chain_snapshot(self, now_value: datetime) -> dict:
         chain_v2_service = self.app.extensions.get("mcc_task_chain_v2_service")
         chain_service = self.app.extensions.get("mcc_task_chain_service")
         if not chain_v2_service and not chain_service:
             raise RuntimeError("任务链尚未注册")
-        chain = (
+        return (
             chain_v2_service.full_snapshot()
             if chain_v2_service
             else adapt_task_chain(chain_service.get_chain(), now=now_value)
         )
+
+    def live_snapshot(self, *, chain_override=_UNSET, module_errors=None) -> dict:
+        now_value = self.clock()
+        now = _iso(now_value)
+        chain_v2_service = self.app.extensions.get("mcc_task_chain_v2_service")
+        chain = self._load_chain_snapshot(now_value) if chain_override is _UNSET else chain_override
         secupload_issue = next((
             row for row in chain.get("systemIssues") or []
             if isinstance(row, dict) and row.get("id") == "secupload_failures"
@@ -327,8 +362,10 @@ class HomeSummaryService:
         if has_shared_qb_client:
             try:
                 qb_status = qb_client.summary()
-            except Exception:
+            except Exception as exc:
                 qb_status = {}
+                if module_errors is not None:
+                    module_errors.setdefault("qb_activity", exc)
         qb_active_downloads = None
         if qb_status.get("connected") is True:
             raw_active = (qb_status.get("counts") or {}).get("active")
@@ -557,11 +594,13 @@ class HomeSummaryService:
                         observed_at=str(rss_summary.get("lastMatchAt") or rss_summary.get("lastSuccessAt") or now),
                         fresh_until=_fresh_until(now_value),
                     )
-            except Exception:
+            except Exception as exc:
                 rss_evidence = evidence(
                     state="evidence_insufficient", source="private-rss", reason_code="RSS_STATUS_READ_FAILED",
                     reason_text="RSS 状态暂时无法读取", observed_at=now, fresh_until=_fresh_until(now_value),
                 )
+                if module_errors is not None:
+                    module_errors.setdefault("rss_resource_center", exc)
 
         # 秒传状态只通过关注项与 systemIssues 表达：
         # recovering 使用处理中语义，action_required 只影响秒传关注项本身，
@@ -792,26 +831,27 @@ class HomeSummaryService:
                 subscription_errors = [value for value in subscription_snapshot.get("errors") or [] if value]
                 confirmed_progress = [item for item in subscription_items if isinstance(item.get("missingEpisodes"), list)]
                 unconfirmed_progress = [item for item in subscription_items if not isinstance(item.get("missingEpisodes"), list)]
-                if not subscription_errors:
-                    missing_episodes_value = sum(
-                        len(item.get("missingEpisodes") or []) for item in confirmed_progress
-                    )
-                    missing_episodes_unconfirmed_count = len(unconfirmed_progress)
-                    missing_episodes_confirmation = "partial" if unconfirmed_progress else "confirmed"
-                    missing_episodes_state = (
-                        "action_required" if missing_episodes_value > 0
-                        else "unknown" if unconfirmed_progress
-                        else "normal"
-                    )
-                    missing_episodes_detail = (
-                        f"已确认缺失 {missing_episodes_value} 集 · {missing_episodes_unconfirmed_count} 条追更尚未提供进度"
-                        if unconfirmed_progress
-                        else f"追更记录明确标记 {missing_episodes_value} 集缺失"
-                        if missing_episodes_value > 0
-                        else "已核对追更记录，当前没有明确缺集"
-                    )
-            except Exception:
-                pass
+                missing_episodes_value = sum(
+                    len(item.get("missingEpisodes") or []) for item in confirmed_progress
+                )
+                missing_episodes_unconfirmed_count = len(unconfirmed_progress) + len(subscription_errors)
+                has_unconfirmed = missing_episodes_unconfirmed_count > 0
+                missing_episodes_confirmation = "partial" if has_unconfirmed else "confirmed"
+                missing_episodes_state = (
+                    "action_required" if missing_episodes_value > 0
+                    else "unknown" if has_unconfirmed
+                    else "normal"
+                )
+                missing_episodes_detail = (
+                    f"已确认缺失 {missing_episodes_value} 集 · {missing_episodes_unconfirmed_count} 条追更尚未提供进度"
+                    if has_unconfirmed
+                    else f"追更记录明确标记 {missing_episodes_value} 集缺失"
+                    if missing_episodes_value > 0
+                    else "已核对追更记录，当前没有明确缺集"
+                )
+            except Exception as exc:
+                if module_errors is not None:
+                    module_errors.setdefault("subscription_progress", exc)
 
         focus_items = [
             _focus_item(
@@ -1052,8 +1092,35 @@ class HomeSummaryService:
 
     def snapshot_modules(self) -> dict[str, dict]:
         now_value = self.clock()
-        snapshot = self.live_snapshot()
-        return self._module_payloads(snapshot, today_key=_today_key(now_value))
+        module_errors = {}
+        try:
+            chain = self._load_chain_snapshot(now_value)
+        except Exception as exc:
+            chain = {"generatedAt": _iso(now_value), "items": [], "services": {}, "systemIssues": []}
+            for module_key in ("task_pipeline", "archive_today", "secupload", "service_health"):
+                module_errors[module_key] = exc
+            qb_client = self.app.extensions.get("mcc_qbittorrent_client")
+            if not callable(getattr(qb_client, "summary", None)):
+                module_errors["qb_activity"] = exc
+
+        snapshot = self.live_snapshot(chain_override=chain, module_errors=module_errors)
+        payloads = self._module_payloads(snapshot, today_key=_today_key(now_value))
+        return {
+            module_key: (
+                {
+                    "status": "failed",
+                    "errorCode": type(module_errors[module_key]).__name__,
+                    "errorText": "模块采集暂时失败",
+                }
+                if module_key in module_errors
+                else {
+                    "status": "success",
+                    "payload": payload,
+                    "confirmation": _module_confirmation(payload),
+                }
+            )
+            for module_key, payload in payloads.items()
+        }
 
     @staticmethod
     def _empty_focus(key, label, unit, href):
@@ -1143,7 +1210,10 @@ class HomeSummaryService:
             confirmation = row.get("confirmation") if row else "unknown"
             fresh_until = _parse_time(row.get("freshUntil")) if row else None
             if row and (fresh_until is None or fresh_until <= now_utc):
-                confirmation = "partial" if row.get("payload") else "unknown"
+                confirmation = _merge_confirmation(
+                    confirmation,
+                    "partial" if row.get("payload") else "unknown",
+                )
             result[key] = {
                 "observedAt": row.get("observedAt") if row else "",
                 "freshUntil": row.get("freshUntil") if row else "",
@@ -1167,7 +1237,9 @@ class HomeSummaryService:
         for focus_key, item in focus_by_key.items():
             metadata = modules_meta[focus_modules[focus_key]]
             item.update({
-                "confirmation": metadata["confirmation"],
+                "confirmation": _merge_confirmation(
+                    item.get("confirmation"), metadata["confirmation"]
+                ),
                 "observedAt": metadata["observedAt"],
                 "freshUntil": metadata["freshUntil"],
             })

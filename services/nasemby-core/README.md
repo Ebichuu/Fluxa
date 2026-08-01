@@ -98,7 +98,7 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/v2/subscriptions/candidate-migrations/*`：把历史追更按人工、下游归属、可迁候选和待复核四类只读预览；确认执行要求最新指纹、幂等键和 SQLite 备份，只迁移可安全识别的自动来源记录，不调用外部服务。
 - `/api/qbittorrent/actions/:action/preview`：只读返回暂停/恢复动作资格、实际影响对象、跳过数量、禁止原因、确认要求、幂等键和冷却时间；浏览器提交任务 DTO 中的 40 位不透明引用，服务端从当前 qB 快照解析真实 hash，不调用 qB 写接口。
 - `/api/qbittorrent/actions/:action`：执行前复查任务状态并校验可选预览幂等键，状态变化时拒绝旧确认；旧客户端真实 hash 输入继续兼容，但执行结果、错误和活动记录只返回脱敏公开引用。
-- `/api/v2/home/summary`：纯读 SQLite 中七个独立首页模块缓存，不在 GET 内刷新或访问外部服务；空缓存也立即返回结构完整的 200 部分响应。后台单飞刷新保留各模块最后可靠值与独立错误状态，日期模块按 `Asia/Shanghai` 隔离；下载完成未入库和追更缺集同时返回已确认数量与不重叠的暂未确认对象。
+- `/api/v2/home/summary`：纯读 SQLite 中七个独立首页模块缓存，不在 GET 内刷新或访问外部服务；空缓存也立即返回结构完整的 200 部分响应。后台单飞刷新每轮只读一次共享任务快照，并分别保存各模块的可靠值或失败状态；日期模块按 `Asia/Shanghai` 隔离。确认状态按 `unknown > partial > confirmed` 合并；下载完成未入库和追更缺集同时返回已确认数量与不重叠的暂未确认对象，追更条目读取失败计入未确认数量。
 - `/api/v2/subscriptions/reconciliation`：只读对比 Fluxa 与 Torra，返回对账、兼容履约、健康、`torraFact` 与 `pipelineOutcome`；Torra completed 只表示获取目标满足，不写入或删除任一台账。
 - `/api/v2/subscriptions/workbench`：分页返回追更工作台、五项能力状态、结构化确认进度、统一派生结果、对账摘要和可选海报补齐目标；Torra 入队、已提交待确认和只读对账 linked 分开表达，没有集级证据时返回“集数进度未确认”。
 - `/api/v2/subscriptions/visual-backfills`：最多处理 100 个订阅 ID，只按明确 TMDB 身份补充空缺海报/背景；本地写入关闭时只返回视觉结果，开启时才补充已有本地记录；不创建仅 Torra 镜像。

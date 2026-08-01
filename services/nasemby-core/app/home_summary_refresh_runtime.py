@@ -38,8 +38,28 @@ class HomeSummaryRefreshRuntime:
         written = []
         failed = []
         today_key = _today_key(now)
-        for module_key, payload in modules.items():
+        for module_key, result in modules.items():
             scope_key = self._scope(module_key, today_key)
+            is_envelope = (
+                isinstance(result, dict)
+                and result.get("status") in {"success", "failed"}
+                and ("payload" in result or result.get("status") == "failed")
+            )
+            if is_envelope and result["status"] == "failed":
+                failed.append(module_key)
+                try:
+                    self.repository.write_failure(
+                        module_key,
+                        scope_key,
+                        result.get("errorCode") or "HOME_SUMMARY_MODULE_FAILED",
+                        "模块刷新暂时失败",
+                        now=now,
+                    )
+                except Exception:
+                    pass
+                continue
+            payload = result.get("payload") if is_envelope else result
+            confirmation = result.get("confirmation", "confirmed") if is_envelope else "confirmed"
             try:
                 self.repository.write_success(
                     module_key,
@@ -47,7 +67,7 @@ class HomeSummaryRefreshRuntime:
                     payload,
                     observed_at=now,
                     fresh_until=now + timedelta(minutes=5),
-                    confirmation="confirmed",
+                    confirmation=confirmation,
                     now=now,
                 )
                 written.append(module_key)

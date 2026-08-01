@@ -32,6 +32,15 @@ class FakeTaskChainV2Service:
         return {**self.archive, "date": archived_date, "timezone": "Asia/Shanghai"}
 
 
+class FailingTaskChainV2Service:
+    def __init__(self):
+        self.calls = 0
+
+    def full_snapshot(self):
+        self.calls += 1
+        raise TimeoutError("task chain unavailable")
+
+
 class FakeQbClient:
     def __init__(self, payload):
         self.payload = payload
@@ -934,6 +943,50 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(focus["missing_episodes"]["value"], 2)
         self.assertEqual(focus["missing_episodes"]["unconfirmedCount"], 1)
         self.assertEqual(focus["missing_episodes"]["confirmation"], "partial")
+
+    def test_missing_episode_errors_preserve_confirmed_counts(self):
+        app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)
+        app.extensions["mcc_subscription_workbench"] = FakeSubscriptionWorkbench(
+            [
+                {"id": "subscription-1", "missingEpisodes": ["E05", "E06"]},
+                {"id": "subscription-2"},
+            ],
+            errors=["subscription row failed"],
+        )
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+        focus = {value["key"]: value for value in result["focusItems"]}
+
+        self.assertEqual(focus["missing_episodes"]["value"], 2)
+        self.assertEqual(focus["missing_episodes"]["unconfirmedCount"], 2)
+        self.assertEqual(focus["missing_episodes"]["confirmation"], "partial")
+        self.assertEqual(focus["missing_episodes"]["state"], "action_required")
+
+    def test_module_collection_isolates_chain_failure_and_reads_chain_once(self):
+        app = Flask(f"{__name__}-isolated-home-modules")
+        chain_service = FailingTaskChainV2Service()
+        qb_client = FakeQbClient({"connected": True, "counts": {"active": 2}})
+        app.extensions["mcc_task_chain_v2_service"] = chain_service
+        app.extensions["mcc_qbittorrent_client"] = qb_client
+        app.extensions["mcc_private_rss"] = FakeRssService()
+        app.extensions["mcc_subscription_workbench"] = FakeSubscriptionWorkbench([
+            {"id": "subscription-1", "missingEpisodes": ["E05"]},
+        ])
+
+        modules = HomeSummaryService(app, clock=lambda: NOW).snapshot_modules()
+
+        self.assertEqual(chain_service.calls, 1)
+        self.assertEqual(qb_client.calls, 1)
+        for module_key in ("task_pipeline", "archive_today", "secupload", "service_health"):
+            self.assertEqual(modules[module_key]["status"], "failed")
+        self.assertEqual(modules["qb_activity"]["status"], "success")
+        self.assertEqual(modules["qb_activity"]["payload"]["activeDownloadTasks"], 2)
+        self.assertEqual(modules["rss_resource_center"]["status"], "success")
+        self.assertEqual(modules["subscription_progress"]["status"], "success")
+        self.assertEqual(
+            modules["subscription_progress"]["payload"]["focusItem"]["value"],
+            1,
+        )
 
 
 if __name__ == "__main__":

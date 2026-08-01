@@ -2,7 +2,7 @@
 
 对应规格：`docs/superpowers/specs/2026-08-01-home-summary-cache-design.md`
 
-状态：阶段 1～7 已在本地完成；673 项后端回归、前端生产构建、API/模块/质量/安全关卡与空缓存性能门禁通过（首次 5.15ms，P95 5.15ms）；fnOS 容器冷启动与真实数据对账待部署后复验。
+状态：阶段 1～7 及模块采集隔离补丁已在本地完成；677 项后端回归、前端生产构建、API/模块/质量/安全关卡与空缓存性能门禁通过（首次 5.15ms，P95 5.15ms）；fnOS 容器冷启动与真实数据对账待部署后复验。
 
 实施边界：本波次只处理首页 P0 与三处相关文案；只修改 Fluxa；不接入 Symedia 后六项能力，不清理身份台账或电影追更，不推断 Torra 搜索策略，不执行 Torra、qB、秒传、Symedia、Emby 或追更写动作；始终排除 `services/nasemby-core/mcc_data.db`。
 
@@ -28,7 +28,7 @@
 1. 在 `home_summary_runtime.py` 保留现有事实判断辅助函数，将实时工作拆为显式采集输入和纯模块投影。
 2. 模块键固定为 `task_pipeline`、`qb_activity`、`archive_today`、`secupload`、`subscription_progress`、`rss_resource_center`、`service_health`。
 3. 同一轮只调用一次任务链完整快照；qB、归档、秒传、订阅进度和 RSS 读取结果先在事务外形成版本化本地输入，再供多个投影复用。
-4. 单个外部读取或模块投影失败只产生该模块失败结果，不抹除同轮已成功模块。
+4. 单个外部读取或模块投影失败只产生该模块失败结果，不抹除同轮已成功模块；内部采集信封分别携带 `success/failed`、模块 payload、确认状态和脱敏错误，刷新器落库前移除该信封。
 5. 模块 payload 只保存首页需要的公开摘要，禁止保存文件名、路径、hash、URL、Cookie、Passkey、Authorization、远端原始 ID 或上游错误原文。
 6. 将现有 `test_home_summary_runtime.py` 的事实语义测试迁到模块投影层，确认问题组、qB 口径、秒传状态、归档和服务健康结果不回归。
 
@@ -73,10 +73,11 @@
 
 1. 下载完成未入库按规范任务目标互斥划分为 `confirmedNotArchived`、`confirmedArchivedOrProtected` 和 `unconfirmed`。
 2. 旧 `value` 只计 `confirmedNotArchived`；新增 `unconfirmedCount` 只计无当前可靠 Symedia 事实的目标，两组不得相交。
-3. 追更缺集按追更条目互斥划分 `confirmedProgress` 与 `unconfirmedProgress`；旧 `value` 只汇总明确数组中的缺集数，新计数表示尚未提供进度的追更条数。
+3. 追更缺集按追更条目互斥划分 `confirmedProgress` 与 `unconfirmedProgress`；旧 `value` 只汇总明确数组中的缺集数，新计数表示尚未提供进度或本轮读取失败的追更条数。部分读取错误不得清空成功条目的已确认缺集数。
 4. 为相关 `focusItems` 增加可选 `confirmation/unconfirmedCount/unconfirmedUnit/observedAt/freshUntil/errorReason`，旧 `value/state/detail` 保持兼容。
 5. 刷新失败但有历史成功值时返回“上次确认值 + 当前暂未确认”；从未成功过才返回 `null/unknown`。
 6. 测试 2+14、6+131、确认 0、确认 0 加未确认、模块失败保留旧值，以及两组集合严格无交集。
+7. 模块缓存与关注项确认状态按 `unknown > partial > confirmed` 合并，模块成功不得把关注项自身的 `partial/unknown` 提升为 `confirmed`。
 
 验收：能够稳定显示“已确认未入库 2 个 · 另有 14 个暂未确认”和“已确认缺失 6 集 · 131 条追更尚未提供进度”；未知对象不按 0 或未完成计算。
 
