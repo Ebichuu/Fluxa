@@ -128,7 +128,7 @@ Vite 会把 `/api` 和 `/mineradio` 代理到 Python。
 ## 本地检查
 
 ```powershell
-python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前后端 648 项；v2 机器契约 75 条
+python -m unittest discover -s services/nasemby-core/tests -t services/nasemby-core -v  # 当前后端 660 项；v2 机器契约 75 条
 npm test
 npm run build
 docker compose config --services
@@ -137,6 +137,8 @@ docker compose config --images
 
 自动测试使用临时目录和模拟客户端，不连接真实服务执行写操作，也不会向真实活动日志追加模拟记录。
 正式镜像只通过 GitHub Actions 构建并推送到 GHCR，不在本地手工推送。
+
+`MCC_SUBSCRIPTION_SCHEDULER_ENABLED` 只控制包含 PT 搜索和频道轮询的旧订阅总调度，默认保持关闭。设置中的“每日候选更新”由独立 `candidate-source` 调度器执行，只更新本地候选池，不创建追更、不搜索 PT、不推送 Torra 也不提交下载。
 
 ## 默认可用的只读功能
 
@@ -162,7 +164,7 @@ MCC_CLOUD_SEARCH_ENABLED=false
 MCC_CLOUD_TRANSFER_ENABLED=false
 ```
 
-因此默认只能读取当前页面、订阅快照和服务状态，不会导入或同步 Torra 订阅、创建真实订阅、运行调度、整体开放原核心接口、推送 Torra、提交追更洗版分析、下载候选或调用 MoviePilot 人工备用动作。
+因此默认不会导入或同步 Torra 订阅、创建真实订阅、运行旧订阅总调度、整体开放原核心接口、推送 Torra、提交追更洗版分析、下载候选或调用 MoviePilot 人工备用动作。如果用户在设置中开启每日候选更新，唯一新增写入是本地候选池与调度审计。
 
 ## 持久目录
 

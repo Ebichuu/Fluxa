@@ -132,11 +132,12 @@ Gunicorn 固定单 worker，避免多进程重复调度。后台组件：
 
 - HDHive 到期检查线程。
 - 发现缓存预热线程。
-- 订阅调度线程，仅在 `MCC_SUBSCRIPTION_SCHEDULER_ENABLED=true` 时启动。
+- 候选来源调度线程始终注册，但只在 SQLite 中的“每日候选更新”开启且计划到期时更新本地 `discover_candidates`；手动和定时刷新共用互斥、计划键和审计。
+- 旧订阅总调度线程仅在 `MCC_SUBSCRIPTION_SCHEDULER_ENABLED=true` 时启动；它包含 PT 搜索和频道轮询，不再用于候选来源更新。
 - 私人 RSS 收集线程，仅在 `MCC_PRIVATE_RSS_ENABLED=true` 时启动；每次最多并发两个来源，同一来源互斥，失败按 `Retry-After` 或指数退避持久化到 SQLite。
 - 追更洗版协调线程，仅在 `MCC_TORRA_QUALITY_WATCH_ENABLED=true` 时启动；SQLite 设置仍须单独开启，单 worker 内全局分析并发固定为 1。
 
-当前 Compose 固定关闭订阅调度。未来开启多 worker 或多副本前，必须先引入调度选主和台账并发写方案。
+当前 Compose 固定关闭旧订阅总调度。候选来源调度不依赖该环境开关，且禁止调用订阅搜索、Torra 推送、频道轮询或下载。未来开启多 worker 或多副本前，必须先引入调度选主；当前 SQLite 运行槽位只是单实例崩溃恢复与重复领取防线。
 
 ## 8. 写入闸门
 

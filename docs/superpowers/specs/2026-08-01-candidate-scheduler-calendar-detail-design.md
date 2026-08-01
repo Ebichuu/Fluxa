@@ -2,7 +2,7 @@
 
 日期：2026-08-01
 
-状态：设计已确认，待实施
+状态：本地实施与自动化验证完成，待 fnOS 实机复验
 
 范围：只修改 Fluxa；不修改 Torra，不恢复 PT 搜索、追更推送、频道轮询或下载动作
 
@@ -189,7 +189,7 @@ sourceCounts
 
 追更能力快照中的 `sourceScan` 保持可选增量，但它改为读取 `candidate-source` 权威状态，不再从 `subscription-task` 推断候选调度。
 
-现有 HTTP 状态码、旧字段和路由保持兼容。并发刷新如未取得运行槽位，返回结构化的 `already_running` 结果和当前脱敏 `runId`，不启动第二次刷新。
+现有成功和原有失败的 HTTP 状态码、旧字段和路由保持兼容。并发刷新如未取得运行槽位，返回 `409 + CANDIDATE_REFRESH_ALREADY_RUNNING`、结构化 `already_running` 结果和当前脱敏 `runId`，不启动第二次刷新。
 
 日历路由、查询参数和响应结构保持不变；日期快速路径只修改服务端计算方式。
 
