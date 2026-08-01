@@ -557,6 +557,49 @@ def _summary_calendar(calendar: dict, current: datetime) -> dict:
     }
 
 
+def _detail_calendar_stats(base, entries, all_entries, include_unlinked, excluded_before):
+    status_counts = {
+        state: 0
+        for state in (
+            "upcoming", "acquiring", "library", "playable", "protected", "missing", "unknown", "unlinked",
+        )
+    }
+    unlinked = sum(entry.get("linkState") == "unlinked" for entry in all_entries)
+    titles = set()
+    counts = {
+        "inLibrary": 0,
+        "pending": 0,
+        "acquired": 0,
+        "libraryEvidence": 0,
+        "playable": 0,
+        "actionRequired": 0,
+    }
+    for entry in entries:
+        titles.add(_text(entry.get("key")) or _text(entry.get("title")))
+        counts["inLibrary"] += int(bool(entry.get("inLibrary")))
+        counts["pending"] += int(not bool(entry.get("inLibrary")))
+        counts["acquired"] += int(bool(entry.get("acquiredAt")))
+        counts["libraryEvidence"] += int(bool(entry.get("libraryAt")))
+        counts["playable"] += int(entry.get("status") == "playable")
+        counts["actionRequired"] += int(entry.get("healthState") == "action_required")
+        status = _text(entry.get("status"))
+        if status in status_counts:
+            status_counts[status] += 1
+    return {
+        **(base or {}),
+        "entries": len(entries),
+        "titles": len(titles),
+        **counts,
+        "unlinked": unlinked,
+        "excludedUnlinked": 0 if include_unlinked else unlinked,
+        "linkedEntries": len(all_entries) - unlinked,
+        "unlinkedEntries": unlinked,
+        "totalEntries": len(all_entries),
+        "excludedBeforeSubscription": int(excluded_before or 0),
+        "statusCounts": status_counts,
+    }
+
+
 def _torra_calendar_source_item(row: dict) -> dict | None:
     if not isinstance(row, dict) or _text(row.get("reconciliationState")) != "only_torra":
         return None
@@ -717,15 +760,81 @@ class CalendarTimelineService:
         self._torra_cache_lock = threading.RLock()
         self._snapshot_cache = {}
         self._snapshot_cache_lock = threading.RLock()
+        self._snapshot_build_locks = {}
+        self._date_snapshot_cache = {}
 
-    def cached_snapshot(self, year: int, month: int, media_type: str) -> dict | None:
-        key = (int(year), int(month), str(media_type or "all"))
+    def _read_cached_snapshot(self, year: int, month: int, media_type: str, include_unlinked=False) -> dict | None:
+        key = (int(year), int(month), str(media_type or "all"), bool(include_unlinked))
         with self._snapshot_cache_lock:
             cached = self._snapshot_cache.get(key)
             if not cached or time.monotonic() - cached[0] >= SNAPSHOT_CACHE_TTL_SECONDS:
                 self._snapshot_cache.pop(key, None)
                 return None
             return deepcopy(cached[1])
+
+    def cached_snapshot(self, year: int, month: int, media_type: str, include_unlinked=False) -> dict | None:
+        cached = self._read_cached_snapshot(year, month, media_type, include_unlinked)
+        if cached:
+            cached.pop("_allEntries", None)
+            cached.pop("_excludedBeforeByDate", None)
+        return cached
+
+    def _snapshot_build_lock(self, key):
+        with self._snapshot_cache_lock:
+            return self._snapshot_build_locks.setdefault(key, threading.Lock())
+
+    def _read_cached_date(self, detail_date: date, media_type: str, include_unlinked: bool):
+        key = (detail_date.isoformat(), str(media_type or "all"), bool(include_unlinked))
+        with self._snapshot_cache_lock:
+            cached = self._date_snapshot_cache.get(key)
+            if not cached or time.monotonic() - cached[0] >= SNAPSHOT_CACHE_TTL_SECONDS:
+                self._date_snapshot_cache.pop(key, None)
+                return None
+            return deepcopy(cached[1])
+
+    @staticmethod
+    def _cached_response(cached: dict, view: str, current: datetime) -> dict:
+        public = deepcopy(cached)
+        public.pop("_allEntries", None)
+        public.pop("_excludedBeforeByDate", None)
+        if view != "summary":
+            public["calendar"]["view"] = view or "legacy"
+            return public
+        calendar = _summary_calendar(public["calendar"], current)
+        stable = json.dumps(calendar, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        version = hashlib.sha256(
+            f"{public.get('version') or ''}|{stable}".encode("utf-8")
+        ).hexdigest()[:24]
+        return {"ok": True, "version": version, "calendar": calendar}
+
+    @staticmethod
+    def _detail_from_cached(cached: dict, detail_date: date, include_unlinked: bool) -> dict:
+        day = detail_date.isoformat()
+        source_calendar = deepcopy(cached.get("calendar") or {})
+        all_entries = [
+            entry for entry in cached.get("_allEntries") or source_calendar.get("entries") or []
+            if _text(entry.get("date")) == day
+        ]
+        entries = all_entries if include_unlinked else [
+            entry for entry in all_entries if entry.get("linkState") != "unlinked"
+        ]
+        source_calendar.update({
+            "entries": entries,
+            "view": "detail",
+            "includeUnlinked": bool(include_unlinked),
+            "stats": _detail_calendar_stats(
+                source_calendar.get("stats"),
+                entries,
+                all_entries,
+                include_unlinked,
+                (cached.get("_excludedBeforeByDate") or {}).get(day),
+            ),
+        })
+        stable = json.dumps(source_calendar, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        version = hashlib.sha256(
+            f"{cached.get('version') or ''}|{day}|{stable}".encode("utf-8")
+        ).hexdigest()[:24]
+        return {"ok": True, "version": version, "calendar": source_calendar}
 
     def _torra_calendar_entries(self, year: int, month: int, media_type: str) -> tuple[list[dict], list[str]]:
         cache_key = (year, month, media_type)
@@ -855,7 +964,47 @@ class CalendarTimelineService:
         include_unlinked: bool = False,
     ) -> dict:
         current = self.clock()
-        cacheable = start is None and end is None and detail_date is None and not include_unlinked
+        if detail_date:
+            year, month = detail_date.year, detail_date.month
+            cached_date = self._read_cached_date(detail_date, media_type, include_unlinked)
+            if cached_date:
+                return self._detail_from_cached(cached_date, detail_date, include_unlinked)
+        cache_key = (int(year), int(month), str(media_type or "all"), bool(include_unlinked))
+        build_lock = self._snapshot_build_lock(cache_key)
+        with build_lock:
+            cached = self._read_cached_snapshot(year, month, media_type, include_unlinked)
+            if cached:
+                if detail_date:
+                    return self._detail_from_cached(cached, detail_date, include_unlinked)
+                if start is None and end is None:
+                    return self._cached_response(cached, view, current)
+            return self._build_snapshot(
+                year,
+                month,
+                media_type,
+                view=view,
+                start=start,
+                end=end,
+                detail_date=detail_date,
+                include_unlinked=include_unlinked,
+                current=current,
+            )
+
+    def _build_snapshot(
+        self,
+        year: int,
+        month: int,
+        media_type: str,
+        *,
+        view: str = "",
+        start: date | None = None,
+        end: date | None = None,
+        detail_date: date | None = None,
+        include_unlinked: bool = False,
+        current: datetime | None = None,
+    ) -> dict:
+        current = current or self.clock()
+        cacheable = start is None and end is None and detail_date is None
         if detail_date:
             start = end = detail_date
             year, month = detail_date.year, detail_date.month
@@ -874,13 +1023,19 @@ class CalendarTimelineService:
             })
             raw_entries.append({**value, "linkState": _calendar_link_state(value)})
         excluded_before_subscription = sum(_is_pre_subscription_episode(entry) for entry in raw_entries)
+        excluded_before_by_date = {}
+        for entry in raw_entries:
+            if _is_pre_subscription_episode(entry):
+                key = _text(entry.get("date"))
+                excluded_before_by_date[key] = excluded_before_by_date.get(key, 0) + 1
         entries = [entry for entry in raw_entries if not _is_pre_subscription_episode(entry)]
         excluded_unlinked = sum(entry.get("linkState") == "unlinked" for entry in entries)
         linked_entries = len(entries) - excluded_unlinked
         total_entries = len(entries)
+        today = current.astimezone(BEIJING_TZ).strftime("%Y-%m-%d")
+        all_entries = [{**entry, "status": _entry_status(entry, today)} for entry in entries]
         if not include_unlinked:
             entries = [entry for entry in entries if entry.get("linkState") != "unlinked"]
-        today = current.astimezone(BEIJING_TZ).strftime("%Y-%m-%d")
         entries = [{**entry, "status": _entry_status(entry, today)} for entry in entries]
         observed_at = current.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
         source_confirmation = "partial" if int(calendar.get("errorCount") or 0) > 0 else "confirmed"
@@ -943,14 +1098,32 @@ class CalendarTimelineService:
             f"{task_payload.get('version') or ''}|{full_stable}".encode("utf-8")
         ).hexdigest()[:24]
         if cacheable:
+            cache_payload = {
+                "ok": True,
+                "version": full_version,
+                "calendar": deepcopy(calendar),
+                "_allEntries": deepcopy(all_entries),
+                "_excludedBeforeByDate": excluded_before_by_date,
+            }
             with self._snapshot_cache_lock:
-                self._snapshot_cache[(year, month, media_type)] = (
+                self._snapshot_cache[(year, month, media_type, bool(include_unlinked))] = (
                     time.monotonic(),
-                    {
-                        "ok": True,
-                        "version": full_version,
-                        "calendar": deepcopy(calendar),
-                    },
+                    cache_payload,
+                )
+        else:
+            cache_payload = {
+                "ok": True,
+                "version": full_version,
+                "calendar": deepcopy(calendar),
+                "_allEntries": deepcopy(all_entries),
+                "_excludedBeforeByDate": excluded_before_by_date,
+            }
+        with self._snapshot_cache_lock:
+            cached_at = time.monotonic()
+            for day in {_text(entry.get("date")) for entry in all_entries if _text(entry.get("date"))}:
+                self._date_snapshot_cache[(day, media_type, bool(include_unlinked))] = (
+                    cached_at,
+                    cache_payload,
                 )
         if view == "summary":
             calendar = _summary_calendar(calendar, current)

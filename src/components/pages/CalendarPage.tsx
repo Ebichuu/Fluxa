@@ -80,6 +80,10 @@ function shiftDateKey(key: string, days: number) {
   return toDateKey(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
 }
 
+function monthEndKey(year: number, month: number) {
+  return toDateKey(year, month, new Date(Date.UTC(year, month, 0)).getUTCDate());
+}
+
 function entrySourceText(entry: SubscriptionCalendarEntry) {
   const labels = Array.from(new Set((entry.sourceLabels ?? [entry.sourceLabel]).filter(Boolean)));
   return labels.length > 0 ? `来源：${labels.join('、')}` : 'TMDB 日历';
@@ -201,12 +205,29 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
   );
   const [detailDate, setDetailDate] = useState(initialUrlState.detailOpen ? initialUrlState.date : '');
   const [mode, setMode] = useState<'loading' | 'live' | 'error'>('loading');
-  const [detailMode, setDetailMode] = useState<'idle' | 'loading' | 'live' | 'error'>('idle');
+  const [detailMode, setDetailMode] = useState<'idle' | 'loading' | 'live' | 'error'>(
+    initialUrlState.detailOpen ? 'loading' : 'idle'
+  );
   const [calendarErrors, setCalendarErrors] = useState<string[]>([]);
   const [entryTotals, setEntryTotals] = useState({ linked: 0, unlinked: 0, total: 0 });
   const [statisticsMeta, setStatisticsMeta] = useState<SubscriptionCalendar['statisticsMeta']>();
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const detailRequestRef = useRef<AbortController | null>(null);
+  const pendingDetailRef = useRef<{
+    date: string;
+    mediaType: CalendarMediaType;
+    includeUnlinked: boolean;
+  } | null>(initialUrlState.detailOpen && initialUrlState.date ? {
+    date: initialUrlState.date,
+    mediaType: initialUrlState.mediaType,
+    includeUnlinked: initialUrlState.status === 'unlinked'
+  } : null);
+  const summaryCoverageRef = useRef<{
+    from: string;
+    to: string;
+    mediaType: CalendarMediaType;
+    includeUnlinked: boolean;
+  } | null>(null);
   const detailPanelRef = useRef<HTMLElement | null>(null);
   const mobileFilterTriggerRef = useRef<HTMLButtonElement | null>(null);
   const mobileFilterSheetRef = useRef<HTMLElement | null>(null);
@@ -231,8 +252,64 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     }, mode, entryKind);
   };
 
+  const requestDateDetail = (
+    dateKey: string,
+    requestedMediaType: CalendarMediaType,
+    requestedIncludeUnlinked = includeUnlinked
+  ) => {
+    detailRequestRef.current?.abort();
+    const controller = new AbortController();
+    detailRequestRef.current = controller;
+    pendingDetailRef.current = null;
+    setSelectedDate(dateKey);
+    setDetailDate(dateKey);
+    setDetailEntries([]);
+    setDetailMode('loading');
+    getSubscriptionCalendarDateDetail(
+      dateKey, requestedMediaType, calendarRequestOptions(controller.signal), requestedIncludeUnlinked
+    )
+      .then((payload) => {
+        if (controller.signal.aborted) return;
+        setDetailEntries(payload.calendar.entries);
+        setDetailMode('live');
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setDetailMode('error');
+      });
+  };
+
+  const queueDateDetail = (
+    dateKey: string,
+    requestedMediaType: CalendarMediaType,
+    requestedIncludeUnlinked: boolean
+  ) => {
+    setSelectedDate(dateKey);
+    setDetailDate(dateKey);
+    setDetailEntries([]);
+    setDetailMode('loading');
+    const coverage = summaryCoverageRef.current;
+    if (
+      coverage
+      && coverage.mediaType === requestedMediaType
+      && coverage.includeUnlinked === requestedIncludeUnlinked
+      && coverage.from <= dateKey
+      && dateKey <= coverage.to
+    ) {
+      requestDateDetail(dateKey, requestedMediaType, requestedIncludeUnlinked);
+      return;
+    }
+    pendingDetailRef.current = {
+      date: dateKey,
+      mediaType: requestedMediaType,
+      includeUnlinked: requestedIncludeUnlinked
+    };
+  };
+
   useEffect(() => {
     const controller = new AbortController();
+    const requestFrom = calendarView === 'week' ? visibleWeekStart : toDateKey(year, month, 1);
+    const requestTo = calendarView === 'week' ? visibleWeekEnd : monthEndKey(year, month);
+    summaryCoverageRef.current = null;
     setMode('loading');
     setCalendarErrors([]);
     const request = calendarView === 'week'
@@ -256,6 +333,22 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
             ?? payload.calendar.stats.entries + (payload.calendar.stats.excludedUnlinked ?? 0)
         });
         setMode('live');
+        summaryCoverageRef.current = {
+          from: requestFrom,
+          to: requestTo,
+          mediaType,
+          includeUnlinked
+        };
+        const pending = pendingDetailRef.current;
+        if (
+          pending
+          && pending.mediaType === mediaType
+          && pending.includeUnlinked === includeUnlinked
+          && requestFrom <= pending.date
+          && pending.date <= requestTo
+        ) {
+          requestDateDetail(pending.date, pending.mediaType, pending.includeUnlinked);
+        }
       })
       .catch(() => {
         if (!controller.signal.aborted) {
@@ -264,35 +357,11 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
           setEntryTotals({ linked: 0, unlinked: 0, total: 0 });
           setStatisticsMeta(undefined);
           setMode('error');
+          if (pendingDetailRef.current) setDetailMode('error');
         }
       });
     return () => controller.abort();
   }, [calendarView, includeUnlinked, mediaType, month, visibleWeekEnd, visibleWeekStart, year]);
-
-  const requestDateDetail = (
-    dateKey: string,
-    requestedMediaType: CalendarMediaType,
-    requestedIncludeUnlinked = includeUnlinked
-  ) => {
-    detailRequestRef.current?.abort();
-    const controller = new AbortController();
-    detailRequestRef.current = controller;
-    setSelectedDate(dateKey);
-    setDetailDate(dateKey);
-    setDetailEntries([]);
-    setDetailMode('loading');
-    getSubscriptionCalendarDateDetail(
-      dateKey, requestedMediaType, calendarRequestOptions(controller.signal), requestedIncludeUnlinked
-    )
-      .then((payload) => {
-        if (controller.signal.aborted) return;
-        setDetailEntries(payload.calendar.entries);
-        setDetailMode('live');
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setDetailMode('error');
-      });
-  };
 
   useEffect(() => {
     const applyUrlState = () => {
@@ -307,7 +376,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         ? todayKey
         : toDateKey(next.year, next.month, 1)));
       if (next.detailOpen && next.date) {
-        requestDateDetail(next.date, next.mediaType, next.status === 'unlinked');
+        queueDateDetail(next.date, next.mediaType, next.status === 'unlinked');
       } else {
         detailRequestRef.current?.abort();
         setDetailDate('');
@@ -316,13 +385,6 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
       }
     };
 
-    if (initialUrlState.detailOpen && initialUrlState.date) {
-      requestDateDetail(
-        initialUrlState.date,
-        initialUrlState.mediaType,
-        initialUrlState.status === 'unlinked'
-      );
-    }
     window.addEventListener('popstate', applyUrlState);
     return () => {
       detailRequestRef.current?.abort();
@@ -443,7 +505,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
 
   const openDate = (dateKey: string) => {
     writeCalendarUrlState({ date: dateKey, detailOpen: true }, 'push', calendarDateHistoryKind);
-    requestDateDetail(dateKey, mediaType);
+    queueDateDetail(dateKey, mediaType, includeUnlinked);
   };
 
   const closeDetail = () => {

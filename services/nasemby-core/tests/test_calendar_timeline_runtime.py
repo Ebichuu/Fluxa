@@ -559,6 +559,123 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
         with patch("app.calendar_timeline_runtime.time.monotonic", return_value=401.0):
             self.assertIsNone(service.cached_snapshot(2026, 7, "tv"))
 
+    def test_date_detail_projects_cached_month_without_reloading_sources_or_tasks(self):
+        calls = {"calendar": 0, "tasks": 0}
+
+        def counted_loader(year, month, media_type):
+            calls["calendar"] += 1
+            return calendar_loader(year, month, media_type)
+
+        class CountingTaskService(FakeTaskService):
+            def full_snapshot(self):
+                calls["tasks"] += 1
+                return super().full_snapshot()
+
+        application = Flask(f"{__name__}-date-fast-path")
+        application.extensions["mcc_task_chain_v2_service"] = CountingTaskService()
+        register_calendar_timeline(
+            application,
+            calendar_loader=counted_loader,
+            clock=lambda: datetime(2026, 7, 22, 1, 31, tzinfo=timezone.utc),
+        )
+        client = application.test_client()
+
+        summary = client.get("/api/v2/calendar?year=2026&month=7&type=tv&view=summary")
+        detail = client.get("/api/v2/calendar?date=2026-07-22&type=tv&view=detail")
+
+        self.assertEqual(summary.status_code, 200)
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(calls, {"calendar": 1, "tasks": 1})
+        self.assertEqual(detail.get_json()["calendar"]["view"], "detail")
+        self.assertEqual(detail.get_json()["calendar"]["stats"]["entries"], 1)
+
+    def test_date_detail_cache_keeps_unlinked_scope_isolated_and_recounts_day(self):
+        def unlinked_loader(year, month, media_type):
+            payload = calendar_loader(year, month, media_type)
+            payload["entries"][0]["tmdb_id"] = ""
+            payload["entries"][0]["key"] = "unlinked"
+            payload["entries"][0]["follow_scope_explicit"] = False
+            payload["entries"][0]["subscription_origin"] = ""
+            return payload
+
+        application = Flask(f"{__name__}-date-unlinked-cache")
+        application.extensions["mcc_task_chain_v2_service"] = FakeTaskService([])
+        register_calendar_timeline(application, calendar_loader=unlinked_loader)
+        client = application.test_client()
+
+        client.get("/api/v2/calendar?year=2026&month=7&type=tv&view=summary")
+        hidden = client.get("/api/v2/calendar?date=2026-07-22&type=tv&view=detail").get_json()["calendar"]
+        client.get("/api/v2/calendar?year=2026&month=7&type=tv&view=summary&includeUnlinked=1")
+        visible = client.get(
+            "/api/v2/calendar?date=2026-07-22&type=tv&view=detail&includeUnlinked=1"
+        ).get_json()["calendar"]
+
+        self.assertEqual(hidden["entries"], [])
+        self.assertEqual(hidden["stats"]["totalEntries"], 1)
+        self.assertEqual(hidden["stats"]["unlinkedEntries"], 1)
+        self.assertEqual(hidden["stats"]["excludedUnlinked"], 1)
+        self.assertEqual(len(visible["entries"]), 1)
+        self.assertEqual(visible["stats"]["totalEntries"], 1)
+        self.assertEqual(visible["stats"]["excludedUnlinked"], 0)
+
+    def test_concurrent_month_requests_share_one_snapshot_build(self):
+        calls = 0
+        calls_lock = threading.Lock()
+
+        def slow_loader(year, month, media_type):
+            nonlocal calls
+            with calls_lock:
+                calls += 1
+            time.sleep(0.05)
+            return calendar_loader(year, month, media_type)
+
+        application = Flask(f"{__name__}-calendar-single-flight")
+        application.extensions["mcc_task_chain_v2_service"] = FakeTaskService([])
+        register_calendar_timeline(application, calendar_loader=slow_loader)
+        responses = []
+
+        def load():
+            with application.test_client() as client:
+                responses.append(client.get(
+                    "/api/v2/calendar?year=2026&month=7&type=tv&view=summary"
+                ).status_code)
+
+        workers = [threading.Thread(target=load) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=5)
+
+        self.assertEqual(sorted(responses), [200, 200])
+        self.assertEqual(calls, 1)
+
+    def test_week_summary_populates_date_fast_path(self):
+        calls = {"calendar": 0, "tasks": 0}
+
+        def counted_loader(year, month, media_type):
+            calls["calendar"] += 1
+            return calendar_loader(year, month, media_type)
+
+        class CountingTaskService(FakeTaskService):
+            def full_snapshot(self):
+                calls["tasks"] += 1
+                return super().full_snapshot()
+
+        application = Flask(f"{__name__}-week-date-fast-path")
+        application.extensions["mcc_task_chain_v2_service"] = CountingTaskService()
+        register_calendar_timeline(application, calendar_loader=counted_loader)
+        client = application.test_client()
+
+        week = client.get(
+            "/api/v2/calendar?year=2026&month=7&type=tv&view=summary&from=2026-07-20&to=2026-07-26"
+        )
+        detail = client.get("/api/v2/calendar?date=2026-07-22&type=tv&view=detail")
+
+        self.assertEqual(week.status_code, 200)
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(calls, {"calendar": 1, "tasks": 1})
+        self.assertEqual(detail.get_json()["calendar"]["stats"]["entries"], 1)
+
     def test_calendar_reads_each_task_history_once_per_snapshot(self):
         class CountingRepository:
             def __init__(self):
