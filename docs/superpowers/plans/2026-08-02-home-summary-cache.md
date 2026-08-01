@@ -2,7 +2,7 @@
 
 对应规格：`docs/superpowers/specs/2026-08-01-home-summary-cache-design.md`
 
-状态：待实施。
+状态：阶段 1～7 已在本地完成；673 项后端回归、前端生产构建、API/模块/质量/安全关卡与空缓存性能门禁通过（首次 5.15ms，P95 5.15ms）；fnOS 容器冷启动与真实数据对账待部署后复验。
 
 实施边界：本波次只处理首页 P0 与三处相关文案；只修改 Fluxa；不接入 Symedia 后六项能力，不清理身份台账或电影追更，不推断 Torra 搜索策略，不执行 Torra、qB、秒传、Symedia、Emby 或追更写动作；始终排除 `services/nasemby-core/mcc_data.db`。
 
