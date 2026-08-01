@@ -90,6 +90,23 @@ function homeQbCopy(value: string) {
     .replace(/qB 当前没有提供可验证的下载任务状态/g, 'qB 活跃任务状态暂未确认');
 }
 
+function focusItemDetail(item: HomeSummaryFocusItem) {
+  if (item.key === 'downloaded_not_archived' && typeof item.unconfirmedCount === 'number' && item.value !== null) {
+    return item.unconfirmedCount > 0
+      ? `已确认未入库 ${item.value} 个 · 另有 ${item.unconfirmedCount} 个暂未确认`
+      : item.detail;
+  }
+  if (item.key === 'missing_episodes' && typeof item.unconfirmedCount === 'number' && item.value !== null) {
+    return item.unconfirmedCount > 0
+      ? `已确认缺失 ${item.value} 集 · ${item.unconfirmedCount} 条追更尚未提供进度`
+      : item.detail;
+  }
+  if (item.confirmation === 'partial' && item.errorReason && !item.detail.includes('当前暂未确认')) {
+    return `${item.detail} · 当前暂未确认`;
+  }
+  return item.detail;
+}
+
 export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
   const [summary, setSummary] = useState<HomeSummaryResponse>(emptySummary);
   const [error, setError] = useState('');
@@ -320,7 +337,7 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
               <span className="home-focus__marker" aria-hidden="true" />
               <span className="home-focus__copy">
                 <strong>{item.key === 'current_downloads' ? 'qB 活跃任务' : item.label}</strong>
-                <small>{item.key === 'current_downloads' ? homeQbCopy(item.detail) : item.detail}</small>
+                <small>{item.key === 'current_downloads' ? homeQbCopy(focusItemDetail(item)) : focusItemDetail(item)}</small>
               </span>
               <span className="home-focus__value">
                 <b>{item.value ?? '—'}</b>

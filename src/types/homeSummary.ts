@@ -65,6 +65,22 @@ export interface HomeSummaryFocusItem {
   state: HomeSummaryFocusState;
   detail: string;
   href: string;
+  confirmation?: 'confirmed' | 'partial' | 'unknown';
+  unconfirmedCount?: number;
+  unconfirmedUnit?: string;
+  observedAt?: string;
+  freshUntil?: string;
+  errorReason?: string;
+}
+
+export interface HomeSummaryModuleMetadata {
+  observedAt: string;
+  freshUntil: string;
+  confirmation: 'confirmed' | 'partial' | 'unknown';
+  lastSuccessAt: string;
+  lastAttemptAt: string;
+  errorCode: string;
+  errorText: string;
 }
 
 export interface HomeSummaryResponse {
@@ -115,4 +131,9 @@ export interface HomeSummaryResponse {
     source?: string;
     href?: string;
   }>;
+  modules?: Partial<Record<
+    'task_pipeline' | 'qb_activity' | 'archive_today' | 'secupload' |
+    'subscription_progress' | 'rss_resource_center' | 'service_health',
+    HomeSummaryModuleMetadata
+  >>;
 }
