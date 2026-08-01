@@ -1062,83 +1062,148 @@ class HomeSummaryService:
             "state": "unknown", "detail": "当前暂未确认", "href": href,
         }
 
-    def cached_snapshot(self) -> dict:
-        now_value = self.clock()
-        now = _iso(now_value)
-        today_key = _today_key(now_value)
-        if self.repository is None:
-            return self.live_snapshot()
-        scopes = {
-            "task_pipeline": "global", "qb_activity": "global",
-            "archive_today": f"date:{today_key}", "secupload": "global",
-            "subscription_progress": "global", "rss_resource_center": f"date:{today_key}",
+    @staticmethod
+    def _cache_scopes(today_key):
+        return {
+            "task_pipeline": "global",
+            "qb_activity": "global",
+            "archive_today": f"date:{today_key}",
+            "secupload": "global",
+            "subscription_progress": "global",
+            "rss_resource_center": f"date:{today_key}",
             "service_health": "global",
         }
-        rows = self.repository.get_many(scopes)
-        task = (rows.get(("task_pipeline", "global")) or {}).get("payload") or {}
-        qb = (rows.get(("qb_activity", "global")) or {}).get("payload") or {}
-        archive = (rows.get(("archive_today", f"date:{today_key}")) or {}).get("payload") or {}
-        secupload = (rows.get(("secupload", "global")) or {}).get("payload") or {}
-        progress = (rows.get(("subscription_progress", "global")) or {}).get("payload") or {}
-        rss = (rows.get(("rss_resource_center", f"date:{today_key}")) or {}).get("payload") or {}
-        health = (rows.get(("service_health", "global")) or {}).get("payload") or {}
+
+    @staticmethod
+    def _cached_payloads(rows, scopes):
+        return {
+            key: (rows.get((key, scope)) or {}).get("payload") or {}
+            for key, scope in scopes.items()
+        }
+
+    @staticmethod
+    def _cached_counts(task, qb, archive):
         counts = dict(task.get("counts") or {})
-        counts.update({"activeDownloadTasks": qb.get("activeDownloadTasks"), "archivedToday": archive.get("archivedToday")})
+        counts.update({
+            "activeDownloadTasks": qb.get("activeDownloadTasks"),
+            "archivedToday": archive.get("archivedToday"),
+        })
         defaults = {
             "ingestedToday": 0, "completedTargetsToday": 0, "playableToday": 0, "downloading": 0,
             "concurrentDownloadGroups": 0, "pending": 0, "waiting": 0, "evidenceInsufficient": 0,
             "identityPending": 0, "actionRequired": 0, "mediaActionRequired": 0, "actionRequiredWorks": 0,
-            "actionRequiredResources": 0, "actionRequiredGroups": 0, "actionRequiredIdentityUnconfirmedResources": 0,
-            "auxiliaryAlerts": 0, "inProgress": 0, "suspectedBlocked": 0, "protected": 0,
+            "actionRequiredResources": 0, "actionRequiredGroups": 0,
+            "actionRequiredIdentityUnconfirmedResources": 0, "auxiliaryAlerts": 0,
+            "inProgress": 0, "suspectedBlocked": 0, "protected": 0,
         }
         for key, value in defaults.items():
             counts.setdefault(key, value if task else None)
-        focus = list(task.get("focusItems") or [])
-        for item in (qb.get("focusItem"), archive.get("focusItem"), secupload.get("focusItem"), progress.get("focusItem")):
+        return counts
+
+    def _focus_defaults(self, today_key):
+        return {
+            "current_downloads": self._empty_focus(
+                "current_downloads", "qB 活跃任务", "个", "/tasks?qbActive=1"
+            ),
+            "secupload_failures": self._empty_focus(
+                "secupload_failures", "秒传状态", "个", "/tasks?systemIssue=secupload_failures"
+            ),
+            "downloaded_not_archived": self._empty_focus(
+                "downloaded_not_archived", "下载完成未入库", "个", "/tasks?outcomeState=in_progress"
+            ),
+            "archived_today": self._empty_focus(
+                "archived_today", "今日入库", "个文件", f"/tasks?archivedDate={today_key}"
+            ),
+            "missing_episodes": self._empty_focus(
+                "missing_episodes", "追更缺集", "集", "/following?missingEpisodes=1"
+            ),
+            "action_required": self._empty_focus(
+                "action_required", "需要处理", "个问题组", "/tasks?outcomeState=action_required"
+            ),
+        }
+
+    def _cached_focus(self, payloads, today_key):
+        task_focus = payloads["task_pipeline"].get("focusItems") or {}
+        focus = list(task_focus.values()) if isinstance(task_focus, dict) else list(task_focus)
+        for module_key in ("qb_activity", "archive_today", "secupload", "subscription_progress"):
+            item = payloads[module_key].get("focusItem")
             if not isinstance(item, dict):
                 continue
-            focus = [row for row in focus if row.get("key") != item.get("key")] + [item]
-        required_focus = {
-            "current_downloads": self._empty_focus("current_downloads", "qB 活跃任务", "个", "/tasks?qbActive=1"),
-            "secupload_failures": self._empty_focus("secupload_failures", "秒传状态", "个", "/tasks?systemIssue=secupload_failures"),
-            "downloaded_not_archived": self._empty_focus("downloaded_not_archived", "下载完成未入库", "个", "/tasks?outcomeState=in_progress"),
-            "archived_today": self._empty_focus("archived_today", "今日入库", "个文件", f"/tasks?archivedDate={today_key}"),
-            "missing_episodes": self._empty_focus("missing_episodes", "追更缺集", "集", "/following?missingEpisodes=1"),
-            "action_required": self._empty_focus("action_required", "需要处理", "个问题组", "/tasks?outcomeState=action_required"),
-        }
+            focus = [row for row in focus if row.get("key") != item.get("key")]
+            focus.append(item)
         focus_by_key = {row.get("key"): row for row in focus if isinstance(row, dict)}
-        focus_by_key = {**required_focus, **focus_by_key}
-        modules_meta = {}
+        return {**self._focus_defaults(today_key), **focus_by_key}
+
+    @staticmethod
+    def _module_metadata(rows, scopes, now_value):
+        result = {}
+        now_utc = _parse_time(_iso(now_value))
         for key, scope in scopes.items():
             row = rows.get((key, scope))
             confirmation = row.get("confirmation") if row else "unknown"
             fresh_until = _parse_time(row.get("freshUntil")) if row else None
-            if row and (fresh_until is None or fresh_until <= now_value.astimezone(timezone.utc)):
+            if row and (fresh_until is None or fresh_until <= now_utc):
                 confirmation = "partial" if row.get("payload") else "unknown"
-            modules_meta[key] = {
+            result[key] = {
                 "observedAt": row.get("observedAt") if row else "",
                 "freshUntil": row.get("freshUntil") if row else "",
                 "confirmation": confirmation,
                 "lastSuccessAt": row.get("lastSuccessAt") if row else "",
                 "lastAttemptAt": row.get("lastAttemptAt") if row else "",
                 "errorCode": row.get("lastErrorCode") if row else "",
-                "errorText": safe_public_text(row.get("lastErrorText"), "模块状态暂时无法确认") if row and row.get("lastErrorText") else "",
+                "errorText": safe_public_text(
+                    row.get("lastErrorText"), "模块状态暂时无法确认"
+                ) if row and row.get("lastErrorText") else "",
             }
+        return result
+
+    @staticmethod
+    def _decorate_focus(focus_by_key, modules_meta):
         focus_modules = {
-            "current_downloads": "qb_activity",
-            "secupload_failures": "secupload",
-            "downloaded_not_archived": "task_pipeline",
-            "archived_today": "archive_today",
-            "missing_episodes": "subscription_progress",
-            "action_required": "task_pipeline",
+            "current_downloads": "qb_activity", "secupload_failures": "secupload",
+            "downloaded_not_archived": "task_pipeline", "archived_today": "archive_today",
+            "missing_episodes": "subscription_progress", "action_required": "task_pipeline",
         }
         for focus_key, item in focus_by_key.items():
             metadata = modules_meta[focus_modules[focus_key]]
-            item["confirmation"] = metadata["confirmation"]
-            item["observedAt"] = metadata["observedAt"]
-            item["freshUntil"] = metadata["freshUntil"]
+            item.update({
+                "confirmation": metadata["confirmation"],
+                "observedAt": metadata["observedAt"],
+                "freshUntil": metadata["freshUntil"],
+            })
             if metadata["errorText"]:
                 item["errorReason"] = metadata["errorText"]
+
+    @staticmethod
+    def _empty_resource_center():
+        return {
+            "counts": {
+                "newToday": None, "needsReview": None, "followNeedsReview": None,
+                "unlinkedItems": None, "upgradeAvailable": None,
+            },
+            "confirmation": "unknown",
+            "observedAt": "",
+        }
+
+    def cached_snapshot(self) -> dict:
+        now_value = self.clock()
+        now = _iso(now_value)
+        today_key = _today_key(now_value)
+        if self.repository is None:
+            return self.live_snapshot()
+        scopes = self._cache_scopes(today_key)
+        rows = self.repository.get_many(scopes)
+        payloads = self._cached_payloads(rows, scopes)
+        task = payloads["task_pipeline"]
+        qb = payloads["qb_activity"]
+        archive = payloads["archive_today"]
+        secupload = payloads["secupload"]
+        rss = payloads["rss_resource_center"]
+        health = payloads["service_health"]
+        counts = self._cached_counts(task, qb, archive)
+        focus_by_key = self._cached_focus(payloads, today_key)
+        modules_meta = self._module_metadata(rows, scopes, now_value)
+        self._decorate_focus(focus_by_key, modules_meta)
         health_state = health.get("healthState") or task.get("healthState") or "evidence_insufficient"
         if modules_meta["service_health"]["confirmation"] != "confirmed" and health_state == "normal":
             health_state = "evidence_insufficient"
@@ -1148,8 +1213,12 @@ class HomeSummaryService:
             "headline": health.get("headline") or task.get("headline") or "影音中心状态尚待确认",
             "detail": health.get("detail") or task.get("detail") or "首页缓存尚未完成首轮刷新",
             "counts": counts,
-            "statisticsMeta": {**(task.get("statisticsMeta") or {}), **(qb.get("statisticsMeta") or {}), **(archive.get("statisticsMeta") or {})},
-            "resourceCenter": rss.get("resourceCenter") or {"counts": {"newToday": None, "needsReview": None, "followNeedsReview": None, "unlinkedItems": None, "upgradeAvailable": None}, "confirmation": "unknown", "observedAt": ""},
+            "statisticsMeta": {
+                **(task.get("statisticsMeta") or {}),
+                **(qb.get("statisticsMeta") or {}),
+                **(archive.get("statisticsMeta") or {}),
+            },
+            "resourceCenter": rss.get("resourceCenter") or self._empty_resource_center(),
             "archiveSummary": archive.get("archiveSummary"),
             "problemGroupSummary": task.get("problemGroupSummary"),
             "problemGroupTotal": task.get("problemGroupTotal") or 0,
@@ -1157,9 +1226,12 @@ class HomeSummaryService:
             "auxiliaryIssueTotal": task.get("auxiliaryIssueTotal") or 0,
             "auxiliaryIssues": task.get("auxiliaryIssues") or [],
             "focusItems": list(focus_by_key.values()),
-            "issueTotal": task.get("issueTotal") or 0, "issues": task.get("issues") or [],
-            "diagnostics": task.get("diagnostics") or [], "diagnosticTotal": task.get("diagnosticTotal") or 0,
-            "systemIssues": secupload.get("systemIssues") or [], "modules": modules_meta,
+            "issueTotal": task.get("issueTotal") or 0,
+            "issues": task.get("issues") or [],
+            "diagnostics": task.get("diagnostics") or [],
+            "diagnosticTotal": task.get("diagnosticTotal") or 0,
+            "systemIssues": secupload.get("systemIssues") or [],
+            "modules": modules_meta,
         }
 
     def snapshot(self) -> dict:

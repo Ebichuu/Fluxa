@@ -34,6 +34,56 @@ class HomeSummaryRefreshRuntime:
     def _scope(self, module_key: str, today_key: str) -> str:
         return f"date:{today_key}" if module_key in DATE_MODULES else "global"
 
+    def _write_modules(self, modules, now):
+        written = []
+        failed = []
+        today_key = _today_key(now)
+        for module_key, payload in modules.items():
+            scope_key = self._scope(module_key, today_key)
+            try:
+                self.repository.write_success(
+                    module_key,
+                    scope_key,
+                    payload,
+                    observed_at=now,
+                    fresh_until=now + timedelta(minutes=5),
+                    confirmation="confirmed",
+                    now=now,
+                )
+                written.append(module_key)
+            except Exception as exc:
+                failed.append(module_key)
+                try:
+                    self.repository.write_failure(
+                        module_key, scope_key, type(exc).__name__, "模块刷新暂时失败", now=now
+                    )
+                except Exception:
+                    pass
+        return written, failed
+
+    def _mark_collection_failure(self, now, error_code):
+        today_key = _today_key(now)
+        for module_key in MODULE_KEYS:
+            try:
+                self.repository.write_failure(
+                    module_key,
+                    self._scope(module_key, today_key),
+                    error_code,
+                    "首页摘要刷新暂时失败",
+                    now=now,
+                )
+            except Exception:
+                pass
+
+    def _finish_failed_refresh(self, token, now, error_code):
+        self._mark_collection_failure(now, error_code)
+        if not token:
+            return
+        try:
+            self.repository.finish_refresh(token, now=now, error_code=error_code)
+        except Exception:
+            pass
+
     def run_once(self) -> dict:
         if not self._run_lock.acquire(blocking=False):
             return {"status": "already_running", "ran": False}
@@ -44,30 +94,7 @@ class HomeSummaryRefreshRuntime:
             if not token:
                 return {"status": "already_running", "ran": False}
             modules = self.collector.snapshot_modules()
-            today_key = _today_key(now)
-            written = []
-            failed = []
-            for module_key, payload in modules.items():
-                scope_key = self._scope(module_key, today_key)
-                try:
-                    self.repository.write_success(
-                        module_key,
-                        scope_key,
-                        payload,
-                        observed_at=now,
-                        fresh_until=now + timedelta(minutes=5),
-                        confirmation="confirmed",
-                        now=now,
-                    )
-                    written.append(module_key)
-                except Exception as exc:
-                    failed.append(module_key)
-                    try:
-                        self.repository.write_failure(
-                            module_key, scope_key, type(exc).__name__, "模块刷新暂时失败", now=now
-                        )
-                    except Exception:
-                        pass
+            written, failed = self._write_modules(modules, now)
             self.repository.finish_refresh(token, now=now, error_code="PARTIAL_FAILURE" if failed else "")
             token = None
             return {
@@ -77,23 +104,7 @@ class HomeSummaryRefreshRuntime:
                 "failedModules": failed,
             }
         except Exception as exc:
-            today_key = _today_key(now)
-            for module_key in MODULE_KEYS:
-                try:
-                    self.repository.write_failure(
-                        module_key,
-                        self._scope(module_key, today_key),
-                        type(exc).__name__,
-                        "首页摘要刷新暂时失败",
-                        now=now,
-                    )
-                except Exception:
-                    pass
-            if token:
-                try:
-                    self.repository.finish_refresh(token, now=now, error_code=type(exc).__name__)
-                except Exception:
-                    pass
+            self._finish_failed_refresh(token, now, type(exc).__name__)
             return {"status": "failed", "ran": True, "errorCode": type(exc).__name__}
         finally:
             self._run_lock.release()
