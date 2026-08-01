@@ -14,6 +14,7 @@ from app.health_state_runtime import SchedulerStatusRegistry
 from app.subscription_workbench_runtime import (
     SubscriptionWorkbenchService,
     _candidate_scan_snapshot,
+    _candidate_time_detail,
     _reconciliation_composition,
     register_subscription_workbench,
 )
@@ -674,8 +675,8 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
                 "enabled": True,
                 "rulesEnabled": True,
                 "running": False,
-                "lastRunAt": "2026-08-01T00:31:00Z",
-                "lastSuccessAt": "2026-08-01T00:31:00Z",
+                "lastRunAt": "2026-08-01T13:05:56Z",
+                "lastSuccessAt": "2026-08-01T13:05:56Z",
                 "nextRunAt": "2026-08-02T00:30:00Z",
                 "lastError": "",
                 "lastResult": {"succeededSources": 2, "failedSources": 0},
@@ -684,7 +685,7 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         })()
         service = SubscriptionWorkbenchService(app, {
             "MCC_SUBSCRIPTION_SCHEDULER_ENABLED": "false",
-        })
+        }, clock=lambda: datetime(2026, 8, 1, 13, 40, 56, tzinfo=timezone.utc))
         config = {"douban": {"enabled": True, "task_enabled": True, "task_time": "08:30"}}
 
         with patch.object(discover_runtime, "load_subscription_config", return_value=config):
@@ -692,6 +693,7 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
 
         self.assertTrue(payload["scheduler"]["running"])
         self.assertEqual(payload["sourceScan"]["state"], "healthy")
+        self.assertEqual(payload["sourceScan"]["detail"], "35 分钟前 · 北京时间 21:05:56")
         self.assertEqual(payload["sourceScan"]["lastResult"]["succeededSources"], 2)
         self.assertEqual(payload["sourceScan"]["nextRunAt"], "2026-08-02T00:30:00Z")
 
@@ -732,6 +734,14 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
         self.assertTrue(waiting["overdue"])
         self.assertEqual(failed["state"], "error")
         self.assertEqual(failed["detail"], "最近运行失败")
+        self.assertEqual(
+            _candidate_time_detail(
+                "2026-07-26T03:00:00Z",
+                datetime(2026, 7, 28, 3, 0, tzinfo=timezone.utc),
+            ),
+            "2 天前 · 北京时间 11:00:00",
+        )
+        self.assertEqual(_candidate_time_detail("invalid", datetime.now(timezone.utc)), "时间暂未确认")
 
     def test_snapshot_paginates_after_media_type_and_query_filters(self):
         app = Flask(__name__)

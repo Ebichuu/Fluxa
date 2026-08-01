@@ -44,6 +44,27 @@ def _as_datetime(value):
     return parsed.astimezone(timezone.utc)
 
 
+def _candidate_time_detail(value, now_value):
+    parsed = _as_datetime(value)
+    current = _as_datetime(now_value)
+    if not parsed or not current:
+        return "时间暂未确认"
+    elapsed_seconds = (current - parsed).total_seconds()
+    if elapsed_seconds < -60:
+        return "时间暂未确认"
+    elapsed_seconds = max(0, elapsed_seconds)
+    minutes = int(elapsed_seconds // 60)
+    if minutes < 1:
+        relative = "刚刚"
+    elif minutes < 60:
+        relative = f"{minutes} 分钟前"
+    else:
+        hours = minutes // 60
+        relative = f"{hours} 小时前" if hours < 24 else f"{hours // 24} 天前"
+    clock = parsed.astimezone(SHANGHAI_TZ).strftime("%H:%M:%S")
+    return f"{relative} · 北京时间 {clock}"
+
+
 def _candidate_scan_snapshot(environment, douban, scheduler, now_value=None):
     now_value = now_value or datetime.now(timezone.utc)
     if now_value.tzinfo is None:
@@ -103,7 +124,7 @@ def _candidate_scan_snapshot(environment, douban, scheduler, now_value=None):
     elif candidate_scheduler and scheduler.get("running"):
         state = "running"
         label = "候选来源更新中"
-        detail = f"开始于 {scheduler.get('startedAt')}" if scheduler.get("startedAt") else ""
+        detail = _candidate_time_detail(scheduler.get("startedAt"), now_value)
     elif last_error:
         state = "error"
         label = "候选调度异常"
@@ -115,11 +136,11 @@ def _candidate_scan_snapshot(environment, douban, scheduler, now_value=None):
     elif overdue:
         state = "overdue"
         label = "候选调度逾期"
-        detail = f"最近成功 {last_success_at}"
+        detail = f"最近成功 {_candidate_time_detail(last_success_at, now_value)}"
     else:
         state = "healthy"
         label = "候选自动更新正常"
-        detail = f"最近运行 {last_run_at}"
+        detail = _candidate_time_detail(last_run_at, now_value)
     return {
         "configured": bool(douban),
         "ruleEnabled": rule_enabled,
