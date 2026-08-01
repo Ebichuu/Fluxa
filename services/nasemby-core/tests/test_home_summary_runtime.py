@@ -908,9 +908,32 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
         focus = {value["key"]: value for value in result["focusItems"]}
 
-        self.assertIsNone(focus["missing_episodes"]["value"])
+        self.assertEqual(focus["missing_episodes"]["value"], 0)
         self.assertEqual(focus["missing_episodes"]["state"], "unknown")
+        self.assertEqual(focus["missing_episodes"]["unconfirmedCount"], 1)
+        self.assertEqual(focus["missing_episodes"]["confirmation"], "partial")
         self.assertIn("尚未提供", focus["missing_episodes"]["detail"])
+
+    def test_partial_confirmation_counts_are_disjoint_and_actionable(self):
+        unknown_archive = item(item_id="chain-unknown", library_status="waiting")
+        unknown_archive["episodeNumber"] = 2
+        unknown_archive["pipelineFacts"] = [pipeline_fact("qb", "succeeded")]
+        failed_archive = item(item_id="chain-failed", library_status="blocked")
+        app = self.build_app([unknown_archive, failed_archive], scheduler_enabled=True, scheduler_started=True)
+        app.extensions["mcc_subscription_workbench"] = FakeSubscriptionWorkbench([
+            {"id": "subscription-1", "missingEpisodes": ["E05", "E06"]},
+            {"id": "subscription-2"},
+        ])
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+        focus = {value["key"]: value for value in result["focusItems"]}
+
+        self.assertEqual(focus["downloaded_not_archived"]["value"], 1)
+        self.assertEqual(focus["downloaded_not_archived"]["unconfirmedCount"], 1)
+        self.assertEqual(focus["downloaded_not_archived"]["confirmation"], "partial")
+        self.assertEqual(focus["missing_episodes"]["value"], 2)
+        self.assertEqual(focus["missing_episodes"]["unconfirmedCount"], 1)
+        self.assertEqual(focus["missing_episodes"]["confirmation"], "partial")
 
 
 if __name__ == "__main__":

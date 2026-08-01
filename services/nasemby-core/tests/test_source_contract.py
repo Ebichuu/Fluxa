@@ -475,6 +475,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "_candidate_source_scheduler_started",
             "_private_rss_collector_started",
             "_quality_watch_scheduler_started",
+            "_home_summary_refresh_started",
             "_torra_subscription_sync_started",
             "_background_runtime_started",
         )
@@ -495,12 +496,12 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
 
         self.assertEqual(
             [thread.name for thread in started_threads],
-            ["hdhive-checkin", "discover-cache-preload", "torra-subscription-sync", "candidate-source"],
+            ["hdhive-checkin", "discover-cache-preload", "torra-subscription-sync", "candidate-source", "home-summary-refresh"],
         )
         self.assertTrue(all(thread.daemon for thread in started_threads))
         self.assertEqual(
             started,
-            ["hdhive-checkin", "discover-cache-preload", "torra-subscription-sync", "candidate-source"],
+            ["hdhive-checkin", "discover-cache-preload", "torra-subscription-sync", "candidate-source", "home-summary-refresh"],
         )
         self.assertEqual(repeated, [])
 
@@ -523,6 +524,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "_candidate_source_scheduler_started",
             "_private_rss_collector_started",
             "_quality_watch_scheduler_started",
+            "_home_summary_refresh_started",
             "_torra_subscription_sync_started",
             "_background_runtime_started",
         )
@@ -548,6 +550,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
                 "torra-subscription-sync",
                 "candidate-source",
                 "subscription-task",
+                "home-summary-refresh",
             ],
         )
         self.assertEqual(started, started_threads)
@@ -571,6 +574,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "_candidate_source_scheduler_started",
             "_private_rss_collector_started",
             "_quality_watch_scheduler_started",
+            "_home_summary_refresh_started",
             "_torra_subscription_sync_started",
             "_background_runtime_started",
         )
@@ -596,6 +600,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
                 "torra-subscription-sync",
                 "candidate-source",
                 "quality-watch",
+                "home-summary-refresh",
             ],
         )
         self.assertEqual(started, started_threads)

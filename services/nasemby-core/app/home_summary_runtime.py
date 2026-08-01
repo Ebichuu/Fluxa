@@ -142,7 +142,7 @@ def _active_download_count(item: dict) -> int:
     ) or 0)
 
 
-def _focus_item(key, label, unit, value, state, detail, href):
+def _focus_item(key, label, unit, value, state, detail, href, **metadata):
     return {
         "key": key,
         "label": label,
@@ -151,6 +151,7 @@ def _focus_item(key, label, unit, value, state, detail, href):
         "state": state,
         "detail": detail,
         "href": href,
+        **metadata,
     }
 
 
@@ -163,6 +164,16 @@ def _today_key(value) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(SHANGHAI_TZ).date().isoformat()
+
+
+def _parse_time(value):
+    try:
+        parsed = datetime.fromisoformat(str(value or "").strip().replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _problem_episode_evidence(item: dict, stage: dict) -> dict:
@@ -282,8 +293,9 @@ class HomeSummaryService:
     def __init__(self, app: Flask, clock=None):
         self.app = app
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.repository = app.extensions.get("mcc_home_summary_repository")
 
-    def snapshot(self) -> dict:
+    def live_snapshot(self) -> dict:
         now_value = self.clock()
         now = _iso(now_value)
         chain_v2_service = self.app.extensions.get("mcc_task_chain_v2_service")
@@ -707,26 +719,39 @@ class HomeSummaryService:
             item for item in downloaded_candidates
             if _current_verified_fact(item, "symedia", "waiting", "active", "failed")
         ]
-        downloaded_archive_unknown = any(
-            not _current_verified_fact(item, "symedia", "waiting", "active", "succeeded", "failed", "protected")
+        downloaded_archive_unknown = [
+            item
             for item in downloaded_candidates
+            if not _current_verified_fact(item, "symedia", "waiting", "active", "succeeded", "failed", "protected")
+        ]
+        downloaded_archive_confirmed = [
+            item
+            for item in downloaded_candidates
+            if _current_verified_fact(item, "symedia", "succeeded", "protected")
+        ]
+        downloaded_partition_count = (
+            len(download_done_not_archived) + len(downloaded_archive_unknown) + len(downloaded_archive_confirmed)
         )
+        if downloaded_partition_count != len(downloaded_candidates):
+            raise RuntimeError("下载与入库统计分区不完整")
+        downloaded_unconfirmed_count = len(downloaded_archive_unknown)
+        downloaded_confirmation = "partial" if downloaded_unconfirmed_count > 0 else "confirmed"
         if qb_status.get("connected") is True and symedia_status.get("connected") is True:
-            downloaded_not_archived_value = None if downloaded_archive_unknown else len(download_done_not_archived)
+            downloaded_not_archived_value = len(download_done_not_archived)
             has_blocked_archive = any(
                 bool(_current_verified_fact(item, "symedia", "failed"))
                 for item in download_done_not_archived
             )
             downloaded_not_archived_state = (
-                "unknown" if downloaded_not_archived_value is None
-                else "action_required" if has_blocked_archive
+                "action_required" if has_blocked_archive
                 else "processing" if downloaded_not_archived_value > 0
+                else "unknown" if downloaded_unconfirmed_count > 0
                 else "normal"
             )
             downloaded_not_archived_detail = (
-                "部分下载完成任务缺少当前 Symedia 证据，暂时无法确认入库结果"
-                if downloaded_not_archived_value is None
-                else f"{downloaded_not_archived_value} 个任务已有下载完成证据，但入库尚未完成"
+                f"已确认未入库 {downloaded_not_archived_value} 个 · 另有 {downloaded_unconfirmed_count} 个暂未确认"
+                if downloaded_unconfirmed_count > 0
+                else f"已确认 {downloaded_not_archived_value} 个任务下载完成但入库尚未完成"
                 if downloaded_not_archived_value > 0
                 else "已核对下载与入库证据，没有下载完成后仍未入库的任务"
             )
@@ -734,6 +759,8 @@ class HomeSummaryService:
             downloaded_not_archived_value = None
             downloaded_not_archived_state = "unknown"
             downloaded_not_archived_detail = "qB 或 Symedia 未提供完整连接证据，暂时无法核对"
+            downloaded_unconfirmed_count = len(downloaded_candidates)
+            downloaded_confirmation = "unknown"
 
         archived_today_value = archived_today
         if archived_today_value is not None and archived_today_value >= 0:
@@ -751,6 +778,8 @@ class HomeSummaryService:
             archived_today_detail = "Symedia 尚未提供今日归档文件统计"
 
         missing_episodes_value = None
+        missing_episodes_unconfirmed_count = 0
+        missing_episodes_confirmation = "unknown"
         missing_episodes_state = "unknown"
         missing_episodes_detail = "追更记录尚未提供可验证的缺集统计"
         subscription_workbench = self.app.extensions.get("mcc_subscription_workbench")
@@ -761,17 +790,23 @@ class HomeSummaryService:
                     item for item in subscription_snapshot.get("items") or [] if isinstance(item, dict)
                 ]
                 subscription_errors = [value for value in subscription_snapshot.get("errors") or [] if value]
-                coverage_complete = all(
-                    "missingEpisodes" in item and isinstance(item.get("missingEpisodes"), list)
-                    for item in subscription_items
-                )
-                if not subscription_errors and coverage_complete:
+                confirmed_progress = [item for item in subscription_items if isinstance(item.get("missingEpisodes"), list)]
+                unconfirmed_progress = [item for item in subscription_items if not isinstance(item.get("missingEpisodes"), list)]
+                if not subscription_errors:
                     missing_episodes_value = sum(
-                        len(item.get("missingEpisodes") or []) for item in subscription_items
+                        len(item.get("missingEpisodes") or []) for item in confirmed_progress
                     )
-                    missing_episodes_state = "action_required" if missing_episodes_value > 0 else "normal"
+                    missing_episodes_unconfirmed_count = len(unconfirmed_progress)
+                    missing_episodes_confirmation = "partial" if unconfirmed_progress else "confirmed"
+                    missing_episodes_state = (
+                        "action_required" if missing_episodes_value > 0
+                        else "unknown" if unconfirmed_progress
+                        else "normal"
+                    )
                     missing_episodes_detail = (
-                        f"追更记录明确标记 {missing_episodes_value} 集缺失"
+                        f"已确认缺失 {missing_episodes_value} 集 · {missing_episodes_unconfirmed_count} 条追更尚未提供进度"
+                        if unconfirmed_progress
+                        else f"追更记录明确标记 {missing_episodes_value} 集缺失"
                         if missing_episodes_value > 0
                         else "已核对追更记录，当前没有明确缺集"
                     )
@@ -790,6 +825,11 @@ class HomeSummaryService:
             _focus_item(
                 "downloaded_not_archived", "下载完成未入库", "个", downloaded_not_archived_value,
                 downloaded_not_archived_state, downloaded_not_archived_detail, "/tasks?outcomeState=in_progress",
+                confirmation=downloaded_confirmation,
+                unconfirmedCount=downloaded_unconfirmed_count,
+                unconfirmedUnit="个",
+                observedAt=now,
+                freshUntil=_fresh_until(now_value),
             ),
             _focus_item(
                 "archived_today", "今日入库", "个文件", archived_today_value, archived_today_state,
@@ -798,6 +838,11 @@ class HomeSummaryService:
             _focus_item(
                 "missing_episodes", "追更缺集", "集", missing_episodes_value, missing_episodes_state,
                 missing_episodes_detail, "/following?missingEpisodes=1",
+                confirmation=missing_episodes_confirmation,
+                unconfirmedCount=missing_episodes_unconfirmed_count,
+                unconfirmedUnit="条追更",
+                observedAt=now,
+                freshUntil=_fresh_until(now_value),
             ),
             _focus_item(
                 "action_required", "需要处理", "个问题组", counts["actionRequiredGroups"],
@@ -934,15 +979,203 @@ class HomeSummaryService:
             "systemIssues": [present_system_issue(secupload_issue)],
         }
 
+    @staticmethod
+    def _module_payloads(snapshot: dict, *, today_key: str) -> dict[str, dict]:
+        counts = snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {}
+        focus = {
+            item.get("key"): item
+            for item in snapshot.get("focusItems") or []
+            if isinstance(item, dict) and item.get("key")
+        }
+        statistics = snapshot.get("statisticsMeta") if isinstance(snapshot.get("statisticsMeta"), dict) else {}
+        modules = {
+            "task_pipeline": {
+                "ok": bool(snapshot.get("ok")),
+                "healthState": snapshot.get("healthState"),
+                "headline": snapshot.get("headline"),
+                "detail": snapshot.get("detail"),
+                "counts": {
+                    key: counts.get(key)
+                    for key in (
+                        "ingestedToday", "completedTargetsToday", "playableToday", "downloading",
+                        "concurrentDownloadGroups", "pending", "waiting", "evidenceInsufficient",
+                        "identityPending", "actionRequired", "mediaActionRequired", "actionRequiredWorks",
+                        "actionRequiredResources", "actionRequiredGroups", "actionRequiredIdentityUnconfirmedResources",
+                        "auxiliaryAlerts", "inProgress", "suspectedBlocked", "protected",
+                    )
+                },
+                "problemGroupSummary": snapshot.get("problemGroupSummary"),
+                "problemGroupTotal": snapshot.get("problemGroupTotal"),
+                "problemGroups": snapshot.get("problemGroups") or [],
+                "auxiliaryIssueTotal": snapshot.get("auxiliaryIssueTotal"),
+                "auxiliaryIssues": snapshot.get("auxiliaryIssues") or [],
+                "issueTotal": snapshot.get("issueTotal"),
+                "issues": snapshot.get("issues") or [],
+                "diagnostics": snapshot.get("diagnostics") or [],
+                "diagnosticTotal": snapshot.get("diagnosticTotal"),
+                "focusItems": {
+                    key: focus[key]
+                    for key in ("downloaded_not_archived", "action_required")
+                    if key in focus
+                },
+                "statisticsMeta": {key: statistics.get(key) for key in ("actionRequiredGroups",) if key in statistics},
+            },
+            "qb_activity": {
+                "activeDownloadTasks": counts.get("activeDownloadTasks"),
+                "focusItem": focus.get("current_downloads"),
+                "statisticsMeta": {"activeDownloadTasks": statistics.get("activeDownloadTasks")},
+            },
+            "archive_today": {
+                "date": today_key,
+                "archivedToday": counts.get("archivedToday"),
+                "archiveSummary": snapshot.get("archiveSummary"),
+                "focusItem": focus.get("archived_today"),
+                "statisticsMeta": {"archivedToday": statistics.get("archivedToday")},
+            },
+            "secupload": {
+                "systemIssues": snapshot.get("systemIssues") or [],
+                "focusItem": focus.get("secupload_failures"),
+            },
+            "subscription_progress": {
+                "focusItem": focus.get("missing_episodes"),
+            },
+            "rss_resource_center": {
+                "resourceCenter": snapshot.get("resourceCenter") or {},
+            },
+            "service_health": {
+                "healthState": snapshot.get("healthState"),
+                "headline": snapshot.get("headline"),
+                "detail": snapshot.get("detail"),
+            },
+        }
+        return modules
 
-def register_home_summary(app: Flask, clock=None):
+    def snapshot_modules(self) -> dict[str, dict]:
+        now_value = self.clock()
+        snapshot = self.live_snapshot()
+        return self._module_payloads(snapshot, today_key=_today_key(now_value))
+
+    @staticmethod
+    def _empty_focus(key, label, unit, href):
+        return {
+            "key": key, "label": label, "unit": unit, "value": None,
+            "state": "unknown", "detail": "当前暂未确认", "href": href,
+        }
+
+    def cached_snapshot(self) -> dict:
+        now_value = self.clock()
+        now = _iso(now_value)
+        today_key = _today_key(now_value)
+        if self.repository is None:
+            return self.live_snapshot()
+        scopes = {
+            "task_pipeline": "global", "qb_activity": "global",
+            "archive_today": f"date:{today_key}", "secupload": "global",
+            "subscription_progress": "global", "rss_resource_center": f"date:{today_key}",
+            "service_health": "global",
+        }
+        rows = self.repository.get_many(scopes)
+        task = (rows.get(("task_pipeline", "global")) or {}).get("payload") or {}
+        qb = (rows.get(("qb_activity", "global")) or {}).get("payload") or {}
+        archive = (rows.get(("archive_today", f"date:{today_key}")) or {}).get("payload") or {}
+        secupload = (rows.get(("secupload", "global")) or {}).get("payload") or {}
+        progress = (rows.get(("subscription_progress", "global")) or {}).get("payload") or {}
+        rss = (rows.get(("rss_resource_center", f"date:{today_key}")) or {}).get("payload") or {}
+        health = (rows.get(("service_health", "global")) or {}).get("payload") or {}
+        counts = dict(task.get("counts") or {})
+        counts.update({"activeDownloadTasks": qb.get("activeDownloadTasks"), "archivedToday": archive.get("archivedToday")})
+        defaults = {
+            "ingestedToday": 0, "completedTargetsToday": 0, "playableToday": 0, "downloading": 0,
+            "concurrentDownloadGroups": 0, "pending": 0, "waiting": 0, "evidenceInsufficient": 0,
+            "identityPending": 0, "actionRequired": 0, "mediaActionRequired": 0, "actionRequiredWorks": 0,
+            "actionRequiredResources": 0, "actionRequiredGroups": 0, "actionRequiredIdentityUnconfirmedResources": 0,
+            "auxiliaryAlerts": 0, "inProgress": 0, "suspectedBlocked": 0, "protected": 0,
+        }
+        for key, value in defaults.items():
+            counts.setdefault(key, value if task else None)
+        focus = list(task.get("focusItems") or [])
+        for item in (qb.get("focusItem"), archive.get("focusItem"), secupload.get("focusItem"), progress.get("focusItem")):
+            if not isinstance(item, dict):
+                continue
+            focus = [row for row in focus if row.get("key") != item.get("key")] + [item]
+        required_focus = {
+            "current_downloads": self._empty_focus("current_downloads", "qB 活跃任务", "个", "/tasks?qbActive=1"),
+            "secupload_failures": self._empty_focus("secupload_failures", "秒传状态", "个", "/tasks?systemIssue=secupload_failures"),
+            "downloaded_not_archived": self._empty_focus("downloaded_not_archived", "下载完成未入库", "个", "/tasks?outcomeState=in_progress"),
+            "archived_today": self._empty_focus("archived_today", "今日入库", "个文件", f"/tasks?archivedDate={today_key}"),
+            "missing_episodes": self._empty_focus("missing_episodes", "追更缺集", "集", "/following?missingEpisodes=1"),
+            "action_required": self._empty_focus("action_required", "需要处理", "个问题组", "/tasks?outcomeState=action_required"),
+        }
+        focus_by_key = {row.get("key"): row for row in focus if isinstance(row, dict)}
+        focus_by_key = {**required_focus, **focus_by_key}
+        modules_meta = {}
+        for key, scope in scopes.items():
+            row = rows.get((key, scope))
+            confirmation = row.get("confirmation") if row else "unknown"
+            fresh_until = _parse_time(row.get("freshUntil")) if row else None
+            if row and (fresh_until is None or fresh_until <= now_value.astimezone(timezone.utc)):
+                confirmation = "partial" if row.get("payload") else "unknown"
+            modules_meta[key] = {
+                "observedAt": row.get("observedAt") if row else "",
+                "freshUntil": row.get("freshUntil") if row else "",
+                "confirmation": confirmation,
+                "lastSuccessAt": row.get("lastSuccessAt") if row else "",
+                "lastAttemptAt": row.get("lastAttemptAt") if row else "",
+                "errorCode": row.get("lastErrorCode") if row else "",
+                "errorText": safe_public_text(row.get("lastErrorText"), "模块状态暂时无法确认") if row and row.get("lastErrorText") else "",
+            }
+        focus_modules = {
+            "current_downloads": "qb_activity",
+            "secupload_failures": "secupload",
+            "downloaded_not_archived": "task_pipeline",
+            "archived_today": "archive_today",
+            "missing_episodes": "subscription_progress",
+            "action_required": "task_pipeline",
+        }
+        for focus_key, item in focus_by_key.items():
+            metadata = modules_meta[focus_modules[focus_key]]
+            item["confirmation"] = metadata["confirmation"]
+            item["observedAt"] = metadata["observedAt"]
+            item["freshUntil"] = metadata["freshUntil"]
+            if metadata["errorText"]:
+                item["errorReason"] = metadata["errorText"]
+        health_state = health.get("healthState") or task.get("healthState") or "evidence_insufficient"
+        if modules_meta["service_health"]["confirmation"] != "confirmed" and health_state == "normal":
+            health_state = "evidence_insufficient"
+        return {
+            "ok": True, "generatedAt": now,
+            "healthState": health_state,
+            "headline": health.get("headline") or task.get("headline") or "影音中心状态尚待确认",
+            "detail": health.get("detail") or task.get("detail") or "首页缓存尚未完成首轮刷新",
+            "counts": counts,
+            "statisticsMeta": {**(task.get("statisticsMeta") or {}), **(qb.get("statisticsMeta") or {}), **(archive.get("statisticsMeta") or {})},
+            "resourceCenter": rss.get("resourceCenter") or {"counts": {"newToday": None, "needsReview": None, "followNeedsReview": None, "unlinkedItems": None, "upgradeAvailable": None}, "confirmation": "unknown", "observedAt": ""},
+            "archiveSummary": archive.get("archiveSummary"),
+            "problemGroupSummary": task.get("problemGroupSummary"),
+            "problemGroupTotal": task.get("problemGroupTotal") or 0,
+            "problemGroups": task.get("problemGroups") or [],
+            "auxiliaryIssueTotal": task.get("auxiliaryIssueTotal") or 0,
+            "auxiliaryIssues": task.get("auxiliaryIssues") or [],
+            "focusItems": list(focus_by_key.values()),
+            "issueTotal": task.get("issueTotal") or 0, "issues": task.get("issues") or [],
+            "diagnostics": task.get("diagnostics") or [], "diagnosticTotal": task.get("diagnosticTotal") or 0,
+            "systemIssues": secupload.get("systemIssues") or [], "modules": modules_meta,
+        }
+
+    def snapshot(self) -> dict:
+        return self.live_snapshot()
+
+
+def register_home_summary(app: Flask, clock=None, repository=None):
+    if repository is not None:
+        app.extensions["mcc_home_summary_repository"] = repository
     service = HomeSummaryService(app, clock=clock)
     app.extensions["mcc_home_summary"] = service
 
     @app.get("/api/v2/home/summary")
     def home_summary():
         try:
-            return jsonify(service.snapshot())
+            return jsonify(service.cached_snapshot())
         except Exception:
             return jsonify({
                 "code": "HOME_SUMMARY_READ_FAILED",

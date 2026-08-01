@@ -43,6 +43,8 @@ from app.symedia_read_runtime import register_symedia_read
 from app.task_chain_runtime import register_task_chain
 from app.task_chain_v2_runtime import register_task_chain_v2
 from app.home_summary_runtime import register_home_summary
+from app.home_summary_repository import HomeSummaryRepository
+from app.home_summary_refresh_runtime import HomeSummaryRefreshRuntime, register_home_summary_refresh
 from app.integration_runtime import register_integrations
 from app.cloud_acquisition_runtime import register_cloud_acquisition
 from app.calendar_timeline_runtime import register_calendar_timeline
@@ -128,6 +130,7 @@ _candidate_source_scheduler_started = False
 _torra_subscription_sync_started = False
 _private_rss_collector_started = False
 _quality_watch_scheduler_started = False
+_home_summary_refresh_started = False
 _background_runtime_started = False
 
 
@@ -555,6 +558,30 @@ def start_quality_watch_scheduler():
     thread.start()
 
 
+def _home_summary_refresh_loop():
+    time.sleep(1)
+    while True:
+        try:
+            runtime = app.extensions.get("mcc_home_summary_refresh")
+            if runtime:
+                runtime.run_once()
+        except Exception as exc:
+            logger.error("background scheduler failed scheduler=home-summary-refresh error_type=%s", type(exc).__name__)
+        time.sleep(60)
+
+
+def start_home_summary_refresh_scheduler():
+    global _home_summary_refresh_started
+    if _home_summary_refresh_started:
+        return
+    runtime = app.extensions.get("mcc_home_summary_refresh")
+    if not runtime:
+        return
+    _home_summary_refresh_started = True
+    thread = threading.Thread(target=_home_summary_refresh_loop, name="home-summary-refresh", daemon=True)
+    thread.start()
+
+
 def start_background_runtime():
     global _background_runtime_started
     if _background_runtime_started:
@@ -586,6 +613,9 @@ def start_background_runtime():
     if str(os.getenv("MCC_TORRA_QUALITY_WATCH_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}:
         start_quality_watch_scheduler()
         started.append("quality-watch")
+    start_home_summary_refresh_scheduler()
+    if _home_summary_refresh_started:
+        started.append("home-summary-refresh")
     _background_runtime_started = True
     return started
 
@@ -1450,7 +1480,8 @@ def create_app(
         application.extensions["mcc_resource_task_repository"] = resource_repository
     register_task_chain_v2(application, repository=resource_repository)
     register_calendar_timeline(application)
-    register_home_summary(application)
+    home_summary_repository = HomeSummaryRepository(discover_runtime.subscription_database_path())
+    home_summary_service = register_home_summary(application, repository=home_summary_repository)
     register_integrations(
         application,
         environment=environment,
@@ -1610,6 +1641,10 @@ def create_app(
             ),
             clock=quality_repository.clock,
         ),
+    )
+    register_home_summary_refresh(
+        application,
+        HomeSummaryRefreshRuntime(home_summary_repository, home_summary_service),
     )
     register_frontend(
         application,

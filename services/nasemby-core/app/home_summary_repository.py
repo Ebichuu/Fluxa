@@ -177,6 +177,8 @@ class HomeSummaryRepository:
     ):
         module_key = _validate_module(module_key)
         scope_key = _validate_scope(scope_key)
+        if not isinstance(payload, dict):
+            raise ValueError("home summary module payload must be an object")
         confirmation = str(confirmation or "confirmed").strip().lower()
         if confirmation not in {"confirmed", "partial", "unknown"}:
             raise ValueError("invalid home summary confirmation")
@@ -272,4 +274,3 @@ class HomeSummaryRepository:
                 (now_text, str(error_code or "").strip()[:120], int(row["version"]) + 1, now_text),
             )
         return True
-
