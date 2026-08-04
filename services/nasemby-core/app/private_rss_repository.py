@@ -18,6 +18,7 @@ MATCH_STATUSES = {"candidate", "ignored", "triggered", "confirmed", "expired"}
 IDENTITY_STATUSES = {"identified", "conflict", "unidentified"}
 RSS_REVIEW_STATES = {"needs_review", "follow_needs_review", "unlinked"}
 RSS_GROUP_SCOPES = {"scoreable", "cleanup"}
+CLEANUP_RULE_VERSION = "rss-match-cleanup-v1"
 RSS_GROUP_STATES = {
     "initial_best",
     "waiting_baseline",
@@ -44,7 +45,20 @@ MATCH_EVALUATION_COLUMNS = {
     "baseline_summary_json": "TEXT NOT NULL DEFAULT '{}'",
     "is_best_candidate": "INTEGER NOT NULL DEFAULT 0",
     "evaluated_at": "TEXT NOT NULL DEFAULT ''",
+    "archive_state": "TEXT NOT NULL DEFAULT 'active'",
+    "archived_at": "TEXT NOT NULL DEFAULT ''",
+    "archive_reason_code": "TEXT NOT NULL DEFAULT ''",
+    "archive_run_id": "TEXT NOT NULL DEFAULT ''",
+    "version": "INTEGER NOT NULL DEFAULT 1",
 }
+
+
+class RssMatchCleanupConflict(RuntimeError):
+    pass
+
+
+class RssMatchCleanupStale(RssMatchCleanupConflict):
+    pass
 
 
 def _now():
@@ -187,6 +201,38 @@ def _json_load(value):
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _json_list(value):
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except (TypeError, ValueError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _cleanup_fingerprint(rows):
+    facts = [{
+        "matchId": str(row.get("id") or ""),
+        "version": int(row.get("version") or 1),
+        "archiveState": str(row.get("archive_state") or "active"),
+        "evaluationStatus": str(row.get("evaluation_status") or ""),
+        "evaluationReason": str(row.get("evaluation_reason") or ""),
+        "subscriptionKey": str(row.get("subscription_key") or ""),
+        "unitKey": str(row.get("unit_key") or ""),
+        "targetKey": str(row.get("target_key") or ""),
+        "artifactKey": str(row.get("artifact_key") or ""),
+    } for row in sorted(rows, key=lambda value: str(value.get("id") or ""))]
+    payload = _json_dump({"cleanupRuleVersion": CLEANUP_RULE_VERSION, "facts": facts})
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _cleanup_eligible(row):
+    return (
+        str(row.get("archive_state") or "active") == "active"
+        and str(row.get("evaluation_status") or "") == "blocked"
+        and str(row.get("evaluation_reason") or "") == "subscription_missing"
+    )
+
+
 def _create_match_table(connection):
     connection.execute(
         "CREATE TABLE IF NOT EXISTS rss_subscription_matches ("
@@ -200,7 +246,9 @@ def _create_match_table(connection):
         "evaluation_action_id TEXT NOT NULL DEFAULT '', download_action_id TEXT NOT NULL DEFAULT '', "
         "candidate_summary_json TEXT NOT NULL DEFAULT '{}', baseline_summary_json TEXT NOT NULL DEFAULT '{}', "
         "is_best_candidate INTEGER NOT NULL DEFAULT 0, "
-        "evaluated_at TEXT NOT NULL DEFAULT '', "
+        "evaluated_at TEXT NOT NULL DEFAULT '', archive_state TEXT NOT NULL DEFAULT 'active', "
+        "archived_at TEXT NOT NULL DEFAULT '', archive_reason_code TEXT NOT NULL DEFAULT '', "
+        "archive_run_id TEXT NOT NULL DEFAULT '', version INTEGER NOT NULL DEFAULT 1, "
         "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(item_id, unit_key))"
     )
     connection.execute(
@@ -379,6 +427,28 @@ class PrivateRssRepository:
             )
             _initialize_match_table(connection)
             _initialize_rule_snapshot_table(connection)
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS rss_match_cleanup_runs ("
+                "id TEXT PRIMARY KEY, status TEXT NOT NULL, fingerprint TEXT NOT NULL, "
+                "selected_json TEXT NOT NULL DEFAULT '[]', preview_json TEXT NOT NULL DEFAULT '{}', "
+                "result_json TEXT NOT NULL DEFAULT '{}', idempotency_key TEXT NOT NULL DEFAULT '', "
+                "item_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, confirmed_at TEXT NOT NULL DEFAULT '', "
+                "updated_at TEXT NOT NULL)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rss_match_cleanup_runs_created "
+                "ON rss_match_cleanup_runs(created_at DESC)"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_rss_match_cleanup_runs_idempotency "
+                "ON rss_match_cleanup_runs(idempotency_key) WHERE idempotency_key<>''"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS rss_match_cleanup_items ("
+                "run_id TEXT NOT NULL REFERENCES rss_match_cleanup_runs(id) ON DELETE CASCADE, "
+                "match_id TEXT NOT NULL, match_version INTEGER NOT NULL, reason_code TEXT NOT NULL, "
+                "status TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(run_id, match_id))"
+            )
 
     @staticmethod
     def _public_source(row):
@@ -956,6 +1026,11 @@ class PrivateRssRepository:
             "baselineSummary": _json_load(result.get("baseline_summary_json")),
             "bestCandidate": bool(result.get("is_best_candidate")),
             "evaluatedAt": result.get("evaluated_at") or "",
+            "archiveState": result.get("archive_state") or "active",
+            "archivedAt": result.get("archived_at") or "",
+            "archiveReasonCode": result.get("archive_reason_code") or "",
+            "archiveRunId": result.get("archive_run_id") or "",
+            "version": int(result.get("version") or 1),
             "createdAt": result["created_at"],
             "updatedAt": result["updated_at"],
         }
@@ -994,7 +1069,7 @@ class PrivateRssRepository:
         def update(target):
             target.execute(
                 "UPDATE rss_subscription_matches SET torra_subscription_id=?, target_key=?, "
-                "artifact_key=?, updated_at=? WHERE id=?",
+                "artifact_key=?, updated_at=?, version=version+1 WHERE id=?",
                 values,
             )
 
@@ -1012,7 +1087,7 @@ class PrivateRssRepository:
         with closing(self.runtime.connect()) as connection:
             rows = connection.execute(
                 "SELECT * FROM rss_subscription_matches WHERE artifact_key=? "
-                "ORDER BY created_at, id",
+                "AND archive_state='active' ORDER BY created_at, id",
                 (artifact_key,),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -1053,7 +1128,7 @@ class PrivateRssRepository:
                 "UPDATE rss_subscription_matches SET rule_id=?, rule_hash=?, candidate_score=?, "
                 "baseline_score=?, evaluation_status=?, decision=?, evaluation_reason=?, "
                 "evaluation_action_id=?, candidate_summary_json=?, baseline_summary_json=?, "
-                f"evaluated_at=?, updated_at=? WHERE id IN ({placeholders})",
+                f"evaluated_at=?, updated_at=?, version=version+1 WHERE archive_state='active' AND id IN ({placeholders})",
                 (*values, *ids),
             )
         return [match for match in (self.get_match(match_id) for match_id in ids) if match]
@@ -1070,7 +1145,7 @@ class PrivateRssRepository:
         params = [value for ref in refs for value in ref]
         with closing(self.runtime.connect()) as connection:
             rows = connection.execute(
-                f"SELECT * FROM rss_subscription_matches WHERE {where} ORDER BY created_at, id",
+                f"SELECT * FROM rss_subscription_matches WHERE archive_state='active' AND ({where}) ORDER BY created_at, id",
                 params,
             ).fetchall()
         return [self._match(row) for row in rows]
@@ -1097,7 +1172,7 @@ class PrivateRssRepository:
         with self.runtime.transaction(immediate=True) as connection:
             connection.executemany(
                 "UPDATE rss_subscription_matches SET decision=?, evaluation_reason=?, "
-                "is_best_candidate=?, updated_at=? WHERE id=?",
+                "is_best_candidate=?, updated_at=?, version=version+1 WHERE archive_state='active' AND id=?",
                 rows,
             )
         return len(rows)
@@ -1185,9 +1260,12 @@ class PrivateRssRepository:
                 raise KeyError("RSS 匹配不存在")
             if status not in allowed.get(row["match_status"], set()):
                 raise ValueError("RSS 匹配状态转换无效")
+            if str(row["archive_state"] or "active") != "active":
+                raise ValueError("已归档 RSS 匹配不可修改")
             action_id = row["trigger_action_id"] if trigger_action_id is None else str(trigger_action_id or "")
             connection.execute(
-                "UPDATE rss_subscription_matches SET match_status=?, trigger_action_id=?, updated_at=? WHERE id=?",
+                "UPDATE rss_subscription_matches SET match_status=?, trigger_action_id=?, updated_at=?, "
+                "version=version+1 WHERE id=?",
                 (status, action_id, _iso(), str(match_id)),
             )
             updated = connection.execute(
@@ -1231,8 +1309,11 @@ class PrivateRssRepository:
             raise ValueError("RSS 匹配状态无效")
         limit = max(1, min(int(limit or 50), 100))
         offset = max(0, int(offset or 0))
-        where = "WHERE match_status=?" if status else ""
-        params = (status,) if status else ()
+        where = "WHERE archive_state='active'"
+        params = ()
+        if status:
+            where += " AND match_status=?"
+            params = (status,)
         with closing(self.runtime.connect()) as connection:
             total = int(connection.execute(
                 f"SELECT COUNT(*) AS count FROM rss_subscription_matches {where}", params
@@ -1242,6 +1323,228 @@ class PrivateRssRepository:
                 (*params, limit, offset),
             ).fetchall()
         return {"items": [self._match(row) for row in rows], "total": total, "limit": limit, "offset": offset}
+
+    @staticmethod
+    def _cleanup_preview_item(row):
+        return {
+            "matchId": str(row.get("id") or ""),
+            "subscriptionId": str(row.get("subscription_key") or ""),
+            "unitId": str(row.get("unit_key") or ""),
+            "artifactKey": str(row.get("artifact_key") or ""),
+            "title": str(row.get("item_title") or "")[:240],
+            "version": int(row.get("version") or 1),
+            "reasonCode": "subscription_missing",
+        }
+
+    @staticmethod
+    def _cleanup_skip_reason(row):
+        if not row:
+            return "match_missing"
+        if str(row.get("archive_state") or "active") == "archived":
+            return "already_archived"
+        if str(row.get("evaluation_status") or "") != "blocked":
+            return "candidate_still_active"
+        reason = str(row.get("evaluation_reason") or "")
+        if reason == "subscription_missing":
+            return "eligible"
+        if "conflict" in reason:
+            return "ownership_conflict"
+        return "reason_not_eligible"
+
+    def create_match_cleanup_preview(self, match_ids):
+        ids = sorted({str(value or "").strip() for value in match_ids or [] if str(value or "").strip()})
+        if not ids or len(ids) > 200 or any(len(value) > 80 for value in ids):
+            raise ValueError("RSS 清理预览需要 1 到 200 个匹配")
+        placeholders = ",".join("?" for _ in ids)
+        with closing(self.runtime.connect()) as connection:
+            rows = connection.execute(
+                "SELECT m.*, i.title AS item_title FROM rss_subscription_matches m "
+                "JOIN rss_items i ON i.id=m.item_id "
+                f"WHERE m.id IN ({placeholders}) ORDER BY m.id",
+                ids,
+            ).fetchall()
+        by_id = {str(row["id"]): dict(row) for row in rows}
+        eligible = [by_id[match_id] for match_id in ids if match_id in by_id and _cleanup_eligible(by_id[match_id])]
+        skipped = [{
+            "matchId": match_id,
+            "reasonCode": self._cleanup_skip_reason(by_id.get(match_id)),
+        } for match_id in ids if match_id not in {str(row.get("id") or "") for row in eligible}]
+        selected = [str(row["id"]) for row in eligible]
+        fingerprint = _cleanup_fingerprint(eligible)
+        now = _iso()
+        run_id = f"rss-match-cleanup:{uuid.uuid4().hex[:24]}"
+        preview = {
+            "id": run_id,
+            "status": "previewed",
+            "fingerprint": fingerprint,
+            "cleanupRuleVersion": CLEANUP_RULE_VERSION,
+            "itemCount": len(eligible),
+            "items": [self._cleanup_preview_item(row) for row in eligible],
+            "skipped": skipped,
+            "createdAt": now,
+        }
+        with self.runtime.transaction(immediate=True) as connection:
+            connection.execute(
+                "INSERT INTO rss_match_cleanup_runs ("
+                "id, status, fingerprint, selected_json, preview_json, item_count, created_at, updated_at"
+                ") VALUES (?, 'previewed', ?, ?, ?, ?, ?, ?)",
+                (run_id, fingerprint, _json_dump(selected), _json_dump(preview), len(eligible), now, now),
+            )
+        return preview
+
+    def _mark_cleanup_run(self, run_id, status):
+        with self.runtime.transaction(immediate=True) as connection:
+            connection.execute(
+                "UPDATE rss_match_cleanup_runs SET status=?, updated_at=? "
+                "WHERE id=? AND status='previewed'",
+                (status, _iso(), str(run_id or "")),
+            )
+
+    def apply_match_cleanup(
+        self,
+        *,
+        preview_id,
+        fingerprint,
+        match_ids,
+        idempotency_key,
+    ):
+        preview_id = str(preview_id or "").strip()
+        fingerprint = str(fingerprint or "").strip()
+        idempotency_key = str(idempotency_key or "").strip()
+        selected = sorted({str(value or "").strip() for value in match_ids or [] if str(value or "").strip()})
+        if not preview_id or len(preview_id) > 80 or not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
+            raise ValueError("RSS 清理确认参数无效")
+        if not idempotency_key or len(idempotency_key) > 160:
+            raise ValueError("RSS 清理确认缺少有效幂等键")
+        if not selected or len(selected) > 200 or any(len(value) > 80 for value in selected):
+            raise ValueError("RSS 清理确认需要 1 到 200 个匹配")
+
+        with closing(self.runtime.connect()) as connection:
+            replay = connection.execute(
+                "SELECT id, result_json FROM rss_match_cleanup_runs "
+                "WHERE idempotency_key=? AND status='applied'",
+                (idempotency_key,),
+            ).fetchone()
+        if replay:
+            if str(replay["id"] or "") != preview_id:
+                raise RssMatchCleanupConflict("RSS 清理幂等键已用于其他预览")
+            return _json_load(replay["result_json"])
+
+        try:
+            with self.runtime.transaction(immediate=True) as connection:
+                replay = connection.execute(
+                    "SELECT id, result_json FROM rss_match_cleanup_runs "
+                    "WHERE idempotency_key=? AND status='applied'",
+                    (idempotency_key,),
+                ).fetchone()
+                if replay:
+                    if str(replay["id"] or "") != preview_id:
+                        raise RssMatchCleanupConflict("RSS 清理幂等键已用于其他预览")
+                    return _json_load(replay["result_json"])
+                run = connection.execute(
+                    "SELECT * FROM rss_match_cleanup_runs WHERE id=?",
+                    (preview_id,),
+                ).fetchone()
+                if not run:
+                    raise KeyError("RSS 清理预览不存在")
+                if str(run["status"] or "") != "previewed":
+                    raise RssMatchCleanupConflict("RSS 清理预览当前不可执行")
+                expected = sorted(str(value or "") for value in _json_list(run["selected_json"]) if str(value or ""))
+                if fingerprint != str(run["fingerprint"] or "") or selected != expected:
+                    raise RssMatchCleanupStale("RSS 清理预览已过期")
+                placeholders = ",".join("?" for _ in selected)
+                rows = connection.execute(
+                    f"SELECT * FROM rss_subscription_matches WHERE id IN ({placeholders}) ORDER BY id",
+                    selected,
+                ).fetchall()
+                current = [dict(row) for row in rows]
+                if len(current) != len(selected) or any(not _cleanup_eligible(row) for row in current):
+                    raise RssMatchCleanupStale("RSS 清理预览已过期")
+                if _cleanup_fingerprint(current) != fingerprint:
+                    raise RssMatchCleanupStale("RSS 清理预览已过期")
+
+                now = _iso()
+                connection.execute(
+                    f"UPDATE rss_subscription_matches SET archive_state='archived', archived_at=?, "
+                    "archive_reason_code='subscription_missing', archive_run_id=?, updated_at=?, "
+                    f"version=version+1 WHERE id IN ({placeholders})",
+                    (now, preview_id, now, *selected),
+                )
+                connection.executemany(
+                    "INSERT INTO rss_match_cleanup_items ("
+                    "run_id, match_id, match_version, reason_code, status, created_at"
+                    ") VALUES (?, ?, ?, 'subscription_missing', 'archived', ?)",
+                    ((preview_id, str(row["id"]), int(row.get("version") or 1), now) for row in current),
+                )
+                result = {
+                    "id": preview_id,
+                    "status": "applied",
+                    "fingerprint": fingerprint,
+                    "archivedCount": len(current),
+                    "archivedMatchIds": selected,
+                    "appliedAt": now,
+                }
+                connection.execute(
+                    "UPDATE rss_match_cleanup_runs SET status='applied', result_json=?, "
+                    "idempotency_key=?, confirmed_at=?, updated_at=? WHERE id=?",
+                    (_json_dump(result), idempotency_key, now, now, preview_id),
+                )
+                return result
+        except RssMatchCleanupStale:
+            self._mark_cleanup_run(preview_id, "stale")
+            raise
+        except (KeyError, RssMatchCleanupConflict):
+            raise
+        except Exception:
+            self._mark_cleanup_run(preview_id, "failed")
+            raise
+
+    @staticmethod
+    def _match_cleanup_run(row):
+        if not row:
+            return None
+        preview = _json_load(row["preview_json"])
+        applied = _json_load(row["result_json"])
+        return {
+            "id": str(row["id"] or ""),
+            "status": str(row["status"] or ""),
+            "fingerprint": str(row["fingerprint"] or ""),
+            "itemCount": int(row["item_count"] or 0),
+            "items": preview.get("items") if isinstance(preview.get("items"), list) else [],
+            "archivedCount": int(applied.get("archivedCount") or 0),
+            "createdAt": str(row["created_at"] or ""),
+            "confirmedAt": str(row["confirmed_at"] or ""),
+            "updatedAt": str(row["updated_at"] or ""),
+        }
+
+    def get_match_cleanup_run(self, run_id):
+        run_id = str(run_id or "").strip()
+        if not run_id or len(run_id) > 80:
+            return None
+        with closing(self.runtime.connect()) as connection:
+            row = connection.execute(
+                "SELECT id, status, fingerprint, preview_json, result_json, item_count, "
+                "created_at, confirmed_at, updated_at FROM rss_match_cleanup_runs WHERE id=?",
+                (run_id,),
+            ).fetchone()
+        return self._match_cleanup_run(row)
+
+    def list_match_cleanup_runs(self, limit=20):
+        limit = max(1, min(int(limit or 20), 100))
+        with closing(self.runtime.connect()) as connection:
+            total = int(connection.execute(
+                "SELECT COUNT(*) AS count FROM rss_match_cleanup_runs"
+            ).fetchone()["count"])
+            rows = connection.execute(
+                "SELECT id, status, fingerprint, preview_json, result_json, item_count, "
+                "created_at, confirmed_at, updated_at FROM rss_match_cleanup_runs "
+                "ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return {
+            "items": [self._match_cleanup_run(row) for row in rows],
+            "total": total,
+        }
 
     @staticmethod
     def _candidate_group_state(candidates):
@@ -1284,6 +1587,7 @@ class PrivateRssRepository:
 
     @staticmethod
     def _candidate_groups_query(where=""):
+        active_where = f"{where} AND archive_state='active'" if where else "WHERE archive_state='active'"
         return (
             "WITH candidate_groups AS ("
             "SELECT subscription_key, unit_key, MAX(created_at) AS latest_at, "
@@ -1295,7 +1599,7 @@ class PrivateRssRepository:
             "WHEN COUNT(*)>0 AND SUM(CASE WHEN evaluation_status='blocked' AND evaluation_reason='subscription_missing' THEN 1 ELSE 0 END)=COUNT(*) THEN 'needs_cleanup' "
             "WHEN COUNT(*)>0 AND SUM(CASE WHEN evaluation_status='blocked' THEN 1 ELSE 0 END)=COUNT(*) THEN 'blocked' "
             "ELSE 'monitoring_rss' END AS group_state "
-            f"FROM rss_subscription_matches {where} GROUP BY subscription_key, unit_key"
+            f"FROM rss_subscription_matches {active_where} GROUP BY subscription_key, unit_key"
             ") "
         )
 
@@ -1452,9 +1756,20 @@ class PrivateRssRepository:
             rows = connection.execute(
                 "SELECT m.*, i.title AS item_title, i.published_at AS item_published_at "
                 "FROM rss_subscription_matches m JOIN rss_items i ON i.id=m.item_id "
-                f"WHERE {clauses} ORDER BY m.created_at DESC, m.id DESC",
+                f"WHERE m.archive_state='active' AND ({clauses}) ORDER BY m.created_at DESC, m.id DESC",
                 ref_params,
             ).fetchall()
+            artifact_keys = sorted({str(row["artifact_key"] or "") for row in rows if row["artifact_key"]})
+            ownership_rows = []
+            if artifact_keys:
+                artifact_marks = ",".join("?" for _ in artifact_keys)
+                ownership_rows = connection.execute(
+                    "SELECT id, subscription_key, unit_key, artifact_key, target_key, "
+                    "evaluation_status, evaluation_reason, archive_state "
+                    f"FROM rss_subscription_matches WHERE artifact_key IN ({artifact_marks}) "
+                    "ORDER BY created_at DESC, id DESC",
+                    artifact_keys,
+                ).fetchall()
 
         grouped = {}
         for row in rows:
@@ -1462,6 +1777,27 @@ class PrivateRssRepository:
             candidate["itemTitle"] = str(row["item_title"] or "")[:240]
             candidate["publishedAt"] = str(row["item_published_at"] or "")
             grouped.setdefault((candidate["subscriptionId"], candidate["unitId"]), []).append(candidate)
+        ownership_by_artifact = {}
+        for source in ownership_rows:
+            row = dict(source)
+            archive_state = str(row.get("archive_state") or "active")
+            reason_code = str(row.get("evaluation_reason") or "")
+            if archive_state == "archived":
+                ownership_state = "archived"
+            elif reason_code == "subscription_missing":
+                ownership_state = "invalid"
+            elif str(row.get("evaluation_status") or "") == "blocked":
+                ownership_state = "conflict"
+            else:
+                ownership_state = "valid"
+            ownership_by_artifact.setdefault(str(row.get("artifact_key") or ""), []).append({
+                "matchId": str(row.get("id") or ""),
+                "subscriptionId": str(row.get("subscription_key") or ""),
+                "unitId": str(row.get("unit_key") or ""),
+                "targetKey": str(row.get("target_key") or ""),
+                "state": ownership_state,
+                "reasonCode": reason_code,
+            })
         groups = []
         for ref in refs:
             key = (ref["subscription_key"], ref["unit_key"])
@@ -1478,6 +1814,15 @@ class PrivateRssRepository:
                 if isinstance(row.get("baselineScore"), (int, float))
                 and not isinstance(row.get("baselineScore"), bool)
             ), None)
+            ownerships = []
+            seen_ownerships = set()
+            for artifact_key in {str(row.get("artifactKey") or "") for row in candidates}:
+                for ownership in ownership_by_artifact.get(artifact_key, []):
+                    identity = (ownership["matchId"], ownership["state"])
+                    if identity in seen_ownerships:
+                        continue
+                    seen_ownerships.add(identity)
+                    ownerships.append(ownership)
             groups.append({
                 "id": "rss-group:" + hashlib.sha256(
                     f"{key[0]}|{key[1]}".encode("utf-8")
@@ -1497,6 +1842,7 @@ class PrivateRssRepository:
                     str(row.get("evaluatedAt") or row.get("createdAt") or "")
                     for row in candidates
                 ), default=""),
+                "ownerships": ownerships,
                 "candidates": candidates,
             })
         return {
@@ -1557,7 +1903,7 @@ class PrivateRssRepository:
             subscription_marks = ",".join("?" for _ in stored_subscriptions)
             rows = connection.execute(
                 "SELECT id, artifact_key FROM rss_subscription_matches "
-                f"WHERE target_key=? AND artifact_key IN ({artifact_marks}) "
+                f"WHERE archive_state='active' AND target_key=? AND artifact_key IN ({artifact_marks}) "
                 f"AND subscription_key IN ({subscription_marks}) "
                 "ORDER BY is_best_candidate DESC, created_at DESC, id DESC",
                 (target_key, *artifacts, *stored_subscriptions),
@@ -1572,7 +1918,7 @@ class PrivateRssRepository:
         with closing(self.runtime.connect()) as connection:
             rows = connection.execute(
                 "SELECT * FROM rss_subscription_matches "
-                "WHERE match_status='candidate' AND (evaluation_status='pending' "
+                "WHERE archive_state='active' AND match_status='candidate' AND (evaluation_status='pending' "
                 "OR (evaluation_status='blocked' AND evaluation_reason IN "
                 "('rule_ambiguous', 'version_fields_unconfirmed'))) "
                 "ORDER BY created_at, id LIMIT ?",

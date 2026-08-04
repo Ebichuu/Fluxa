@@ -308,6 +308,17 @@ def _reconciliation_composition(items):
     return counts
 
 
+def _reconciliation_action_required(items):
+    seen = set()
+    for item in items or []:
+        if str(item.get("reconciliationState") or "") not in {"conflict", "remote_missing"}:
+            continue
+        key = str(item.get("id") or item.get("subscriptionKey") or "").strip()
+        if key:
+            seen.add(key)
+    return len(seen)
+
+
 def _chain_item_for_row(row, chain):
     mapped = map_subscription_item(row) or {}
     candidates = [
@@ -707,6 +718,7 @@ class SubscriptionWorkbenchService:
                 for item in mapped_items
             ),
             "inLibrary": sum(item.get("library", {}).get("status") == "done" for item in mapped_items),
+            "reconciliationActionRequired": _reconciliation_action_required(mapped_items),
             **_reconciliation_composition(mapped_items),
         }
         chain_available = 'chain_payload' in locals() and isinstance(chain_payload, dict) and not chain_error

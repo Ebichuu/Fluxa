@@ -18,7 +18,8 @@ import { currentHistoryEntryIs, writeUrlQuery, type UrlHistoryMode } from '../..
 import {
   getSubscriptionCalendarDateDetail,
   getSubscriptionCalendarRangeSummary,
-  getSubscriptionCalendarSummary
+  getSubscriptionCalendarSummary,
+  requestSubscriptionCalendarRefresh
 } from '../../services/api';
 import type {
   SubscriptionCalendarDayPreview,
@@ -31,6 +32,7 @@ import type {
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
 import { statisticDisplayValue, statisticScopeText } from '../../utils/statistics';
 import type { AppNavigate } from '../layout/AppTopNav';
+import { PosterImage } from '../layout/PosterImage';
 import { HealthBadge } from '../status/HealthBadge';
 
 interface CalendarPageProps {
@@ -176,12 +178,14 @@ function readCalendarUrlState(todayKey: string, location: Location = window.loca
 }
 
 function EntryPoster({ entry }: { entry: CalendarPosterItem }) {
-  const [imageFailed, setImageFailed] = useState(false);
-  useEffect(() => setImageFailed(false), [entry.posterUrl]);
-  if (entry.posterUrl && !imageFailed) {
-    return <img alt="" aria-hidden="true" className="calendar-entry__poster" decoding="async" loading="lazy" src={entry.posterUrl} onError={() => setImageFailed(true)} />;
-  }
-  return <span aria-hidden="true" className="calendar-entry__poster calendar-entry__poster--fallback">{entry.title.charAt(0)}</span>;
+  return (
+    <PosterImage
+      className="calendar-entry__poster"
+      fallbackClassName="calendar-entry__poster--fallback"
+      src={entry.posterUrl}
+      title={entry.title}
+    />
+  );
 }
 
 export function CalendarPage({ onNavigate }: CalendarPageProps) {
@@ -209,10 +213,12 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     initialUrlState.detailOpen ? 'loading' : 'idle'
   );
   const [calendarErrors, setCalendarErrors] = useState<string[]>([]);
+  const [cacheStatus, setCacheStatus] = useState<'fresh' | 'stale' | 'cold'>('cold');
   const [entryTotals, setEntryTotals] = useState({ linked: 0, unlinked: 0, total: 0 });
   const [statisticsMeta, setStatisticsMeta] = useState<SubscriptionCalendar['statisticsMeta']>();
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const detailRequestRef = useRef<AbortController | null>(null);
+  const refreshSessionRef = useRef(`${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
   const pendingDetailRef = useRef<{
     date: string;
     mediaType: CalendarMediaType;
@@ -307,30 +313,49 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
 
   useEffect(() => {
     const controller = new AbortController();
+    let pollTimer = 0;
+    let pollCount = 0;
     const requestFrom = calendarView === 'week' ? visibleWeekStart : toDateKey(year, month, 1);
     const requestTo = calendarView === 'week' ? visibleWeekEnd : monthEndKey(year, month);
     summaryCoverageRef.current = null;
     setMode('loading');
     setCalendarErrors([]);
-    const request = calendarView === 'week'
+    const readSummary = () => (calendarView === 'week'
       ? getSubscriptionCalendarRangeSummary(
           visibleWeekStart, visibleWeekEnd, mediaType, calendarRequestOptions(controller.signal), includeUnlinked
         )
       : getSubscriptionCalendarSummary(
           year, month, mediaType, calendarRequestOptions(controller.signal), includeUnlinked
-        );
-    request
+        ));
+    const refreshScopes = () => {
+      const keys = calendarView === 'week'
+        ? Array.from(new Set([visibleWeekStart.slice(0, 7), visibleWeekEnd.slice(0, 7)]))
+        : [`${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}`];
+      return Promise.all(keys.map((key) => {
+        const [scopeYear, scopeMonth] = key.split('-').map(Number);
+        return requestSubscriptionCalendarRefresh({
+          year: scopeYear,
+          month: scopeMonth,
+          mediaType,
+          includeUnlinked,
+          idempotencyKey: `calendar-ui:${refreshSessionRef.current}:${key}:${mediaType}:${includeUnlinked ? 1 : 0}`
+        });
+      }));
+    };
+    const applySummary = () => readSummary()
       .then((payload) => {
         if (controller.signal.aborted) return;
+        const nextCacheStatus = payload.cache?.status ?? 'fresh';
+        setCacheStatus(nextCacheStatus);
         setDays(payload.calendar.days ?? []);
         setSearchIndex(payload.calendar.searchIndex ?? []);
         setCalendarErrors(payload.calendar.errors ?? []);
         setStatisticsMeta(payload.calendar.statisticsMeta);
         setEntryTotals({
-          linked: payload.calendar.stats.linkedEntries ?? payload.calendar.stats.entries,
+          linked: payload.calendar.stats.linkedEntries ?? payload.calendar.stats.entries ?? 0,
           unlinked: payload.calendar.stats.unlinkedEntries ?? payload.calendar.stats.unlinked ?? 0,
           total: payload.calendar.stats.totalEntries
-            ?? payload.calendar.stats.entries + (payload.calendar.stats.excludedUnlinked ?? 0)
+            ?? (payload.calendar.stats.entries ?? 0) + (payload.calendar.stats.excludedUnlinked ?? 0)
         });
         setMode('live');
         summaryCoverageRef.current = {
@@ -349,6 +374,13 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         ) {
           requestDateDetail(pending.date, pending.mediaType, pending.includeUnlinked);
         }
+        if (nextCacheStatus !== 'fresh' && pollCount < 8) {
+          pollCount += 1;
+          const enqueue = pollCount === 1 ? refreshScopes().catch(() => undefined) : Promise.resolve();
+          enqueue.finally(() => {
+            if (!controller.signal.aborted) pollTimer = window.setTimeout(applySummary, 1500);
+          });
+        }
       })
       .catch(() => {
         if (!controller.signal.aborted) {
@@ -360,7 +392,11 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
           if (pendingDetailRef.current) setDetailMode('error');
         }
       });
-    return () => controller.abort();
+    applySummary();
+    return () => {
+      controller.abort();
+      window.clearTimeout(pollTimer);
+    };
   }, [calendarView, includeUnlinked, mediaType, month, visibleWeekEnd, visibleWeekStart, year]);
 
   useEffect(() => {
@@ -601,7 +637,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
     unknown: result.unknown + (day.statusCounts.unknown ?? 0),
     unlinked: result.unlinked + (day.statusCounts.unlinked ?? 0)
   }), { upcoming: 0, acquiring: 0, library: 0, playable: 0, protected: 0, missing: 0, unknown: 0, unlinked: 0 });
-  const isLoading = mode === 'loading';
+  const isLoading = mode === 'loading' || cacheStatus === 'cold';
 
   return (
     <main className="work-page work-page--fill ops-page ops-page--calendar">
@@ -639,7 +675,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
             <button aria-label="上一周期" className="ops-icon-button" title="上一周期" type="button" onClick={() => shiftPeriod(-1)}><ChevronLeft aria-hidden="true" size={14} /></button>
             <button className="tool-link" type="button" onClick={goToday}>今天</button>
             <button aria-label="下一周期" className="ops-icon-button" title="下一周期" type="button" onClick={() => shiftPeriod(1)}><ChevronRight aria-hidden="true" size={14} /></button>
-            <span className="ops-calendar-mode">{mode === 'loading' ? '加载中…' : mode === 'error' ? '日历不可用' : `已关联 ${entryTotals.linked} · 未关联 ${entryTotals.unlinked} · 合计 ${entryTotals.total}`}</span>
+            <span className="ops-calendar-mode">{mode === 'loading' ? '加载中…' : mode === 'error' ? '日历不可用' : cacheStatus === 'cold' ? '正在生成日历' : cacheStatus === 'stale' ? `上次结果 · 正在更新` : `已关联 ${entryTotals.linked} · 未关联 ${entryTotals.unlinked} · 合计 ${entryTotals.total}`}</span>
           </div>
         </header>
 
@@ -675,7 +711,8 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
 
         {calendarErrors.length > 0 && <p className="ops-calendar-error">部分追更缺少播出日期，当前只显示可验证记录。</p>}
         {mode === 'error' && <p className="ops-calendar-error">日历与任务证据暂时无法读取，没有显示缓存或示例数据。</p>}
-        {mode === 'live' && days.length === 0 && <div className="calendar-empty"><CalendarDays size={22} /><strong>当前月份没有追更日历</strong><span>切换月份或前往发现页添加追更。</span></div>}
+        {mode === 'live' && cacheStatus === 'fresh' && days.length === 0 && <div className="calendar-empty"><CalendarDays size={22} /><strong>当前月份没有追更日历</strong><span>切换月份或前往发现页添加追更。</span></div>}
+        {mode === 'live' && cacheStatus === 'cold' && <div className="calendar-empty"><CalendarDays size={22} /><strong>正在生成当前日历</strong><span>页面会在后台结果就绪后自动更新。</span></div>}
 
         {days.length > 0 && (
           <div className="ops-calendar-scroll">

@@ -11,7 +11,11 @@ from app.activity_log import write_activity
 from app.http_runtime import current_request_id
 from app.automation_action_runtime import present_automation_action
 from app.private_rss_collector import PrivateRssCollector
-from app.private_rss_repository import PrivateRssRepository
+from app.private_rss_repository import (
+    PrivateRssRepository,
+    RssMatchCleanupConflict,
+    RssMatchCleanupStale,
+)
 from app.quality_watch_repository import QualityWatchRepository
 from app.rss_subscription_match_runtime import (
     RssAnalysisDependencies,
@@ -46,6 +50,11 @@ RSS_MATCH_PUBLIC_FIELDS = (
     "baselineSummary",
     "bestCandidate",
     "evaluatedAt",
+    "archiveState",
+    "archivedAt",
+    "archiveReasonCode",
+    "archiveRunId",
+    "version",
     "createdAt",
     "updatedAt",
 )
@@ -211,6 +220,20 @@ def _present_rss_match_group(group):
     subscription_id, unit_id = torra_public_match_keys(
         group.get("subscriptionId"), group.get("unitId")
     )
+    ownerships = []
+    for row in group.get("ownerships") or []:
+        if not isinstance(row, dict):
+            continue
+        owner_subscription, owner_unit = torra_public_match_keys(
+            row.get("subscriptionId"), row.get("unitId")
+        )
+        ownerships.append({
+            "matchId": str(row.get("matchId") or "")[:80],
+            "subscriptionId": owner_subscription,
+            "unitId": owner_unit,
+            "state": str(row.get("state") or "conflict")[:40],
+            "reasonCode": str(row.get("reasonCode") or "")[:80],
+        })
     return {
         "id": str(group.get("id") or "")[:80],
         "subscriptionId": subscription_id,
@@ -225,6 +248,7 @@ def _present_rss_match_group(group):
         "baselineScore": group.get("baselineScore"),
         "baselineSummary": _public_score_summary(group.get("baselineSummary"), baseline=True),
         "lastCandidateAt": str(group.get("lastCandidateAt") or "")[:80],
+        "ownerships": ownerships,
         "candidates": [
             presented
             for presented in (
@@ -258,6 +282,71 @@ def _present_rss_match_group_list(payload):
         "blocked": max(0, int(counts.get("blocked") or 0)),
     }
     return value
+
+
+def _present_cleanup_item(item):
+    source = item if isinstance(item, dict) else {}
+    subscription_id, unit_id = torra_public_match_keys(
+        source.get("subscriptionId"), source.get("unitId")
+    )
+    return {
+        "matchId": str(source.get("matchId") or "")[:80],
+        "subscriptionId": subscription_id,
+        "unitId": unit_id,
+        "title": safe_public_text(source.get("title"))[:240],
+        "version": max(1, int(source.get("version") or 1)),
+        "reasonCode": str(source.get("reasonCode") or "subscription_missing")[:80],
+    }
+
+
+def _present_cleanup_preview(payload):
+    source = payload if isinstance(payload, dict) else {}
+    return {
+        "id": str(source.get("id") or "")[:80],
+        "status": str(source.get("status") or "previewed")[:40],
+        "fingerprint": str(source.get("fingerprint") or "")[:64],
+        "cleanupRuleVersion": str(source.get("cleanupRuleVersion") or "")[:80],
+        "itemCount": max(0, int(source.get("itemCount") or 0)),
+        "items": [_present_cleanup_item(row) for row in source.get("items") or []],
+        "skipped": [{
+            "matchId": str(row.get("matchId") or "")[:80],
+            "reasonCode": str(row.get("reasonCode") or "")[:80],
+        } for row in source.get("skipped") or [] if isinstance(row, dict)],
+        "createdAt": str(source.get("createdAt") or "")[:80],
+    }
+
+
+def _present_cleanup_result(payload):
+    source = payload if isinstance(payload, dict) else {}
+    return {
+        "id": str(source.get("id") or "")[:80],
+        "status": str(source.get("status") or "")[:40],
+        "fingerprint": str(source.get("fingerprint") or "")[:64],
+        "archivedCount": max(0, int(source.get("archivedCount") or 0)),
+        "archivedMatchIds": [
+            str(value or "")[:80] for value in source.get("archivedMatchIds") or []
+            if str(value or "")
+        ],
+        "appliedAt": str(source.get("appliedAt") or "")[:80],
+    }
+
+
+def _present_cleanup_run_list(payload):
+    source = payload if isinstance(payload, dict) else {}
+    return {
+        "items": [{
+            "id": str(row.get("id") or "")[:80],
+            "status": str(row.get("status") or "")[:40],
+            "fingerprint": str(row.get("fingerprint") or "")[:64],
+            "itemCount": max(0, int(row.get("itemCount") or 0)),
+            "archivedCount": max(0, int(row.get("archivedCount") or 0)),
+            "items": [_present_cleanup_item(item) for item in row.get("items") or []],
+            "createdAt": str(row.get("createdAt") or "")[:80],
+            "confirmedAt": str(row.get("confirmedAt") or "")[:80],
+            "updatedAt": str(row.get("updatedAt") or "")[:80],
+        } for row in source.get("items") or [] if isinstance(row, dict)],
+        "total": max(0, int(source.get("total") or 0)),
+    }
 
 
 def _truthy(value):
@@ -585,5 +674,79 @@ def register_private_rss(
         response.status_code = 200 if result.get("status") == "existing" else 201
         response.headers["Location"] = f"/api/v2/rss-matches/{match.get('id', '')}"
         return response
+
+    @app.get("/api/v2/rss-match-cleanups")
+    def rss_match_cleanups_list():
+        try:
+            payload = service.repository.list_match_cleanup_runs(
+                limit=request.args.get("limit") or 20,
+            )
+        except (TypeError, ValueError):
+            return _error("RSS_MATCH_CLEANUP_QUERY_INVALID", "RSS 清理审计查询参数无效", 400)
+        return jsonify(_present_cleanup_run_list(payload))
+
+    @app.get("/api/v2/rss-match-cleanups/<run_id>")
+    def rss_match_cleanups_detail(run_id):
+        run = service.repository.get_match_cleanup_run(run_id)
+        if not run:
+            return _error("RSS_MATCH_CLEANUP_NOT_FOUND", "RSS 清理记录不存在", 404)
+        return jsonify(_present_cleanup_run_list({"items": [run], "total": 1})["items"][0])
+
+    @app.post("/api/v2/rss-match-cleanups/previews")
+    def rss_match_cleanups_preview():
+        if not service.config_write_enabled():
+            return _error("RSS_MATCH_CLEANUP_WRITE_DISABLED", "RSS 本地清理写入尚未启用", 503)
+        body = request.get_json(silent=True) or {}
+        if not isinstance(body, dict) or set(body) - {"matchIds"} or not isinstance(body.get("matchIds"), list):
+            return _error("RSS_MATCH_CLEANUP_PREVIEW_INVALID", "RSS 清理预览参数无效", 400)
+        try:
+            preview = service.repository.create_match_cleanup_preview(body.get("matchIds"))
+        except ValueError:
+            return _error("RSS_MATCH_CLEANUP_PREVIEW_INVALID", "RSS 清理预览参数无效", 400)
+        except Exception:
+            return _error("RSS_MATCH_CLEANUP_PREVIEW_FAILED", "RSS 清理预览生成失败", 500)
+        response = jsonify(_present_cleanup_preview(preview))
+        response.status_code = 201
+        response.headers["Location"] = f"/api/v2/rss-match-cleanups/{preview['id']}"
+        return response
+
+    @app.post("/api/v2/rss-match-cleanups")
+    def rss_match_cleanups_apply():
+        if not service.config_write_enabled():
+            return _error("RSS_MATCH_CLEANUP_WRITE_DISABLED", "RSS 本地清理写入尚未启用", 503)
+        body = request.get_json(silent=True) or {}
+        expected_fields = {"previewId", "fingerprint", "matchIds", "idempotencyKey"}
+        if (
+            not isinstance(body, dict)
+            or set(body) != expected_fields
+            or not isinstance(body.get("matchIds"), list)
+        ):
+            return _error("RSS_MATCH_CLEANUP_INVALID", "RSS 清理确认参数无效", 400)
+        try:
+            result = service.repository.apply_match_cleanup(
+                preview_id=body.get("previewId"),
+                fingerprint=body.get("fingerprint"),
+                match_ids=body.get("matchIds"),
+                idempotency_key=body.get("idempotencyKey"),
+            )
+        except ValueError:
+            return _error("RSS_MATCH_CLEANUP_INVALID", "RSS 清理确认参数无效", 400)
+        except KeyError:
+            return _error("RSS_MATCH_CLEANUP_NOT_FOUND", "RSS 清理预览不存在", 404)
+        except RssMatchCleanupStale:
+            return _error("RSS_MATCH_CLEANUP_PREVIEW_STALE", "RSS 清理预览已过期，请重新预览", 409)
+        except RssMatchCleanupConflict:
+            return _error("RSS_MATCH_CLEANUP_CONFLICT", "RSS 清理确认发生冲突", 409)
+        except Exception:
+            return _error("RSS_MATCH_CLEANUP_FAILED", "RSS 清理执行失败", 500)
+        public_result = _present_cleanup_result(result)
+        write_activity(
+            "rss",
+            "match_cleanup",
+            "success",
+            "RSS 失效匹配已归档",
+            archivedCount=public_result["archivedCount"],
+        )
+        return jsonify(public_result)
 
     return service

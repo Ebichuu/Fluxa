@@ -14,6 +14,7 @@ from app import discover_runtime
 from app.contract_mapping import map_calendar_payload
 from app.http_runtime import current_request_id
 from app.statistic_metadata_runtime import statistic_metadata
+from app.calendar_snapshot_repository import CalendarRefreshConflict, normalize_scope
 from app.task_exception_runtime import protection_rule
 from app.task_public_runtime import (
     present_pipeline_fact,
@@ -752,10 +753,11 @@ def _merge_calendar_entries(entries: list[dict]) -> list[dict]:
 
 
 class CalendarTimelineService:
-    def __init__(self, app: Flask, calendar_loader=None, clock=None):
+    def __init__(self, app: Flask, calendar_loader=None, clock=None, repository=None):
         self.app = app
         self.calendar_loader = calendar_loader or discover_runtime.build_subscription_calendar
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.repository = repository
         self._torra_cache = {}
         self._torra_cache_lock = threading.RLock()
         self._snapshot_cache = {}
@@ -778,6 +780,130 @@ class CalendarTimelineService:
             cached.pop("_allEntries", None)
             cached.pop("_excludedBeforeByDate", None)
         return cached
+
+    @staticmethod
+    def _cache_confirmation(calendar: dict, payload: dict) -> str:
+        if not payload.get("calendar"):
+            return "unknown"
+        if calendar.get("errorCount") or calendar.get("errors") or any(
+            entry.get("status") in {"unknown", "unlinked"}
+            for entry in calendar.get("entries") or []
+            if isinstance(entry, dict)
+        ):
+            return "partial"
+        return "confirmed"
+
+    def build_cache_payload(self, year: int, month: int, media_type: str, *, include_unlinked=False) -> dict:
+        """Build one scope outside SQLite; the refresh worker persists the result."""
+        self._build_snapshot(
+            year,
+            month,
+            media_type,
+            include_unlinked=include_unlinked,
+            current=self.clock(),
+        )
+        key = (int(year), int(month), str(media_type or "all"), bool(include_unlinked))
+        with self._snapshot_cache_lock:
+            cached = self._snapshot_cache.get(key)
+            if not cached:
+                raise RuntimeError("日历快照未生成")
+            payload = deepcopy(cached[1])
+        payload["confirmation"] = self._cache_confirmation(payload.get("calendar") or {}, payload)
+        return payload
+
+    @staticmethod
+    def _cache_meta(row, *, queue=None):
+        return {
+            "status": "fresh" if row and row.get("isFresh") else "stale" if row else "cold",
+            "confirmation": row.get("effectiveConfirmation") if row else "unknown",
+            "observedAt": row.get("observedAt", "") if row else "",
+            "freshUntil": row.get("freshUntil", "") if row else "",
+            "lastSuccessAt": row.get("lastSuccessAt", "") if row else "",
+            "lastAttemptAt": row.get("lastAttemptAt", "") if row else "",
+            "lastErrorCode": row.get("lastErrorCode", "") if row else "",
+            "lastErrorText": row.get("lastErrorText", "") if row else "",
+            "refresh": {
+                "status": queue.get("status") if queue else "idle",
+                "running": bool(queue and queue.get("status") == "running"),
+                "requestedAt": queue.get("lastRequestedAt", "") if queue else "",
+            },
+        }
+
+    def _empty_cached_response(self, year, month, media_type, include_unlinked, *, view="", meta=None):
+        calendar = {
+            "year": int(year), "month": int(month), "mediaType": media_type,
+            "timeZone": "Asia/Shanghai", "includeUnlinked": bool(include_unlinked),
+            "entries": [], "errors": [], "errorCount": 0,
+            "stats": {
+                "entries": None, "titles": None, "inLibrary": None, "pending": None,
+                "linkedEntries": None, "unlinkedEntries": None, "totalEntries": None,
+            }, "view": view or "legacy",
+        }
+        return {"ok": True, "version": "", "confirmation": "unknown", "cache": meta or {"status": "cold", "confirmation": "unknown"}, "calendar": calendar}
+
+    def read_cached(self, year, month, media_type="all", *, view="", start=None, end=None, detail_date=None, include_unlinked=False):
+        if not self.repository:
+            return self.snapshot(
+                year, month, media_type, view=view, start=start, end=end,
+                detail_date=detail_date, include_unlinked=include_unlinked,
+            )
+        current = self.clock()
+        if detail_date:
+            year, month = detail_date.year, detail_date.month
+        if start is None and end is None:
+            start = detail_date
+            end = detail_date
+        if start and end:
+            scopes = [
+                normalize_scope(item_year, item_month, media_type, include_unlinked)
+                for item_year, item_month in _month_keys(start, end)
+            ]
+        else:
+            scopes = [normalize_scope(year, month, media_type, include_unlinked)]
+        rows = self.repository.get_many(scopes, now=current)
+        available = [row for row in rows.values() if row]
+        if not available:
+            queue = self.repository.queue_state(year, month, media_type, include_unlinked)
+            return self._empty_cached_response(year, month, media_type, include_unlinked, view=view, meta=self._cache_meta(None, queue=queue))
+        first = available[0]
+        all_entries = []
+        excluded_by_date = {}
+        errors = []
+        confirmations = []
+        for row in available:
+            payload = row.get("payload") or {}
+            calendar = payload.get("calendar") or {}
+            all_entries.extend(payload.get("_allEntries") or calendar.get("entries") or [])
+            errors.extend(calendar.get("errors") or [])
+            confirmations.append(row.get("effectiveConfirmation") or "unknown")
+            for key, value in (payload.get("_excludedBeforeByDate") or {}).items():
+                excluded_by_date[key] = excluded_by_date.get(key, 0) + int(value or 0)
+        all_entries = _merge_calendar_entries(all_entries)
+        if start and end:
+            all_entries = [entry for entry in all_entries if _text(entry.get("date")) and start.isoformat() <= _text(entry.get("date")) <= end.isoformat()]
+        visible = all_entries if include_unlinked else [entry for entry in all_entries if entry.get("linkState") != "unlinked"]
+        visible = [{**entry, "status": _entry_status(entry, current.astimezone(BEIJING_TZ).strftime("%Y-%m-%d"))} for entry in visible]
+        calendar = deepcopy((first.get("payload") or {}).get("calendar") or {})
+        calendar.update({
+            "entries": visible,
+            "errors": list(dict.fromkeys(errors))[:20],
+            "errorCount": len(errors),
+            "includeUnlinked": bool(include_unlinked),
+            "view": view or "legacy",
+            "stats": _detail_calendar_stats(
+                calendar.get("stats"), visible, all_entries, include_unlinked,
+                sum(excluded_by_date.values()),
+            ),
+        })
+        if view == "summary":
+            calendar = _summary_calendar(calendar, current)
+        stable = json.dumps(calendar, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        version = hashlib.sha256(f"{first.get('version') or ''}|{stable}".encode("utf-8")).hexdigest()[:24]
+        confirmation = "unknown" if "unknown" in confirmations else "partial" if "partial" in confirmations or len(available) < len(scopes) else "confirmed"
+        queue = self.repository.queue_state(year, month, media_type, include_unlinked)
+        meta = self._cache_meta(first, queue=queue)
+        meta["confirmation"] = confirmation
+        return {"ok": True, "version": version, "confirmation": confirmation, "cache": meta, "calendar": calendar}
 
     def _snapshot_build_lock(self, key):
         with self._snapshot_cache_lock:
@@ -1101,6 +1227,7 @@ class CalendarTimelineService:
             cache_payload = {
                 "ok": True,
                 "version": full_version,
+                "confirmation": self._cache_confirmation(calendar, {"calendar": calendar}),
                 "calendar": deepcopy(calendar),
                 "_allEntries": deepcopy(all_entries),
                 "_excludedBeforeByDate": excluded_before_by_date,
@@ -1114,6 +1241,7 @@ class CalendarTimelineService:
             cache_payload = {
                 "ok": True,
                 "version": full_version,
+                "confirmation": self._cache_confirmation(calendar, {"calendar": calendar}),
                 "calendar": deepcopy(calendar),
                 "_allEntries": deepcopy(all_entries),
                 "_excludedBeforeByDate": excluded_before_by_date,
@@ -1138,8 +1266,8 @@ def _error(code: str, message: str, status: int):
     return jsonify({"code": code, "error": message, "request_id": current_request_id()}), status
 
 
-def register_calendar_timeline(app: Flask, calendar_loader=None, clock=None):
-    service = CalendarTimelineService(app, calendar_loader=calendar_loader, clock=clock)
+def register_calendar_timeline(app: Flask, calendar_loader=None, clock=None, repository=None):
+    service = CalendarTimelineService(app, calendar_loader=calendar_loader, clock=clock, repository=repository)
     app.extensions["mcc_calendar_timeline"] = service
 
     @app.get("/api/v2/calendar")
@@ -1176,16 +1304,28 @@ def register_calendar_timeline(app: Flask, calendar_loader=None, clock=None):
         ):
             return _error("CALENDAR_RANGE_INVALID", "日历范围、日期或视图无效", 400)
         try:
-            payload = service.snapshot(
-                year,
-                month,
-                media_type,
-                view=view,
-                start=from_value,
-                end=to_value,
-                detail_date=detail_date,
-                include_unlinked=include_unlinked,
-            )
+            if service.repository:
+                payload = service.read_cached(
+                    year,
+                    month,
+                    media_type,
+                    view=view,
+                    start=from_value,
+                    end=to_value,
+                    detail_date=detail_date,
+                    include_unlinked=include_unlinked,
+                )
+            else:
+                payload = service.snapshot(
+                    year,
+                    month,
+                    media_type,
+                    view=view,
+                    start=from_value,
+                    end=to_value,
+                    detail_date=detail_date,
+                    include_unlinked=include_unlinked,
+                )
         except Exception:
             return _error("CALENDAR_TIMELINE_READ_FAILED", "日历时间线读取失败", 502)
         etag = payload.get("version") or ""
@@ -1197,5 +1337,30 @@ def register_calendar_timeline(app: Flask, calendar_loader=None, clock=None):
             response.set_etag(etag)
         response.headers["Cache-Control"] = "private, no-cache, must-revalidate"
         return response
+
+    @app.post("/api/v2/calendar/refresh-requests")
+    def calendar_refresh_request():
+        if not service.repository:
+            return _error("CALENDAR_REFRESH_UNAVAILABLE", "日历后台刷新尚未启用", 503)
+        body = request.get_json(silent=True) or {}
+        try:
+            scope = normalize_scope(
+                body.get("year"),
+                body.get("month"),
+                body.get("mediaType") or body.get("type") or "all",
+                _truthy(body.get("includeUnlinked")),
+            )
+            idempotency_key = _text(body.get("idempotencyKey"))
+            if not idempotency_key or len(idempotency_key) > 180:
+                raise ValueError("刷新幂等键无效")
+            result = service.repository.request_refresh(
+                scope["year"], scope["month"], scope["mediaType"], scope["includeUnlinked"],
+                now=service.clock(), idempotency_key=idempotency_key,
+            )
+        except CalendarRefreshConflict:
+            return _error("CALENDAR_REFRESH_CONFLICT", "刷新请求与其他日历范围冲突", 409)
+        except (TypeError, ValueError):
+            return _error("CALENDAR_REFRESH_INVALID", "日历刷新范围或幂等键无效", 422)
+        return jsonify({"ok": True, "scope": scope, "refresh": result}), 202
 
     return service

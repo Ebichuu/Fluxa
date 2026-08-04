@@ -4,13 +4,16 @@ import unittest
 import json
 import threading
 import time
+import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 from flask import Flask
 
 from app import discover_runtime
 from app.calendar_timeline_runtime import _entry_status, _merge_calendar_entries, register_calendar_timeline
+from app.calendar_snapshot_repository import CalendarSnapshotRepository
 
 
 def pipeline_fact(
@@ -204,6 +207,48 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
             headers={"If-None-Match": first.headers["ETag"]},
         )
         self.assertEqual(unchanged.status_code, 304)
+
+    def test_persistent_calendar_get_is_read_only_and_cold_scope_is_unknown(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        repository = CalendarSnapshotRepository(Path(directory.name) / "calendar.sqlite3")
+        application = Flask(f"{__name__}-cached-cold")
+        service = register_calendar_timeline(
+            application,
+            calendar_loader=lambda *_args: self.fail("GET must not call calendar loader"),
+            repository=repository,
+            clock=lambda: datetime(2026, 7, 22, 1, 31, tzinfo=timezone.utc),
+        )
+        service.snapshot = lambda *_args, **_kwargs: self.fail("GET must not build snapshot")
+
+        response = application.test_client().get("/api/v2/calendar?year=2026&month=7&type=tv&view=summary")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["confirmation"], "unknown")
+        self.assertEqual(payload["cache"]["status"], "cold")
+        self.assertIsNone(payload["calendar"]["stats"]["entries"])
+        self.assertIsNone(repository.queue_state(2026, 7, "tv", False))
+
+    def test_refresh_request_only_queues_and_is_idempotent(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        repository = CalendarSnapshotRepository(Path(directory.name) / "calendar.sqlite3")
+        application = Flask(f"{__name__}-cached-refresh")
+        register_calendar_timeline(application, calendar_loader=calendar_loader, repository=repository)
+        client = application.test_client()
+        body = {
+            "year": 2026, "month": 7, "mediaType": "tv",
+            "includeUnlinked": False, "idempotencyKey": "browser:2026-07:tv:0",
+        }
+
+        first = client.post("/api/v2/calendar/refresh-requests", json=body)
+        second = client.post("/api/v2/calendar/refresh-requests", json=body)
+
+        self.assertEqual(first.status_code, 202)
+        self.assertEqual(second.status_code, 202)
+        self.assertEqual(first.get_json()["refresh"]["scopeKey"], "2026-07:tv:0")
+        self.assertEqual(repository.queue_state(2026, 7, "tv", False)["attemptCount"], 0)
 
     def test_season_level_stage_does_not_mark_episode_acquired_or_library(self):
         season_only = FakeTaskService().full_snapshot()["items"][0]

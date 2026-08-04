@@ -19,6 +19,7 @@ import {
   X
 } from 'lucide-react';
 import {
+  applyRssMatchCleanup,
   backfillRssIdentities,
   deleteRssSource,
   getAutomationAction,
@@ -27,6 +28,7 @@ import {
   getRssSeedItems,
   getRssSources,
   previewRssExactDownload,
+  previewRssMatchCleanup,
   runRssMatcher,
   saveRssSource,
   startRssMatchAnalysis,
@@ -34,7 +36,7 @@ import {
   testRssSource
 } from '../../services/api';
 import { writeUrlQuery, type UrlHistoryMode } from '../../app/urlState';
-import type { AutomationAction, RssExactDownloadPreview, RssIdentityStatus, RssLibrarySummary, RssMatch, RssMatchGroup, RssMatchGroupListResponse, RssSeedItem, RssSource, RssSourceInput } from '../../types/rssSeedLibrary';
+import type { AutomationAction, RssExactDownloadPreview, RssIdentityStatus, RssLibrarySummary, RssMatch, RssMatchCleanupPreview, RssMatchGroup, RssMatchGroupListResponse, RssSeedItem, RssSource, RssSourceInput } from '../../types/rssSeedLibrary';
 import {
   classifyRssResourceScope,
   countRssResourceScopes,
@@ -414,6 +416,8 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const [matchPollTimedOut, setMatchPollTimedOut] = useState<Record<string, boolean>>({});
   const [matchBusy, setMatchBusy] = useState('');
   const [downloadTarget, setDownloadTarget] = useState<{ match: RssMatch; analysis: AutomationAction } | null>(null);
+  const [cleanupPreview, setCleanupPreview] = useState<RssMatchCleanupPreview | null>(null);
+  const [cleanupBusy, setCleanupBusy] = useState(false);
   const [query, setQuery] = useState(initialUrlState.query);
   const [sourceId, setSourceId] = useState(initialUrlState.sourceId);
   const [identityStatus, setIdentityStatus] = useState<RssIdentityStatus>(initialUrlState.identityStatus);
@@ -914,9 +918,50 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     }, 'push');
   };
 
+  const previewCleanupGroup = async (group: RssMatchGroup) => {
+    const matchIds = group.candidates.map((candidate) => candidate.id);
+    setCleanupBusy(true);
+    setFeedback(null);
+    try {
+      const preview = await previewRssMatchCleanup(matchIds);
+      if (preview.itemCount < 1) {
+        setFeedback({ tone: 'error', message: '当前归属已变化，没有可安全归档的失效匹配' });
+        await loadMatches(matchesOffset, 'cleanup');
+        return;
+      }
+      setCleanupPreview(preview);
+    } catch (reason) {
+      setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : '待整理预览生成失败' });
+    } finally {
+      setCleanupBusy(false);
+    }
+  };
+
+  const confirmCleanup = async () => {
+    if (!cleanupPreview) return;
+    setCleanupBusy(true);
+    try {
+      const result = await applyRssMatchCleanup({
+        previewId: cleanupPreview.id,
+        fingerprint: cleanupPreview.fingerprint,
+        matchIds: cleanupPreview.items.map((item) => item.matchId),
+        idempotencyKey: createIdempotencyKey()
+      });
+      setCleanupPreview(null);
+      setFeedback({ tone: 'ok', message: `已归档 ${result.archivedCount} 条失效匹配；RSS 原始资源仍保留` });
+      await loadMatches(0, 'cleanup');
+    } catch (reason) {
+      setCleanupPreview(null);
+      setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : '失效匹配归档失败' });
+      await loadMatches(0, 'cleanup');
+    } finally {
+      setCleanupBusy(false);
+    }
+  };
+
   const resourceViews: Array<{ id: ResourceView; label: string; count: number }> = [
     { id: 'new', label: '新资源', count: summary.items },
-    { id: 'identify', label: '待识别', count: reviewTotal },
+    { id: 'identify', label: '追更待识别', count: reviewTotal },
     { id: 'scoring', label: '候选评分', count: matchGroupCounts.scoreableTotal ?? matchGroupCounts.total },
     { id: 'upgrades', label: '追更洗版', count: matchGroupCounts.upgradeAvailable },
     { id: 'cleanup', label: '待整理', count: matchGroupCounts.needsCleanup ?? 0 }
@@ -1197,6 +1242,25 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                       <strong>{group.title || match.itemTitle || seed?.title || '已匹配到一条追更内容'} · {group.episodeLabel}</strong>
                       <small>{candidateGroupScoreLabel(group)}</small>
                       <span className="rss-match-status">{shadowEvaluationLabel(match)}</span>
+                      {resourceView === 'cleanup' && (
+                        <div className="rss-ownership-summary" aria-label="候选归属">
+                          {(group.ownerships ?? []).map((ownership) => (
+                            <span className={`rss-ownership-chip rss-ownership-chip--${ownership.state}`} key={`${ownership.matchId}:${ownership.state}`}>
+                              {ownership.state === 'valid'
+                                ? '有效归属'
+                                : ownership.state === 'archived'
+                                  ? '已归档归属'
+                                  : ownership.state === 'conflict'
+                                    ? '归属冲突'
+                                    : '失效归属'}
+                              {' · '}{ownership.subscriptionId}
+                            </span>
+                          ))}
+                          {(group.ownerships ?? []).length === 0 && (
+                            <span className="rss-ownership-chip rss-ownership-chip--invalid">失效归属 · 订阅不存在</span>
+                          )}
+                        </div>
+                      )}
                       {resourceView !== 'cleanup' && ['upgrade_available', 'initial_best'].includes(group.state) && (
                         <button
                           className="ops-link rss-exact-preview"
@@ -1238,7 +1302,14 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                       </details>
                     </div>
                     {resourceView === 'cleanup' ? (
-                      <span className="state-chip">待整理</span>
+                      <button
+                        className="ops-action-button ops-action-button--primary"
+                        disabled={cleanupBusy}
+                        type="button"
+                        onClick={() => void previewCleanupGroup(group)}
+                      >
+                        <Trash2 size={13} />{cleanupBusy ? '正在核验' : '预览归档'}
+                      </button>
                     ) : pollTimedOut && action ? (
                       <button className="ops-action-button ops-action-button--primary" type="button" onClick={() => {
                         setFeedback({ tone: 'ok', message: '正在重新确认 Torra 动作状态…' });
@@ -1273,6 +1344,34 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
               </nav>
             )}
           </section>
+
+          <ConfirmDialog
+            busy={cleanupBusy}
+            labelledBy="rss-match-cleanup-title"
+            describedBy="rss-match-cleanup-description"
+            open={Boolean(cleanupPreview)}
+            onClose={() => !cleanupBusy && setCleanupPreview(null)}
+          >
+            <span className="ops-confirm-dialog__signal">本地归档</span>
+            <h2 id="rss-match-cleanup-title">归档失效匹配？</h2>
+            <p id="rss-match-cleanup-description">
+              将归档 {cleanupPreview?.itemCount ?? 0} 条已确认失去订阅归属的匹配。RSS 原始资源、评分证据和候选历史不会删除，也不会触发搜索或下载。
+            </p>
+            <div className="rss-cleanup-preview-list">
+              {cleanupPreview?.items.map((item) => (
+                <span key={item.matchId}>
+                  <strong>{item.title || '标题暂未确认'}</strong>
+                  <small>{item.subscriptionId} · 订阅不存在</small>
+                </span>
+              ))}
+            </div>
+            <div className="ops-confirm-dialog__actions">
+              <button className="ops-action-button" disabled={cleanupBusy} type="button" onClick={() => setCleanupPreview(null)}>取消</button>
+              <button className="ops-action-button ops-action-button--primary" disabled={cleanupBusy} type="button" onClick={() => void confirmCleanup()}>
+                <Trash2 size={13} />{cleanupBusy ? '正在归档' : '确认归档'}
+              </button>
+            </div>
+          </ConfirmDialog>
 
           <details className="rss-diagnostics">
             <summary><ServerCog size={15} /><span><strong>高级诊断</strong><small>身份识别、历史扫描和匹配器信息</small></span></summary>

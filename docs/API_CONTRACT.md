@@ -4,7 +4,7 @@
 路由数量：47  
 运行实现：Python / Flask
 
-新增能力使用真正的 URL 版本契约：`docs/contracts/http-api-contract-v2.json`，当前共 75 条。v1 的 47 条冻结路径和历史状态码不变。
+新增能力使用真正的 URL 版本契约：`docs/contracts/http-api-contract-v2.json`，当前共 80 条。v1 的 47 条冻结路径和历史状态码不变。
 
 ## 1. 版本规则
 
@@ -196,7 +196,7 @@ NasEmby 原静态管理页不注册为第二套生产页面，迁移期静态快
 
 ## 9. HTTP v2 契约
 
-当前 47 条 v1 契约不承担新增语义。75 条 `/api/v2` 接口包括：
+当前 47 条 v1 契约不承担新增语义。80 条 `/api/v2` 接口包括：
 
 - 当前 React 使用：集成脱敏摘要、Torra 单条预览/推送、缓存系统指标、私人 RSS 来源管理、本地种子库和管理员运行时配置。
 - 发现候选闭环：独立候选列表、只读加入预览和确认加入追更；候选不进入追更与日历，只有人工确认后才创建追更意图。
@@ -268,7 +268,7 @@ v2 新增响应字段允许向后兼容扩展；删除字段、改变类型或�
 
 ## 13. 已实现的私人 PT RSS 种子库接口
 
-以下接口已经进入当前 75 条 v2 机器契约和 React：
+以下接口已经进入当前 80 条 v2 机器契约和 React：
 
 - `GET /api/v2/rss-sources`
 - `POST /api/v2/rss-sources`
@@ -283,6 +283,10 @@ v2 新增响应字段允许向后兼容扩展；删除字段、改变类型或�
 - `GET /api/v2/rss-matches`
 - `GET /api/v2/rss-matches/:id`
 - `POST /api/v2/rss-matches`
+- `GET /api/v2/rss-match-cleanups`
+- `GET /api/v2/rss-match-cleanups/:runId`
+- `POST /api/v2/rss-match-cleanups/previews`
+- `POST /api/v2/rss-match-cleanups`
 - `POST /api/v2/rss-matches/:id/exact-download-previews`
 - `GET /api/v2/automation-actions/:id`
 
@@ -294,7 +298,9 @@ v2 新增响应字段允许向后兼容扩展；删除字段、改变类型或�
 
 `GET /api/v2/rss-sources` 的摘要可选返回最近一次身份回填的运行时间、扫描、识别、冲突、未变化和剩余数量。未运行与“已运行但识别为 0”必须明确区分，不能仅凭当前未识别数量推断回填器是否工作。
 
-`GET /api/v2/rss-matches` 读取 SQLite 中的本地匹配记录，可按 `candidate / ignored / triggered / confirmed / expired` 状态筛选；默认继续返回 `{items,total,limit,offset}`。可选 `view=groups` 返回 `{groups,total,limit,offset,counts?}`，其中 `total` 是当前筛选后的订阅季集组数，旧 `counts.total` 不受 `groupState/groupScope` 影响但遵循其余订阅与季集范围；新增 `scoreableTotal/needsCleanup` 分别说明评分主范围与待整理范围。可选 `groupState=initial_best|waiting_baseline|monitoring_rss|upgrade_available|protected|needs_cleanup|blocked`、`groupScope=scoreable|cleanup`、公开 `subscriptionId`、`mediaType`、`seasonNumber`、`episodeNumber` 和 `matchId` 只筛选分组视图；`matchId` 精确定位其所属候选组，订阅与季集条件不一致时返回空分页，不回退标题匹配。只有组内全部候选同时为 `evaluation_status=blocked` 且 `evaluation_reason=subscription_missing` 时才派生为 `needs_cleanup`；其他阻断仍保留 `blocked`。每组包含 `candidateCount/bestMatchId/bestArtifactKey/bestCandidateScore/baselineScore/baselineSummary/lastCandidateAt/candidates`。同一范围包可以投影到多个集级组，但底层 `artifactKey` 与冠军判定保持单一，未完整覆盖全部目标的范围包不得成为冠军。基线只来自 Torra 明确季集文件，或具有 TMDB、媒体类型、季集和成功状态的 Symedia 文件；qB 只能为精确同名基线补充大小，不能独立认领。多个不同当前版本、规则不明确或证据不足时分数为 `null` 并显示“暂未确认”。`GET /api/v2/rss-matches/:id` 返回与创建接口相同的公开 DTO，供 `POST 201` 的 `Location` 解引用，不存在时返回统一 `404 RSS_MATCH_NOT_FOUND`，且不读取或返回 RSS 条目的下载地址、详情地址或凭据。公开 DTO 的 `reason` 只允许 `identity`、`mediaType`、`year`、`season`、`episode` 和 `matchSource`；旧 Torra subscription/unit ID、路径、URL、外部 job 字段及所有未知键在投影时剔除。新插入条目仍可由自动匹配器生成 `candidate`；普通追更页也可调用 `POST /api/v2/rss-matches` 为一个搜索结果建立单条人工匹配。人工创建不会调用全局 matcher，服务端重新读取 RSS 条目、本地或 Torra 只读追更、观察单元与 Torra 当前订阅，校验身份、媒体类型、年份、季集、基线时间和归属；同一条目与观察单元已存在时幂等返回原匹配。该记录不代表本地已经判断版本更好。随后 `POST /api/v2/rss-matches/:id/torra-rewash-analyses` 执行人工分析；成功响应只公开评分变化、质量和大小等脱敏摘要，不返回候选 ID。`POST /api/v2/rss-matches/:id/torra-rewashes` 要求明确确认，并重新校验分析动作确实属于同一匹配、追更和观察单元。匹配状态和下载动作 ID 在同一 SQLite 事务中更新，幂等重放不会重复提交。RSS 收集闸门关闭不影响人工分析，但下载仍要求独立下载闸门、Torra/qB 前检、限流和冷却。
+`GET /api/v2/rss-matches` 读取 SQLite 中的本地匹配记录，可按 `candidate / ignored / triggered / confirmed / expired` 状态筛选；默认继续返回 `{items,total,limit,offset}`。可选 `view=groups` 返回 `{groups,total,limit,offset,counts?}`，其中 `total` 是当前筛选后的订阅季集组数，旧 `counts.total` 不受 `groupState/groupScope` 影响但遵循其余订阅与季集范围；新增 `scoreableTotal/needsCleanup` 分别说明评分主范围与待整理范围。可选 `groupState=initial_best|waiting_baseline|monitoring_rss|upgrade_available|protected|needs_cleanup|blocked`、`groupScope=scoreable|cleanup`、公开 `subscriptionId`、`mediaType`、`seasonNumber`、`episodeNumber` 和 `matchId` 只筛选分组视图；`matchId` 精确定位其所属候选组，订阅与季集条件不一致时返回空分页，不回退标题匹配。只有组内全部候选同时为 `evaluation_status=blocked` 且 `evaluation_reason=subscription_missing` 时才派生为 `needs_cleanup`；其他阻断仍保留 `blocked`。每组包含 `candidateCount/bestMatchId/bestArtifactKey/bestCandidateScore/baselineScore/baselineSummary/lastCandidateAt/ownerships/candidates`。同一范围包可以投影到多个集级组，但底层 `artifactKey` 与冠军判定保持单一，未完整覆盖全部目标的范围包不得成为冠军。基线只来自 Torra 明确季集文件，或具有 TMDB、媒体类型、季集和成功状态的 Symedia 文件；qB 只能为精确同名基线补充大小，不能独立认领。多个不同当前版本、规则不明确或证据不足时分数为 `null` 并显示“暂未确认”。`GET /api/v2/rss-matches/:id` 返回与创建接口相同的公开 DTO，供 `POST 201` 的 `Location` 解引用，不存在时返回统一 `404 RSS_MATCH_NOT_FOUND`，且不读取或返回 RSS 条目的下载地址、详情地址或凭据。公开 DTO 的 `reason` 只允许 `identity`、`mediaType`、`year`、`season`、`episode` 和 `matchSource`；旧 Torra subscription/unit ID、路径、URL、外部 job 字段及所有未知键在投影时剔除。新插入条目仍可由自动匹配器生成 `candidate`；普通追更页也可调用 `POST /api/v2/rss-matches` 为一个搜索结果建立单条人工匹配。人工创建不会调用全局 matcher，服务端重新读取 RSS 条目、本地或 Torra 只读追更、观察单元与 Torra 当前订阅，校验身份、媒体类型、年份、季集、基线时间和归属；同一条目与观察单元已存在时幂等返回原匹配。该记录不代表本地已经判断版本更好。随后 `POST /api/v2/rss-matches/:id/torra-rewash-analyses` 执行人工分析；成功响应只公开评分变化、质量和大小等脱敏摘要，不返回候选 ID。`POST /api/v2/rss-matches/:id/torra-rewashes` 要求明确确认，并重新校验分析动作确实属于同一匹配、追更和观察单元。匹配状态和下载动作 ID 在同一 SQLite 事务中更新，幂等重放不会重复提交。RSS 收集闸门关闭不影响人工分析，但下载仍要求独立下载闸门、Torra/qB 前检、限流和冷却。
+
+失效归属清理固定采用“预览 → 明确确认 → 原子归档 → 审计留痕”。预览最多接受 200 个本地匹配 ID，只把 `evaluationStatus=blocked + evaluationReason=subscription_missing + archiveState=active` 列为可归档；有效候选、所有权冲突和其他阻断原因只返回固定跳过码。确认必须提交同一预览 ID、SHA-256 指纹、完整匹配集合和幂等键，并在一个 SQLite 即时事务内重新核对版本、状态、规范目标和 artifact 所有权。任一项漂移时整批回滚并返回 `409 RSS_MATCH_CLEANUP_PREVIEW_STALE`；相同幂等键返回首次结果。归档只改变失效匹配的可见性并递增版本，不删除 `rss_items`、评分证据或历史，不调用 Torra、qB、115、Symedia 或 Emby。公开预览、结果和审计不返回 URL、路径、Cookie、Passkey 或 Torra 原始 ID。
 
 ## 14. 已实现的 MoviePilot 人工备用接口
 

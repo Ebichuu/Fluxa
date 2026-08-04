@@ -1409,6 +1409,55 @@
   font-size: 12px;
 }
 
+.rss-ownership-summary,
+.rss-cleanup-preview-list {
+  display: grid;
+  gap: 6px;
+}
+
+.rss-ownership-chip {
+  width: fit-content;
+  max-width: 100%;
+  border: 1px solid var(--rss-line);
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: var(--theme-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.rss-ownership-chip--valid {
+  border-color: rgba(82, 184, 135, 0.34);
+  color: var(--theme-success, #79cda1);
+}
+
+.rss-ownership-chip--invalid,
+.rss-ownership-chip--conflict {
+  border-color: rgba(225, 154, 72, 0.35);
+  color: var(--theme-warning, #e6ad6c);
+}
+
+.rss-ownership-chip--archived {
+  opacity: 0.68;
+}
+
+.rss-cleanup-preview-list {
+  max-height: 240px;
+  overflow: auto;
+}
+
+.rss-cleanup-preview-list > span {
+  display: grid;
+  gap: 3px;
+  border-top: 1px solid var(--rss-line);
+  padding-top: 8px;
+}
+
+.rss-cleanup-preview-list strong,
+.rss-cleanup-preview-list small {
+  overflow-wrap: anywhere;
+}
+
 .rss-diagnostics .rss-identity-run {
   padding: 9px 0;
   font-size: 12px;

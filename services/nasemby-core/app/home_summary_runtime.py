@@ -441,6 +441,7 @@ class HomeSummaryService:
             "identityPending": len(identity_only),
             "actionRequired": 0,
             "mediaActionRequired": 0,
+            "reconciliationActionRequired": 0,
             "auxiliaryAlerts": 0,
             "inProgress": 0,
             "suspectedBlocked": sum(
@@ -821,6 +822,9 @@ class HomeSummaryService:
         missing_episodes_confirmation = "unknown"
         missing_episodes_state = "unknown"
         missing_episodes_detail = "追更记录尚未提供可验证的缺集统计"
+        reconciliation_action_required_value = None
+        reconciliation_action_required_state = "unknown"
+        reconciliation_action_required_detail = "追更对账状态暂未确认"
         subscription_workbench = self.app.extensions.get("mcc_subscription_workbench")
         if subscription_workbench:
             try:
@@ -848,6 +852,16 @@ class HomeSummaryService:
                     else f"追更记录明确标记 {missing_episodes_value} 集缺失"
                     if missing_episodes_value > 0
                     else "已核对追更记录，当前没有明确缺集"
+                )
+                reconciliation_action_required_value = int(
+                    (subscription_snapshot.get("stats") or {}).get("reconciliationActionRequired") or 0
+                )
+                counts["reconciliationActionRequired"] = reconciliation_action_required_value
+                reconciliation_action_required_state = "normal"
+                reconciliation_action_required_detail = (
+                    f"{reconciliation_action_required_value} 条追更需要核对 Fluxa / Torra 归属 · 不计入媒体异常"
+                    if reconciliation_action_required_value > 0
+                    else "Fluxa / Torra 追更归属当前没有明确冲突"
                 )
             except Exception as exc:
                 if module_errors is not None:
@@ -881,6 +895,14 @@ class HomeSummaryService:
                 confirmation=missing_episodes_confirmation,
                 unconfirmedCount=missing_episodes_unconfirmed_count,
                 unconfirmedUnit="条追更",
+                observedAt=now,
+                freshUntil=_fresh_until(now_value),
+            ),
+            _focus_item(
+                "reconciliation_action_required", "对账待处理", "条", reconciliation_action_required_value,
+                reconciliation_action_required_state, reconciliation_action_required_detail,
+                "/following?status=reconciliation_action_required",
+                confirmation="confirmed" if reconciliation_action_required_value is not None else "unknown",
                 observedAt=now,
                 freshUntil=_fresh_until(now_value),
             ),
@@ -1040,6 +1062,7 @@ class HomeSummaryService:
                         "ingestedToday", "completedTargetsToday", "playableToday", "downloading",
                         "concurrentDownloadGroups", "pending", "waiting", "evidenceInsufficient",
                         "identityPending", "actionRequired", "mediaActionRequired", "actionRequiredWorks",
+                        "reconciliationActionRequired",
                         "actionRequiredResources", "actionRequiredGroups", "actionRequiredIdentityUnconfirmedResources",
                         "auxiliaryAlerts", "inProgress", "suspectedBlocked", "protected",
                     )
@@ -1078,6 +1101,11 @@ class HomeSummaryService:
             },
             "subscription_progress": {
                 "focusItem": focus.get("missing_episodes"),
+                "focusItems": [
+                    focus[key]
+                    for key in ("missing_episodes", "reconciliation_action_required")
+                    if key in focus
+                ],
             },
             "rss_resource_center": {
                 "resourceCenter": snapshot.get("resourceCenter") or {},
@@ -1159,6 +1187,7 @@ class HomeSummaryService:
             "ingestedToday": 0, "completedTargetsToday": 0, "playableToday": 0, "downloading": 0,
             "concurrentDownloadGroups": 0, "pending": 0, "waiting": 0, "evidenceInsufficient": 0,
             "identityPending": 0, "actionRequired": 0, "mediaActionRequired": 0, "actionRequiredWorks": 0,
+            "reconciliationActionRequired": 0,
             "actionRequiredResources": 0, "actionRequiredGroups": 0,
             "actionRequiredIdentityUnconfirmedResources": 0, "auxiliaryAlerts": 0,
             "inProgress": 0, "suspectedBlocked": 0, "protected": 0,
@@ -1184,6 +1213,10 @@ class HomeSummaryService:
             "missing_episodes": self._empty_focus(
                 "missing_episodes", "追更缺集", "集", "/following?missingEpisodes=1"
             ),
+            "reconciliation_action_required": self._empty_focus(
+                "reconciliation_action_required", "对账待处理", "条",
+                "/following?status=reconciliation_action_required"
+            ),
             "action_required": self._empty_focus(
                 "action_required", "需要处理", "个问题组", "/tasks?outcomeState=action_required"
             ),
@@ -1193,11 +1226,12 @@ class HomeSummaryService:
         task_focus = payloads["task_pipeline"].get("focusItems") or {}
         focus = list(task_focus.values()) if isinstance(task_focus, dict) else list(task_focus)
         for module_key in ("qb_activity", "archive_today", "secupload", "subscription_progress"):
-            item = payloads[module_key].get("focusItem")
-            if not isinstance(item, dict):
-                continue
-            focus = [row for row in focus if row.get("key") != item.get("key")]
-            focus.append(item)
+            items = payloads[module_key].get("focusItems") or [payloads[module_key].get("focusItem")]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                focus = [row for row in focus if row.get("key") != item.get("key")]
+                focus.append(item)
         focus_by_key = {row.get("key"): row for row in focus if isinstance(row, dict)}
         return {**self._focus_defaults(today_key), **focus_by_key}
 
@@ -1233,6 +1267,7 @@ class HomeSummaryService:
             "current_downloads": "qb_activity", "secupload_failures": "secupload",
             "downloaded_not_archived": "task_pipeline", "archived_today": "archive_today",
             "missing_episodes": "subscription_progress", "action_required": "task_pipeline",
+            "reconciliation_action_required": "subscription_progress",
         }
         for focus_key, item in focus_by_key.items():
             metadata = modules_meta[focus_modules[focus_key]]

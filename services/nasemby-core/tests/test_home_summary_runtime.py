@@ -74,12 +74,13 @@ class FakeRssService:
 
 
 class FakeSubscriptionWorkbench:
-    def __init__(self, items=None, errors=None):
+    def __init__(self, items=None, errors=None, stats=None):
         self.items = items or []
         self.errors = errors or []
+        self.stats = stats or {}
 
     def snapshot(self, *, limit=None):
-        return {"ok": True, "items": self.items, "errors": self.errors}
+        return {"ok": True, "items": self.items, "errors": self.errors, "stats": self.stats}
 
 
 def pipeline_fact(stage, state, *, observed_at="2026-07-22T01:00:00Z", scope="episode", reason_code="", reason_text=""):
@@ -729,12 +730,14 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
             [value["key"] for value in result["focusItems"]],
             [
                 "current_downloads", "secupload_failures", "downloaded_not_archived",
-                "archived_today", "missing_episodes", "action_required",
+                "archived_today", "missing_episodes", "reconciliation_action_required",
+                "action_required",
             ],
         )
         for key in (
             "current_downloads", "secupload_failures", "downloaded_not_archived",
             "archived_today", "missing_episodes", "action_required",
+            "reconciliation_action_required",
         ):
             self.assertEqual(focus[key]["value"], 0)
             self.assertEqual(focus[key]["state"], "normal")
@@ -742,6 +745,22 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(focus["archived_today"]["href"], "/tasks?archivedDate=2026-07-22")
         self.assertEqual(focus["missing_episodes"]["href"], "/following?missingEpisodes=1")
         self.assertEqual(focus["action_required"]["href"], "/tasks?outcomeState=action_required")
+
+    def test_reconciliation_focus_is_auxiliary_and_does_not_raise_media_action_count(self):
+        app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)
+        app.extensions["mcc_subscription_workbench"] = FakeSubscriptionWorkbench(
+            [{"id": "subscription-1", "missingEpisodes": []}],
+            stats={"reconciliationActionRequired": 3},
+        )
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+        focus = {value["key"]: value for value in result["focusItems"]}
+
+        self.assertEqual(result["counts"]["mediaActionRequired"], 0)
+        self.assertEqual(result["counts"]["reconciliationActionRequired"], 3)
+        self.assertEqual(focus["reconciliation_action_required"]["value"], 3)
+        self.assertEqual(focus["reconciliation_action_required"]["state"], "normal")
+        self.assertIn("不计入媒体异常", focus["reconciliation_action_required"]["detail"])
 
     def test_focus_items_only_raise_failures_from_explicit_evidence(self):
         pending_archive = item(library_status="blocked")

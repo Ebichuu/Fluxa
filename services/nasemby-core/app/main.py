@@ -48,6 +48,8 @@ from app.home_summary_refresh_runtime import HomeSummaryRefreshRuntime, register
 from app.integration_runtime import register_integrations
 from app.cloud_acquisition_runtime import register_cloud_acquisition
 from app.calendar_timeline_runtime import register_calendar_timeline
+from app.calendar_snapshot_repository import CalendarSnapshotRepository
+from app.calendar_snapshot_refresh_runtime import CalendarSnapshotRefreshRuntime, register_calendar_snapshot_refresh
 from app.system_metrics_runtime import register_system_metrics
 from app.secupload_issue_runtime import SecuploadIssueService, register_secupload_issue
 from app.private_rss_api_runtime import register_private_rss
@@ -131,6 +133,7 @@ _torra_subscription_sync_started = False
 _private_rss_collector_started = False
 _quality_watch_scheduler_started = False
 _home_summary_refresh_started = False
+_calendar_snapshot_refresh_started = False
 _background_runtime_started = False
 
 
@@ -570,6 +573,30 @@ def _home_summary_refresh_loop():
         time.sleep(60)
 
 
+def _calendar_snapshot_refresh_loop():
+    time.sleep(1)
+    while True:
+        try:
+            runtime = app.extensions.get("mcc_calendar_snapshot_refresh")
+            if runtime:
+                runtime.run_once()
+        except Exception as exc:
+            logger.error("background scheduler failed scheduler=calendar-snapshot-refresh error_type=%s", type(exc).__name__)
+        time.sleep(30)
+
+
+def start_calendar_snapshot_refresh_scheduler():
+    global _calendar_snapshot_refresh_started
+    if _calendar_snapshot_refresh_started:
+        return
+    runtime = app.extensions.get("mcc_calendar_snapshot_refresh")
+    if not runtime:
+        return
+    _calendar_snapshot_refresh_started = True
+    thread = threading.Thread(target=_calendar_snapshot_refresh_loop, name="calendar-snapshot-refresh", daemon=True)
+    thread.start()
+
+
 def start_home_summary_refresh_scheduler():
     global _home_summary_refresh_started
     if _home_summary_refresh_started:
@@ -616,6 +643,9 @@ def start_background_runtime():
     start_home_summary_refresh_scheduler()
     if _home_summary_refresh_started:
         started.append("home-summary-refresh")
+    start_calendar_snapshot_refresh_scheduler()
+    if _calendar_snapshot_refresh_started:
+        started.append("calendar-snapshot-refresh")
     _background_runtime_started = True
     return started
 
@@ -1479,7 +1509,15 @@ def create_app(
         resource_repository = ResourceTaskRepository(discover_runtime.subscription_database_path())
         application.extensions["mcc_resource_task_repository"] = resource_repository
     register_task_chain_v2(application, repository=resource_repository)
-    register_calendar_timeline(application)
+    calendar_repository = CalendarSnapshotRepository(discover_runtime.subscription_database_path())
+    calendar_service = register_calendar_timeline(application, repository=calendar_repository)
+    calendar_refresh = CalendarSnapshotRefreshRuntime(
+        calendar_repository,
+        calendar_service.build_cache_payload,
+        clock=calendar_repository.clock,
+    )
+    register_calendar_snapshot_refresh(application, calendar_refresh)
+    calendar_refresh.request_default_scope()
     home_summary_repository = HomeSummaryRepository(discover_runtime.subscription_database_path())
     home_summary_service = register_home_summary(application, repository=home_summary_repository)
     register_integrations(

@@ -16,6 +16,7 @@ export interface HomeSummaryCounts {
   identityPending: number;
   actionRequired: number;
   mediaActionRequired: number;
+  reconciliationActionRequired?: number;
   actionRequiredWorks?: number;
   actionRequiredResources?: number;
   actionRequiredGroups?: number;
@@ -54,7 +55,7 @@ export interface HomeProblemGroup extends HomeSummaryIssue {
   episodeNumbers: number[];
 }
 
-export type HomeSummaryFocusKey = 'current_downloads' | 'secupload_failures' | 'downloaded_not_archived' | 'archived_today' | 'missing_episodes' | 'action_required';
+export type HomeSummaryFocusKey = 'current_downloads' | 'secupload_failures' | 'downloaded_not_archived' | 'archived_today' | 'missing_episodes' | 'reconciliation_action_required' | 'action_required';
 export type HomeSummaryFocusState = 'normal' | 'processing' | 'action_required' | 'unknown';
 
 export interface HomeSummaryFocusItem {

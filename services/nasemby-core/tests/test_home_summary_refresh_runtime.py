@@ -134,7 +134,7 @@ class HomeSummaryRefreshRuntimeTests(unittest.TestCase):
         payload = response.get_json()
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["healthState"], "evidence_insufficient")
-        self.assertEqual(len(payload["focusItems"]), 6)
+        self.assertEqual(len(payload["focusItems"]), 7)
         self.assertTrue(all(row["confirmation"] == "unknown" for row in payload["modules"].values()))
 
     def test_cached_get_reads_current_shanghai_date_only(self):

@@ -36,6 +36,72 @@ class FakeManualMatchRuntime:
 
 
 class PrivateRssApiRuntimeTests(unittest.TestCase):
+    def test_cleanup_preview_confirm_and_audit_are_safe_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "media_control_center.sqlite3"
+            repository = PrivateRssRepository(database)
+            source = repository.save_source({
+                "name": "测试站",
+                "feedUrl": "https://tracker.example/rss?passkey=source-secret",
+            })
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "cleanup-api",
+                "title": "待整理条目 S01E03",
+                "download_url": "https://tracker.example/download?passkey=item-secret",
+                "detail_url": "https://tracker.example/detail?token=detail-secret",
+            }])
+            item = repository.search_items(limit=10)["items"][0]
+            match = repository.create_match(
+                item["id"], "torra:raw-subscription-secret", "torra:raw-subscription-secret:s1:e3", {},
+            )
+            repository.save_match_evaluation([match["id"]], {
+                "status": "blocked",
+                "reason": "subscription_missing",
+            })
+            app = create_app(
+                access_environment={"NASEMBY_CORE_WRITE_ENABLED": "true", "MCC_PRIVATE_RSS_ENABLED": "false"},
+                private_rss_repository=repository,
+                private_rss_collector=FakeCollector(),
+                quality_watch_repository=QualityWatchRepository(database),
+            )
+            client = app.test_client()
+
+            preview_response = client.post(
+                "/api/v2/rss-match-cleanups/previews",
+                json={"matchIds": [match["id"]]},
+            )
+            preview = preview_response.get_json()
+            preview_detail = client.get(preview_response.headers["Location"])
+            apply_body = {
+                "previewId": preview["id"],
+                "fingerprint": preview["fingerprint"],
+                "matchIds": [match["id"]],
+                "idempotencyKey": "cleanup-api-once",
+            }
+            applied = client.post("/api/v2/rss-match-cleanups", json=apply_body)
+            replay = client.post("/api/v2/rss-match-cleanups", json=apply_body)
+            audit = client.get("/api/v2/rss-match-cleanups?limit=10")
+
+            self.assertEqual(preview_response.status_code, 201)
+            self.assertEqual(preview_detail.status_code, 200)
+            self.assertEqual(preview_detail.get_json()["id"], preview["id"])
+            self.assertEqual(preview["itemCount"], 1)
+            self.assertEqual(applied.status_code, 200)
+            self.assertEqual(applied.get_json(), replay.get_json())
+            self.assertEqual(audit.status_code, 200)
+            self.assertEqual(audit.get_json()["items"][0]["archivedCount"], 1)
+            response_text = "\n".join((
+                preview_response.get_data(as_text=True),
+                preview_detail.get_data(as_text=True),
+                applied.get_data(as_text=True),
+                audit.get_data(as_text=True),
+            ))
+            for forbidden in (
+                "source-secret", "item-secret", "detail-secret", "raw-subscription-secret",
+                "download_url", "downloadUrl", "feedUrl", "passkey", "token=", "https://",
+            ):
+                self.assertNotIn(forbidden, response_text)
+
     def test_manual_match_post_uses_create_semantics_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "media_control_center.sqlite3"
@@ -183,6 +249,7 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
                 "evaluationStatus", "decision", "evaluationReason",
                 "evaluationActionId", "downloadActionId", "candidateSummary",
                 "baselineSummary", "bestCandidate", "evaluatedAt",
+                "archiveState", "archivedAt", "archiveReasonCode", "archiveRunId", "version",
                 "createdAt", "updatedAt",
             })
             response_text = detail.get_data(as_text=True)

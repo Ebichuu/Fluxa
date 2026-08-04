@@ -14,6 +14,8 @@ import type {
   RssExactDownloadPreview,
   RssIdentityBackfillResponse,
   RssMatch,
+  RssMatchCleanupPreview,
+  RssMatchCleanupResult,
   RssMatchGroup,
   RssMatchGroupListResponse,
   RssMatchListResponse,
@@ -405,6 +407,25 @@ export function getSubscriptionCalendarDateDetail(
   );
 }
 
+export function requestSubscriptionCalendarRefresh(input: {
+  year: number;
+  month: number;
+  mediaType?: 'all' | 'movie' | 'tv';
+  includeUnlinked?: boolean;
+  idempotencyKey: string;
+}): Promise<{
+  ok: boolean;
+  refresh: { status: string; scopeKey: string };
+}> {
+  return postJson('/api/v2/calendar/refresh-requests', {
+    year: input.year,
+    month: input.month,
+    mediaType: input.mediaType ?? 'all',
+    includeUnlinked: Boolean(input.includeUnlinked),
+    idempotencyKey: input.idempotencyKey
+  });
+}
+
 export function getSubscriptionItems(includeProgress = false, options?: RequestOptions): Promise<SubscriptionListResponse> {
   return readJson<SubscriptionListResponse>(
     includeProgress ? '/api/subscriptions/items?include_progress=1' : '/api/subscriptions/items',
@@ -669,6 +690,29 @@ export function createRssMatch(
   options?: RequestOptions
 ): Promise<RssMatch> {
   return postJson<RssMatch>('/api/v2/rss-matches', input, options);
+}
+
+export function previewRssMatchCleanup(
+  matchIds: string[],
+  options?: RequestOptions
+): Promise<RssMatchCleanupPreview> {
+  return postJson<RssMatchCleanupPreview>(
+    '/api/v2/rss-match-cleanups/previews',
+    { matchIds },
+    options
+  );
+}
+
+export function applyRssMatchCleanup(
+  input: {
+    previewId: string;
+    fingerprint: string;
+    matchIds: string[];
+    idempotencyKey: string;
+  },
+  options?: RequestOptions
+): Promise<RssMatchCleanupResult> {
+  return postJson<RssMatchCleanupResult>('/api/v2/rss-match-cleanups', input, options);
 }
 
 export function startRssMatchAnalysis(

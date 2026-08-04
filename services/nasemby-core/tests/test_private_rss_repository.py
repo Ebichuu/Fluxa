@@ -6,10 +6,114 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.private_rss_repository import FetchRunRecord, PrivateRssRepository
+from app.private_rss_repository import (
+    FetchRunRecord,
+    PrivateRssRepository,
+    RssMatchCleanupStale,
+)
 
 
 class PrivateRssRepositoryTests(unittest.TestCase):
+    def _cleanup_match(self, repository, source_id, fingerprint, subscription_key):
+        repository.upsert_items(source_id, [{
+            "fingerprint": fingerprint,
+            "title": f"Cleanup {fingerprint} S01E03",
+        }])
+        item = next(
+            row for row in repository.search_items(limit=100)["items"]
+            if fingerprint in row["title"]
+        )
+        match = repository.create_match(
+            item["id"], subscription_key, f"{subscription_key}:s1:e3", {},
+        )
+        repository.set_match_binding(
+            match["id"],
+            torra_subscription_id="upstream-secret-id",
+            target_key="tv:tmdb:123:season:1:episodes:3-3",
+            artifact_key=f"rss:{fingerprint}",
+        )
+        repository.save_match_evaluation([match["id"]], {
+            "status": "blocked",
+            "reason": "subscription_missing",
+        })
+        return repository.get_match(match["id"])
+
+    def test_match_cleanup_archives_only_invalid_matches_and_keeps_rss_items(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "Cleanup", "feedUrl": "https://tracker.example/rss"})
+            match = self._cleanup_match(repository, source["id"], "orphan", "tv:missing:s1")
+            before_items = repository.search_items(limit=100)["total"]
+
+            preview = repository.create_match_cleanup_preview([match["id"]])
+            result = repository.apply_match_cleanup(
+                preview_id=preview["id"],
+                fingerprint=preview["fingerprint"],
+                match_ids=[match["id"]],
+                idempotency_key="cleanup-once",
+            )
+            replay = repository.apply_match_cleanup(
+                preview_id=preview["id"],
+                fingerprint=preview["fingerprint"],
+                match_ids=[match["id"]],
+                idempotency_key="cleanup-once",
+            )
+
+            self.assertEqual(preview["itemCount"], 1)
+            self.assertEqual(result, replay)
+            self.assertEqual(result["archivedCount"], 1)
+            self.assertEqual(repository.search_items(limit=100)["total"], before_items)
+            self.assertEqual(repository.list_candidate_groups(group_scope="cleanup")["total"], 0)
+            archived = repository.get_match(match["id"])
+            self.assertEqual(archived["archiveState"], "archived")
+            self.assertEqual(archived["archiveReasonCode"], "subscription_missing")
+            self.assertEqual(repository.list_match_cleanup_runs()["items"][0]["status"], "applied")
+            with closing(repository.runtime.connect()) as connection:
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) AS count FROM rss_match_cleanup_items").fetchone()["count"],
+                    1,
+                )
+
+    def test_match_cleanup_drift_rolls_back_the_whole_batch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "Cleanup", "feedUrl": "https://tracker.example/rss"})
+            first = self._cleanup_match(repository, source["id"], "first", "tv:missing:first")
+            second = self._cleanup_match(repository, source["id"], "second", "tv:missing:second")
+            preview = repository.create_match_cleanup_preview([first["id"], second["id"]])
+            repository.save_match_evaluation([second["id"]], {
+                "status": "blocked",
+                "reason": "subscription_missing",
+            })
+
+            with self.assertRaises(RssMatchCleanupStale):
+                repository.apply_match_cleanup(
+                    preview_id=preview["id"],
+                    fingerprint=preview["fingerprint"],
+                    match_ids=[first["id"], second["id"]],
+                    idempotency_key="cleanup-stale",
+                )
+
+            self.assertEqual(repository.get_match(first["id"])["archiveState"], "active")
+            self.assertEqual(repository.get_match(second["id"])["archiveState"], "active")
+            self.assertEqual(repository.list_match_cleanup_runs()["items"][0]["status"], "stale")
+
+    def test_match_cleanup_preview_rejects_valid_and_conflicted_candidates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "Cleanup", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [{"fingerprint": "valid", "title": "Valid S01E01"}])
+            item = repository.search_items(limit=10)["items"][0]
+            valid = repository.create_match(item["id"], "tv:valid:s1", "tv:valid:s1:e1", {})
+            repository.save_match_evaluation([valid["id"]], {
+                "status": "scored", "reason": "shadow_only_no_download",
+            })
+            preview = repository.create_match_cleanup_preview([valid["id"]])
+
+            self.assertEqual(preview["itemCount"], 0)
+            self.assertEqual(preview["skipped"][0]["reasonCode"], "candidate_still_active")
+            self.assertEqual(repository.get_match(valid["id"])["archiveState"], "active")
+
     def test_subscription_missing_groups_move_to_cleanup_scope(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")

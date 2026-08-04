@@ -214,6 +214,11 @@ export interface RssMatch {
   baselineSummary?: RssScoreSummary;
   bestCandidate?: boolean;
   evaluatedAt?: string;
+  archiveState?: 'active' | 'archived' | string;
+  archivedAt?: string;
+  archiveReasonCode?: string;
+  archiveRunId?: string;
+  version?: number;
   itemTitle?: string;
   subscriptionTitle?: string;
   episodeLabel?: string;
@@ -250,7 +255,43 @@ export interface RssMatchGroup {
   baselineScore?: number | null;
   baselineSummary?: RssScoreSummary;
   lastCandidateAt?: string;
+  ownerships?: Array<{
+    matchId: string;
+    subscriptionId: string;
+    unitId: string;
+    state: 'valid' | 'invalid' | 'conflict' | 'archived' | string;
+    reasonCode?: string;
+  }>;
   candidates: RssMatch[];
+}
+
+export interface RssMatchCleanupItem {
+  matchId: string;
+  subscriptionId: string;
+  unitId: string;
+  title: string;
+  version: number;
+  reasonCode: string;
+}
+
+export interface RssMatchCleanupPreview {
+  id: string;
+  status: 'previewed' | string;
+  fingerprint: string;
+  cleanupRuleVersion: string;
+  itemCount: number;
+  items: RssMatchCleanupItem[];
+  skipped: Array<{ matchId: string; reasonCode: string }>;
+  createdAt: string;
+}
+
+export interface RssMatchCleanupResult {
+  id: string;
+  status: 'applied' | string;
+  fingerprint: string;
+  archivedCount: number;
+  archivedMatchIds: string[];
+  appliedAt: string;
 }
 
 export interface RssMatchListResponse {

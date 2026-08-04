@@ -535,7 +535,7 @@ function mergeRssSeedResponses(payloads: RssSeedListResponse[]): RssSeedListResp
 }
 
 type SubscriptionTab = 'movie' | 'tv' | 'blocked';
-type SubscriptionStatusFilter = 'all' | 'following' | 'action_required' | 'playable';
+type SubscriptionStatusFilter = 'all' | 'following' | 'action_required' | 'reconciliation_action_required' | 'playable';
 type SubscriptionUpdateFilter = 'all' | 'today' | '3' | '7';
 
 const subscriptionTabHeading: Record<SubscriptionTab, string> = {
@@ -742,7 +742,7 @@ function readFollowingFilters() {
     ? 'following'
     : status === 'done'
       ? 'playable'
-      : status === 'following' || status === 'action_required' || status === 'playable'
+      : status === 'following' || status === 'action_required' || status === 'reconciliation_action_required' || status === 'playable'
         ? status
         : 'all';
   return {
@@ -1229,7 +1229,15 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     return subs.filter((item) => {
       if (item.mediaType !== subscriptionTab) return false;
       if (subscriptionYear !== 'all' && item.year !== subscriptionYear) return false;
-      if (subscriptionStatus !== 'all' && resolvedSubscriptionStatus(item) !== subscriptionStatus) return false;
+      if (
+        subscriptionStatus === 'reconciliation_action_required'
+        && !['conflict', 'remote_missing'].includes(item.reconciliationState ?? '')
+      ) return false;
+      if (
+        subscriptionStatus !== 'all'
+        && subscriptionStatus !== 'reconciliation_action_required'
+        && resolvedSubscriptionStatus(item) !== subscriptionStatus
+      ) return false;
       if (missingEpisodesOnly && (item.missingEpisodes?.length ?? 0) === 0) return false;
       const days = daysSinceSubscriptionUpdate(item.updatedAt);
       if (subscriptionUpdate === 'today' && days !== 0) return false;
@@ -1255,6 +1263,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     playable: subs.filter((item) => item.outcomeState === 'playable').length,
     completed: subs.filter((item) => item.outcomeState === 'playable').length,
     actionRequired: subs.filter((item) => item.outcomeState === 'action_required').length,
+    reconciliationActionRequired: subs.filter((item) => ['conflict', 'remote_missing'].includes(item.reconciliationState ?? '')).length,
     inLibrary: subs.filter((item) => item.library?.status === 'done').length,
     linked: subs.filter((item) => item.reconciliationState === 'linked').length,
     onlyTorra: subs.filter((item) => item.reconciliationState === 'only_torra').length,
@@ -2759,6 +2768,11 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             <span><b>{workbenchStats.following}</b>追更中</span>
             <span><b>{statisticDisplayValue(workbenchStats.playable, workbench.statisticsMeta?.playable)}</b>已可播放</span>
             <span><b>{workbenchStats.actionRequired}</b>需要处理</span>
+            <button
+              className={subscriptionStatus === 'reconciliation_action_required' ? 'is-active' : undefined}
+              type="button"
+              onClick={() => setSubscriptionStatus('reconciliation_action_required')}
+            ><b>{workbenchStats.reconciliationActionRequired ?? workbenchStats.attention}</b>对账待处理</button>
             <span><b>{workbenchStats.inLibrary}</b>已入库</span>
             <small className="subscription-workbench-summary__composition">
               全库构成（{workbenchStats.total}）：已关联 {workbenchStats.linked} · 仅 Torra {workbenchStats.onlyTorra} · 仅 Fluxa {workbenchStats.onlyFluxa} · 对账异常 {workbenchStats.attention} · 未分类 {workbenchStats.unclassified}
@@ -2882,7 +2896,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             </label>
             <div className="discover-sub-filter-row">
               <span>状态</span>
-              {([['all', '全部'], ['following', '追更中'], ['action_required', '需要处理'], ['playable', '已可播放']] as const).map(([value, label]) => (
+              {([['all', '全部'], ['following', '追更中'], ['action_required', '需要处理'], ['reconciliation_action_required', '对账待处理'], ['playable', '已可播放']] as const).map(([value, label]) => (
                 <button
                   className={subscriptionStatus === value ? 'is-active' : undefined}
                   key={value}

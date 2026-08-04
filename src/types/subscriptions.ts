@@ -89,10 +89,10 @@ export interface SubscriptionCalendar {
   month: number;
   entries: SubscriptionCalendarEntry[];
   stats: {
-    entries: number;
-    titles: number;
-    inLibrary: number;
-    pending: number;
+    entries: number | null;
+    titles: number | null;
+    inLibrary: number | null;
+    pending: number | null;
     acquired?: number;
     libraryEvidence?: number;
     playable?: number;
@@ -123,6 +123,22 @@ export interface SubscriptionCalendarResponse {
 export interface SubscriptionCalendarTimelineResponse {
   ok: boolean;
   version: string;
+  confirmation?: 'confirmed' | 'partial' | 'unknown';
+  cache?: {
+    status: 'fresh' | 'stale' | 'cold';
+    confirmation: 'confirmed' | 'partial' | 'unknown';
+    observedAt?: string;
+    freshUntil?: string;
+    lastSuccessAt?: string;
+    lastAttemptAt?: string;
+    lastErrorCode?: string;
+    lastErrorText?: string;
+    refresh?: {
+      status?: 'idle' | 'pending' | 'running' | 'succeeded' | 'failed';
+      running?: boolean;
+      requestedAt?: string;
+    };
+  };
   calendar: SubscriptionCalendar;
 }
 
@@ -212,6 +228,7 @@ export interface SubscriptionWorkbenchResponse {
     completed: number;
     playable: number;
     actionRequired: number;
+    reconciliationActionRequired?: number;
     inLibrary: number;
     linked: number;
     onlyTorra: number;

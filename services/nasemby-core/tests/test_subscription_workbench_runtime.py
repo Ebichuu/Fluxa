@@ -15,6 +15,7 @@ from app.subscription_workbench_runtime import (
     SubscriptionWorkbenchService,
     _candidate_scan_snapshot,
     _candidate_time_detail,
+    _reconciliation_action_required,
     _reconciliation_composition,
     register_subscription_workbench,
 )
@@ -129,6 +130,16 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
             "unclassified": 1,
         })
         self.assertEqual(sum(counts.values()), len(items))
+
+    def test_reconciliation_action_required_is_independent_and_deduplicated(self):
+        items = [
+            {"id": "sub-a", "reconciliationState": "conflict", "outcomeState": "playable"},
+            {"id": "sub-a", "reconciliationState": "conflict", "outcomeState": "action_required"},
+            {"id": "sub-b", "reconciliationState": "remote_missing", "outcomeState": "playable"},
+            {"id": "sub-c", "reconciliationState": "only_fluxa", "outcomeState": "action_required"},
+        ]
+
+        self.assertEqual(_reconciliation_action_required(items), 2)
 
     def test_automatic_source_merge_preserves_manual_and_torra_rows(self):
         existing = [
