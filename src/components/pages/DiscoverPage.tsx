@@ -2800,10 +2800,10 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
               className={subscriptionStatus === 'reconciliation_action_required' ? 'is-active' : undefined}
               type="button"
               onClick={() => setSubscriptionStatus('reconciliation_action_required')}
-            ><b>{workbenchStats.reconciliationActionRequired ?? workbenchStats.attention}</b>对账待处理</button>
+            ><b>{workbenchStats.reconciliationActionRequired ?? workbenchStats.attention}</b>个对账目标</button>
             <span><b>{workbenchStats.inLibrary}</b>已入库</span>
             <small className="subscription-workbench-summary__composition">
-              全库记录 {workbenchStats.total} · 已关联 {workbenchStats.linked} · 仅 Torra {workbenchStats.onlyTorra} · 仅 Fluxa {workbenchStats.onlyFluxa} · 对账待处理目标 {workbenchStats.reconciliationActionRequired ?? workbenchStats.attention} · 未分类 {workbenchStats.unclassified}
+              全库记录 {workbenchStats.total}：已关联 {workbenchStats.linked} · 仅 Torra {workbenchStats.onlyTorra} · 仅 Fluxa {workbenchStats.onlyFluxa} · 对账异常记录 {workbenchStats.attention} · 未分类 {workbenchStats.unclassified}
             </small>
             <small className="subscription-workbench-summary__scope">
               已可播放统计：{statisticScopeText(workbench.statisticsMeta?.playable, '当前追更台账')}

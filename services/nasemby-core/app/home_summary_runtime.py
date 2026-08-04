@@ -899,7 +899,7 @@ class HomeSummaryService:
                 freshUntil=_fresh_until(now_value),
             ),
             _focus_item(
-                "reconciliation_action_required", "对账待处理", "条", reconciliation_action_required_value,
+                "reconciliation_action_required", "对账待处理", "个目标", reconciliation_action_required_value,
                 reconciliation_action_required_state, reconciliation_action_required_detail,
                 "/following?status=reconciliation_action_required",
                 confirmation="confirmed" if reconciliation_action_required_value is not None else "unknown",

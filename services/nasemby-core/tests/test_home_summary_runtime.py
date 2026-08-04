@@ -759,6 +759,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["counts"]["mediaActionRequired"], 0)
         self.assertEqual(result["counts"]["reconciliationActionRequired"], 3)
         self.assertEqual(focus["reconciliation_action_required"]["value"], 3)
+        self.assertEqual(focus["reconciliation_action_required"]["unit"], "个目标")
         self.assertEqual(focus["reconciliation_action_required"]["state"], "normal")
         self.assertIn("不计入媒体异常", focus["reconciliation_action_required"]["detail"])
 
