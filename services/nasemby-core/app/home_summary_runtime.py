@@ -859,7 +859,7 @@ class HomeSummaryService:
                 counts["reconciliationActionRequired"] = reconciliation_action_required_value
                 reconciliation_action_required_state = "normal"
                 reconciliation_action_required_detail = (
-                    f"{reconciliation_action_required_value} 条追更需要核对 Fluxa / Torra 归属 · 不计入媒体异常"
+                    f"{reconciliation_action_required_value} 个规范追更目标需要核对 Fluxa / Torra 归属 · 不计入媒体异常"
                     if reconciliation_action_required_value > 0
                     else "Fluxa / Torra 追更归属当前没有明确冲突"
                 )
@@ -1214,7 +1214,7 @@ class HomeSummaryService:
                 "missing_episodes", "追更缺集", "集", "/following?missingEpisodes=1"
             ),
             "reconciliation_action_required": self._empty_focus(
-                "reconciliation_action_required", "对账待处理", "条",
+                "reconciliation_action_required", "对账待处理", "个目标",
                 "/following?status=reconciliation_action_required"
             ),
             "action_required": self._empty_focus(

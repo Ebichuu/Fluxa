@@ -133,13 +133,23 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
 
     def test_reconciliation_action_required_is_independent_and_deduplicated(self):
         items = [
-            {"id": "sub-a", "reconciliationState": "conflict", "outcomeState": "playable"},
-            {"id": "sub-a", "reconciliationState": "conflict", "outcomeState": "action_required"},
-            {"id": "sub-b", "reconciliationState": "remote_missing", "outcomeState": "playable"},
+            {"id": "sub-a", "mediaType": "tv", "tmdbId": "296003", "seasonNumber": 1, "reconciliationState": "conflict", "outcomeState": "playable"},
+            {"id": "sub-a-copy", "mediaType": "tv", "tmdbId": "296003", "seasonNumber": 1, "reconciliationState": "conflict", "outcomeState": "action_required"},
+            {"id": "sub-b", "mediaType": "tv", "tmdbId": "296003", "seasonNumber": 2, "reconciliationState": "remote_missing", "outcomeState": "playable"},
             {"id": "sub-c", "reconciliationState": "only_fluxa", "outcomeState": "action_required"},
         ]
 
         self.assertEqual(_reconciliation_action_required(items), 2)
+
+    def test_reconciliation_action_required_keeps_unreliable_identities_separate(self):
+        items = [
+            {"id": "sub-a", "title": "小芳", "mediaType": "tv", "tmdbId": "", "seasonNumber": 1, "reconciliationState": "conflict"},
+            {"id": "sub-b", "title": "小芳", "mediaType": "tv", "tmdbId": "", "seasonNumber": 1, "reconciliationState": "remote_missing"},
+            {"id": "sub-c", "title": "小芳", "mediaType": "tv", "tmdbId": "296003", "seasonNumber": None, "reconciliationState": "conflict"},
+            {"id": "sub-d", "title": "小芳", "mediaType": "tv", "tmdbId": "296003", "seasonNumber": 1.5, "reconciliationState": "conflict"},
+        ]
+
+        self.assertEqual(_reconciliation_action_required(items), 4)
 
     def test_automatic_source_merge_preserves_manual_and_torra_rows(self):
         existing = [

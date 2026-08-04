@@ -38,7 +38,7 @@ const metricDefinitions = [
 
 const resourceCenterDefinitions = [
   { key: 'newToday', label: '今日新资源', unit: '条', icon: Rss },
-  { key: 'needsReview', label: '待识别', unit: '条', icon: ScanSearch },
+  { key: 'needsReview', label: '追更待识别', unit: '条', icon: ScanSearch },
   { key: 'upgradeAvailable', label: '可洗版', unit: '组', icon: Sparkles }
 ] as const;
 

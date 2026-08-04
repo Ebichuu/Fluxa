@@ -10,8 +10,8 @@
 - 本波次只实施日历持久缓存、独立对账待处理、RSS 失效匹配归档、海报兜底。
 - Symedia 剩余能力和 Torra 订阅搜索模式留到独立只读证据波次。
 - 不读取、修改或提交 `services/nasemby-core/mcc_data.db`。
-- 批次 1–6 已完成。
-- 日历、追更、首页与 RSS 定向回归 147 项通过；Python 全量回归 694 项、TypeScript 检查和生产构建通过。
+- 批次 1–6 及收口补丁已完成。
+- 日历、追更、首页与 RSS 定向回归通过；Python 全量回归 695 项、TypeScript 检查和生产构建通过。
 - API 契约声明与实际路由均为 80 条；变更完整性、质量和安全检查通过。
 - 隔离浏览器实机验收通过；全过程使用临时 SQLite 和虚构数据，未启动后台生产运行时，也未连接或触发 Torra、qB、115、Symedia、Emby 与真实 RSS 动作。
 
@@ -77,7 +77,7 @@
 
 实施：
 
-1. `reconciliationActionRequired` 只统计 `conflict/remote_missing`，按规范订阅键去重。
+1. `reconciliationActionRequired` 只统计 `conflict/remote_missing`，按“媒体类型 + TMDB + 季”规范目标键去重；身份不完整时逐记录保留。
 2. 新增 `status=reconciliation_action_required` 深链和独立筛选入口。
 3. 保留媒体 `action_required` 的原统计与筛选。
 4. 首页只增加中性辅助提醒，不并入媒体异常总数。
@@ -151,3 +151,9 @@
 - `/following?status=reconciliation_action_required` 正确显示 1 条对账待处理，媒体“需要处理”仍为 0。
 - RSS 待整理组同时显示有效归属和失效归属；预览与确认仅归档 1 条失效匹配。
 - 归档后 `rss_items` 仍为 1 条、匹配审计仍为 2 条、有效候选组仍保留 1 条候选。
+
+收口补丁：
+
+- 同一媒体类型、TMDB 与季的不同内部追更记录在“对账待处理”中只统计和展示一个规范目标；不同季及身份不完整记录不合并。
+- 发现页白图、坏图和缺图统一显示标题首字，不再使用损坏图片图标。
+- 首页资源摘要统一使用“追更待识别”。

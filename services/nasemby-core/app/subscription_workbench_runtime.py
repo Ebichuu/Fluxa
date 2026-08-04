@@ -308,14 +308,40 @@ def _reconciliation_composition(items):
     return counts
 
 
+def _reconciliation_target_key(item):
+    media_type = str(item.get("mediaType") or "").strip().lower()
+    if media_type not in {"movie", "tv"}:
+        return ""
+    tmdb_id = str(item.get("tmdbId") or "").strip()
+    if not tmdb_id.isdigit() or int(tmdb_id) <= 0:
+        return ""
+    if media_type == "movie":
+        season_number = 0
+    else:
+        raw_season_number = item.get("seasonNumber")
+        if isinstance(raw_season_number, bool):
+            return ""
+        if isinstance(raw_season_number, float) and not raw_season_number.is_integer():
+            return ""
+        try:
+            season_number = int(raw_season_number)
+        except (TypeError, ValueError):
+            return ""
+        if season_number < 0:
+            return ""
+    return f"{media_type}:tmdb:{int(tmdb_id)}:season:{season_number}"
+
+
 def _reconciliation_action_required(items):
     seen = set()
-    for item in items or []:
+    for index, item in enumerate(items or []):
         if str(item.get("reconciliationState") or "") not in {"conflict", "remote_missing"}:
             continue
-        key = str(item.get("id") or item.get("subscriptionKey") or "").strip()
-        if key:
-            seen.add(key)
+        key = _reconciliation_target_key(item)
+        if not key:
+            record_key = str(item.get("id") or item.get("subscriptionKey") or "").strip()
+            key = f"record:{record_key}" if record_key else f"row:{index}"
+        seen.add(key)
     return len(seen)
 
 

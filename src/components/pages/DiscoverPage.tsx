@@ -538,6 +538,25 @@ type SubscriptionTab = 'movie' | 'tv' | 'blocked';
 type SubscriptionStatusFilter = 'all' | 'following' | 'action_required' | 'reconciliation_action_required' | 'playable';
 type SubscriptionUpdateFilter = 'all' | 'today' | '3' | '7';
 
+function reconciliationTargetKey(item: SubscriptionItem, index: number) {
+  const mediaType = item.mediaType?.trim().toLowerCase();
+  const tmdbId = item.tmdbId?.trim() ?? '';
+  if ((mediaType !== 'movie' && mediaType !== 'tv') || !/^\d+$/.test(tmdbId) || Number(tmdbId) <= 0) {
+    return `record:${item.id || index}`;
+  }
+  if (mediaType === 'tv' && (!Number.isInteger(item.seasonNumber) || (item.seasonNumber ?? -1) < 0)) {
+    return `record:${item.id || index}`;
+  }
+  return `${mediaType}:tmdb:${Number(tmdbId)}:season:${mediaType === 'tv' ? item.seasonNumber : 0}`;
+}
+
+function reconciliationActionRequiredCount(items: SubscriptionItem[]) {
+  return new Set(items
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => ['conflict', 'remote_missing'].includes(item.reconciliationState ?? ''))
+    .map(({ item, index }) => reconciliationTargetKey(item, index))).size;
+}
+
 const subscriptionTabHeading: Record<SubscriptionTab, string> = {
   movie: '电影',
   tv: '电视剧',
@@ -1226,7 +1245,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   const visibleSubscriptions = useMemo(() => {
     if (subscriptionTab === 'blocked') return [];
     const keyword = subscriptionKeyword.trim().toLowerCase();
-    return subs.filter((item) => {
+    const filtered = subs.filter((item) => {
       if (item.mediaType !== subscriptionTab) return false;
       if (subscriptionYear !== 'all' && item.year !== subscriptionYear) return false;
       if (
@@ -1249,6 +1268,16 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       }
       return true;
     });
+    if (subscriptionStatus !== 'reconciliation_action_required') return filtered;
+    const targetItems = new Map<string, SubscriptionItem>();
+    filtered.forEach((item, index) => {
+      const targetKey = reconciliationTargetKey(item, index);
+      const existing = targetItems.get(targetKey);
+      if (!existing || (item.reconciliationState === 'conflict' && existing.reconciliationState !== 'conflict')) {
+        targetItems.set(targetKey, item);
+      }
+    });
+    return [...targetItems.values()];
   }, [missingEpisodesOnly, subs, subscriptionKeyword, subscriptionStatus, subscriptionTab, subscriptionUpdate, subscriptionYear]);
   const localWriteEnabled = subscriptionsOnly
     ? (subscriptionCapabilities?.localWrite.enabled
@@ -1263,7 +1292,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     playable: subs.filter((item) => item.outcomeState === 'playable').length,
     completed: subs.filter((item) => item.outcomeState === 'playable').length,
     actionRequired: subs.filter((item) => item.outcomeState === 'action_required').length,
-    reconciliationActionRequired: subs.filter((item) => ['conflict', 'remote_missing'].includes(item.reconciliationState ?? '')).length,
+    reconciliationActionRequired: reconciliationActionRequiredCount(subs),
     inLibrary: subs.filter((item) => item.library?.status === 'done').length,
     linked: subs.filter((item) => item.reconciliationState === 'linked').length,
     onlyTorra: subs.filter((item) => item.reconciliationState === 'only_torra').length,
@@ -2627,7 +2656,6 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                   <PosterImage
                     className="discover-card__poster"
                     fallbackClassName="discover-card__poster--fallback"
-                    fallbackVariant="icon"
                     src={result.posterUrl}
                     title={result.title}
                   />
@@ -2775,7 +2803,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             ><b>{workbenchStats.reconciliationActionRequired ?? workbenchStats.attention}</b>对账待处理</button>
             <span><b>{workbenchStats.inLibrary}</b>已入库</span>
             <small className="subscription-workbench-summary__composition">
-              全库构成（{workbenchStats.total}）：已关联 {workbenchStats.linked} · 仅 Torra {workbenchStats.onlyTorra} · 仅 Fluxa {workbenchStats.onlyFluxa} · 对账异常 {workbenchStats.attention} · 未分类 {workbenchStats.unclassified}
+              全库记录 {workbenchStats.total} · 已关联 {workbenchStats.linked} · 仅 Torra {workbenchStats.onlyTorra} · 仅 Fluxa {workbenchStats.onlyFluxa} · 对账待处理目标 {workbenchStats.reconciliationActionRequired ?? workbenchStats.attention} · 未分类 {workbenchStats.unclassified}
             </small>
             <small className="subscription-workbench-summary__scope">
               已可播放统计：{statisticScopeText(workbench.statisticsMeta?.playable, '当前追更台账')}
