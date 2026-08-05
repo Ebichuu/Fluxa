@@ -325,6 +325,13 @@
   border-bottom: 1px solid var(--border-subtle);
 }
 
+.home-resource-center__empty {
+  margin: 0;
+  padding: 18px 4px;
+  color: var(--ops-muted);
+  font-size: 13px;
+}
+
 .home-resource-center__item {
   display: grid;
   min-width: 0;
@@ -665,6 +672,15 @@
   padding: 12px 15px;
 }
 
+.home-issue__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ops-text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .home-issue__marker {
   width: 8px;
   height: 8px;
@@ -741,7 +757,8 @@
   .home-focus__list { grid-template-columns: 1fr; }
   .home-focus__item:nth-child(odd) { border-right: 0; }
   .home-issue { grid-template-columns: 8px minmax(0, 1fr) auto; }
-  .home-issue > svg { display: none; }
+  .home-issue .health-badge { display: none; }
+  .home-issue__action { font-size: 11px; }
 }
 
 @media (max-width: 430px) {
@@ -756,6 +773,7 @@
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
   }
+  .home-issue__action { grid-column: 2 / -1; }
 }
 
 @media (prefers-reduced-motion: reduce) {

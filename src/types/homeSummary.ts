@@ -9,6 +9,7 @@ export interface HomeSummaryCounts {
   playableToday: number;
   downloading: number;
   activeDownloadTasks: number | null;
+  waitingAutoRecovery?: number | null;
   concurrentDownloadGroups: number;
   pending: number;
   waiting: number;
@@ -46,6 +47,13 @@ export interface HomeSummaryIssue {
   secondaryReasonText?: string;
   identityState?: 'unidentified' | 'linked' | 'conflict';
   executionState?: 'normal' | 'waiting' | 'protected' | 'suspected_blocked' | 'action_required' | 'confirmed_failed';
+  impactText?: string;
+  primaryAction?: {
+    label: string;
+    kind: string;
+    href?: string;
+  };
+  availableActions?: Array<{ label: string; kind: string; href?: string }>;
 }
 
 export interface HomeProblemGroup extends HomeSummaryIssue {
@@ -91,16 +99,18 @@ export interface HomeSummaryResponse {
   headline: string;
   detail: string;
   counts: HomeSummaryCounts;
-  statisticsMeta?: Partial<Record<'archivedToday' | 'playableToday' | 'activeDownloadTasks' | 'actionRequiredGroups', StatisticMetadata>>;
+  statisticsMeta?: Partial<Record<'archivedToday' | 'playableToday' | 'activeDownloadTasks' | 'waitingAutoRecovery' | 'actionRequiredGroups', StatisticMetadata>>;
   resourceCenter?: {
     counts: {
       newToday: number | null;
+      followNewToday?: number | null;
       needsReview: number | null;
       followNeedsReview?: number | null;
       unlinkedItems?: number | null;
       upgradeAvailable: number | null;
+      needsDecision?: number | null;
     };
-    confirmation: 'confirmed' | 'unknown';
+    confirmation: 'confirmed' | 'partial' | 'unknown';
     observedAt: string;
   };
   archiveSummary?: {

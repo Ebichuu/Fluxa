@@ -351,10 +351,12 @@ class PrivateRssRepositoryTests(unittest.TestCase):
 
             self.assertEqual(summary, {
                 "newToday": 2,
+                "followNewToday": 0,
                 "needsReview": 2,
                 "followNeedsReview": 0,
                 "unlinkedItems": 3,
                 "upgradeAvailable": 0,
+                "needsDecision": 0,
             })
             self.assertEqual(page["total"], summary["newToday"])
             with self.assertRaisesRegex(ValueError, "发布时间范围"):

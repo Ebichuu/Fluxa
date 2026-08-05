@@ -11,7 +11,6 @@ import {
   Rss,
   RefreshCw,
   ScanSearch,
-  ShieldCheck,
   Sparkles,
   TriangleAlert
 } from 'lucide-react';
@@ -30,16 +29,17 @@ interface OverviewProps {
 }
 
 const metricDefinitions = [
-  { key: 'archivedToday', label: '归档文件', unit: '个文件', icon: Library, target: 'archived' },
-  { key: 'playableToday', label: '已可播放', unit: '个', icon: ShieldCheck, target: 'playable' },
-  { key: 'activeDownloadTasks', label: 'qB 活跃任务', unit: '个', icon: Download, target: 'qb_active' },
-  { key: 'actionRequiredGroups', label: '需处理问题组', unit: '个', icon: TriangleAlert, target: 'action_required' }
+  { key: 'archivedToday', label: '今日入库', unit: '个文件', icon: Library, target: 'archived' },
+  { key: 'activeDownloadTasks', label: '正在下载', unit: '个任务', icon: Download, target: 'qb_active' },
+  { key: 'waitingAutoRecovery', label: '等待自动恢复', unit: '个任务', icon: RefreshCw, target: 'secupload' },
+  { key: 'actionRequiredGroups', label: '需要处理', unit: '个问题组', icon: TriangleAlert, target: 'action_required' }
 ] as const;
 
 const resourceCenterDefinitions = [
-  { key: 'newToday', label: '今日新资源', unit: '条', icon: Rss },
+  { key: 'newToday', label: '追更命中新资源', unit: '条', icon: Rss },
   { key: 'needsReview', label: '追更待识别', unit: '条', icon: ScanSearch },
-  { key: 'upgradeAvailable', label: '可洗版', unit: '组', icon: Sparkles }
+  { key: 'upgradeAvailable', label: '可洗版候选', unit: '组', icon: Sparkles },
+  { key: 'needsDecision', label: '需要人工决定', unit: '组', icon: TriangleAlert }
 ] as const;
 
 function shanghaiDateKey(value = new Date()) {
@@ -61,14 +61,14 @@ function emptySummary(): HomeSummaryResponse {
     healthState: 'evidence_insufficient',
     headline: '正在读取影音中心状态',
     detail: '正在汇总下载、入库和调度证据',
-    counts: { ingestedToday: 0, archivedToday: null, completedTargetsToday: 0, playableToday: 0, downloading: 0, activeDownloadTasks: null, concurrentDownloadGroups: 0, pending: 0, waiting: 0, evidenceInsufficient: 0, identityPending: 0, actionRequired: 0, mediaActionRequired: 0, actionRequiredWorks: 0, actionRequiredResources: 0, actionRequiredGroups: 0, actionRequiredIdentityUnconfirmedResources: 0, auxiliaryAlerts: 0, inProgress: 0, suspectedBlocked: 0, protected: 0 },
+    counts: { ingestedToday: 0, archivedToday: null, completedTargetsToday: 0, playableToday: 0, downloading: 0, activeDownloadTasks: null, waitingAutoRecovery: null, concurrentDownloadGroups: 0, pending: 0, waiting: 0, evidenceInsufficient: 0, identityPending: 0, actionRequired: 0, mediaActionRequired: 0, actionRequiredWorks: 0, actionRequiredResources: 0, actionRequiredGroups: 0, actionRequiredIdentityUnconfirmedResources: 0, auxiliaryAlerts: 0, inProgress: 0, suspectedBlocked: 0, protected: 0 },
     resourceCenter: {
-      counts: { newToday: null, needsReview: null, followNeedsReview: null, unlinkedItems: null, upgradeAvailable: null },
+      counts: { newToday: null, followNewToday: null, needsReview: null, followNeedsReview: null, unlinkedItems: null, upgradeAvailable: null, needsDecision: null },
       confirmation: 'unknown',
       observedAt: ''
     },
     focusItems: [
-      emptyFocusItem('current_downloads', 'qB 活跃任务', '个', '/tasks?qbActive=1'),
+      emptyFocusItem('current_downloads', '正在下载', '个任务', '/tasks?qbActive=1'),
       emptyFocusItem('secupload_failures', '秒传失败', '个', '/tasks?systemIssue=secupload_failures'),
       emptyFocusItem('downloaded_not_archived', '下载完成未入库', '个', '/tasks?outcomeState=in_progress'),
       emptyFocusItem('archived_today', '今日入库', '个文件', `/tasks?archivedDate=${shanghaiDateKey()}`),
@@ -84,27 +84,10 @@ function emptySummary(): HomeSummaryResponse {
 
 function homeQbCopy(value: string) {
   return value
-    .replace(/qB 下载任务/g, 'qB 活跃任务')
-    .replace(/qB 当前有 (\d+) 个下载任务正在执行/g, 'qB 当前有 $1 个活跃任务')
-    .replace(/qB 已连接，当前没有正在下载的任务/g, 'qB 已连接，当前没有活跃任务')
-    .replace(/qB 当前没有提供可验证的下载任务状态/g, 'qB 活跃任务状态暂未确认');
-}
-
-function focusItemDetail(item: HomeSummaryFocusItem) {
-  if (item.key === 'downloaded_not_archived' && typeof item.unconfirmedCount === 'number' && item.value !== null) {
-    return item.unconfirmedCount > 0
-      ? `已确认未入库 ${item.value} 个 · 另有 ${item.unconfirmedCount} 个暂未确认`
-      : item.detail;
-  }
-  if (item.key === 'missing_episodes' && typeof item.unconfirmedCount === 'number' && item.value !== null) {
-    return item.unconfirmedCount > 0
-      ? `已确认缺失 ${item.value} 集 · ${item.unconfirmedCount} 条追更尚未提供进度`
-      : item.detail;
-  }
-  if (item.confirmation === 'partial' && item.errorReason && !item.detail.includes('当前暂未确认')) {
-    return `${item.detail} · 当前暂未确认`;
-  }
-  return item.detail;
+    .replace(/qB 下载任务/g, '正在下载')
+    .replace(/qB 当前有 (\d+) 个下载任务正在执行/g, '当前有 $1 个下载任务正在执行')
+    .replace(/qB 已连接，当前没有正在下载的任务/g, '当前没有正在下载的任务')
+    .replace(/qB 当前没有提供可验证的下载任务状态/g, '正在下载状态暂未确认');
 }
 
 export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
@@ -151,22 +134,28 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
   const unloadedIssueCount = Math.max(0, groupedIssueTotal - groupedIssueRows.length);
   const StatusIcon = status === 'normal' ? CheckCircle2 : status === 'action_required' ? TriangleAlert : Clock3;
   const resourceCenter = summary.resourceCenter ?? {
-    counts: { newToday: null, needsReview: null, followNeedsReview: null, unlinkedItems: null, upgradeAvailable: null },
+      counts: { newToday: null, followNewToday: null, needsReview: null, followNeedsReview: null, unlinkedItems: null, upgradeAvailable: null, needsDecision: null },
     confirmation: 'unknown' as const,
     observedAt: ''
   };
+  const resourceRelevantEmpty = resourceCenter.confirmation === 'confirmed' && [
+    resourceCenter.counts.followNewToday ?? resourceCenter.counts.newToday,
+    resourceCenter.counts.followNeedsReview ?? resourceCenter.counts.needsReview,
+    resourceCenter.counts.upgradeAvailable,
+    resourceCenter.counts.needsDecision,
+  ].every((value) => value === 0);
 
   const openMetric = (target: typeof metricDefinitions[number]['target']) => {
     if (target === 'archived') {
       onNavigate('tasks', { archivedDate: shanghaiDateKey() });
       return;
     }
-    if (target === 'playable') {
-      onNavigate('tasks', { outcomeState: 'playable', completedDate: shanghaiDateKey() });
-      return;
-    }
     if (target === 'qb_active') {
       onNavigate('tasks', { qbActive: true });
+      return;
+    }
+    if (target === 'secupload') {
+      onNavigate('tasks', { systemIssue: 'secupload_failures' });
       return;
     }
     onNavigate('tasks', target ? { outcomeState: target } : undefined);
@@ -181,6 +170,10 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
   };
 
   const openIssue = (issue: HomeSummaryResponse['issues'][number]) => {
+    if (issue.primaryAction?.href) {
+      onNavigatePath(issue.primaryAction.href);
+      return;
+    }
     if (issue.href) {
       onNavigatePath(issue.href);
       return;
@@ -257,6 +250,13 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
       <section className="home-metrics" aria-label="今日媒体处理统计">
         {metricDefinitions.map(({ key, label, unit, icon: Icon, target }) => {
           const meta = summary.statisticsMeta?.[key];
+          const fallbackScope = key === 'activeDownloadTasks'
+            ? '当前下载状态'
+            : key === 'waitingAutoRecovery'
+              ? '当前恢复计划'
+              : key === 'actionRequiredGroups'
+                ? '当前问题'
+                : '今日范围';
           const rawValue = summaryUnavailable
             ? null
             : key === 'actionRequiredGroups'
@@ -266,7 +266,7 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
           return (
             <button className={`home-metric home-metric--${key}`} key={key} type="button" onClick={() => openMetric(target)}>
               <span aria-hidden="true"><Icon size={17} /></span>
-              <small><span>{label}</span><em>{statisticScopeText(meta, key === 'activeDownloadTasks' ? '当前 qB 快照' : '今日范围')}</em></small>
+              <small><span>{label}</span><em>{statisticScopeText(meta ? { ...meta, scope: '' } : undefined, fallbackScope)}</em></small>
               <strong><b>{value ?? '—'}</b><em>{value == null ? '未知' : unit}</em></strong>
             </button>
           );
@@ -276,16 +276,21 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
       <section className="home-resource-center" aria-labelledby="home-resource-center-title">
         <header className="home-section-heading">
           <div>
-            <p className="ops-eyebrow">PT RSS</p>
+            <p className="ops-eyebrow">站点新资源</p>
             <h2 id="home-resource-center-title">资源中心</h2>
           </div>
           <small>{resourceCenter.observedAt ? <>最近读取 <RelativeTime value={resourceCenter.observedAt} /></> : '等待资源证据'}</small>
         </header>
-        <div className="home-resource-center__list">
+        {resourceRelevantEmpty && (
+          <p className="home-resource-center__empty">今日站点资源已完成扫描，暂无与你追更相关的新候选。</p>
+        )}
+        {!resourceRelevantEmpty && <div className="home-resource-center__list">
           {resourceCenterDefinitions.map(({ key, label, unit, icon: Icon }) => {
             const value = summaryUnavailable || resourceCenter.confirmation === 'unknown'
               ? null
-              : key === 'needsReview'
+              : key === 'newToday'
+                ? resourceCenter.counts.followNewToday ?? resourceCenter.counts.newToday
+                : key === 'needsReview'
                 ? resourceCenter.counts.followNeedsReview ?? resourceCenter.counts.needsReview
                 : resourceCenter.counts[key];
             const href = key === 'newToday'
@@ -305,48 +310,13 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
                 }}
               >
                 <Icon aria-hidden="true" size={16} />
-                <span><strong>{label}</strong><small>{key === 'newToday' ? 'Asia/Shanghai 今日' : key === 'needsReview' ? '已关联追更的 RSS 台账' : '当前候选组'}</small></span>
+                <span><strong>{label}</strong><small>{key === 'newToday' ? '已关联追更的今日候选' : key === 'needsReview' ? '已关联追更的候选' : '当前候选组'}</small></span>
                 <b>{value ?? '—'}<em>{value == null ? '未知' : unit}</em></b>
                 <ArrowRight aria-hidden="true" size={15} />
               </a>
             );
           })}
-        </div>
-      </section>
-
-      <section className="home-focus" aria-labelledby="home-focus-title">
-        <header className="home-section-heading">
-          <div>
-            <p className="ops-eyebrow">固定入口</p>
-            <h2 id="home-focus-title">我的关注</h2>
-          </div>
-          <small>只展示已有证据</small>
-        </header>
-        <div className="home-focus__list">
-          {summary.focusItems.map((item) => (
-            <a
-              className={`home-focus__item home-focus__item--${item.state}`}
-              href={item.href}
-              key={item.key}
-              onClick={(event) => {
-                if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-                event.preventDefault();
-                onNavigatePath(item.href);
-              }}
-            >
-              <span className="home-focus__marker" aria-hidden="true" />
-              <span className="home-focus__copy">
-                <strong>{item.key === 'current_downloads' ? 'qB 活跃任务' : item.label}</strong>
-                <small>{item.key === 'current_downloads' ? homeQbCopy(focusItemDetail(item)) : focusItemDetail(item)}</small>
-              </span>
-              <span className="home-focus__value">
-                <b>{item.value ?? '—'}</b>
-                <em>{item.value == null ? '未知' : item.unit}</em>
-              </span>
-              <ArrowRight aria-hidden="true" size={15} />
-            </a>
-          ))}
-        </div>
+        </div>}
       </section>
 
       <section className="home-issues" aria-labelledby="home-issues-title">
@@ -383,11 +353,11 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
                     {issue.reasonText || '查看任务详情'}
                     {'resourceCount' in issue && typeof issue.resourceCount === 'number' && issue.resourceCount > 1 && ` · 涉及 ${issue.resourceCount} 个资源`}
                     {issue.secondaryReasonText && ` · ${issue.secondaryReasonText}`}
-                    {' · '}<RelativeTime interactive={false} value={issue.observedAt} />
+                    {' · '}{issue.impactText || '查看解决方式'}
                   </small>
                 </span>
                 <HealthBadge state={issue.healthState} />
-                <ArrowRight aria-hidden="true" size={16} />
+                <span className="home-issue__action">{issue.primaryAction?.label || '查看解决方式'} <ArrowRight aria-hidden="true" size={16} /></span>
               </button>
             ))}
             {loadedHiddenIssueCount > 0 && (

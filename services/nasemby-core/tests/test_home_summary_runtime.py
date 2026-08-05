@@ -236,10 +236,12 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["resourceCenter"], {
             "counts": {
                 "newToday": 12,
+                "followNewToday": 0,
                 "needsReview": 3,
                 "followNeedsReview": 1,
                 "unlinkedItems": 346,
                 "upgradeAvailable": 2,
+                "needsDecision": 0,
             },
             "confirmation": "confirmed",
             "observedAt": "2026-07-22T02:00:00Z",
@@ -330,7 +332,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["statisticsMeta"]["archivedToday"]["confirmation"], "partial")
         self.assertEqual(result["counts"]["completedTargetsToday"], 1)
         self.assertEqual(result["counts"]["ingestedToday"], 1)
-        self.assertIn("归档文件 24 · 已可播放 1", result["detail"])
+        self.assertIn("今日入库 24 个文件", result["detail"])
 
     def test_today_archive_prefers_recomputed_v2_file_and_link_counts(self):
         app = Flask(f"{__name__}-archive-v2")
@@ -470,7 +472,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         })
         self.assertEqual(result["problemGroupTotal"], 5)
         self.assertEqual(sum(group["resourceCount"] for group in result["problemGroups"]), 8)
-        self.assertEqual(result["headline"], "5 个问题组 · 涉及 8 个资源 · 其中 3 条身份未确认")
+        self.assertEqual(result["headline"], "有 5 个问题需要处理 · 涉及 8 个资源 · 正在下载 0 个 · 今日入库 未知 个文件")
         self.assertEqual(focus["action_required"]["value"], 5)
         self.assertIn("涉及 8 个资源", focus["action_required"]["detail"])
         self.assertIn("3 条身份未确认", focus["action_required"]["detail"])
@@ -575,11 +577,12 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
 
         issue = next(value for value in HomeSummaryService(app, clock=lambda: NOW).snapshot()["issues"] if value["source"] == "Symedia")
 
-        self.assertEqual(issue["headline"], "《测试剧》S01E05识别失败")
+        self.assertEqual(issue["headline"], "《测试剧》S01E05作品识别失败")
         self.assertEqual(issue["displayTitle"], "测试剧 S01E05")
         self.assertEqual(issue["seasonNumber"], 1)
         self.assertEqual(issue["episodeNumber"], 5)
-        self.assertEqual(issue["reasonText"], "Symedia 未查询到对应媒体信息")
+        self.assertEqual(issue["reasonText"], "作品识别失败")
+        self.assertEqual(issue["primaryAction"]["label"], "查看解决方式")
         public_text = f"{issue['headline']} {issue['reasonText']}"
         self.assertNotIn("/vol/", public_text)
         self.assertNotIn("symedia:private", public_text)
@@ -610,8 +613,8 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(issue["displayTitle"], "测试剧 S01E05")
-        self.assertEqual(issue["headline"], "《测试剧》S01E05识别失败")
-        self.assertEqual(issue["reasonText"], "Symedia 未查询到对应媒体信息")
+        self.assertEqual(issue["headline"], "《测试剧》S01E05作品识别失败")
+        self.assertEqual(issue["reasonText"], "作品识别失败")
         self.assertEqual(issue["secondaryReasonText"], "任务尚未关联到可靠媒体身份")
         self.assertNotIn("/storage/", f"{issue['headline']} {issue['reasonText']} {issue['secondaryReasonText']}")
 
@@ -656,7 +659,7 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["counts"]["inProgress"], 1)
         self.assertEqual(result["healthState"], "waiting")
         self.assertEqual(result["headline"], "有 1 项任务正在处理")
-        self.assertIn("qB 下载任务 3", result["detail"])
+        self.assertIn("正在下载 3 个", result["detail"])
 
     def test_home_uses_global_qb_active_count_even_when_media_chain_needs_action(self):
         blocked = item(library_status="blocked")
@@ -866,8 +869,8 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(result["statisticsMeta"]["archivedToday"]["confirmation"], "unknown")
         self.assertEqual(result["healthState"], "evidence_insufficient")
         self.assertEqual(result["headline"], "核心服务状态尚待确认")
-        self.assertIn("归档文件 未知", result["detail"])
-        self.assertIn("qB 下载任务 未知", result["detail"])
+        self.assertIn("今日入库 未知", result["detail"])
+        self.assertIn("正在下载 未知", result["detail"])
 
     def test_recovering_secupload_uses_processing_semantics_and_system_issue_link(self):
         app = self.build_app([item()], scheduler_enabled=True, scheduler_started=True)

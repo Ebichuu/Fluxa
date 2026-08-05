@@ -304,20 +304,67 @@ def _safe_issue_copy(item: dict, result: dict) -> dict:
         return {**base, "headline": f"{label}疑似阻塞", "reasonText": "已有处理阶段长时间没有形成后续证据"}
     if source.casefold() == "symedia" or "SYMEDIA" in reason_code or stage.get("stage") == "symedia":
         if any(marker in raw_reason for marker in ("未找到", "未查询到", "识别", "TMDB", "媒体信息")):
-            return {**base, "headline": f"{label}识别失败", "reasonText": "Symedia 未查询到对应媒体信息"}
+            return {**base, "headline": f"{label}作品识别失败", "reasonText": "作品识别失败"}
         if result.get("healthState") == "action_required":
-            return {**base, "headline": f"{label}入库失败", "reasonText": "Symedia 未完成媒体入库"}
+            return {**base, "headline": f"{label}入库失败", "reasonText": "媒体未完成入库"}
     if result_reason_code == "TASK_IDENTITY_UNLINKED":
-        return {**base, "headline": f"{label}尚未识别", "reasonText": "暂时无法确认这条记录对应的媒体作品"}
+        return {**base, "headline": f"{label}作品尚未识别", "reasonText": "暂时无法确认这条记录对应的媒体作品"}
     if source == "qBittorrent" or "DOWNLOAD" in reason_code or stage.get("stage") == "qb":
         return {
             **base,
             "headline": f"{label}下载需要检查",
-            "reasonText": safe_public_text(raw_reason or result.get("reasonText"), "qB 下载任务没有正常继续"),
+            "reasonText": "下载任务没有正常继续",
         }
     if source == "Torra":
-        return {**base, "headline": f"{label}获取需要检查", "reasonText": "Torra 未能确认资源处理状态"}
+        return {**base, "headline": f"{label}获取需要检查", "reasonText": "自动获取没有形成可验证结果"}
     return {**base, "headline": f"{label}需要检查", "reasonText": "当前步骤没有形成可验证结果"}
+
+
+def _issue_action_copy(issue: dict) -> dict:
+    """将技术原因投影成一个安全的下一步；这里只返回导航/预览入口，不执行写操作。"""
+    reason_code = str(issue.get("reasonCode") or "").upper()
+    source = str(issue.get("source") or "").casefold()
+    identity_state = str(issue.get("identityState") or "")
+    if reason_code in {"REMOTE_MISSING", "TORRA_REMOTE_MISSING"} or "REMOTE_MISSING" in reason_code:
+        return {
+            "impactText": "不影响已有媒体，但后续不会自动更新",
+            "primaryAction": {"label": "查看解决方式", "kind": "resolve_remote_missing", "href": "/following?status=reconciliation_action_required"},
+            "availableActions": [
+                {"label": "恢复 Torra 追更", "kind": "restore_torra"},
+                {"label": "预览归档镜像", "kind": "preview_archive_mirror"},
+                {"label": "暂时忽略", "kind": "ignore_once"},
+                {"label": "查看技术详情", "kind": "technical_detail"},
+            ],
+        }
+    if reason_code in {"EVIDENCE_OWNER_CONFLICT", "IDENTITY_CONFLICT"} or identity_state == "conflict":
+        return {
+            "impactText": "当前证据不会自动绑定到任一作品",
+            "primaryAction": {"label": "查看冲突", "kind": "resolve_conflict", "href": "/tasks?advanced=1&identityStates=conflict"},
+            "availableActions": [{"label": "查看技术详情", "kind": "technical_detail"}],
+        }
+    if identity_state == "unidentified" or reason_code in {"TASK_IDENTITY_UNLINKED", "TASK_IDENTITY_PENDING"}:
+        return {
+            "impactText": "无法确认作品和季集，后续处理会等待",
+            "primaryAction": {"label": "选择作品和季", "kind": "resolve_identity", "href": "/tasks?advanced=1&identityStates=unidentified"},
+            "availableActions": [{"label": "查看技术详情", "kind": "technical_detail"}],
+        }
+    if source == "qbittorrent" or "DOWNLOAD" in reason_code or reason_code.startswith("QB_"):
+        return {
+            "impactText": "资源尚未完成，入库和播放会继续等待",
+            "primaryAction": {"label": "检查下载任务", "kind": "inspect_download", "href": "/tasks?qbActive=1"},
+            "availableActions": [{"label": "查看技术详情", "kind": "technical_detail"}],
+        }
+    if "SECUPLOAD" in reason_code or "115" in source:
+        return {
+            "impactText": "已有恢复计划，当前等待下一次自动重试",
+            "primaryAction": {"label": "查看自动重试时间", "kind": "inspect_retry", "href": "/tasks?systemIssue=secupload_failures"},
+            "availableActions": [{"label": "确认后重试", "kind": "retry_after_confirmation"}, {"label": "查看技术详情", "kind": "technical_detail"}],
+        }
+    return {
+        "impactText": "当前链路没有形成可验证结果",
+        "primaryAction": {"label": "查看解决方式", "kind": "resolve_issue"},
+        "availableActions": [{"label": "查看技术详情", "kind": "technical_detail"}],
+    }
 
 
 class HomeSummaryService:
@@ -533,6 +580,7 @@ class HomeSummaryService:
         rss_resource_center = {
             "counts": {
                 "newToday": None,
+                "followNewToday": None,
                 "needsReview": None,
                 "followNeedsReview": None,
                 "unlinkedItems": None,
@@ -555,6 +603,7 @@ class HomeSummaryService:
                     rss_resource_center = {
                         "counts": {
                             "newToday": max(0, int(resource_counts.get("newToday") or 0)),
+                            "followNewToday": max(0, int(resource_counts.get("followNewToday") or 0)),
                             "needsReview": max(0, int(resource_counts.get("needsReview") or 0)),
                             "followNeedsReview": max(0, int(
                                 resource_counts.get("followNeedsReview", resource_counts.get("needsReview")) or 0
@@ -564,6 +613,7 @@ class HomeSummaryService:
                                 if "unlinkedItems" in resource_counts else None
                             ),
                             "upgradeAvailable": max(0, int(resource_counts.get("upgradeAvailable") or 0)),
+                            "needsDecision": max(0, int(resource_counts.get("needsDecision", resource_counts.get("needsCleanup", 0)) or 0)),
                         },
                         "confirmation": "confirmed",
                         "observedAt": now,
@@ -618,6 +668,7 @@ class HomeSummaryService:
                 media_issues.append({
                     **result,
                     **issue_copy,
+                    **_issue_action_copy({**result, **issue_copy, "source": result.get("source")}),
                     "issueKind": "media",
                     "targetKey": target_key,
                     "chainId": str(item.get("chainId") or item.get("id") or ""),
@@ -630,6 +681,7 @@ class HomeSummaryService:
                 source = str(result.get("source") or "")
                 auxiliary_issues.append({
                     **result,
+                    **_issue_action_copy(result),
                     "issueKind": "auxiliary",
                     "targetKey": "",
                     "chainId": "",
@@ -646,6 +698,10 @@ class HomeSummaryService:
                     observed_at=str(secupload_issue.get("observedAt") or now),
                     fresh_until=_fresh_until(now_value),
                 ),
+                **_issue_action_copy({
+                    "reasonCode": "SECUPLOAD_RETRY_REQUIRED",
+                    "source": "torra-secupload",
+                }),
                 "issueKind": "auxiliary",
                 "targetKey": "",
                 "chainId": "",
@@ -684,6 +740,7 @@ class HomeSummaryService:
             media_problem_groups.append({
                 **result,
                 **issue_copy,
+                **_issue_action_copy({**result, **issue_copy, "source": result.get("source")}),
                 "groupId": str(group.get("groupId") or ""),
                 "issueKind": "media_group",
                 "resourceCount": resource_count,
@@ -729,6 +786,13 @@ class HomeSummaryService:
         counts["activeDownloadTasks"] = current_downloads_value
 
         secupload_failures = _integer(secupload_issue.get("failedTotal"))
+        counts["waitingAutoRecovery"] = (
+            secupload_failures
+            if secupload_state == "recovering" and secupload_failures is not None
+            else 0
+            if secupload_state in {"normal", "action_required"}
+            else None
+        )
         category_labels = "、".join(
             str(row.get("label") or "") for row in secupload_issue.get("categories") or [] if row.get("label")
         )
@@ -960,9 +1024,10 @@ class HomeSummaryService:
         if counts["mediaActionRequired"] > 0:
             health_state = "action_required"
             headline = (
-                f"{counts['actionRequiredGroups']} 个问题组"
+                f"有 {counts['actionRequiredGroups']} 个问题需要处理"
                 f" · 涉及 {counts['actionRequiredResources']} 个资源"
-                f" · 其中 {counts['actionRequiredIdentityUnconfirmedResources']} 条身份未确认"
+                f" · 正在下载 {counts['activeDownloadTasks'] if counts['activeDownloadTasks'] is not None else '未知'} 个"
+                f" · 今日入库 {counts['archivedToday'] if counts['archivedToday'] is not None else '未知'} 个文件"
             )
         elif counts["auxiliaryAlerts"] > 0:
             health_state = "action_required"
@@ -982,11 +1047,9 @@ class HomeSummaryService:
         archived_today_text = counts["archivedToday"] if counts["archivedToday"] is not None else "未知"
         active_downloads_text = counts["activeDownloadTasks"] if counts["activeDownloadTasks"] is not None else "未知"
         detail = (
-            f"归档文件 {archived_today_text} · 已可播放 {counts['playableToday']} · "
-            f"qB 下载任务 {active_downloads_text} · 需处理问题组 {counts['actionRequiredGroups']}"
-            f"（{counts['actionRequiredResources']} 个资源，"
-            f"{counts['actionRequiredIdentityUnconfirmedResources']} 条身份未确认） · "
-            f"辅助提醒 {counts['auxiliaryAlerts']}"
+            f"今日入库 {archived_today_text} 个文件 · 正在下载 {active_downloads_text} 个"
+            f" · 等待自动恢复 {counts.get('waitingAutoRecovery') if counts.get('waitingAutoRecovery') is not None else '未知'} 个"
+            f" · 需要处理 {counts['actionRequiredGroups']} 个问题组"
         )
         emby_connected = bool(isinstance(services.get("emby"), dict) and services["emby"].get("connected") is True)
         task_count_confirmation = "partial" if counts["evidenceInsufficient"] > 0 else "confirmed"
@@ -1012,6 +1075,10 @@ class HomeSummaryService:
             "activeDownloadTasks": statistic_metadata(
                 scope="current_qb_snapshot", unit="qb_task", observed_at=now,
                 confirmation="confirmed" if counts["activeDownloadTasks"] is not None else "unknown",
+            ),
+            "waitingAutoRecovery": statistic_metadata(
+                scope="current_secupload_recovery", unit="task", observed_at=now,
+                confirmation="confirmed" if counts.get("waitingAutoRecovery") is not None else "unknown",
             ),
             "actionRequiredGroups": statistic_metadata(
                 scope="current_unique_task_chains", unit="problem_group", observed_at=now,
@@ -1098,6 +1165,8 @@ class HomeSummaryService:
             "secupload": {
                 "systemIssues": snapshot.get("systemIssues") or [],
                 "focusItem": focus.get("secupload_failures"),
+                "waitingAutoRecovery": counts.get("waitingAutoRecovery"),
+                "statisticsMeta": {"waitingAutoRecovery": statistics.get("waitingAutoRecovery")},
             },
             "subscription_progress": {
                 "focusItem": focus.get("missing_episodes"),
@@ -1177,11 +1246,12 @@ class HomeSummaryService:
         }
 
     @staticmethod
-    def _cached_counts(task, qb, archive):
+    def _cached_counts(task, qb, archive, secupload):
         counts = dict(task.get("counts") or {})
         counts.update({
             "activeDownloadTasks": qb.get("activeDownloadTasks"),
             "archivedToday": archive.get("archivedToday"),
+            "waitingAutoRecovery": secupload.get("waitingAutoRecovery"),
         })
         defaults = {
             "ingestedToday": 0, "completedTargetsToday": 0, "playableToday": 0, "downloading": 0,
@@ -1285,8 +1355,8 @@ class HomeSummaryService:
     def _empty_resource_center():
         return {
             "counts": {
-                "newToday": None, "needsReview": None, "followNeedsReview": None,
-                "unlinkedItems": None, "upgradeAvailable": None,
+                "newToday": None, "followNewToday": None, "needsReview": None, "followNeedsReview": None,
+                "unlinkedItems": None, "upgradeAvailable": None, "needsDecision": None,
             },
             "confirmation": "unknown",
             "observedAt": "",
@@ -1307,7 +1377,7 @@ class HomeSummaryService:
         secupload = payloads["secupload"]
         rss = payloads["rss_resource_center"]
         health = payloads["service_health"]
-        counts = self._cached_counts(task, qb, archive)
+        counts = self._cached_counts(task, qb, archive, secupload)
         focus_by_key = self._cached_focus(payloads, today_key)
         modules_meta = self._module_metadata(rows, scopes, now_value)
         self._decorate_focus(focus_by_key, modules_meta)
@@ -1324,6 +1394,7 @@ class HomeSummaryService:
                 **(task.get("statisticsMeta") or {}),
                 **(qb.get("statisticsMeta") or {}),
                 **(archive.get("statisticsMeta") or {}),
+                **(secupload.get("statisticsMeta") or {}),
             },
             "resourceCenter": rss.get("resourceCenter") or self._empty_resource_center(),
             "archiveSummary": archive.get("archiveSummary"),

@@ -1934,6 +1934,62 @@
   grid-column: 1 / -1;
 }
 
+.discover-sub__records {
+  margin: 0 12px 12px;
+  border-top: 1px solid var(--ops-hair);
+  color: var(--ops-muted);
+}
+
+.discover-sub__records > summary {
+  padding: 10px 0;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.discover-sub__records > div {
+  display: grid;
+  gap: 6px;
+  padding-bottom: 10px;
+}
+
+.discover-sub__records span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.discover-sub__records small {
+  color: var(--ops-faint);
+  text-align: right;
+}
+
+.discover-sub__recommended-action {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--ops-hair);
+}
+
+.discover-sub__recommended-action > span {
+  display: grid;
+  gap: 3px;
+}
+
+.discover-sub__recommended-action strong {
+  color: var(--ops-ink-strong);
+  font-size: 12px;
+}
+
+.discover-sub__recommended-action small {
+  color: var(--ops-faint);
+  font-size: 11px;
+}
+
 .subscription-workbench-summary__composition {
   white-space: normal;
 }

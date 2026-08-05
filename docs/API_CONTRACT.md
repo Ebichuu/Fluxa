@@ -4,7 +4,7 @@
 路由数量：47  
 运行实现：Python / Flask
 
-新增能力使用真正的 URL 版本契约：`docs/contracts/http-api-contract-v2.json`，当前共 80 条。v1 的 47 条冻结路径和历史状态码不变。
+新增能力使用真正的 URL 版本契约：`docs/contracts/http-api-contract-v2.json`，当前共 81 条。v1 的 47 条冻结路径和历史状态码不变。
 
 ## 1. 版本规则
 
@@ -65,7 +65,8 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `GET /api/subscriptions/items` | 可选 `include_progress=1` |
 | `POST /api/subscriptions/run` | 无业务正文；只刷新已配置榜单到 `discover_candidates`，返回候选新增/更新/跳过摘要；不写 `subscriptions`，不调用 Torra、qB、115、Symedia 或 Emby |
 | `GET /api/v2/home/summary` | 无参数；按新派生结果、调度器心跳和服务证据返回今日结论；`activeDownloadTasks` 直接读取应用内共享 qB 摘要的 `counts.active`，独立于媒体链结果，qB 在线且明确为 0 才返回 0，离线、读取失败或计数无效返回 `null`；`mediaActionRequired/actionRequired` 继续统计任务中心可列出的资源异常，旧 `actionRequiredWorks/actionRequiredResources/issues/issueTotal` 保持原语义和数值；可选 `problemGroupSummary/problemGroups/problemGroupTotal` 与任务中心共用纯派生器，从全部异常资源按作品季、阶段和原因生成问题组，可靠身份要求 `identityState=linked`、有效 TMDB ID 和明确媒体类型，标题只做机械规范化展示分组且不写回身份；可选 `auxiliaryIssues/auxiliaryIssueTotal` 独立返回 RSS/服务提醒；`inProgress` 包含媒体活动目标和自动恢复中的明确秒传失败数量，`playableToday` 只统计当日 Emby 明确可播放目标；`archiveSummary` 实时解释归档文件、已关联文件、关联任务和未关联文件；无法验证时 `archivedToday`、`activeDownloadTasks` 返回 `null` 而不是伪造 `0`，旧 `completedTargetsToday/ingestedToday` 保留兼容；可选 `statisticsMeta` 说明今日归档、今日可播放、qB 活跃任务和问题组的范围、单位、观察时间与确认状态；可选 `resourceCenter` 使用同一次 SQLite 读取返回 Asia/Shanghai 今日新资源、全库兼容待复核、已关联追更待识别、未关联追更和可洗版候选组计数，首页优先展示已关联追更待识别；读取失败时计数为 `null` 且不改变首页健康结论 |
-| `GET /api/v2/subscriptions/workbench` | 可选 `limit`（1–100，默认 24）、`offset`（默认 0）、`mediaType`（`movie`/`tv`）和 `query`；返回五项能力状态、全量 `following/playable/actionRequired/inLibrary` 业务指标，以及互斥且总和等于 `total` 的 `linked/onlyTorra/onlyFluxa/attention/unclassified` 记录构成统计；`reconciliationActionRequired` 按“媒体类型 + TMDB + 季”统计规范追更目标，同一目标的不同内部记录只计一次，身份不完整时逐记录保留；同时返回结构化 `progress`、`torraFact/pipelineOutcome`、当前页订阅、`page.nextOffset` 和可选 `posterBackfillIds`；订阅 `torra.pushState` 可选为 `queued/submitted/linked/failed/disabled/unknown`，只有只读对账取得可靠远端 ID 且身份与范围一致才返回 `linked`；兼容 `completed/fulfillmentState/chainState` 只由新事实投影，Torra completed 不进入 `playable`；可选 `statisticsMeta` 将业务指标范围固定为当前完整追更台账，任务链不可读时 `playable` 确认状态为 `unknown` |
+| `GET /api/v2/subscriptions/workbench` | 纯读 SQLite 最后可靠工作台快照，再按可选 `limit`（1–100，默认 24）、`offset`（默认 0）、`mediaType`（`movie`/`tv`）和 `query` 投影；返回五项能力状态、全量 `following/playable/actionRequired/inLibrary` 业务指标，以及互斥且总和等于 `total` 的 `linked/onlyTorra/onlyFluxa/attention/unclassified` 记录构成统计；`reconciliationActionRequired` 按“媒体类型 + TMDB + 季”统计规范追更目标，同一目标的不同内部记录只计一次，身份不完整时逐记录保留；同时返回结构化 `progress`、`torraFact/pipelineOutcome`、当前页订阅、`page.nextOffset` 和可选 `posterBackfillIds/generatedAt/confirmation/stale/refreshState/lastError`；Torra completed 不进入 `playable`；缓存缺失立即返回 `unknown` 结构，失败保留旧快照。 |
+| `POST /api/v2/subscriptions/workbench/refresh-requests` | 只提交后台工作台刷新并返回 202；进程锁与 SQLite 租约共同单飞，不等待 Torra 对账，不改变追更、Torra、qB 或其他外部状态。 |
 | `POST /api/v2/subscriptions/visual-backfills` | `ids` 为最多 100 个订阅 ID；只按明确 TMDB 身份补充空缺海报/背景，不按标题猜图；本地写入开启时可补充已有本地记录，关闭时只返回视觉结果；仅 Torra 条目始终不创建本地镜像 |
 | `GET /api/v2/subscriptions/reconciliation` | 无参数；只读对比 Fluxa 与 Torra，独立返回对账、兼容履约、健康、`torraFact` 和 `pipelineOutcome`；Torra completed 投影为“获取目标已满足”，没有 Emby 事实时结果仍为 `evidence_insufficient`；不修改或删除任一台账 |
 | `GET /api/v2/tasks/summary` | 返回唯一任务链数量、健康/身份/执行三维状态数量、兼容四态 `userCounts`、新派生六态 `outcomeCounts`、阶段数量、服务状态和稳定 `version`；支持 ETag 条件读取；可选 `problemGroupSummary` 从全部 `action_required` 资源计算问题组、资源和身份未确认资源数；可选 `statisticsMeta` 将任务数量范围固定为当前唯一任务链，并在存在证据不足结果时标记 `partial`；可选 `systemIssues` 返回系统级问题（如 Torra 秒传）的分类级安全摘要；`ledger.transientEventCleanup` 只返回迁移 ID、状态、删除总数和按阶段统计，不公开数据库或备份路径 |
@@ -196,7 +197,7 @@ NasEmby 原静态管理页不注册为第二套生产页面，迁移期静态快
 
 ## 9. HTTP v2 契约
 
-当前 47 条 v1 契约不承担新增语义。80 条 `/api/v2` 接口包括：
+当前 47 条 v1 契约不承担新增语义。81 条 `/api/v2` 接口包括：
 
 - 当前 React 使用：集成脱敏摘要、Torra 单条预览/推送、缓存系统指标、私人 RSS 来源管理、本地种子库和管理员运行时配置。
 - 发现候选闭环：独立候选列表、只读加入预览和确认加入追更；候选不进入追更与日历，只有人工确认后才创建追更意图。
@@ -268,7 +269,7 @@ v2 新增响应字段允许向后兼容扩展；删除字段、改变类型或�
 
 ## 13. 已实现的私人 PT RSS 种子库接口
 
-以下接口已经进入当前 80 条 v2 机器契约和 React：
+以下接口已经进入当前 81 条 v2 机器契约和 React：
 
 - `GET /api/v2/rss-sources`
 - `POST /api/v2/rss-sources`

@@ -476,6 +476,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "_private_rss_collector_started",
             "_quality_watch_scheduler_started",
             "_home_summary_refresh_started",
+            "_subscription_workbench_refresh_started",
             "_calendar_snapshot_refresh_started",
             "_torra_subscription_sync_started",
             "_background_runtime_started",
@@ -497,12 +498,12 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
 
         self.assertEqual(
             [thread.name for thread in started_threads],
-            ["hdhive-checkin", "discover-cache-preload", "torra-subscription-sync", "candidate-source", "home-summary-refresh", "calendar-snapshot-refresh"],
+            ["hdhive-checkin", "discover-cache-preload", "torra-subscription-sync", "candidate-source", "home-summary-refresh", "subscription-workbench-refresh", "calendar-snapshot-refresh"],
         )
         self.assertTrue(all(thread.daemon for thread in started_threads))
         self.assertEqual(
             started,
-            ["hdhive-checkin", "discover-cache-preload", "torra-subscription-sync", "candidate-source", "home-summary-refresh", "calendar-snapshot-refresh"],
+            ["hdhive-checkin", "discover-cache-preload", "torra-subscription-sync", "candidate-source", "home-summary-refresh", "subscription-workbench-refresh", "calendar-snapshot-refresh"],
         )
         self.assertEqual(repeated, [])
 
@@ -526,6 +527,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "_private_rss_collector_started",
             "_quality_watch_scheduler_started",
             "_home_summary_refresh_started",
+            "_subscription_workbench_refresh_started",
             "_calendar_snapshot_refresh_started",
             "_torra_subscription_sync_started",
             "_background_runtime_started",
@@ -553,6 +555,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
                 "candidate-source",
                 "subscription-task",
                 "home-summary-refresh",
+                "subscription-workbench-refresh",
                 "calendar-snapshot-refresh",
             ],
         )
@@ -578,6 +581,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "_private_rss_collector_started",
             "_quality_watch_scheduler_started",
             "_home_summary_refresh_started",
+            "_subscription_workbench_refresh_started",
             "_calendar_snapshot_refresh_started",
             "_torra_subscription_sync_started",
             "_background_runtime_started",
@@ -605,6 +609,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
                 "candidate-source",
                 "quality-watch",
                 "home-summary-refresh",
+                "subscription-workbench-refresh",
                 "calendar-snapshot-refresh",
             ],
         )

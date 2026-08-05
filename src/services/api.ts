@@ -448,6 +448,13 @@ export function getSubscriptionWorkbench(input: {
   return readJson<SubscriptionWorkbenchResponse>(`/api/v2/subscriptions/workbench?${query.toString()}`, options);
 }
 
+export function requestSubscriptionWorkbenchRefresh(): Promise<{
+  ok: boolean;
+  refresh: { status: string };
+}> {
+  return postJson('/api/v2/subscriptions/workbench/refresh-requests', {});
+}
+
 export function backfillSubscriptionVisuals(ids: string[]): Promise<SubscriptionVisualBackfillResponse> {
   return postJson<SubscriptionVisualBackfillResponse>('/api/v2/subscriptions/visual-backfills', { ids }, { timeoutMs: 60_000 });
 }

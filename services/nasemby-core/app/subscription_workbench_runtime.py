@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
 
 from flask import Flask, jsonify, request
@@ -427,10 +428,11 @@ def _item_snapshot(row, chain_item=None):
 
 
 class SubscriptionWorkbenchService:
-    def __init__(self, app: Flask, environment=None, clock=None):
+    def __init__(self, app: Flask, environment=None, clock=None, cache_repository=None):
         self.app = app
         self.environment = environment if environment is not None else {}
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.cache_repository = cache_repository
 
     def _candidate_scheduler_snapshot(self):
         registry = self.app.extensions.get("mcc_scheduler_status")
@@ -573,7 +575,7 @@ class SubscriptionWorkbenchService:
                 result["items"].append(item)
         return result
 
-    def snapshot(self, *, limit=None, offset=0, media_type="", query=""):
+    def live_snapshot(self, *, limit=None, offset=0, media_type="", query=""):
         checked_at = _now()
         write_enabled = _truthy(self.environment.get("NASEMBY_CORE_WRITE_ENABLED"))
         raw = discover_runtime.load_subscription_items(
@@ -914,10 +916,73 @@ class SubscriptionWorkbenchService:
             },
         }
 
+    @staticmethod
+    def _project_cached(payload, *, limit=None, offset=0, media_type="", query="", cache_meta=None):
+        base = dict(payload or {})
+        rows = [item for item in (base.get("items") or []) if isinstance(item, dict)]
+        if media_type in {"movie", "tv"}:
+            rows = [item for item in rows if item.get("mediaType") == media_type]
+        normalized_query = str(query or "").strip().casefold()
+        if normalized_query:
+            rows = [item for item in rows if normalized_query in " ".join((
+                str(item.get("title") or ""), str(item.get("tmdbId") or ""), str(item.get("sourceLabel") or ""),
+            )).casefold()]
+        page_total = len(rows)
+        page_offset = max(0, int(offset or 0))
+        page_limit = max(1, min(100, int(limit))) if limit is not None else max(1, page_total or 1)
+        paged = rows[page_offset:page_offset + page_limit] if limit is not None else rows
+        next_offset = page_offset + len(paged)
+        meta = cache_meta or {}
+        base.update({
+            "ok": True,
+            "lastReadAt": meta.get("generatedAt") or base.get("lastReadAt") or "",
+            "generatedAt": meta.get("generatedAt") or base.get("generatedAt") or "",
+            "confirmation": meta.get("confirmation") or "unknown",
+            "stale": bool(meta.get("stale")),
+            "refreshState": meta.get("refreshState") or "idle",
+            "lastError": meta.get("lastError") or "",
+            "items": paged,
+            "page": {
+                "total": page_total,
+                "limit": page_limit,
+                "offset": page_offset,
+                "nextOffset": next_offset if next_offset < page_total else None,
+                "hasMore": next_offset < page_total,
+            },
+        })
+        return base
 
-def register_subscription_workbench(app: Flask, environment=None):
-    service = SubscriptionWorkbenchService(app, environment=environment)
+    def snapshot(self, *, limit=None, offset=0, media_type="", query=""):
+        if self.cache_repository is None:
+            return self.live_snapshot(limit=limit, offset=offset, media_type=media_type, query=query)
+        cached = self.cache_repository.get(now=self.clock())
+        if not cached or not cached.get("payload"):
+            return self._project_cached({
+                "capabilities": [],
+                "stats": {
+                    "total": 0, "movie": 0, "tv": 0, "pending": 0, "following": 0,
+                    "completed": 0, "playable": 0, "actionRequired": 0,
+                    "reconciliationActionRequired": 0, "inLibrary": 0, "linked": 0,
+                    "onlyTorra": 0, "onlyFluxa": 0, "attention": 0, "unclassified": 0,
+                },
+                "items": [],
+                "blockedTitles": [],
+                "errors": [],
+                "torraSync": {},
+                "rss": {},
+                "scheduler": {},
+                "reconciliation": {"ok": False, "summary": {}, "items": []},
+            }, limit=limit, offset=offset, media_type=media_type, query=query, cache_meta=cached or {})
+        return self._project_cached(
+            cached["payload"], limit=limit, offset=offset, media_type=media_type, query=query, cache_meta=cached
+        )
+
+
+def register_subscription_workbench(app: Flask, environment=None, cache_repository=None):
+    service = SubscriptionWorkbenchService(app, environment=environment, cache_repository=cache_repository)
     app.extensions["mcc_subscription_workbench"] = service
+    if cache_repository is not None:
+        app.extensions["mcc_subscription_workbench_cache"] = cache_repository
 
     @app.get("/api/v2/subscriptions/capabilities")
     def subscription_capabilities():
@@ -944,6 +1009,15 @@ def register_subscription_workbench(app: Flask, environment=None):
             ))
         except Exception:
             return jsonify({"code": "SUBSCRIPTION_WORKBENCH_READ_FAILED", "error": "订阅工作台读取失败", "request_id": current_request_id()}), 502
+
+    @app.post("/api/v2/subscriptions/workbench/refresh-requests")
+    def subscription_workbench_refresh_request():
+        runtime = app.extensions.get("mcc_subscription_workbench_refresh")
+        if runtime is None:
+            return jsonify({"ok": False, "refresh": {"status": "unavailable"}}), 503
+        # 只提交后台刷新，不等待 Torra 对账或完整快照返回。
+        threading.Thread(target=runtime.run_once, name="subscription-workbench-refresh-request", daemon=True).start()
+        return jsonify({"ok": True, "refresh": {"status": "queued"}}), 202
 
     @app.post("/api/v2/subscriptions/visual-backfills")
     def subscription_visual_backfills():

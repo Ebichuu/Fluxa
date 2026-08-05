@@ -1869,23 +1869,31 @@ class PrivateRssRepository:
                 "SELECT "
                 "SUM(CASE WHEN COALESCE(NULLIF(i.published_at, ''), i.created_at) >= ? "
                 "AND COALESCE(NULLIF(i.published_at, ''), i.created_at) < ? THEN 1 ELSE 0 END) AS new_today, "
+                "SUM(CASE WHEN COALESCE(NULLIF(i.published_at, ''), i.created_at) >= ? "
+                f"AND COALESCE(NULLIF(i.published_at, ''), i.created_at) < ? AND {follow_sql} THEN 1 ELSE 0 END) AS follow_new_today, "
                 f"SUM(CASE WHEN {review_sql} THEN 1 ELSE 0 END) AS needs_review, "
                 f"SUM(CASE WHEN {review_sql} AND {follow_sql} THEN 1 ELSE 0 END) AS follow_needs_review, "
                 f"SUM(CASE WHEN NOT {follow_sql} THEN 1 ELSE 0 END) AS unlinked_items "
                 "FROM rss_items i",
-                (published_from, published_before),
+                (published_from, published_before, published_from, published_before),
             ).fetchone()
             grouped_query = self._candidate_groups_query()
             upgrade_count = int(connection.execute(
                 grouped_query
                 + "SELECT COUNT(*) AS count FROM candidate_groups WHERE group_state='upgrade_available'"
             ).fetchone()["count"])
+            decision_count = int(connection.execute(
+                grouped_query
+                + "SELECT COUNT(*) AS count FROM candidate_groups WHERE group_state IN ('needs_cleanup', 'blocked')"
+            ).fetchone()["count"])
         return {
             "newToday": int(item_counts["new_today"] or 0),
+            "followNewToday": int(item_counts["follow_new_today"] or 0),
             "needsReview": int(item_counts["needs_review"] or 0),
             "followNeedsReview": int(item_counts["follow_needs_review"] or 0),
             "unlinkedItems": int(item_counts["unlinked_items"] or 0),
             "upgradeAvailable": upgrade_count,
+            "needsDecision": decision_count,
         }
 
     def find_unique_source_match(self, artifact_keys, subscription_keys, target_key):

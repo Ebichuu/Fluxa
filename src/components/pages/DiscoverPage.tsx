@@ -17,6 +17,7 @@ import {
   getSubscriptionItems,
   getSubscriptionCapabilities,
   getSubscriptionWorkbench,
+  requestSubscriptionWorkbenchRefresh,
   getTorraSubscriptionSyncStatus,
   getTorraPushPreview,
   importTorraSubscriptions,
@@ -695,6 +696,31 @@ function subscriptionUserStatusTone(item: SubscriptionItem) {
     : 'is-neutral';
 }
 
+function subscriptionRecommendedAction(item: SubscriptionItem) {
+  if (item.reconciliationState === 'remote_missing') {
+    return {
+      reason: 'Torra 中已找不到这条追更',
+      impact: '不影响已有媒体，但后续不会自动更新',
+      label: '查看解决方式'
+    };
+  }
+  if (item.reconciliationState === 'conflict') {
+    return {
+      reason: '同一作品存在多个追更关联',
+      impact: '当前不会自动选择任一关联继续处理',
+      label: '查看冲突'
+    };
+  }
+  if (!item.tmdbId || (item.mediaType === 'tv' && item.seasonNumber == null)) {
+    return {
+      reason: '作品或季集身份尚未确认',
+      impact: '候选和后续任务不会自动绑定',
+      label: '选择作品和季'
+    };
+  }
+  return null;
+}
+
 const terminalAutomationStates = new Set(['succeeded', 'failed', 'cancelled']);
 
 function watchStateLabel(state: string) {
@@ -1006,6 +1032,21 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     subscriptionsOnly
   ]);
 
+  const refreshSubs = useCallback(() => {
+    if (!subscriptionsOnly) {
+      void loadSubs();
+      return;
+    }
+    setSweepMessage('已提交追更状态更新，当前列表继续显示上一次可靠结果。');
+    requestSubscriptionWorkbenchRefresh()
+      .then(() => {
+        window.setTimeout(() => void loadSubs(), 1500);
+      })
+      .catch((reason: unknown) => {
+        setSweepMessage(reason instanceof Error ? reason.message : '追更状态更新请求提交失败');
+      });
+  }, [loadSubs, subscriptionsOnly]);
+
   const loadMoreSubs = useCallback(async () => {
     const page = workbench?.page;
     const nextOffset = page?.nextOffset;
@@ -1279,6 +1320,15 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     });
     return [...targetItems.values()];
   }, [missingEpisodesOnly, subs, subscriptionKeyword, subscriptionStatus, subscriptionTab, subscriptionUpdate, subscriptionYear]);
+  const reconciliationRecordsByTarget = useMemo(() => {
+    const groups = new Map<string, SubscriptionItem[]>();
+    subs.forEach((item, index) => {
+      if (!['conflict', 'remote_missing'].includes(item.reconciliationState ?? '')) return;
+      const key = reconciliationTargetKey(item, index);
+      groups.set(key, [...(groups.get(key) ?? []), item]);
+    });
+    return groups;
+  }, [subs]);
   const localWriteEnabled = subscriptionsOnly
     ? (subscriptionCapabilities?.localWrite.enabled
       ?? Boolean(workbench?.capabilities.find((capability) => capability.key === 'local_write')?.enabled))
@@ -1300,7 +1350,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     attention: subs.filter((item) => ['conflict', 'remote_missing'].includes(item.reconciliationState ?? '')).length,
     unclassified: subs.filter((item) => !['linked', 'only_torra', 'only_fluxa', 'conflict', 'remote_missing'].includes(item.reconciliationState ?? '')).length
   };
-  const subscriptionCountsUnavailable = subscriptionsOnly && !workbench;
+  const subscriptionCountsUnavailable = subscriptionsOnly && (!workbench || workbench.confirmation === 'unknown');
   const reconciliationSummary = workbench?.reconciliation?.summary;
   const torraPushEnabled = Boolean(subscriptionCapabilities?.torraPush.enabled);
   const manualFollow = subscriptionCapabilities?.manualFollow;
@@ -2786,29 +2836,36 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             <button aria-label="追更设置" className="ops-icon-button subscription-toolbar__icon" title="追更设置" type="button" onClick={() => onNavigate('subscription-settings')}>
               <SlidersHorizontal aria-hidden="true" size={14} />
             </button>
-            <button aria-label="刷新追更状态" className="ops-icon-button subscription-toolbar__icon" disabled={subsLoading} title="重新读取工作台状态和追更链路" type="button" onClick={loadSubs}>
+            <button aria-label="刷新追更状态" className="ops-icon-button subscription-toolbar__icon" disabled={subsLoading} title="提交后台更新，当前列表不会等待完整对账" type="button" onClick={refreshSubs}>
               <RefreshCcw aria-hidden="true" size={14} />
             </button>
           </div>
         </div>
         {subscriptionsOnly && workbench && (
           <section className="subscription-workbench-summary" aria-label="追更统计">
-            <span><b>{workbenchStats.following}</b>追更中</span>
+            <span><b>{subscriptionCountsUnavailable ? '—' : workbenchStats.following}</b>追更中</span>
             <span><b>{statisticDisplayValue(workbenchStats.playable, workbench.statisticsMeta?.playable)}</b>已可播放</span>
-            <span><b>{workbenchStats.actionRequired}</b>需要处理</span>
+            <span><b>{subscriptionCountsUnavailable ? '—' : workbenchStats.actionRequired}</b>需要处理</span>
             <button
               className={subscriptionStatus === 'reconciliation_action_required' ? 'is-active' : undefined}
               type="button"
               onClick={() => setSubscriptionStatus('reconciliation_action_required')}
-            ><b>{workbenchStats.reconciliationActionRequired ?? workbenchStats.attention}</b>个对账目标</button>
-            <span><b>{workbenchStats.inLibrary}</b>已入库</span>
+            ><b>{subscriptionCountsUnavailable ? '—' : workbenchStats.reconciliationActionRequired ?? workbenchStats.attention}</b>个对账目标</button>
+            <span><b>{subscriptionCountsUnavailable ? '—' : workbenchStats.inLibrary}</b>已入库</span>
             <small className="subscription-workbench-summary__composition">
-              全库记录 {workbenchStats.total}：已关联 {workbenchStats.linked} · 仅 Torra {workbenchStats.onlyTorra} · 仅 Fluxa {workbenchStats.onlyFluxa} · 对账异常记录 {workbenchStats.attention} · 未分类 {workbenchStats.unclassified}
+              全库 {workbenchStats.total} 条追更记录 · 其中 {workbenchStats.attention} 条记录形成 {workbenchStats.reconciliationActionRequired ?? workbenchStats.attention} 个对账目标
+            </small>
+            <small className="subscription-workbench-summary__composition">
+              已关联 {workbenchStats.linked} · 仅 Torra {workbenchStats.onlyTorra} · 仅 Fluxa {workbenchStats.onlyFluxa} · 对账异常记录 {workbenchStats.attention} · 未分类 {workbenchStats.unclassified}
             </small>
             <small className="subscription-workbench-summary__scope">
               已可播放统计：{statisticScopeText(workbench.statisticsMeta?.playable, '当前追更台账')}
             </small>
-            <small className="subscription-workbench-summary__updated">{subscriptionReadAtLabel(workbench.lastReadAt)}</small>
+            <small className="subscription-workbench-summary__updated">
+              {subscriptionReadAtLabel(workbench.generatedAt || workbench.lastReadAt)}
+              {workbench.stale && ' · 正在显示上一次可靠结果'}
+              {workbench.refreshState === 'failed' && ' · 更新暂时失败'}
+            </small>
           </section>
         )}
         {sweepMessage && <p className="console-panel__hint">{sweepMessage}</p>}
@@ -2965,6 +3022,9 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             </button>
           </div>
         )}
+        {!subsLoading && !subsError && subscriptionsOnly && workbench?.confirmation === 'unknown' && (
+          <p className="console-panel__hint">追更快照正在后台生成，当前状态暂未确认。</p>
+        )}
 
         {!subsLoading && !subsError && subscriptionTab === 'blocked' && blockedTitles.length === 0 && (
           <p className="console-panel__hint">暂无被屏蔽追更。</p>
@@ -2976,7 +3036,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
           </div>
         ))}
 
-        {!subsLoading && !subsError && subscriptionsOnly && subscriptionTab !== 'blocked' && subs.length === 0 && (
+        {!subsLoading && !subsError && subscriptionsOnly && workbench?.confirmation !== 'unknown' && subscriptionTab !== 'blocked' && subs.length === 0 && (
           <section className="subscription-empty-guide" aria-label="导入 Torra 追更引导">
             <Database aria-hidden="true" size={24} />
             <div>
@@ -3023,6 +3083,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             ? item.torraSyncState === 'remote_missing' ? 'Torra 远端已缺失' : 'Torra 已有追更，只读同步'
             : '由 Fluxa 管理，可检查后推送';
           const userStatus = subscriptionUserStatus(item);
+          const recommendedAction = subscriptionRecommendedAction(item);
           const mediaResult = item.mediaResult?.state && item.mediaResult.state !== 'unknown'
             ? item.mediaResult
             : undefined;
@@ -3044,6 +3105,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             && (item.mediaType === 'movie' || item.mediaType === 'tv')
             && (item.mediaType === 'movie' || resourceSeasonNumber)
           );
+          const reconciliationRecords = reconciliationRecordsByTarget.get(reconciliationTargetKey(item, 0)) ?? [item];
           return (
             <div
               className={detailId === item.id ? 'discover-sub discover-sub--open' : 'discover-sub'}
@@ -3079,7 +3141,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                   </small>
                   <em>{item.readOnly ? '来自 Torra · 只读' : item.sourceLabel || 'Fluxa'} · {subscriptionUpdateLabel(item.updatedAt)}</em>
                 </button>
-                <button
+                {!recommendedAction && <button
                   aria-label={`搜索 ${item.title} 的资源`}
                   className="tool-link"
                   disabled={resourceWorkflowLocked}
@@ -3088,8 +3150,8 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                   onClick={() => searchSubscriptionResources(item)}
                 >
                   <FileSearch aria-hidden="true" size={14} />
-                </button>
-                {!item.readOnly && <button
+                </button>}
+                {!recommendedAction && !item.readOnly && <button
                   aria-label={`检查并推送 ${item.title} 到 Torra`}
                   className="tool-link"
                   disabled={Boolean(torraPushBusy) || !localWriteEnabled}
@@ -3102,7 +3164,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                 >
                   <Send aria-hidden="true" size={14} />
                 </button>}
-                {!item.readOnly && <button
+                {!recommendedAction && !item.readOnly && <button
                   aria-label={`屏蔽追更 ${item.title}`}
                   className="tool-link"
                   disabled={Boolean(subscriptionAction) || !localWriteEnabled}
@@ -3112,7 +3174,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                 >
                   <Ban aria-hidden="true" size={14} />
                 </button>}
-                {!item.readOnly && <button aria-label={`删除追更 ${item.title}`} className="tool-link" disabled={Boolean(subscriptionAction) || !localWriteEnabled} title={localWriteEnabled ? '只删除，不加入屏蔽列表' : '本地追更写入已关闭'} type="button" onClick={() => removeSubscription(item)}>
+                {!recommendedAction && !item.readOnly && <button aria-label={`删除追更 ${item.title}`} className="tool-link" disabled={Boolean(subscriptionAction) || !localWriteEnabled} title={localWriteEnabled ? '只删除，不加入屏蔽列表' : '本地追更写入已关闭'} type="button" onClick={() => removeSubscription(item)}>
                   <Trash2 aria-hidden="true" size={14} />
                 </button>}
               </div>
@@ -3135,6 +3197,12 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                     <b>最近检查</b><small><RelativeTime value={item.observedAt || item.updatedAt} /></small>
                   </span>
                   {userStatus && <p className={subscriptionUserStatusTone(item)}><strong>当前状态</strong>{userStatus}</p>}
+                  {recommendedAction && (
+                    <div className="discover-sub__recommended-action">
+                      <span><strong>{recommendedAction.reason}</strong><small>{recommendedAction.impact}</small></span>
+                      <button className="ops-action-button" type="button" onClick={() => openDetail(item)}>{recommendedAction.label}</button>
+                    </div>
+                  )}
                   {residualCount > 0 && <p className="discover-sub__residual"><strong>遗留问题</strong>另有 {residualCount} 个资源需处理</p>}
                   <details className="discover-sub__advanced">
                     <summary>高级诊断</summary>
@@ -3159,6 +3227,20 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                     </div>
                   </details>
                 </div>
+              )}
+
+              {subscriptionsOnly && subscriptionStatus === 'reconciliation_action_required' && reconciliationRecords.length > 1 && (
+                <details className="discover-sub__records">
+                  <summary>{reconciliationRecords.length} 条内部记录形成这个对账目标</summary>
+                  <div>
+                    {reconciliationRecords.map((record) => (
+                      <span key={record.id || `${record.sourceLabel}:${record.updatedAt}`}>
+                        <strong>{record.sourceLabel || (record.readOnly ? 'Torra 镜像' : 'Fluxa')}</strong>
+                        <small>{reconciliationLabel(record)} · {subscriptionUpdateLabel(record.updatedAt)}</small>
+                      </span>
+                    ))}
+                  </div>
+                </details>
               )}
 
               {resourceTarget?.source === 'subscription' && resourceTarget.sourceId === item.id && renderResourcePanel('subscription')}

@@ -22,6 +22,7 @@ from app.mineradio_runtime import register_mineradio
 from app.discover_compat_runtime import register_discover_compat
 from app.subscription_compat_runtime import register_subscription_compat
 from app.subscription_workbench_runtime import register_subscription_workbench
+from app.subscription_workbench_cache import SubscriptionWorkbenchCacheRepository, SubscriptionWorkbenchRefreshRuntime
 from app.discover_candidate_runtime import register_discover_candidates
 from app.candidate_migration_runtime import register_candidate_migrations
 from app.media_search_runtime import register_media_search
@@ -133,6 +134,7 @@ _torra_subscription_sync_started = False
 _private_rss_collector_started = False
 _quality_watch_scheduler_started = False
 _home_summary_refresh_started = False
+_subscription_workbench_refresh_started = False
 _calendar_snapshot_refresh_started = False
 _background_runtime_started = False
 
@@ -573,6 +575,34 @@ def _home_summary_refresh_loop():
         time.sleep(60)
 
 
+def _subscription_workbench_refresh_loop():
+    time.sleep(1)
+    while True:
+        try:
+            runtime = app.extensions.get("mcc_subscription_workbench_refresh")
+            if runtime:
+                runtime.run_once()
+        except Exception as exc:
+            logger.error("background scheduler failed scheduler=subscription-workbench-refresh error_type=%s", type(exc).__name__)
+        time.sleep(60)
+
+
+def start_subscription_workbench_refresh_scheduler():
+    global _subscription_workbench_refresh_started
+    if _subscription_workbench_refresh_started:
+        return
+    runtime = app.extensions.get("mcc_subscription_workbench_refresh")
+    if not runtime:
+        return
+    _subscription_workbench_refresh_started = True
+    thread = threading.Thread(
+        target=_subscription_workbench_refresh_loop,
+        name="subscription-workbench-refresh",
+        daemon=True,
+    )
+    thread.start()
+
+
 def _calendar_snapshot_refresh_loop():
     time.sleep(1)
     while True:
@@ -643,6 +673,9 @@ def start_background_runtime():
     start_home_summary_refresh_scheduler()
     if _home_summary_refresh_started:
         started.append("home-summary-refresh")
+    start_subscription_workbench_refresh_scheduler()
+    if _subscription_workbench_refresh_started:
+        started.append("subscription-workbench-refresh")
     start_calendar_snapshot_refresh_scheduler()
     if _calendar_snapshot_refresh_started:
         started.append("calendar-snapshot-refresh")
@@ -1627,7 +1660,16 @@ def create_app(
         clock=quality_repository.clock,
     )
     application.extensions["mcc_quality_watch_baseline_initializer"] = baseline_initializer
-    register_subscription_workbench(application, environment)
+    subscription_workbench_repository = SubscriptionWorkbenchCacheRepository(
+        discover_runtime.subscription_database_path()
+    )
+    subscription_workbench_service = register_subscription_workbench(
+        application, environment, cache_repository=subscription_workbench_repository
+    )
+    application.extensions["mcc_subscription_workbench_refresh"] = SubscriptionWorkbenchRefreshRuntime(
+        subscription_workbench_repository,
+        subscription_workbench_service,
+    )
     register_discover_candidates(application, environment)
     register_candidate_migrations(application, environment)
     register_media_search(application)

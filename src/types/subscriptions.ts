@@ -218,6 +218,11 @@ export interface SubscriptionWorkbenchStage {
 export interface SubscriptionWorkbenchResponse {
   ok: boolean;
   lastReadAt: string;
+  generatedAt?: string;
+  confirmation?: 'confirmed' | 'partial' | 'unknown';
+  stale?: boolean;
+  refreshState?: 'idle' | 'refreshing' | 'stale' | 'failed' | string;
+  lastError?: string;
   capabilities: SubscriptionWorkbenchCapability[];
   stats: {
     total: number;
