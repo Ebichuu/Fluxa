@@ -11,6 +11,7 @@ from app.missing_episode_fallback_runtime import (
 )
 from app.quality_watch_repository import DEFAULT_LIFECYCLE_MODE, QualityWatchVersionConflict
 from app.quality_watch_runtime import resolve_watch_policy
+from app.quality_watch_subscription_runtime import QualityWatchSubscriptionResolver
 from app.rss_subscription_match_runtime import qb_task_matches
 
 
@@ -111,13 +112,22 @@ class QualityWatchScheduler:
         return _truthy(self.environment.get("MCC_TORRA_QUALITY_WATCH_ENABLED"))
 
     def _subscriptions(self):
-        payload = self.subscription_loader()
+        try:
+            payload = self.subscription_loader()
+        except Exception:
+            payload = []
         if isinstance(payload, dict):
             payload = payload.get("items") or []
-        return {
-            _subscription_key(item): item
-            for item in payload if isinstance(item, dict) and _subscription_key(item)
-        }
+        local = [item for item in payload if isinstance(item, dict)]
+        try:
+            if self.torra is None or not self.torra.is_configured():
+                raise RuntimeError("torra_unavailable")
+            remote = self.torra.list_subscriptions()
+            if not isinstance(remote, list):
+                raise RuntimeError("torra_response_invalid")
+        except Exception:
+            return QualityWatchSubscriptionResolver(local, []).subscription_map(), False
+        return QualityWatchSubscriptionResolver(local, remote).subscription_map(), True
 
     @staticmethod
     def _batch_size(config):
@@ -197,6 +207,14 @@ class QualityWatchScheduler:
     def _block_unit(self, unit, reason):
         self._update_unit(unit, state="blocked", last_result_json={"reason": reason})
         return {"status": "blocked", "reason": reason, "unitId": unit["unit_key"]}
+
+    def _defer_subscription_source(self, unit):
+        retry_at = _as_utc(self.clock()) + timedelta(minutes=5)
+        return self._update_unit(
+            unit,
+            next_check_at=_iso(retry_at),
+            last_result_json={"reason": "torra_source_unavailable"},
+        )
 
     def _defer(self, context, reason, **details):
         unit = self.repository.get_watch_unit(context["unit"]["unit_key"]) or context["unit"]
@@ -469,11 +487,14 @@ class QualityWatchScheduler:
             return self._defer(context, reason)
         return self._handle_claim(context, self._claim(context, config), config, preflight_checked=True)
 
-    def _due_contexts(self, config, subscriptions):
+    def _due_contexts(self, config, subscriptions, torra_confirmed=True):
         contexts = []
         for unit in self.repository.list_scheduler_watch_units():
             subscription = subscriptions.get(unit["subscription_key"])
             if not subscription:
+                if unit["subscription_key"].startswith("torra:") and not torra_confirmed:
+                    self._defer_subscription_source(unit)
+                    continue
                 self._block_unit(unit, "subscription_missing")
                 continue
             context, reason = self._context(unit, subscription, config)
@@ -601,7 +622,7 @@ class QualityWatchScheduler:
         config = self._config()
         if not self._environment_enabled():
             return {"status": "disabled", "processed": []}
-        subscriptions = self._subscriptions()
+        subscriptions, torra_confirmed = self._subscriptions()
         inflight = [
             action for action in (
                 self.repository.find_inflight_action("torra", ANALYSIS_ACTION_TYPE),
@@ -642,7 +663,9 @@ class QualityWatchScheduler:
                         "selected": len(missing_contexts),
                         "processed": missing_processed,
                     }
-        selected = self._select_fair(self._due_contexts(config, subscriptions), config, state)
+        selected = self._select_fair(
+            self._due_contexts(config, subscriptions, torra_confirmed), config, state
+        )
         processed = list(missing_processed)
         for context in selected:
             result = self._process_context(context, config)

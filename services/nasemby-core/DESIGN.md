@@ -36,10 +36,11 @@ Node.js 只存在于 Docker `web-build` 阶段。生产镜像不复制 Node、np
 2. 整站访问保护。
 3. Mineradio、Emby、qB、Torra、Symedia、刷新与任务链运行时。
 4. 发现和订阅公开兼容层。
-5. v2 Torra 推送、追更洗版设置/动作、全局作品搜索/生命周期、系统指标、集成与延期保留的网盘运行时。
-6. React 静态目录与 SPA 回退。
-7. NasEmby 原 Blueprint，供 `/api/status`、`/api/health` 和源码兼容保留。
-8. 保留核心接口隔离守卫。
+5. 初始化质量观察与 Private RSS schema，只读规划规范键迁移；有旧短键时先备份，再在 `BEGIN IMMEDIATE` 中复核并原子迁移，失败直接中止应用创建。
+6. v2 Torra 推送、追更洗版设置/动作、全局作品搜索/生命周期、系统指标、集成与延期保留的网盘运行时。
+7. React 静态目录与 SPA 回退。
+8. NasEmby 原 Blueprint，供 `/api/status`、`/api/health` 和源码兼容保留。
+9. 保留核心接口隔离守卫。
 
 公开兼容路由先注册，保证 React 使用的路径命中白名单映射。原 Blueprint 中未列入公开契约的 115、Telegram、HDHive、缓存预热和 provider 核心入口继续保留，默认由守卫返回 `503 PRESERVED_CORE_API_DISABLED`。
 
@@ -72,7 +73,7 @@ TMDB 发现、全球日播和海外流媒体同时支持 v3 API Key 与 v4 Beare
 
 `media_search_runtime.py` 只读合并本地追更、已识别 RSS、任务、当前完整月历缓存和 Emby TMDB 索引，并按标准 `mediaKey` 去重。本地没有候选时才调用既有 TMDB 只读客户端，失败降级为空且不写发现缓存。没有 TMDB 的本地任务使用独立目录键参与搜索，对外保留空 `tmdbId`、公开 `chainId` 和任务深链，不能进入只接受 `movie:tmdbId / tv:tmdbId` 的作品详情接口。用户结果只聚合 `pipelineOutcome`，下载、115、整理和 Emby 生命周期只采纳当前 verified 的独立事实；日历兼容字段不反推任务结果，电视剧作品级 Emby 索引不生成可播放。
 
-Torra-only 条目不得把远端主键当作浏览器 ID。`subscription_reconciliation_runtime.py` 使用远端 ID 的 SHA-256 前 10 位生成 `torra:<摘要>`，质量观察、人工动作和 RSS 匹配收到公开订阅/观察单元 ID 后，从当前 Torra 只读列表解析唯一内部条目。无匹配返回不存在，摘要碰撞返回冲突；公开 DTO、动作摘要和日志始终保留公开键，不返回原始远端 ID。该解析不创建本地镜像，也不改变 Torra。
+Torra-only 条目不得把远端主键当作浏览器 ID。`subscription_reconciliation_runtime.py` 使用远端 ID 的 SHA-256 前 10 位生成 `torra:<摘要>`；该短键只存在于 API/UI 公开投影。质量观察、RSS 匹配、provider 动作和调度游标内部统一使用 `torra:<远端 ID>`，规范观察单元键继续由 `make_unit_key()` 派生。质量观察、人工动作和 RSS 匹配收到公开订阅/观察单元 ID 后，从当前 Torra 只读列表解析唯一内部条目。无匹配返回不存在，摘要碰撞返回冲突；公开 DTO、动作投影和日志不返回原始远端 ID。该解析不创建新的本地镜像，也不改变 Torra。
 
 任务链内部快照继续保存 qB hash、Torra/Symedia 原始 ID 与 artifact 键，供归属、事件台账和动作执行使用；HTTP 路由在响应边界经过独立白名单 presenter。qB 对浏览器使用确定性的 40 位 SHA-256 引用，动作服务每次从实时 qB 快照唯一反解并只把真实 hash 交给 qB 客户端；旧 hash 输入仅作兼容，任何预览、执行结果、错误和活动记录都不回显原值。用户文本还会过滤 URL、主机端口、Windows/Unix/UNC 路径、凭据键值和外部 job 标识。
 
@@ -114,7 +115,9 @@ Torra 追更洗版动作使用 schema version 3 的 `quality_watch_units`、`pro
 
 质量观察运行时采用双证据：现有任务链的 `download=done + evidence=verified` 只负责证明首个版本已下载；Torra 订阅行的 `library_file_names` 或逐集 `library_episode_files` 才证明 Torra 已能读取 Emby 当前文件并允许写入 `baseline_ready_at`。系列级 `embyIndexed` 汇总不能代替逐集基准。电视剧必须有明确季集，历史扫描默认不创建观察单元；qB 证据可以先建立等待单元，Torra 后续关联时补写 ID。窗口建立后不因重复证据或新版本延长，目标已达也只作用于明确的电影或单集。
 
-生产任务快照通过版本化质量观察桥接器接入同一 `plan_reconcile()` / `apply_reconcile_plan()`：`shadow` 只持久化按阶段和事实类型隔离的判定收据，`apply` 才在收据与观察单元的同一 SQLite 事务内应用。v3 从任务链同一轮快照统一解析 Fluxa 本地追更和 Torra 只读追更，只接受唯一一致的 Torra ID、TMDB、媒体类型和季号；本地订阅优先，Torra-only 使用稳定公开键且不写入本地表。首次影子 `activated_at` 是永久水位；水位前事实和无正式发生时间的事实不会冒充新下载，水位后的精确 Symedia 集级成功可直接创建观察单元并确认入库基线。完成的 qB 剧集季包只有在唯一所有权、订阅已解析且标题无集号时，才按 Hash 缓存读取文件清单，并只从已选中且完成的文件投影明确集号；文件名不参与作品身份判断，跨季范围保持待复核。v2 收据永久保留审计，设置摘要只统计 v3。历史资源只通过持久预览、最多 200 项明确确认和整批乐观校验初始化；任一漂移全批回滚，真实历史时间直接决定 `observing_upgrade` 或 `observation_expired`。
+生产任务快照通过版本化质量观察桥接器接入同一 `plan_reconcile()` / `apply_reconcile_plan()`：`shadow` 只持久化按阶段和事实类型隔离的判定收据，`apply` 才在收据与观察单元的同一 SQLite 事务内应用。v4 从任务链同一轮快照统一解析 Fluxa 本地追更和 Torra 只读追更，只接受唯一一致的 Torra ID、TMDB、媒体类型和季号；本地订阅优先，Torra-only 使用规范内部键且不写入本地表。首次影子 `activated_at` 是永久水位；水位前事实和无正式发生时间的事实不会冒充新下载，水位后的精确 Symedia 集级成功可直接创建观察单元并确认入库基线。完成的 qB 剧集季包只有在唯一所有权、订阅已解析且标题无集号时，才按 Hash 缓存读取文件清单，并只从已选中且完成的文件投影明确集号；文件名不参与作品身份判断，跨季范围保持待复核。v3 及更早收据永久保留审计，设置摘要只统计 v4。历史资源只通过持久预览、最多 200 项明确确认和整批乐观校验初始化；任一漂移全批回滚，真实历史时间直接决定 `observing_upgrade` 或 `observation_expired`。
+
+v4 启动迁移位于桥接器和调度器注册之前。迁移器先只读扫描观察单元、RSS 匹配、provider 动作、调度状态及已登记 JSON 列；没有旧公开键时不创建备份。有待迁移时使用 SQLite backup API 生成并校验备份，在单一 `BEGIN IMMEDIATE` 中重新生成计划、核验指纹并更新主列、固定 JSON 路径、白名单幂等键和成功审计。规范单元键只通过 `make_unit_key()` 重建，禁止字符串前缀替换或标题推断。规范/公开双单元、10 位摘要碰撞、未知 JSON/幂等引用、RSS 唯一键冲突、计划漂移、备份失败或审计失败都会整批回滚并阻止启动；失败后只在数据库外写脱敏报告。Torra 读取失败属于 `source_unavailable`，已有单元保持状态并延后；只有成功取得完整远端列表后才允许判定 `subscription_missing`。
 
 RSS 匹配只在新条目写入时运行，并与 `rss_subscription_matches` 的 `candidate` 写入共用同一 SQLite 事务。候选范围只包含仍在截止时间内的 `observing_upgrade / search_due / search_running` 单元；标准媒体身份优先，其次使用订阅标题和别名，再校验媒体类型、年份、季和明确集号。多个不同身份同时命中时全部放弃，连续集可以分别命中多个活动单元。发布时间早于 `baseline_ready_at`、历史导入、过期窗口和不可靠季集都不创建记录；版本摘要不参与质量高低判断。
 
@@ -246,6 +249,14 @@ Compose 通过 `MCC_DATA_ROOT` 把三个目录映射到同一个 fnOS 根目录�
 代码优先回滚到上一个已验证镜像或归档标签；订阅数据不随代码回滚。恢复旧双服务归档时必须确保新容器已停止，不能同时启动两套后端或调度器。
 
 ## 13. 变更历史
+
+### 2026-08-06 — 质量观察规范键迁移与桥接 v4
+
+**变更内容**：Torra-only 观察单元、RSS 匹配、provider 动作和调度游标统一改用 `torra:<远端 ID>` 规范内部键，公开短键只保留在 API/UI 投影。新增启动前严格迁移、SQLite 备份与完整性校验、事务内二次规划、登记 JSON 精确迁移、未知引用/摘要碰撞/双键冲突阻断和脱敏 sidecar 报告；桥接协议升为 v4，v3 收据保留审计。调度器、RSS 和手工动作复用统一订阅解析，Torra 临时离线只延后单元。
+
+**变更理由**：公开短键曾同时承担界面标识和内部所有权，导致 Torra 只读订阅在桥接、调度、RSS 和手工动作之间可能生成不同单元或重复归属；启动前一次性迁移可以消除双键运行窗口，并在任何冲突下保持数据库原状。
+
+**影响范围**：质量观察 schema/启动装配、订阅解析、生产桥接、调度器、RSS 匹配与评分、人工洗版动作、迁移审计和端到端测试。迁移不修改 Torra、本地订阅身份或 v3 收据，不触发搜索、下载、qB、秒传、归档或历史初始化；自动下载闸门保持关闭。
 
 ### 2026-08-05 — 质量观察生产桥接 v3
 

@@ -11,7 +11,7 @@ from app.quality_watch_subscription_runtime import QualityWatchSubscriptionResol
 from app.resource_identity_runtime import artifact_key as canonical_artifact_key
 
 
-BRIDGE_VERSION = "3"
+BRIDGE_VERSION = "4"
 SUCCESS_STAGES = {"torra", "qb", "symedia"}
 SEASON_PATTERN = re.compile(r"(?:^|[^A-Z0-9])S(?:EASON)?[ ._-]*0*(\d{1,2})(?:[^0-9]|$)", re.IGNORECASE)
 EPISODE_EVIDENCE_STAGES = {

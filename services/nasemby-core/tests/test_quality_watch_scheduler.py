@@ -18,6 +18,7 @@ from app.torra_quality_runtime import TorraQualityClient
 class FakeTorra:
     def __init__(self):
         self.rows = []
+        self.list_error = None
         self.jobs = {}
         self.submissions = []
         self.polls = []
@@ -26,6 +27,8 @@ class FakeTorra:
         return True
 
     def list_subscriptions(self):
+        if self.list_error:
+            raise self.list_error
         return list(self.rows)
 
     def submit_analysis(self, subscription_id):
@@ -196,6 +199,43 @@ class QualityWatchSchedulerTests(unittest.TestCase):
             "is_mutating": False,
         })
         return subscription
+
+    def test_torra_only_subscription_uses_canonical_key_in_scheduler(self):
+        key = "torra:remote-only"
+        self.torra.rows.append({
+            "id": "remote-only", "media_type": "tv", "tmdb_id": 303,
+            "season_number": 1, "is_running": False, "is_mutating": False,
+        })
+        unit = self.repository.ensure_watch_unit(
+            key, "tv", 1, 1, window_hours=24, torra_subscription_id="remote-only",
+        )
+        ready = self.repository.mark_baseline_ready(unit["unit_key"], offsets_minutes=[30, 1440])
+        self._make_due()
+
+        result = self.scheduler.run_once()
+
+        self.assertEqual(result["processed"][0]["status"], "submitted")
+        self.assertEqual(self.torra.submissions, ["remote-only"])
+        action = self.repository.find_inflight_action("torra", "rewash-analysis")
+        self.assertEqual(action["subscription_key"], key)
+        self.assertEqual(action["unit_key"], ready["unit_key"])
+
+    def test_torra_offline_keeps_torra_only_unit_state_and_defers(self):
+        key = "torra:remote-offline"
+        unit = self.repository.ensure_watch_unit(
+            key, "tv", 1, 1, window_hours=24, torra_subscription_id="remote-offline",
+        )
+        ready = self.repository.mark_baseline_ready(unit["unit_key"], offsets_minutes=[30, 1440])
+        self.now[0] += timedelta(minutes=31)
+        self.torra.list_error = TimeoutError("offline")
+
+        result = self.scheduler.run_once()
+        updated = self.repository.get_watch_unit(unit["unit_key"])
+
+        self.assertEqual(result["processed"], [])
+        self.assertEqual(updated["state"], ready["state"])
+        self.assertEqual(updated["last_result"]["reason"], "torra_source_unavailable")
+        self.assertEqual(self.torra.submissions, [])
 
     @staticmethod
     def _missing_entry(key="tv:101", tmdb_id="101", season=1, episode=2, **overrides):

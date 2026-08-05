@@ -222,6 +222,11 @@ class QualityWatchRepository:
                 "PRIMARY KEY(run_id, public_target_id), "
                 "FOREIGN KEY(run_id) REFERENCES quality_watch_baseline_init_runs(run_id) ON DELETE CASCADE)"
             )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS quality_watch_key_migrations ("
+                "migration_id TEXT PRIMARY KEY, status TEXT NOT NULL, backup_ref TEXT NOT NULL DEFAULT '', "
+                "counts_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL)"
+            )
 
     @staticmethod
     def _watch_unit(row):

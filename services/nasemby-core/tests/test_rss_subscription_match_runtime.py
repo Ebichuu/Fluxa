@@ -557,8 +557,8 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(analysis["status"], "submitted")
         self.assertEqual(torra.submissions, ["torra-202"])
         action = self.watch.get_action(analysis["actionId"])
-        self.assertEqual(action["subscription_key"], public_key)
-        self.assertEqual(action["unit_key"], public_unit_key)
+        self.assertEqual(action["subscription_key"], "torra:torra-202")
+        self.assertEqual(action["unit_key"], unit["unit_key"])
 
         missing = self.runtime.create_manual_match(
             item["id"], "torra:missing", public_unit_key
@@ -582,7 +582,14 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
     def test_legacy_raw_torra_match_projects_existing_but_actions_keep_raw_keys(self):
         remote_id = "legacy-torra-runtime-secret"
         raw_key = f"torra:{remote_id}"
-        unit = self._watch(raw_key, episode=1, torra_id=remote_id)
+        unit = self._watch(
+            raw_key,
+            episode=1,
+            torra_id=remote_id,
+            origin="torra",
+            read_only=True,
+            torra_remote_id=remote_id,
+        )
         torra, _qb = self._enable_analysis()
         torra.rows = [{
             "id": remote_id,
@@ -656,8 +663,9 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
             "read_only": True,
             "torra_remote_id": remote_id,
         })
+        canonical_key = f"torra:{remote_id}"
         unit = self.watch.ensure_watch_unit(
-            public_key,
+            canonical_key,
             "tv",
             1,
             1,
@@ -681,8 +689,14 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "created")
         self.assertEqual(result["match"]["subscriptionId"], public_key)
-        self.assertEqual(result["match"]["unitId"], unit["unit_key"])
+        self.assertEqual(
+            result["match"]["unitId"],
+            unit["unit_key"].replace(canonical_key, public_key, 1),
+        )
         self.assertNotIn(remote_id, str(result["match"]))
+        stored = self.rss.get_match_internal(result["match"]["id"])
+        self.assertEqual(stored["subscription_key"], canonical_key)
+        self.assertEqual(stored["unit_key"], unit["unit_key"])
         analysis = self.runtime.start_analysis(
             result["match"]["id"],
             idempotency_key="torra-hashed-rss-analysis",
@@ -827,6 +841,7 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
             "name": "爱情保卫战",
             "media_type": "tv",
             "tmdb_id": 909,
+            "season_number": 2026,
             "names_json": '["爱情保卫战", "Ai Qing Bao Wei Zhan"]',
             "year": "2026",
         }]

@@ -248,7 +248,7 @@ class QualityWatchBridgeRuntimeTests(unittest.TestCase):
         reapplied = self.bridge.set_mode("shadow")
 
         self.assertEqual(shadow["activatedAt"], "2026-07-31T01:00:00.000Z")
-        self.assertEqual(shadow["bridgeVersion"], "3")
+        self.assertEqual(shadow["bridgeVersion"], "4")
         self.assertEqual(shadow["activatedAt"], legacy["activatedAt"])
         self.assertEqual(reapplied["activatedAt"], shadow["activatedAt"])
 
@@ -324,7 +324,7 @@ class QualityWatchBridgeRuntimeTests(unittest.TestCase):
 
         first = self.bridge.process_snapshot(torra_only_pack_snapshot())
         second = self.bridge.process_snapshot(torra_only_pack_snapshot())
-        key = torra_public_subscription_key("torra-303")
+        key = "torra:torra-303"
         units = self.repository.list_watch_units(key)
 
         self.assertEqual((first["processed"], first["applied"]), (8, 8))
@@ -336,7 +336,7 @@ class QualityWatchBridgeRuntimeTests(unittest.TestCase):
         self.assertEqual({unit["baseline_ready_at"] for unit in units}, {"2026-07-31T01:03:00.000Z"})
         self.assertEqual(requested_hashes, ["pack-hash", "pack-hash"])
         self.assertEqual(
-            len([row for row in self.repository.list_bridge_receipts() if row["bridge_version"] == "3"]),
+            len([row for row in self.repository.list_bridge_receipts() if row["bridge_version"] == "4"]),
             8,
         )
 
@@ -410,7 +410,7 @@ class QualityWatchBridgeRuntimeTests(unittest.TestCase):
 
         self.assertEqual((result["processed"], result["needs_review"]), (1, 1))
         self.assertEqual(requested_hashes, ["pack-hash"])
-        self.assertEqual(self.repository.list_watch_units(torra_public_subscription_key("torra-303")), [])
+        self.assertEqual(self.repository.list_watch_units("torra:torra-303"), [])
 
     def test_qb_pack_ignores_skipped_and_incomplete_files(self):
         payload = torra_only_pack_snapshot()
@@ -446,30 +446,30 @@ class QualityWatchBridgeRuntimeTests(unittest.TestCase):
         self.now[0] += timedelta(minutes=5)
 
         result = self.bridge.process_snapshot(payload)
-        units = self.repository.list_watch_units(torra_public_subscription_key("torra-303"))
+        units = self.repository.list_watch_units("torra:torra-303")
 
         self.assertEqual((result["processed"], result["applied"]), (1, 1))
         self.assertEqual([unit["episode_number"] for unit in units], [1])
 
-    def test_summary_ignores_v2_receipts(self):
+    def test_summary_ignores_v3_receipts(self):
         self.bridge.set_mode("shadow")
         self.now[0] += timedelta(minutes=2)
         self.bridge.process_snapshot(snapshot("qb"))
         legacy = dict(self.repository.list_bridge_receipts()[0])
         legacy.update({
-            "receipt_id": "bridge:legacy-v2",
-            "receipt_key": "legacy-v2-key",
-            "bridge_version": "2",
+            "receipt_id": "bridge:legacy-v3",
+            "receipt_key": "legacy-v3-key",
+            "bridge_version": "3",
         })
         with self.repository.runtime.transaction(immediate=True) as connection:
             self.repository.upsert_bridge_receipt(connection, legacy, "needs_review", "legacy")
 
         summary = self.bridge.summary()
 
-        self.assertEqual(summary["bridgeVersion"], "3")
+        self.assertEqual(summary["bridgeVersion"], "4")
         self.assertEqual(summary["receiptTotal"], 1)
         self.assertEqual(
-            len([row for row in self.repository.list_bridge_receipts() if row["bridge_version"] == "2"]),
+            len([row for row in self.repository.list_bridge_receipts() if row["bridge_version"] == "3"]),
             1,
         )
 

@@ -61,6 +61,7 @@ from app.candidate_source_scheduler import (
     register_candidate_source_scheduler,
 )
 from app.quality_watch_repository import QualityWatchRepository
+from app.quality_watch_key_migration import run_quality_watch_key_migration
 from app.quality_watch_bridge_runtime import QualityWatchBridgeRuntime
 from app.quality_watch_baseline_init_runtime import QualityWatchBaselineInitializationService
 from app.resource_task_repository import ResourceTaskRepository
@@ -1479,6 +1480,7 @@ def create_app(
     private_rss_repository=None,
     private_rss_collector=None,
     quality_watch_repository=None,
+    quality_watch_key_migrator=None,
     torra_quality_client=None,
     subscription_automation_service=None,
     moviepilot_backup_service=None,
@@ -1635,6 +1637,12 @@ def create_app(
         collector=private_rss_collector,
         subscription_loader=lambda: discover_runtime.load_subscription_items(remove_completed=False),
         config_loader=discover_runtime.load_subscription_config,
+    )
+    application.extensions["mcc_quality_watch_key_migration"] = (
+        quality_watch_key_migrator or run_quality_watch_key_migration
+    )(
+        quality_repository,
+        clock=quality_repository.clock,
     )
     quality_runtime.set_candidate_backfill(private_rss_service.match_runtime.backfill_watch_unit)
     task_chain_service = application.extensions.get("mcc_task_chain_service")

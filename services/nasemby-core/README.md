@@ -112,7 +112,7 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/v2/rss-items/identity-backfills`：管理员显式触发的本地有界身份回填，每批最多 200 条，不访问 PT 详情页或执行下载；摘要保留最近扫描、识别、冲突、未变化和剩余数量。
 - `/api/v2/rss-matches`：读取本地候选、规范订阅/季集绑定和 Torra 规则影子评分；分组读取可把整组均因 `subscription_missing` 阻断的孤立候选归入 `needs_cleanup`，主评分范围排除该组但旧全量 `total` 保持兼容。POST 可为一个 RSS 搜索结果和明确观察单元建立幂等人工匹配，服务端复核身份、季集、首次下载时间及 Torra 归属，并只读当前规则评分。规则或证据不完整时返回“暂未确认”，不按零分处理；后续人工 Torra 分析和下载仍分别受独立闸门保护。
 - `/api/v2/rss-matches/:id/exact-download-previews`：阶段 C0 只读复核冠军、严格高分、订阅绑定、当前规则、候选评分、基线及 qB/Torra 状态；请求只接受空对象，不创建动作或执行下载。当前固定返回 Torra 正式指定 RSS 资源入口缺失，不使用通用下载器入口。
-- `/api/v2/subscription-automation/settings`、`/api/v2/subscription-automation/bridge-summary`、`/api/v2/subscriptions/:id/quality-watch`：追更洗版全局与单条观察设置、生产桥接水位/收据摘要、暂停和恢复；默认 `follow_rss` 只监听并本地评分 RSS 候选，不按旧检查点触发 Torra 整订阅搜索。生产桥接 v3 支持 `off/shadow/apply`，首次影子水位永久保留，摘要只统计 v3 收据并继续保留 v2 审计；可选 `missingFallbackEnabled` 开启可靠缺集的单订阅搜索兜底，显式 `fixed_window` 才保留高级兼容调度。
+- `/api/v2/subscription-automation/settings`、`/api/v2/subscription-automation/bridge-summary`、`/api/v2/subscriptions/:id/quality-watch`：追更洗版全局与单条观察设置、生产桥接水位/收据摘要、暂停和恢复；默认 `follow_rss` 只监听并本地评分 RSS 候选，不按旧检查点触发 Torra 整订阅搜索。生产桥接 v4 支持 `off/shadow/apply`，首次影子水位永久保留，摘要只统计 v4 收据并继续保留 v3 及更早审计；可选 `missingFallbackEnabled` 开启可靠缺集的单订阅搜索兜底，显式 `fixed_window` 才保留高级兼容调度。
 - `/api/v2/subscription-automation/baseline-initialization-previews`、`/api/v2/subscription-automation/baseline-initializations`：只从缓存任务快照和稳定 `resource_events` 生成持久预览，最多确认 200 个可靠历史目标；同批漂移全部回滚，真实历史时间决定进入观察或直接过期，不触发任何外部搜索或下载动作。
 - `/api/v2/subscriptions/:id/torra-rewash-analyses`、`/api/v2/subscriptions/:id/torra-rewashes`、`/api/v2/rss-matches/:id/torra-rewash-analyses`、`/api/v2/rss-matches/:id/torra-rewashes`：人工异步分析与候选下载；服务端从观察单元和已完成分析动作读取 Torra ID/候选，不接受浏览器映射。
 - `/api/v2/search`、`/api/v2/media/:mediaKey`：外部只读聚合本地追更、已识别 RSS、任务、当月日历和 Emby TMDB 索引；本地无结果时才使用 TMDB 只读补充。无 TMDB 的本地任务保留空 `tmdbId`、公开 `chainId` 和任务深链，不伪造作品详情地址；以媒体键或 TMDB 身份也可定位仅 Emby 候选。响应不返回路径、Hash、外部原始 ID 或不安全播放直链。
@@ -121,9 +121,11 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/v2/integrations/*`、`/api/v2/acquisition/cloud/*` 和云盘策略路由继续保留，当前 React 不调用延期动作。
 - `/mineradio/embed`、`/mineradio/*`。
 
-仅 Torra 条目对浏览器使用 `torra:<10 位 SHA-256 摘要>` 形式的不透明公开 ID。质量观察、人工分析和 RSS 单条匹配在服务端依据当前 Torra 只读快照反解到唯一远端条目；未命中或摘要冲突会明确失败，公开响应和活动记录不回传原始 Torra ID。
+仅 Torra 条目对浏览器使用 `torra:<10 位 SHA-256 摘要>` 形式的不透明公开 ID；质量观察、RSS 匹配、调度游标和操作台账内部统一使用 `torra:<远端 ID>` 规范键。质量观察、人工分析和 RSS 单条匹配在服务端依据当前 Torra 只读快照反解到唯一远端条目；未命中或摘要冲突会明确失败，公开响应和活动记录不回传原始 Torra ID。
 
-质量观察生产桥接 v3 同时解析 Fluxa 本地追更和任务链本轮已经读取的 Torra 只读追更。绑定只接受唯一一致的 Torra ID、TMDB、媒体类型和季号，本地订阅优先，Torra-only 使用稳定公开键但不写入本地订阅表。完成的剧集季包只有在唯一所有权、标题无集号且订阅身份已确认时，才按 Hash 读取并缓存 qB 文件清单，仅从已选中且完成的文件投影明确集号；文件名不参与作品身份判断。激活水位后的精确 Symedia 集级成功可以直接建立入库基线，历史事实仍只进入初始化流程。
+质量观察生产桥接 v4 同时解析 Fluxa 本地追更和任务链本轮已经读取的 Torra 只读追更。绑定只接受唯一一致的 Torra ID、TMDB、媒体类型和季号，本地订阅优先，Torra-only 使用规范内部键但不写入本地订阅表；旧只读镜像即使仍以公开短键保存在追更台账，也只能作为兼容展示载体。完成的剧集季包只有在唯一所有权、标题无集号且订阅身份已确认时，才按 Hash 读取并缓存 qB 文件清单，仅从已选中且完成的文件投影明确集号；文件名不参与作品身份判断。激活水位后的精确 Symedia 集级成功可以直接建立入库基线，历史事实仍只进入初始化流程。
+
+应用启动会在 Private RSS 与质量观察 schema 初始化后、桥接器和调度器注册前运行一次规范键迁移。迁移先只读规划；没有旧短键时返回 0 且不备份，有待迁移时使用 SQLite backup API 备份并校验，再在单一 `BEGIN IMMEDIATE` 中重新核验计划并原子迁移观察单元、RSS 匹配、操作记录、已登记 JSON 路径和调度游标。摘要碰撞、双键单元、未知 JSON 引用、唯一键冲突、备份或审计失败都会整批回滚并阻止服务启动；冲突报告只包含脱敏引用。
 
 任务链公开 DTO 同样不会返回 qB hash、Symedia 内部 ID、artifact 原键、外部 job、路径或 URL。qB 引用使用确定性的 40 位 SHA-256 摘要，以保持现有前端字段形状；暂停/恢复动作必须从本次实时 qB 快照唯一反解，引用不存在或冲突时拒绝执行。`chainId`、`mediaKey` 与 `targetKey` 仍是 Fluxa 本地聚合和深链定位键。
 

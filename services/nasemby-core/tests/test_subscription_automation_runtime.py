@@ -362,6 +362,10 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
         self.assertEqual(analysis.get_json()["subscriptionId"], public_key)
         self.assertEqual(analysis.get_json()["unitId"], public_unit_key)
         self.assertNotIn("torra-202", analysis.get_data(as_text=True))
+        stored = self.repository.get_action(analysis.get_json()["id"])
+        self.assertEqual(stored["subscription_key"], "torra:torra-202")
+        self.assertEqual(stored["unit_key"], torra_unit["unit_key"])
+        self.assertEqual(stored["request_summary"]["unitId"], torra_unit["unit_key"])
 
         missing_units = self.client.get("/api/v2/subscriptions/torra:unknown/quality-watch")
         self.assertEqual(missing_units.status_code, 404)
@@ -379,13 +383,21 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(update.status_code, 404)
 
-    def test_imported_torra_mirror_quality_watch_supports_new_and_legacy_local_keys(self):
+    def test_imported_torra_mirror_uses_canonical_observation_keys(self):
         for index, storage_mode in enumerate(("public", "legacy"), start=2):
             with self.subTest(storage_mode=storage_mode):
                 remote_id = f"torra-mirror-{storage_mode}"
                 public_key = torra_public_subscription_key(remote_id)
                 stored_key = public_key if storage_mode == "public" else f"torra:{remote_id}"
-                self.torra.rows.append({"id": remote_id, "is_running": False, "is_mutating": False})
+                canonical_key = f"torra:{remote_id}"
+                self.torra.rows.append({
+                    "id": remote_id,
+                    "media_type": "tv",
+                    "tmdb_id": str(300 + index),
+                    "season_number": 1,
+                    "is_running": False,
+                    "is_mutating": False,
+                })
                 self.subscriptions.append({
                     "key": stored_key,
                     "subscription_key": stored_key,
@@ -398,7 +410,7 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
                     "torra_remote_id": remote_id,
                 })
                 unit = self.repository.ensure_watch_unit(
-                    stored_key,
+                    canonical_key,
                     "tv",
                     1,
                     index,
@@ -406,7 +418,7 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
                     torra_subscription_id=remote_id,
                 )
                 unit = self.repository.mark_baseline_ready(unit["unit_key"])
-                public_unit_key = unit["unit_key"].replace(stored_key, public_key, 1)
+                public_unit_key = unit["unit_key"].replace(canonical_key, public_key, 1)
 
                 status = self.client.get(f"/api/v2/subscriptions/{public_key}/quality-watch")
                 paused = self.client.patch(

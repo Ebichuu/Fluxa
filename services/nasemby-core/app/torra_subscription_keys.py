@@ -16,6 +16,16 @@ def torra_public_subscription_key(remote_id) -> str:
     return f"torra:{_remote_ref(remote_id)}" if remote_id else ""
 
 
+def torra_canonical_subscription_key(remote_id) -> str:
+    remote_id = str(remote_id or "").strip()
+    return f"torra:{remote_id}" if remote_id else ""
+
+
+def is_torra_public_subscription_key(value) -> bool:
+    key = str(value or "").strip()
+    return bool(key.startswith("torra:") and PUBLIC_KEY_SUFFIX.fullmatch(key.removeprefix("torra:")))
+
+
 def torra_public_storage_key(value, remote_id="") -> str:
     key = str(value or "").strip()
     if not key.startswith("torra:"):
@@ -49,7 +59,7 @@ def resolve_torra_subscription_key(value, rows) -> dict:
         ).strip()
         if not remote_id:
             continue
-        canonical_key = f"torra:{remote_id}"
+        canonical_key = torra_canonical_subscription_key(remote_id)
         public_key = torra_public_subscription_key(remote_id)
         if requested not in {canonical_key, public_key}:
             continue

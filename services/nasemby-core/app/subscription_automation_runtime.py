@@ -9,6 +9,7 @@ from app.subscription_automation_api_runtime import AutomationApiError
 from app.subscription_automation_preflight import require_rewash_provider_ready
 from app.torra_subscription_keys import (
     resolve_torra_subscription_key,
+    torra_canonical_subscription_key,
     torra_internal_unit_key,
     torra_public_storage_key,
     torra_public_unit_key,
@@ -136,18 +137,32 @@ class SubscriptionAutomationService:
         for internal_key, item in self._subscriptions().items():
             if not internal_key.startswith("torra:"):
                 continue
+            remote_id = _text(item.get("torra_remote_id") or item.get("torraRemoteId"))
             public_key = torra_public_storage_key(
                 internal_key,
-                item.get("torra_remote_id"),
+                remote_id,
             )
-            if normalized not in {internal_key, public_key}:
+            is_read_only_mirror = bool(
+                remote_id
+                and _text(item.get("origin") or item.get("source")).lower() == "torra"
+                and _truthy(item.get("read_only", item.get("readOnly")))
+            )
+            canonical_key = (
+                torra_canonical_subscription_key(remote_id)
+                if is_read_only_mirror else internal_key
+            )
+            if normalized not in {internal_key, public_key, canonical_key}:
                 continue
+            resolved_item = dict(item)
+            resolved_item["key"] = canonical_key
+            resolved_item["subscription_key"] = canonical_key
             matches.append({
-                "item": item,
-                "internalKey": internal_key,
+                "item": resolved_item,
+                "internalKey": canonical_key,
                 "publicKey": public_key,
                 "readOnly": True,
                 "local": True,
+                "storageKey": internal_key,
             })
         if len(matches) > 1:
             raise AutomationApiError(
@@ -596,7 +611,7 @@ class SubscriptionAutomationService:
             })
             row["torra_quality_watch"] = nested
 
-        if not self.subscription_updater(internal_key, updater):
+        if not self.subscription_updater(context.get("storageKey") or internal_key, updater):
             raise AutomationApiError("SUBSCRIPTION_NOT_FOUND", "订阅不存在", 404)
         self._update_units(internal_key, lifecycle_mode, body.get("paused"))
         return self.get_quality_watch(context["publicKey"])
@@ -697,10 +712,7 @@ class SubscriptionAutomationService:
             _text(body.get("unitId")),
             context["publicKey"],
         )
-        public_unit_key = torra_public_unit_key(
-            unit["unit_key"], context["internalKey"], context["publicKey"]
-        )
-        request_summary = {"source": MANUAL_SOURCE, "unitId": public_unit_key}
+        request_summary = {"source": MANUAL_SOURCE, "unitId": unit["unit_key"]}
         existing = self.repository.get_action_by_idempotency(idempotency_key)
         self._require_matching_request(existing, request_summary)
         if not existing:
@@ -708,12 +720,12 @@ class SubscriptionAutomationService:
                 raise AutomationApiError("TORRA_REWASH_BUSY", "已有 Torra 追更洗版下载正在执行", 409)
             require_rewash_provider_ready(self.torra, self.qb, item, unit)
         action, immediate, disposition = self._claim_action(
-            context["publicKey"],
+            context["internalKey"],
             unit,
             idempotency_key,
             ANALYSIS_TYPE,
             request_summary,
-            public_unit_key,
+            unit["unit_key"],
         )
         if disposition == "reclaimed":
             try:
@@ -765,16 +777,13 @@ class SubscriptionAutomationService:
             _text(body.get("unitId")),
             context["publicKey"],
         )
-        public_unit_key = torra_public_unit_key(
-            unit["unit_key"], context["internalKey"], context["publicKey"]
-        )
         analysis_action_id = _text(body.get("analysisActionId"))
         analysis_id, selected = self._analysis_selection(
-            context["publicKey"], public_unit_key, analysis_action_id
+            context["internalKey"], unit["unit_key"], analysis_action_id
         )
         request_summary = {
             "source": MANUAL_SOURCE,
-            "unitId": public_unit_key,
+            "unitId": unit["unit_key"],
             "analysisActionId": analysis_action_id,
         }
         existing = self.repository.get_action_by_idempotency(idempotency_key)
@@ -785,12 +794,12 @@ class SubscriptionAutomationService:
                 raise AutomationApiError("TORRA_REWASH_BUSY", "已有 Torra 追更洗版分析正在执行", 409)
             require_rewash_provider_ready(self.torra, self.qb, item, unit)
         action, immediate, disposition = self._claim_action(
-            context["publicKey"],
+            context["internalKey"],
             unit,
             idempotency_key,
             DOWNLOAD_TYPE,
             request_summary,
-            public_unit_key,
+            unit["unit_key"],
         )
         if disposition == "reclaimed":
             try:

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from app.private_rss_parser import extract_media_identity, extract_release_scope
 from app.quality_watch_repository import make_unit_key
+from app.quality_watch_subscription_runtime import QualityWatchSubscriptionResolver
 from app.rss_baseline_runtime import resolve_baseline_artifact
 from app.rss_shadow_scoring_runtime import (
     ShadowScoringUnsupported,
@@ -279,19 +280,20 @@ class RssSubscriptionMatchRuntime:
             rows = torra.list_subscriptions()
         except Exception:
             return {}
-        result = {}
-        for row in rows if isinstance(rows, list) else []:
-            if not isinstance(row, dict) or not _subscription_key(row):
-                continue
-            item = dict(row)
-            item["key"] = f"torra:{_subscription_key(row)}"
-            item["source"] = "torra"
-            result[item["key"]] = item
-        return result
+        return QualityWatchSubscriptionResolver([], rows).subscription_map()
 
     def _subscriptions(self):
         local = self._local_subscriptions()
-        return {**self._torra_subscriptions(), **local}
+        torra = getattr(self.analysis, "torra", None) if self.analysis else None
+        if torra is None:
+            return local
+        try:
+            if hasattr(torra, "is_configured") and not torra.is_configured():
+                return local
+            rows = torra.list_subscriptions()
+        except Exception:
+            return local
+        return QualityWatchSubscriptionResolver(list(local.values()), rows).subscription_map()
 
     def has_executable_candidate(
         self,
@@ -369,23 +371,32 @@ class RssSubscriptionMatchRuntime:
             return None, "torra_subscription_key_conflict"
         if resolved.get("status") != "resolved":
             return None, "subscription_missing"
-        internal_key = next((
-            candidate
-            for candidate in (
-                subscription_id,
-                resolved["canonicalKey"],
-                resolved["publicKey"],
-            )
-            if candidate in local_subscriptions
-        ), resolved["canonicalKey"])
-        subscription = dict(local_subscriptions.get(internal_key) or resolved["item"])
+        resolution = QualityWatchSubscriptionResolver(
+            list(local_subscriptions.values()),
+            rows,
+        ).resolve({
+            "subscription_key": subscription_id,
+            "torra_subscription_id": resolved["remoteId"],
+            "media_type": _media_type(
+                resolved["item"].get("media_type")
+                or resolved["item"].get("mediaType")
+                or resolved["item"].get("type")
+            ),
+            "tmdb_id": _tmdb_id(resolved["item"]),
+            "season_number": self._subscription_season(resolved["item"]),
+        })
+        if resolution.get("status") != "resolved":
+            return None, resolution.get("reason") or "subscription_missing"
+        internal_key = resolution["subscriptionKey"]
+        subscription = dict(resolution["subscription"])
         subscription["key"] = internal_key
+        subscription["subscription_key"] = internal_key
         subscription.setdefault("source", "torra")
         return {
             "subscription": subscription,
             "internalKey": internal_key,
-            "publicKey": resolved["publicKey"],
-            "canonicalKey": resolved["canonicalKey"],
+            "publicKey": resolution["publicKey"],
+            "canonicalKey": resolution["canonicalKey"],
             "remoteId": resolved["remoteId"],
             "torraRows": rows,
         }, ""
@@ -830,7 +841,8 @@ class RssSubscriptionMatchRuntime:
                     confidence="fallback",
                 )
             for candidate in candidates:
-                subscription_key, unit_key = self._public_match_keys(candidate["unit"])
+                subscription_key = _text(candidate["unit"].get("subscription_key"))
+                unit_key = _text(candidate["unit"].get("unit_key"))
                 match = self.rss_repository.create_match(
                     item["id"],
                     subscription_key,
@@ -926,21 +938,24 @@ class RssSubscriptionMatchRuntime:
         public_unit_id = torra_public_unit_key(
             internal_unit_id, context["internalKey"], context["publicKey"]
         )
-        existing = self.rss_repository.get_match_for_item_unit(item_id, public_unit_id)
+        existing = self.rss_repository.get_match_for_item_unit(item_id, internal_unit_id)
         if not existing and public_unit_id != internal_unit_id:
-            existing = self.rss_repository.get_match_for_item_unit(item_id, internal_unit_id)
+            existing = self.rss_repository.get_match_for_item_unit(item_id, public_unit_id)
         if existing:
             if existing.get("subscriptionId") not in {context["internalKey"], context["publicKey"]}:
                 return {"status": "conflict", "reason": "match_owner_conflict"}
             return {"status": "existing", "match": self._public_match(existing)}
         match = self.rss_repository.create_match(
             item_id,
-            context["publicKey"],
-            public_unit_id,
+            context["internalKey"],
+            internal_unit_id,
             {**candidate["reason"], "matchSource": "manual"},
         )
         self.evaluate_matches([match["id"]])
-        return {"status": "created", "match": self.rss_repository.get_match(match["id"])}
+        return {
+            "status": "created",
+            "match": self._public_match(self.rss_repository.get_match(match["id"])),
+        }
 
     def _subscription_target_from_match(self, match, item, context, torra_rows):
         if not context["internalKey"].startswith("torra:"):
@@ -1875,7 +1890,7 @@ class RssSubscriptionMatchRuntime:
         unit = self.watch_repository.get_watch_unit(unit_key)
         if not unit:
             return {"scanned": 0, "created": 0, "evaluated": 0}
-        subscription_key, public_unit_key = self._public_match_keys(unit)
+        _public_subscription_key, public_unit_key = self._public_match_keys(unit)
         rows = self.rss_repository.list_items_for_watch_backfill(
             unit,
             {unit["unit_key"], public_unit_key},
@@ -1894,8 +1909,8 @@ class RssSubscriptionMatchRuntime:
                     continue
                 match = self.rss_repository.create_match(
                     item["id"],
-                    subscription_key,
-                    public_unit_key,
+                    unit["subscription_key"],
+                    unit["unit_key"],
                     candidate["reason"],
                     connection=connection,
                 )
