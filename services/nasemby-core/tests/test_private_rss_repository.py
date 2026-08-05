@@ -341,6 +341,10 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             }])
             start = "2026-07-30T16:00:00Z"
             end = "2026-07-31T16:00:00Z"
+            ready_item = repository.search_items(query="Today Ready", limit=10)["items"][0]
+            repository.create_match(
+                ready_item["id"], "tv:201:s1", "tv:201:s1:e1", {},
+            )
 
             summary = repository.resource_center_summary(start, end)
             page = repository.search_items(
@@ -348,19 +352,36 @@ class PrivateRssRepositoryTests(unittest.TestCase):
                 published_before=end,
                 limit=10,
             )
+            linked_page = repository.search_items(
+                published_from=start,
+                published_before=end,
+                follow_state="linked",
+                limit=10,
+            )
+            unlinked_page = repository.search_items(
+                published_from=start,
+                published_before=end,
+                follow_state="unlinked",
+                limit=10,
+            )
 
             self.assertEqual(summary, {
                 "newToday": 2,
-                "followNewToday": 0,
+                "followNewToday": 1,
                 "needsReview": 2,
                 "followNeedsReview": 0,
-                "unlinkedItems": 3,
+                "unlinkedItems": 2,
                 "upgradeAvailable": 0,
                 "needsDecision": 0,
             })
             self.assertEqual(page["total"], summary["newToday"])
+            self.assertEqual(linked_page["total"], summary["followNewToday"])
+            self.assertEqual(linked_page["items"][0]["title"], "Today Ready S01E01")
+            self.assertEqual(unlinked_page["total"], 1)
             with self.assertRaisesRegex(ValueError, "发布时间范围"):
                 repository.search_items(published_from=end, published_before=start)
+            with self.assertRaisesRegex(ValueError, "追更关联状态"):
+                repository.search_items(follow_state="unknown")
 
     def test_match_shadow_fields_and_rule_snapshots_are_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:

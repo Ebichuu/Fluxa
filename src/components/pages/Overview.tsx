@@ -12,13 +12,15 @@ import {
   RefreshCw,
   ScanSearch,
   Sparkles,
-  TriangleAlert
+  TriangleAlert,
+  X
 } from 'lucide-react';
 import { usePolling } from '../../hooks/usePolling';
 import { getHomeSummary } from '../../services/api';
 import type { HealthState, HomeSummaryFocusItem, HomeSummaryResponse } from '../../types/homeSummary';
 import { readLocalStorage, writeLocalStorage } from '../../utils/storage';
 import { statisticScopeText } from '../../utils/statistics';
+import { ConfirmDialog } from '../layout/ConfirmDialog';
 import type { AppNavigate, AppPathNavigate } from '../layout/AppTopNav';
 import { HealthBadge } from '../status/HealthBadge';
 import { RelativeTime } from '../status/RelativeTime';
@@ -95,6 +97,7 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
   const [error, setError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [showAllIssues, setShowAllIssues] = useState(false);
+  const [resolutionIssue, setResolutionIssue] = useState<HomeSummaryResponse['issues'][number] | null>(null);
   const [showWelcome, setShowWelcome] = useState(() => readLocalStorage('fluxa:welcome-dismissed') !== '1');
 
   const loadSummary = async (signal: AbortSignal) => {
@@ -170,6 +173,13 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
   };
 
   const openIssue = (issue: HomeSummaryResponse['issues'][number]) => {
+    if (
+      (issue.primaryAction?.label === '查看解决方式' || issue.primaryAction?.kind.startsWith('resolve_'))
+      && issue.availableActions?.length
+    ) {
+      setResolutionIssue(issue);
+      return;
+    }
     if (issue.primaryAction?.href) {
       onNavigatePath(issue.primaryAction.href);
       return;
@@ -188,6 +198,12 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
       title: issue.title,
       outcomeState: 'action_required'
     });
+  };
+
+  const openResolutionAction = (href?: string) => {
+    if (!href) return;
+    setResolutionIssue(null);
+    onNavigatePath(href);
   };
 
   const openDiagnostic = (diagnostic: NonNullable<HomeSummaryResponse['diagnostics']>[number]) => {
@@ -294,10 +310,12 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
                 ? resourceCenter.counts.followNeedsReview ?? resourceCenter.counts.needsReview
                 : resourceCenter.counts[key];
             const href = key === 'newToday'
-              ? `/rss-library?publishedDate=${shanghaiDateKey()}&window=all`
+              ? `/rss-library?publishedDate=${shanghaiDateKey()}&window=all&followState=linked`
               : key === 'needsReview'
                 ? '/rss-library?view=identify'
-                : '/rss-library?view=upgrades';
+                : key === 'needsDecision'
+                  ? '/rss-library?view=cleanup'
+                  : '/rss-library?view=upgrades';
             return (
               <a
                 className="home-resource-center__item"
@@ -399,6 +417,55 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
           </div>
         </details>
       )}
+
+      <ConfirmDialog
+        className="home-resolution-dialog"
+        labelledBy="home-resolution-title"
+        describedBy="home-resolution-description"
+        open={Boolean(resolutionIssue)}
+        onClose={() => setResolutionIssue(null)}
+      >
+        {resolutionIssue && (
+          <>
+            <header className="home-resolution-dialog__header">
+              <div>
+                <span className="ops-confirm-dialog__signal">安全处理入口</span>
+                <h2 id="home-resolution-title">{resolutionIssue.headline || resolutionIssue.displayTitle || resolutionIssue.title}</h2>
+              </div>
+              <button
+                aria-label="关闭解决方式"
+                className="home-resolution-dialog__close"
+                data-dialog-initial-focus
+                title="关闭"
+                type="button"
+                onClick={() => setResolutionIssue(null)}
+              >
+                <X aria-hidden="true" size={18} />
+              </button>
+            </header>
+            <p id="home-resolution-description">
+              {resolutionIssue.reasonText || '当前问题需要进一步确认'} · {resolutionIssue.impactText || '查看可用的安全处理入口'}
+            </p>
+            <div className="home-resolution-dialog__actions">
+              {resolutionIssue.availableActions?.map((action) => (
+                <button
+                  className="home-resolution-dialog__action"
+                  disabled={!action.href}
+                  key={action.kind}
+                  type="button"
+                  onClick={() => openResolutionAction(action.href)}
+                >
+                  <span>
+                    <strong>{action.label}</strong>
+                    <small>{action.href ? '进入对应目标后继续处理' : '需要在对应详情中明确确认'}</small>
+                  </span>
+                  {action.href ? <ArrowRight aria-hidden="true" size={16} /> : <em>暂不直执行</em>}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </ConfirmDialog>
     </main>
   );
 }

@@ -155,7 +155,29 @@ def _identity_only_issue(result: dict) -> bool:
 
 def _problem_fact(item: dict) -> dict:
     outcome = item.get("pipelineOutcome") or {}
-    return _fact(item, str(outcome.get("stage") or ""))
+    facts = [
+        fact for fact in item.get("pipelineFacts") or []
+        if isinstance(fact, dict) and fact.get("isStale") is not True
+    ]
+    outcome_stage = str(outcome.get("stage") or "")
+    outcome_reason = str(outcome.get("reasonCode") or "")
+    matching_reason = next((
+        fact for fact in facts
+        if outcome_reason and str(fact.get("reasonCode") or "") == outcome_reason
+    ), None)
+    if matching_reason and str(matching_reason.get("state") or "") == "failed":
+        return matching_reason
+    matching_stage = next((
+        fact for fact in facts
+        if outcome_stage and str(fact.get("stage") or "") == outcome_stage
+    ), None)
+    if matching_stage and str(matching_stage.get("state") or "") == "failed":
+        return matching_stage
+    verified_failure = next((
+        fact for fact in facts
+        if fact.get("evidence") == "verified" and str(fact.get("state") or "") == "failed"
+    ), None)
+    return verified_failure or matching_reason or matching_stage or {}
 
 
 def _integer(value):
@@ -320,50 +342,82 @@ def _safe_issue_copy(item: dict, result: dict) -> dict:
     return {**base, "headline": f"{label}需要检查", "reasonText": "当前步骤没有形成可验证结果"}
 
 
+def _task_issue_href(issue: dict, *, advanced=False) -> str:
+    params = {
+        "outcomeState": "action_required",
+        "chainId": str(issue.get("chainId") or ""),
+        "targetKey": str(issue.get("targetKey") or ""),
+    }
+    if advanced:
+        params["advanced"] = "1"
+    return "/tasks?" + urlencode({key: value for key, value in params.items() if value})
+
+
 def _issue_action_copy(issue: dict) -> dict:
     """将技术原因投影成一个安全的下一步；这里只返回导航/预览入口，不执行写操作。"""
     reason_code = str(issue.get("reasonCode") or "").upper()
     source = str(issue.get("source") or "").casefold()
     identity_state = str(issue.get("identityState") or "")
+    problem_stage = str(issue.get("problemStage") or "").lower()
+    task_href = _task_issue_href(issue)
+    technical_href = _task_issue_href(issue, advanced=True)
     if reason_code in {"REMOTE_MISSING", "TORRA_REMOTE_MISSING"} or "REMOTE_MISSING" in reason_code:
         return {
             "impactText": "不影响已有媒体，但后续不会自动更新",
             "primaryAction": {"label": "查看解决方式", "kind": "resolve_remote_missing", "href": "/following?status=reconciliation_action_required"},
             "availableActions": [
-                {"label": "恢复 Torra 追更", "kind": "restore_torra"},
-                {"label": "预览归档镜像", "kind": "preview_archive_mirror"},
+                {"label": "恢复 Torra 追更", "kind": "restore_torra", "href": "/following?status=reconciliation_action_required"},
+                {"label": "预览归档镜像", "kind": "preview_archive_mirror", "href": "/following?status=reconciliation_action_required"},
                 {"label": "暂时忽略", "kind": "ignore_once"},
-                {"label": "查看技术详情", "kind": "technical_detail"},
+                {"label": "查看技术详情", "kind": "technical_detail", "href": technical_href},
             ],
+        }
+    if source == "qbittorrent" or problem_stage == "qb" or "DOWNLOAD" in reason_code or reason_code.startswith("QB_"):
+        return {
+            "impactText": "资源尚未完成，入库和播放会继续等待",
+            "primaryAction": {"label": "检查下载任务", "kind": "inspect_download", "href": task_href},
+            "availableActions": [{"label": "查看技术详情", "kind": "technical_detail", "href": technical_href}],
+        }
+    if "SECUPLOAD" in reason_code or problem_stage == "cloud115" or "115" in source:
+        return {
+            "impactText": "已有恢复计划时会自动重试，超过上限后需要确认处理",
+            "primaryAction": {"label": "查看自动重试时间", "kind": "inspect_retry", "href": task_href},
+            "availableActions": [
+                {"label": "确认后重试", "kind": "retry_after_confirmation", "href": task_href},
+                {"label": "查看技术详情", "kind": "technical_detail", "href": technical_href},
+            ],
+        }
+    if problem_stage == "symedia" and str(issue.get("reasonText") or "") == "作品识别失败":
+        return {
+            "impactText": "媒体未能完成识别和入库，后续播放会等待",
+            "primaryAction": {"label": "查看解决方式", "kind": "resolve_media_identity"},
+            "availableActions": [
+                {"label": "选择作品和季", "kind": "resolve_identity", "href": technical_href},
+                {"label": "查看技术详情", "kind": "technical_detail", "href": technical_href},
+            ],
+        }
+    if issue.get("problemIsFailure"):
+        return {
+            "impactText": "当前处理阶段失败，后续结果会继续等待",
+            "primaryAction": {"label": "检查处理详情", "kind": "inspect_failure", "href": task_href},
+            "availableActions": [{"label": "查看技术详情", "kind": "technical_detail", "href": technical_href}],
         }
     if reason_code in {"EVIDENCE_OWNER_CONFLICT", "IDENTITY_CONFLICT"} or identity_state == "conflict":
         return {
             "impactText": "当前证据不会自动绑定到任一作品",
-            "primaryAction": {"label": "查看冲突", "kind": "resolve_conflict", "href": "/tasks?advanced=1&identityStates=conflict"},
-            "availableActions": [{"label": "查看技术详情", "kind": "technical_detail"}],
+            "primaryAction": {"label": "查看冲突", "kind": "resolve_conflict", "href": technical_href},
+            "availableActions": [{"label": "查看技术详情", "kind": "technical_detail", "href": technical_href}],
         }
     if identity_state == "unidentified" or reason_code in {"TASK_IDENTITY_UNLINKED", "TASK_IDENTITY_PENDING"}:
         return {
             "impactText": "无法确认作品和季集，后续处理会等待",
-            "primaryAction": {"label": "选择作品和季", "kind": "resolve_identity", "href": "/tasks?advanced=1&identityStates=unidentified"},
-            "availableActions": [{"label": "查看技术详情", "kind": "technical_detail"}],
-        }
-    if source == "qbittorrent" or "DOWNLOAD" in reason_code or reason_code.startswith("QB_"):
-        return {
-            "impactText": "资源尚未完成，入库和播放会继续等待",
-            "primaryAction": {"label": "检查下载任务", "kind": "inspect_download", "href": "/tasks?qbActive=1"},
-            "availableActions": [{"label": "查看技术详情", "kind": "technical_detail"}],
-        }
-    if "SECUPLOAD" in reason_code or "115" in source:
-        return {
-            "impactText": "已有恢复计划，当前等待下一次自动重试",
-            "primaryAction": {"label": "查看自动重试时间", "kind": "inspect_retry", "href": "/tasks?systemIssue=secupload_failures"},
-            "availableActions": [{"label": "确认后重试", "kind": "retry_after_confirmation"}, {"label": "查看技术详情", "kind": "technical_detail"}],
+            "primaryAction": {"label": "选择作品和季", "kind": "resolve_identity", "href": technical_href},
+            "availableActions": [{"label": "查看技术详情", "kind": "technical_detail", "href": technical_href}],
         }
     return {
         "impactText": "当前链路没有形成可验证结果",
         "primaryAction": {"label": "查看解决方式", "kind": "resolve_issue"},
-        "availableActions": [{"label": "查看技术详情", "kind": "technical_detail"}],
+        "availableActions": [{"label": "查看技术详情", "kind": "technical_detail", "href": technical_href}],
     }
 
 
@@ -661,17 +715,28 @@ class HomeSummaryService:
         for target_key, item, result in visible_item_evidence:
             if result["healthState"] == "action_required":
                 issue_copy = _safe_issue_copy(item, result)
-                issue_href = "/tasks?" + urlencode({
-                    "outcomeState": "action_required",
-                    "chainId": str(item.get("chainId") or ""),
-                })
+                chain_id = str(item.get("chainId") or item.get("id") or "")
+                problem_fact = _problem_fact(item)
+                action_context = {
+                    **result,
+                    **issue_copy,
+                    "source": problem_fact.get("source") or result.get("source"),
+                    "problemStage": problem_fact.get("stage"),
+                    "problemIsFailure": (
+                        problem_fact.get("evidence") == "verified"
+                        and str(problem_fact.get("state") or "") == "failed"
+                    ),
+                    "targetKey": target_key,
+                    "chainId": chain_id,
+                }
+                issue_href = _task_issue_href(action_context)
                 media_issues.append({
                     **result,
                     **issue_copy,
-                    **_issue_action_copy({**result, **issue_copy, "source": result.get("source")}),
+                    **_issue_action_copy(action_context),
                     "issueKind": "media",
                     "targetKey": target_key,
-                    "chainId": str(item.get("chainId") or item.get("id") or ""),
+                    "chainId": chain_id,
                     "title": str(item.get("title") or "未命名媒体"),
                     "href": issue_href,
                 })
@@ -737,24 +802,38 @@ class HomeSummaryService:
             target_key, item, result = primary_row
             issue_copy = _safe_issue_copy(item, result)
             resource_count = int(group.get("resourceCount") or 0)
+            chain_id = str(item.get("chainId") or item.get("id") or "")
+            problem_fact = _problem_fact(item)
+            action_context = {
+                **result,
+                **issue_copy,
+                "source": problem_fact.get("source") or result.get("source"),
+                "problemStage": problem_fact.get("stage"),
+                "problemIsFailure": (
+                    problem_fact.get("evidence") == "verified"
+                    and str(problem_fact.get("state") or "") == "failed"
+                ),
+                "targetKey": target_key,
+                "chainId": chain_id,
+            }
             media_problem_groups.append({
                 **result,
                 **issue_copy,
-                **_issue_action_copy({**result, **issue_copy, "source": result.get("source")}),
+                **_issue_action_copy(action_context),
                 "groupId": str(group.get("groupId") or ""),
                 "issueKind": "media_group",
                 "resourceCount": resource_count,
                 "identityUnconfirmedResources": int(group.get("identityUnconfirmedResources") or 0),
                 "episodeNumbers": list(group.get("episodeNumbers") or []),
                 "targetKey": target_key,
-                "chainId": str(item.get("chainId") or item.get("id") or ""),
+                "chainId": chain_id,
                 "title": str(item.get("title") or "未命名媒体"),
                 "headline": (
                     f"《{str(item.get('title') or '未命名媒体')}》{_episode_label(int(group.get('seasonNumber') or 0), None, None)}"
                     f" · {resource_count} 个资源"
                     if resource_count > 1 else issue_copy.get("headline")
                 ),
-                "href": "/tasks?outcomeState=action_required",
+                "href": _task_issue_href(action_context),
             })
         counts["mediaActionRequired"] = len(media_issues)
         counts["actionRequired"] = counts["mediaActionRequired"]

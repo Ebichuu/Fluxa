@@ -17,6 +17,7 @@ from app.torra_subscription_keys import torra_public_storage_key
 MATCH_STATUSES = {"candidate", "ignored", "triggered", "confirmed", "expired"}
 IDENTITY_STATUSES = {"identified", "conflict", "unidentified"}
 RSS_REVIEW_STATES = {"needs_review", "follow_needs_review", "unlinked"}
+RSS_FOLLOW_STATES = {"linked", "unlinked"}
 RSS_GROUP_SCOPES = {"scoreable", "cleanup"}
 CLEANUP_RULE_VERSION = "rss-match-cleanup-v1"
 RSS_GROUP_STATES = {
@@ -685,6 +686,7 @@ class PrivateRssRepository:
         window_hours=None,
         identity_status="",
         review_state="",
+        follow_state="",
         published_from="",
         published_before="",
         limit=50,
@@ -719,6 +721,9 @@ class PrivateRssRepository:
         review_state = str(review_state or "").strip().lower()
         if review_state and review_state not in RSS_REVIEW_STATES:
             raise ValueError("复核状态无效")
+        follow_state = str(follow_state or "").strip().lower()
+        if follow_state and follow_state not in RSS_FOLLOW_STATES:
+            raise ValueError("追更关联状态无效")
         published_from = str(published_from or "").strip()
         published_before = str(published_before or "").strip()
         if bool(published_from) != bool(published_before) or (
@@ -746,6 +751,10 @@ class PrivateRssRepository:
         if review_state == "follow_needs_review":
             base_where.append(_follow_link_exists_sql())
         elif review_state == "unlinked":
+            base_where.append(f"NOT {_follow_link_exists_sql()}")
+        if follow_state == "linked":
+            base_where.append(_follow_link_exists_sql())
+        elif follow_state == "unlinked":
             base_where.append(f"NOT {_follow_link_exists_sql()}")
         if published_from:
             base_where.append("COALESCE(NULLIF(i.published_at, ''), i.created_at) >= ?")

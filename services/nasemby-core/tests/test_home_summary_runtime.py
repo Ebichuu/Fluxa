@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timezone
+from urllib.parse import parse_qs, urlparse
 
 from flask import Flask
 
@@ -617,6 +618,39 @@ class HomeSummaryRuntimeTests(unittest.TestCase):
         self.assertEqual(issue["reasonText"], "作品识别失败")
         self.assertEqual(issue["secondaryReasonText"], "任务尚未关联到可靠媒体身份")
         self.assertNotIn("/storage/", f"{issue['headline']} {issue['reasonText']} {issue['secondaryReasonText']}")
+
+    def test_verified_download_failure_precedes_identity_prompt_and_uses_target_deep_link(self):
+        blocked = item(item_id="qb:e94", library_status="waiting")
+        blocked.update({"state": "blocked", "title": "E94", "tmdbId": "", "confidence": "unlinked"})
+        blocked["steps"][0].update({
+            "status": "blocked",
+            "evidence": "verified",
+            "source": "qBittorrent",
+            "reasonCode": "QB_DOWNLOAD_FAILED",
+            "detail": "下载任务返回错误",
+        })
+        blocked["pipelineFacts"] = [
+            pipeline_fact(
+                "qb", "failed", reason_code="QB_DOWNLOAD_FAILED",
+                reason_text="下载任务返回错误",
+            ),
+            pipeline_fact("symedia", "unknown", reason_code="SYMEDIA_RESULT_UNKNOWN"),
+        ]
+        app = self.build_app([blocked], scheduler_enabled=False)
+
+        result = HomeSummaryService(app, clock=lambda: NOW).snapshot()
+        issue = next(value for value in result["issues"] if value["title"] == "E94")
+        group = next(value for value in result["problemGroups"] if value["title"] == "E94")
+
+        self.assertIn("下载需要检查", issue["headline"])
+        self.assertEqual(issue["primaryAction"]["label"], "检查下载任务")
+        self.assertEqual(issue["secondaryReasonText"], "任务尚未关联到可靠媒体身份")
+        self.assertNotIn("qbActive=1", issue["primaryAction"]["href"])
+        query = parse_qs(urlparse(issue["primaryAction"]["href"]).query)
+        self.assertEqual(query["chainId"], [issue["chainId"]])
+        self.assertEqual(query["targetKey"], [issue["targetKey"]])
+        self.assertEqual(query["outcomeState"], ["action_required"])
+        self.assertEqual(group["primaryAction"]["href"], issue["primaryAction"]["href"])
 
     def test_home_collapses_unlinked_inferred_records_into_one_identity_notice(self):
         blocked = item(library_status="blocked")

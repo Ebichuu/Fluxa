@@ -52,6 +52,7 @@ import type { AppNavigate } from '../layout/AppTopNav';
 
 type WindowFilter = '' | '1h' | '24h' | '7d';
 type ResourceView = 'new' | 'identify' | 'scoring' | 'upgrades' | 'cleanup';
+type FollowStateFilter = '' | 'linked' | 'unlinked';
 const RSS_INTERVAL_PRESETS = [1, 3, 5] as const;
 const rssPageSize = 50;
 
@@ -60,6 +61,7 @@ interface RssLibraryUrlState {
   query: string;
   sourceId: string;
   identityStatus: RssIdentityStatus;
+  followState: FollowStateFilter;
   windowFilter: WindowFilter;
   offset: number;
   publishedDate: string;
@@ -91,6 +93,7 @@ function readRssLibraryUrlState(location: Location = window.location): RssLibrar
   const params = new URLSearchParams(location.search);
   const windowValue = params.get('window');
   const identityValue = params.get('identityStatus');
+  const followStateValue = params.get('followState');
   const viewValue = params.get('view');
   const mediaTypeValue = params.get('mediaType');
   const publishedDateValue = params.get('publishedDate') ?? '';
@@ -104,6 +107,7 @@ function readRssLibraryUrlState(location: Location = window.location): RssLibrar
     identityStatus: ['identified', 'conflict', 'unidentified'].includes(identityValue ?? '')
       ? identityValue as RssIdentityStatus
       : '',
+    followState: followStateValue === 'linked' || followStateValue === 'unlinked' ? followStateValue : '',
     windowFilter: windowValue === null
       ? publishedDateValue ? '' : '24h'
       : windowValue === 'all'
@@ -131,6 +135,7 @@ function writeRssLibraryUrlState(state: RssLibraryUrlState, mode: UrlHistoryMode
     q: state.query || null,
     sourceId: state.sourceId || null,
     identityStatus: state.identityStatus || null,
+    followState: state.followState || null,
     window: state.windowFilter === '24h' ? null : state.windowFilter || 'all',
     offset: state.offset > 0 ? state.offset : null,
     publishedDate: state.publishedDate || null,
@@ -421,6 +426,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const [query, setQuery] = useState(initialUrlState.query);
   const [sourceId, setSourceId] = useState(initialUrlState.sourceId);
   const [identityStatus, setIdentityStatus] = useState<RssIdentityStatus>(initialUrlState.identityStatus);
+  const [followState, setFollowState] = useState<FollowStateFilter>(initialUrlState.followState);
   const [windowFilter, setWindowFilter] = useState<WindowFilter>(initialUrlState.windowFilter);
   const [offset, setOffset] = useState(initialUrlState.offset);
   const [urlRevision, setUrlRevision] = useState(0);
@@ -455,6 +461,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       query,
       sourceId,
       identityStatus,
+      followState,
       windowFilter,
       offset,
       ...patch
@@ -484,6 +491,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       query: input.query ?? query,
       sourceId: input.sourceId ?? sourceId,
       identityStatus: input.identityStatus ?? identityStatus,
+      followState: input.followState ?? followState,
       windowFilter: input.windowFilter ?? windowFilter,
       offset: input.offset ?? offset
     };
@@ -494,6 +502,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
           sourceId: requestedState.sourceId,
           window: requestedState.windowFilter,
           identityStatus: requestedState.identityStatus,
+          followState: requestedState.followState,
           reviewState: requestedState.view === 'identify' ? 'follow_needs_review' : '',
           publishedDate: requestedState.publishedDate,
           tmdbId: requestedState.tmdbId,
@@ -634,7 +643,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   useEffect(() => {
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceId, windowFilter, identityStatus, resourceView, resourceContext, urlRevision]);
+  }, [sourceId, windowFilter, identityStatus, followState, resourceView, resourceContext, urlRevision]);
 
   useEffect(() => {
     const restoreUrlState = () => {
@@ -653,6 +662,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       setQuery(next.query);
       setSourceId(next.sourceId);
       setIdentityStatus(next.identityStatus);
+      setFollowState(next.followState);
       setWindowFilter(next.windowFilter);
       setOffset(next.offset);
       setUrlRevision((current) => current + 1);
@@ -913,6 +923,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       query,
       sourceId,
       identityStatus,
+      followState,
       windowFilter,
       offset: 0
     }, 'push');
@@ -985,7 +996,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const resourceContextTitle = resourceContext.matchId
     ? '任务来源候选'
     : resourceContext.publishedDate
-      ? `${resourceContext.publishedDate} 新资源`
+      ? `${resourceContext.publishedDate}${followState === 'linked' ? ' 追更命中新资源' : ' 新资源'}`
       : resourceContext.contextTitle || '当前追更资源';
   const resourceContextScope = [
     resourceContext.mediaType === 'movie' ? '电影' : resourceContext.mediaType === 'tv' ? '剧集' : '',
@@ -997,6 +1008,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const clearResourceContext = () => {
     const nextWindow = resourceContext.publishedDate && windowFilter === '' ? '24h' : windowFilter;
     setResourceContext(emptyResourceContext);
+    setFollowState('');
     setWindowFilter(nextWindow);
     setOffset(0);
     setMatchesOffset(0);
@@ -1006,6 +1018,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       query,
       sourceId,
       identityStatus,
+      followState: '',
       windowFilter: nextWindow,
       offset: 0
     });

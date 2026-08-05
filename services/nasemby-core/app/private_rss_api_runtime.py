@@ -547,6 +547,7 @@ def register_private_rss(
                 window_hours=window_hours,
                 identity_status=request.args.get("identityStatus") or "",
                 review_state=request.args.get("reviewState") or "",
+                follow_state=request.args.get("followState") or "",
                 published_from=published_from,
                 published_before=published_before,
                 limit=request.args.get("limit") or 50,

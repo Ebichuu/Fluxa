@@ -622,6 +622,7 @@ export function getRssSeedItems(input: {
   window?: '' | '1h' | '24h' | '7d';
   identityStatus?: '' | 'identified' | 'conflict' | 'unidentified';
   reviewState?: '' | 'needs_review' | 'follow_needs_review' | 'unlinked';
+  followState?: '' | 'linked' | 'unlinked';
   publishedDate?: string;
   tmdbId?: string;
   mediaType?: 'movie' | 'tv';
@@ -636,6 +637,7 @@ export function getRssSeedItems(input: {
   if (input.window) query.set('window', input.window);
   if (input.identityStatus) query.set('identityStatus', input.identityStatus);
   if (input.reviewState) query.set('reviewState', input.reviewState);
+  if (input.followState) query.set('followState', input.followState);
   if (input.publishedDate) query.set('publishedDate', input.publishedDate);
   if (input.tmdbId) query.set('tmdbId', input.tmdbId);
   if (input.mediaType) query.set('mediaType', input.mediaType);

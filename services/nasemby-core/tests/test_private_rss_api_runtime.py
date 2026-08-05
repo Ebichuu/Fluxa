@@ -421,8 +421,11 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             self.assertEqual(client.get("/api/v2/rss-items?reviewState=needs_review").get_json()["total"], 1)
             self.assertEqual(client.get("/api/v2/rss-items?reviewState=follow_needs_review").get_json()["total"], 0)
             self.assertEqual(client.get("/api/v2/rss-items?reviewState=unlinked").get_json()["total"], 1)
+            self.assertEqual(client.get("/api/v2/rss-items?followState=linked").get_json()["total"], 0)
+            self.assertEqual(client.get("/api/v2/rss-items?followState=unlinked").get_json()["total"], 1)
             self.assertEqual(client.get("/api/v2/rss-items?identityStatus=invalid").status_code, 422)
             self.assertEqual(client.get("/api/v2/rss-items?reviewState=invalid").status_code, 422)
+            self.assertEqual(client.get("/api/v2/rss-items?followState=invalid").status_code, 422)
             self.assertEqual(client.post("/api/v2/rss-items/identity-backfills", json={"limit": 201}).status_code, 422)
             repository.upsert_items(source_id, [{
                 "fingerprint": "history-imdb",
