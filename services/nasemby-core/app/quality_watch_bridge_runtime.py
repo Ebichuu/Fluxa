@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
-from app.quality_watch_repository import make_unit_key
+from app.episode_evidence_runtime import parse_episode_ranges
 from app.quality_watch_runtime import plan_reconcile, resolve_watch_policy
+from app.quality_watch_subscription_runtime import QualityWatchSubscriptionResolver
 from app.resource_identity_runtime import artifact_key as canonical_artifact_key
 
 
-BRIDGE_VERSION = "2"
+BRIDGE_VERSION = "3"
 SUCCESS_STAGES = {"torra", "qb", "symedia"}
+SEASON_PATTERN = re.compile(r"(?:^|[^A-Z0-9])S(?:EASON)?[ ._-]*0*(\d{1,2})(?:[^0-9]|$)", re.IGNORECASE)
 EPISODE_EVIDENCE_STAGES = {
     "torra": "download",
     "qb": "download",
@@ -65,7 +68,11 @@ def _subscription_key(row):
 def _subscriptions(value):
     rows = value.get("items") if isinstance(value, dict) else value
     rows = rows if isinstance(rows, list) else []
-    return {_subscription_key(row): row for row in rows if isinstance(row, dict) and _subscription_key(row)}
+    return {
+        _subscription_key(row): row
+        for row in rows
+        if isinstance(row, dict) and _subscription_key(row)
+    }
 
 
 def _fact_units(fact):
@@ -176,7 +183,8 @@ def _episode_targets(item, artifact_key, stage):
     return sorted(targets) or [(item_season, item_episode)]
 
 
-def _project_facts(payload):
+def _project_facts(payload, qb_episode_targets=None):
+    qb_episode_targets = qb_episode_targets if isinstance(qb_episode_targets, dict) else {}
     projected = []
     for item in payload.get("items") or []:
         if not isinstance(item, dict):
@@ -203,7 +211,14 @@ def _project_facts(payload):
                     for row in ownership
                     if _text(row.get("artifactKey")) == artifact_key and _text(row.get("ownerTargetKey"))
                 })
-                for season_number, episode_number in _episode_targets(item, artifact_key, stage):
+                episode_targets = _episode_targets(item, artifact_key, stage)
+                if (
+                    stage == "qb"
+                    and not any(season > 0 and episode > 0 for season, episode in episode_targets)
+                    and source_result_id in qb_episode_targets
+                ):
+                    episode_targets = qb_episode_targets[source_result_id]
+                for season_number, episode_number in episode_targets:
                     projected.append({
                         "stage": stage,
                         "fact_type": "archive_succeeded" if stage == "symedia" else "download_completed",
@@ -224,6 +239,7 @@ def _project_facts(payload):
                             "stage": stage, "state": fact.get("state"), "evidence": fact.get("evidence"),
                             "eventAt": occurred_at, "reasonCode": fact.get("reasonCode"),
                             "seasonNumber": season_number, "episodeNumber": episode_number,
+                            "fileEpisodeTargets": qb_episode_targets.get(source_result_id, []),
                         }),
                         "ownership_version": _stable_hash(ownership),
                     })
@@ -231,12 +247,127 @@ def _project_facts(payload):
 
 
 class QualityWatchBridgeRuntime:
-    def __init__(self, repository, quality_runtime, subscription_loader, config_loader=None, clock=None):
+    def __init__(
+        self,
+        repository,
+        quality_runtime,
+        subscription_loader,
+        config_loader=None,
+        clock=None,
+        torra_subscription_loader=None,
+        qb_task_loader=None,
+        qb_file_loader=None,
+    ):
         self.repository = repository
         self.quality_runtime = quality_runtime
         self.subscription_loader = subscription_loader or (lambda: [])
         self.config_loader = config_loader or (lambda: {})
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.torra_subscription_loader = torra_subscription_loader or (lambda: [])
+        self.qb_task_loader = qb_task_loader
+        self.qb_file_loader = qb_file_loader
+
+    def _qb_episode_targets(self, facts, resolver):
+        if not callable(self.qb_task_loader) or not callable(self.qb_file_loader):
+            return {}
+        candidates = {}
+        for fact in facts:
+            if (
+                fact["stage"] == "qb"
+                and fact["media_type"] == "tv"
+                and fact["season_number"] > 0
+                and fact["episode_number"] <= 0
+                and fact["artifact_key"]
+                and fact["owners"] == [fact["owner_target_key"]]
+                and fact["source_result_id"]
+                and fact["identity_state"] == "linked"
+            ):
+                candidates.setdefault(fact["source_result_id"], []).append(fact)
+        if not candidates:
+            return {}
+        try:
+            summary = self.qb_task_loader()
+        except Exception:
+            return {}
+        if not isinstance(summary, dict) or summary.get("connected") is not True:
+            return {}
+        tasks_by_hash = {}
+        for task in summary.get("tasks") or []:
+            if isinstance(task, dict) and _text(task.get("hash")) in candidates:
+                tasks_by_hash.setdefault(_text(task.get("hash")), []).append(task)
+
+        result = {}
+        for torrent_hash, fact_group in candidates.items():
+            ownership_scopes = {
+                (
+                    fact["owner_target_key"], fact["artifact_key"], fact["media_type"],
+                    fact["tmdb_id"], fact["season_number"],
+                )
+                for fact in fact_group
+            }
+            resolutions = [resolver.resolve(fact) for fact in fact_group]
+            resolved_keys = {
+                row["subscriptionKey"] for row in resolutions if row["status"] == "resolved"
+            }
+            if (
+                len(ownership_scopes) != 1
+                or len(resolved_keys) != 1
+                or any(row["status"] != "resolved" for row in resolutions)
+            ):
+                continue
+            fact = fact_group[0]
+            tasks = tasks_by_hash.get(torrent_hash, [])
+            if len(tasks) != 1 or _text(tasks[0].get("status")) != "completed":
+                continue
+            title = _text(tasks[0].get("name"))
+            if parse_episode_ranges(title):
+                continue
+            seasons = {int(match.group(1)) for match in SEASON_PATTERN.finditer(title)}
+            if seasons != {fact["season_number"]}:
+                continue
+            try:
+                files = self.qb_file_loader(torrent_hash)
+            except Exception:
+                continue
+            targets = set()
+            invalid_scope = False
+            for row in files if isinstance(files, list) else []:
+                if isinstance(row, dict):
+                    if "priority" in row and _integer(row.get("priority")) <= 0:
+                        continue
+                    if "progress" in row:
+                        try:
+                            progress = float(row.get("progress"))
+                        except (TypeError, ValueError):
+                            continue
+                        if progress < 0.999:
+                            continue
+                name = _text(row.get("name")) if isinstance(row, dict) else _text(row)
+                ranges = parse_episode_ranges(name)
+                for episode_range in ranges:
+                    season = _integer(episode_range.get("seasonNumber"))
+                    start = _integer(episode_range.get("episodeStart"))
+                    end = _integer(episode_range.get("episodeEnd"))
+                    if season != fact["season_number"] or start <= 0 or end < start or end - start > 200:
+                        invalid_scope = True
+                        break
+                    targets.update((season, episode) for episode in range(start, end + 1))
+                if invalid_scope:
+                    break
+            if targets and not invalid_scope and len(targets) <= 200:
+                result[torrent_hash] = sorted(targets)
+        return result
+
+    def _subscription_resolver(self):
+        try:
+            local = self.subscription_loader()
+        except Exception:
+            local = []
+        try:
+            torra = self.torra_subscription_loader()
+        except Exception:
+            torra = []
+        return QualityWatchSubscriptionResolver(local, torra)
 
     def set_mode(self, mode):
         return self.repository.set_bridge_mode(mode, bridge_version=BRIDGE_VERSION)
@@ -283,7 +414,9 @@ class QualityWatchBridgeRuntime:
             "ownership_version": fact["ownership_version"],
         }
 
-    def _classification(self, fact, subscription, state, existing_units):
+    def _classification(self, fact, subscription, state, _existing_units):
+        if fact.get("subscription_resolution_reason"):
+            return "needs_review", fact["subscription_resolution_reason"]
         if (
             not subscription
             or fact["identity_state"] != "linked"
@@ -306,11 +439,6 @@ class QualityWatchBridgeRuntime:
         activated_at = _utc(state.get("activatedAt"))
         if activated_at is None or occurred_at <= activated_at:
             return "historical", "before_bridge_activation"
-        unit_key = make_unit_key(
-            fact["subscription_key"], "tv", fact["season_number"], fact["episode_number"]
-        )
-        if fact["stage"] == "symedia" and not any(unit["unit_key"] == unit_key for unit in existing_units):
-            return "historical", "symedia_without_observation_unit"
         return "pending", "eligible"
 
     @staticmethod
@@ -364,21 +492,27 @@ class QualityWatchBridgeRuntime:
                 if status != "pending":
                     self.repository.upsert_bridge_receipt(connection, receipt, status, reason)
                     return status
-                first_success = next((
+                first_success_values = [fact["upstream_occurred_at"]]
+                first_success_values.extend(
                     unit.get("first_success_at") for unit in existing
                     if int(unit.get("season_number") or 0) == fact["season_number"]
                     and int(unit.get("episode_number") or 0) == fact["episode_number"]
-                ), fact["upstream_occurred_at"])
+                )
+                first_success = min(
+                    (value for value in (_utc(item) for item in first_success_values) if value),
+                    default=_utc(fact["upstream_occurred_at"]),
+                )
                 evidence = {
                     "is_new": fact["stage"] in {"torra", "qb"},
                     "episode_numbers": [fact["episode_number"]],
-                    "first_download_at": first_success,
+                    "first_download_at": _iso(first_success),
                     "upstream_occurred_at": fact["upstream_occurred_at"],
                     "time_source": f"{fact['stage']}_completed",
                     "require_reliable_times": True,
                 }
                 if fact["stage"] == "symedia":
                     evidence.update({
+                        "allow_baseline_create": True,
                         "baseline_success": True,
                         "baseline_episode_numbers": [fact["episode_number"]],
                         "baseline_ready_at": fact["upstream_occurred_at"],
@@ -416,17 +550,29 @@ class QualityWatchBridgeRuntime:
 
     def process_snapshot(self, payload):
         state = self.repository.get_bridge_state()
+        if state["mode"] != "off" and state["bridgeVersion"] != BRIDGE_VERSION:
+            state = self.repository.set_bridge_mode(state["mode"], bridge_version=BRIDGE_VERSION)
         result = {
             "mode": state["mode"], "processed": 0,
             **{key: 0 for key in ("pending", "applied", "historical", "needs_review", "rejected", "retryable_failed")},
         }
         if state["mode"] == "off":
             return result
-        subscriptions = _subscriptions(self.subscription_loader())
+        resolver = self._subscription_resolver()
         config = self.config_loader()
-        for fact in _project_facts(payload if isinstance(payload, dict) else {}):
+        snapshot = payload if isinstance(payload, dict) else {}
+        facts = _project_facts(snapshot)
+        qb_episode_targets = self._qb_episode_targets(facts, resolver)
+        if qb_episode_targets:
+            facts = _project_facts(snapshot, qb_episode_targets)
+        for fact in facts:
             result["processed"] += 1
-            subscription = subscriptions.get(fact["subscription_key"])
+            resolution = resolver.resolve(fact)
+            subscription = resolution.get("subscription")
+            if resolution["status"] == "resolved":
+                fact["subscription_key"] = resolution["subscriptionKey"]
+            else:
+                fact["subscription_resolution_reason"] = resolution["reason"]
             existing = self.repository.list_watch_units(fact["subscription_key"])
             status, reason = self._classification(fact, subscription, state, existing)
             receipt = self._receipt(fact)

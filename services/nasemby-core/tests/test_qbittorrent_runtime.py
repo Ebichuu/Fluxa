@@ -338,6 +338,28 @@ class QbittorrentRuntimeContractTests(unittest.TestCase):
         self.assertEqual(len(session.requests), 3)
         self.assertEqual({row["lastCheckedAt"] for row in results}, {results[0]["lastCheckedAt"]})
 
+    def test_torrent_files_are_read_on_demand_and_cached_by_hash(self):
+        from app.qbittorrent_runtime import QbittorrentClient, QbittorrentConfig
+
+        session = FakeSession({
+            "/api/v2/torrents/files": FakeResponse(payload=[
+                {"name": "Show.S01E01.mkv", "size": 100, "progress": 1, "priority": 1},
+                {"name": "Show.S01E02.mkv", "size": 200, "progress": 1, "priority": 6},
+            ]),
+        })
+        client = QbittorrentClient(
+            QbittorrentConfig(base_url="http://qb.example.test"),
+            session=session,
+        )
+
+        first = client.torrent_files("pack-hash")
+        first[0]["name"] = "mutated"
+        second = client.torrent_files("pack-hash")
+
+        self.assertEqual([row["name"] for row in second], ["Show.S01E01.mkv", "Show.S01E02.mkv"])
+        self.assertEqual([row["priority"] for row in second], [1, 6])
+        self.assertEqual([row[1] for row in session.requests].count("/api/v2/torrents/files"), 1)
+
     def test_failed_summary_is_cached_and_configuration_or_action_invalidates_cache(self):
         import requests
 

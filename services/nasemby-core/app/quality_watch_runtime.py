@@ -424,7 +424,10 @@ def plan_reconcile(*, now, subscription, task_item, torra_row, evidence, policy,
         if context["media_type"] == "movie" or int(unit.get("season_number") or 0) == context["season_number"]
     ]
     original = {unit["unit_key"]: deepcopy(unit) for unit in relevant}
-    if not relevant and not evidence.get("is_new"):
+    allow_baseline_create = bool(
+        evidence.get("allow_baseline_create") and evidence.get("baseline_success")
+    )
+    if not relevant and not evidence.get("is_new") and not allow_baseline_create:
         return {"status": "ignored", "reason": "historical_evidence", "writes": [], "unitKeys": [], "backfillUnitKeys": []}
     if not relevant and not _download_is_complete(task_item):
         return {"status": "ignored", "reason": "download_not_complete", "writes": [], "unitKeys": [], "backfillUnitKeys": []}
@@ -452,7 +455,7 @@ def plan_reconcile(*, now, subscription, task_item, torra_row, evidence, policy,
         reason = block_reason
     else:
         reason = ""
-        if evidence.get("is_new") and _download_is_complete(task_item):
+        if (evidence.get("is_new") or allow_baseline_create) and _download_is_complete(task_item):
             episodes = _episodes_to_create(context, torra_row, evidence)
             if episodes is None:
                 episodes = [None]
@@ -473,8 +476,23 @@ def plan_reconcile(*, now, subscription, task_item, torra_row, evidence, policy,
                 units[unit_key] = unit
                 created_keys.append(unit_key)
 
+        evidence_episodes = _positive_integers(evidence.get("episode_numbers"))
+        incoming_first_success = _utc(
+            evidence.get("first_download_at") or evidence.get("upstream_occurred_at")
+        )
         baseline_at = _utc(evidence.get("baseline_ready_at")) or now
         for unit in units.values():
+            applies_to_unit = (
+                context["media_type"] == "movie"
+                or int(unit.get("episode_number") or 0) in evidence_episodes
+            )
+            stored_first_success = _utc(unit.get("first_success_at"))
+            if (
+                applies_to_unit
+                and incoming_first_success
+                and (stored_first_success is None or incoming_first_success < stored_first_success)
+            ):
+                unit["first_success_at"] = _iso(incoming_first_success)
             stored_torra = _text(unit.get("torra_subscription_id"))
             if stored_torra and context["torra_subscription_id"] and stored_torra != context["torra_subscription_id"]:
                 unit["state"] = "blocked"
@@ -483,10 +501,17 @@ def plan_reconcile(*, now, subscription, task_item, torra_row, evidence, policy,
                 continue
             if context["torra_subscription_id"] and not stored_torra:
                 unit["torra_subscription_id"] = context["torra_subscription_id"]
-            if (
-                unit.get("state") == "waiting_library_baseline"
-                and context["torra_subscription_id"]
+            baseline_confirmed = bool(
+                context["torra_subscription_id"]
                 and _baseline_ready_for_unit(context, torra_row, evidence, unit)
+            )
+            stored_baseline = _utc(unit.get("baseline_ready_at"))
+            if (
+                baseline_confirmed
+                and unit.get("state") in {
+                    "waiting_library_baseline", "observing_upgrade", "observation_expired"
+                }
+                and (stored_baseline is None or baseline_at < stored_baseline)
             ):
                 observation_ends = baseline_at + timedelta(hours=int(unit.get("window_hours") or policy["window_hours"]))
                 unit["baseline_ready_at"] = _iso(baseline_at)
@@ -504,7 +529,7 @@ def plan_reconcile(*, now, subscription, task_item, torra_row, evidence, policy,
 
     writes = []
     compared = (
-        "torra_subscription_id", "state", "baseline_ready_at", "next_check_at",
+        "torra_subscription_id", "state", "first_success_at", "baseline_ready_at", "next_check_at",
         "observation_ends_at", "current_evidence", "last_result",
         "target_reached_at", "lifecycle_mode",
     )

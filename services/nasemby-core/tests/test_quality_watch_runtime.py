@@ -180,6 +180,54 @@ class QualityWatchRuntimeTests(unittest.TestCase):
 
         self.assertEqual(unit["first_success_at"], "2026-07-18T00:10:00.000Z")
 
+    def test_reliable_success_times_only_move_to_earlier_evidence(self):
+        self.now[0] = datetime(2026, 7, 18, 6, 0, tzinfo=timezone.utc)
+        common = {
+            "episode_numbers": [1],
+            "baseline_success": True,
+            "baseline_episode_numbers": [1],
+            "time_source": "symedia_completed",
+            "require_reliable_times": True,
+        }
+        initial = self.runtime.reconcile(
+            subscription(),
+            task_item(),
+            torra_row(),
+            {
+                **common,
+                "is_new": True,
+                "first_download_at": "2026-07-18T03:00:00Z",
+                "baseline_ready_at": "2026-07-18T04:00:00Z",
+            },
+        )["units"][0]
+        earlier = self.runtime.reconcile(
+            subscription(),
+            task_item(),
+            torra_row(),
+            {
+                **common,
+                "first_download_at": "2026-07-18T02:00:00Z",
+                "baseline_ready_at": "2026-07-18T03:00:00Z",
+            },
+        )["units"][0]
+        later = self.runtime.reconcile(
+            subscription(),
+            task_item(),
+            torra_row(),
+            {
+                **common,
+                "first_download_at": "2026-07-18T04:00:00Z",
+                "baseline_ready_at": "2026-07-18T05:00:00Z",
+            },
+        )["units"][0]
+
+        self.assertEqual(initial["first_success_at"], "2026-07-18T03:00:00.000Z")
+        self.assertEqual(initial["baseline_ready_at"], "2026-07-18T04:00:00.000Z")
+        self.assertEqual(earlier["first_success_at"], "2026-07-18T02:00:00.000Z")
+        self.assertEqual(earlier["baseline_ready_at"], "2026-07-18T03:00:00.000Z")
+        self.assertEqual(later["first_success_at"], earlier["first_success_at"])
+        self.assertEqual(later["baseline_ready_at"], earlier["baseline_ready_at"])
+
     def test_new_episodes_are_independent_and_subscription_window_overrides_global_default(self):
         first = self.runtime.reconcile(
             subscription(torra_quality_window_hours=24),

@@ -8,6 +8,7 @@ from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 import requests
 from flask import Flask, jsonify
@@ -17,6 +18,7 @@ from app.qbittorrent_assessment_runtime import assess_qb_task, summarize_qb_asse
 
 REQUEST_TIMEOUT_SECONDS = 10
 SUMMARY_CACHE_SECONDS = 5
+TORRENT_FILES_CACHE_SECONDS = 3600
 STATUS_PRIORITY = {
     "stalled": 0,
     "downloading": 1,
@@ -140,6 +142,9 @@ class QbittorrentClient:
         self._summary_cache_at = 0.0
         self._summary_refreshing = False
         self._summary_generation = 0
+        self._torrent_files_condition = threading.Condition(threading.RLock())
+        self._torrent_files_cache = {}
+        self._torrent_files_refreshing = set()
 
     def _invalidate_summary_cache(self) -> None:
         with self._summary_condition:
@@ -152,7 +157,52 @@ class QbittorrentClient:
         with self._summary_condition:
             self.config = config
             self.base_url = config.base_url.strip().rstrip("/")
+        with self._torrent_files_condition:
+            self._torrent_files_cache.clear()
         self._invalidate_summary_cache()
+
+    def torrent_files(self, torrent_hash: str) -> list[dict]:
+        torrent_hash = str(torrent_hash or "").strip()
+        if not torrent_hash:
+            raise RuntimeError("qBittorrent 任务 Hash 为空")
+        while True:
+            with self._torrent_files_condition:
+                cached = self._torrent_files_cache.get(torrent_hash)
+                if cached and self.monotonic() - cached[0] < TORRENT_FILES_CACHE_SECONDS:
+                    return deepcopy(cached[1])
+                if torrent_hash in self._torrent_files_refreshing:
+                    self._torrent_files_condition.wait()
+                    continue
+                self._torrent_files_refreshing.add(torrent_hash)
+                break
+
+        try:
+            if not self.base_url:
+                raise RuntimeError("未配置 QB_BASE_URL")
+            cookie = self._login()
+            payload = self._request(
+                f"/api/v2/torrents/files?hash={quote(torrent_hash, safe='')}",
+                cookie,
+            )
+            if not isinstance(payload, list):
+                raise RuntimeError("qBittorrent 返回了无效文件列表")
+            files = [
+                {
+                    "name": str(row.get("name") or ""),
+                    "size": _integer_or_number(row.get("size")),
+                    "progress": max(0, min(1, _number(row.get("progress")))),
+                    "priority": _integer_or_number(row.get("priority")),
+                }
+                for row in payload
+                if isinstance(row, dict) and str(row.get("name") or "").strip()
+            ]
+            with self._torrent_files_condition:
+                self._torrent_files_cache[torrent_hash] = (self.monotonic(), deepcopy(files))
+            return files
+        finally:
+            with self._torrent_files_condition:
+                self._torrent_files_refreshing.discard(torrent_hash)
+                self._torrent_files_condition.notify_all()
 
     def _empty_summary(self, error=None, observed_at=None):
         return {

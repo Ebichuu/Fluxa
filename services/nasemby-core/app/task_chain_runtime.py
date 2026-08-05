@@ -4,6 +4,7 @@ import math
 import os
 import json
 import re
+from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -1112,6 +1113,10 @@ class TaskChainService:
         self.emby = app.extensions["mcc_emby_client"]
         self.subscription_loader = subscription_loader or _read_subscriptions
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self._torra_subscription_snapshot = []
+
+    def torra_subscription_snapshot(self):
+        return deepcopy(self._torra_subscription_snapshot)
 
     def get_chain(self):
         with ThreadPoolExecutor(max_workers=7) as executor:
@@ -1152,6 +1157,10 @@ class TaskChainService:
             subscriptions = subscription_future.result()
             qb = qb_future.result()
             torra_rows, torra_error = torra_future.result()
+            if not torra_error:
+                self._torra_subscription_snapshot = [
+                    dict(row) for row in torra_rows if isinstance(row, dict)
+                ]
             subscriptions = merge_task_subscriptions(subscriptions, torra_rows)
             torra_upload, torra_upload_error = torra_upload_future.result()
             symedia_page, symedia_error = symedia_future.result()

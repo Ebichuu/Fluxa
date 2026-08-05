@@ -1637,12 +1637,18 @@ def create_app(
         config_loader=discover_runtime.load_subscription_config,
     )
     quality_runtime.set_candidate_backfill(private_rss_service.match_runtime.backfill_watch_unit)
+    task_chain_service = application.extensions.get("mcc_task_chain_service")
     quality_watch_bridge = QualityWatchBridgeRuntime(
         quality_repository,
         quality_runtime,
         subscription_loader=lambda: discover_runtime.load_subscription_items(remove_completed=False),
         config_loader=discover_runtime.load_subscription_config,
         clock=quality_repository.clock,
+        torra_subscription_loader=(
+            task_chain_service.torra_subscription_snapshot if task_chain_service else None
+        ),
+        qb_task_loader=qb_client.summary,
+        qb_file_loader=getattr(qb_client, "torrent_files", None),
     )
     application.extensions["mcc_quality_watch_bridge"] = quality_watch_bridge
     task_chain_v2_service = application.extensions.get("mcc_task_chain_v2_service")

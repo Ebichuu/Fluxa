@@ -550,6 +550,68 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
             "error": "任务链读取失败",
         })
 
+    def test_task_chain_reuses_the_same_torra_subscription_snapshot_for_bridge(self):
+        from flask import Flask
+
+        from app.task_chain_runtime import register_task_chain
+
+        remote_rows = [{
+            "id": "torra-read-only",
+            "name": "只读剧集",
+            "media_type": "tv",
+            "tmdb_id": 303,
+            "season_number": 1,
+        }]
+
+        class Qb:
+            base_url = ""
+
+            @staticmethod
+            def summary():
+                return qb_summary([])
+
+        class Torra:
+            base_url = "http://torra.example.test"
+
+            @staticmethod
+            def is_configured():
+                return True
+
+            @staticmethod
+            def list_subscriptions():
+                return remote_rows
+
+        class Empty:
+            base_url = ""
+            server_url = ""
+
+            @staticmethod
+            def is_configured():
+                return False
+
+            @staticmethod
+            def list_transfer_history(_count):
+                return {"rows": [], "total": 0}
+
+            @staticmethod
+            def get_tmdb_library_index():
+                return None
+
+        app = Flask(f"{__name__}-torra-snapshot")
+        app.extensions.update({
+            "mcc_qbittorrent_client": Qb(),
+            "mcc_torra_client": Torra(),
+            "mcc_symedia_client": Empty(),
+            "mcc_emby_client": Empty(),
+        })
+        service = register_task_chain(app, subscription_loader=lambda: [])
+
+        service.get_chain()
+        snapshot = service.torra_subscription_snapshot()
+        snapshot[0]["tmdb_id"] = 999
+
+        self.assertEqual(service.torra_subscription_snapshot(), remote_rows)
+
     def test_v1_route_presents_only_opaque_external_references(self):
         from flask import Flask
 

@@ -525,6 +525,7 @@ class QualityWatchRepository:
                 allowed = {
                     "torra_subscription_id": str,
                     "state": str,
+                    "first_success_at": str,
                     "baseline_ready_at": str,
                     "next_check_at": str,
                     "observation_ends_at": str,
