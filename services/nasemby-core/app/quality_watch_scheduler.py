@@ -112,13 +112,16 @@ class QualityWatchScheduler:
         return _truthy(self.environment.get("MCC_TORRA_QUALITY_WATCH_ENABLED"))
 
     def _subscriptions(self):
+        local_confirmed = True
         try:
             payload = self.subscription_loader()
         except Exception:
             payload = []
+            local_confirmed = False
         if isinstance(payload, dict):
             payload = payload.get("items") or []
         local = [item for item in payload if isinstance(item, dict)]
+        torra_confirmed = True
         try:
             if self.torra is None or not self.torra.is_configured():
                 raise RuntimeError("torra_unavailable")
@@ -126,8 +129,12 @@ class QualityWatchScheduler:
             if not isinstance(remote, list):
                 raise RuntimeError("torra_response_invalid")
         except Exception:
-            return QualityWatchSubscriptionResolver(local, []).subscription_map(), False
-        return QualityWatchSubscriptionResolver(local, remote).subscription_map(), True
+            remote = []
+            torra_confirmed = False
+        return QualityWatchSubscriptionResolver(local, remote).subscription_map(), {
+            "local": local_confirmed,
+            "torra": torra_confirmed,
+        }
 
     @staticmethod
     def _batch_size(config):
@@ -208,12 +215,12 @@ class QualityWatchScheduler:
         self._update_unit(unit, state="blocked", last_result_json={"reason": reason})
         return {"status": "blocked", "reason": reason, "unitId": unit["unit_key"]}
 
-    def _defer_subscription_source(self, unit):
+    def _defer_subscription_source(self, unit, source="torra"):
         retry_at = _as_utc(self.clock()) + timedelta(minutes=5)
         return self._update_unit(
             unit,
             next_check_at=_iso(retry_at),
-            last_result_json={"reason": "torra_source_unavailable"},
+            last_result_json={"reason": f"{source}_source_unavailable"},
         )
 
     def _defer(self, context, reason, **details):
@@ -487,13 +494,15 @@ class QualityWatchScheduler:
             return self._defer(context, reason)
         return self._handle_claim(context, self._claim(context, config), config, preflight_checked=True)
 
-    def _due_contexts(self, config, subscriptions, torra_confirmed=True):
+    def _due_contexts(self, config, subscriptions, source_confirmation=None):
+        source_confirmation = source_confirmation or {"local": True, "torra": True}
         contexts = []
         for unit in self.repository.list_scheduler_watch_units():
             subscription = subscriptions.get(unit["subscription_key"])
             if not subscription:
-                if unit["subscription_key"].startswith("torra:") and not torra_confirmed:
-                    self._defer_subscription_source(unit)
+                source = "torra" if unit["subscription_key"].startswith("torra:") else "local"
+                if not source_confirmation.get(source, False):
+                    self._defer_subscription_source(unit, source)
                     continue
                 self._block_unit(unit, "subscription_missing")
                 continue
@@ -622,7 +631,7 @@ class QualityWatchScheduler:
         config = self._config()
         if not self._environment_enabled():
             return {"status": "disabled", "processed": []}
-        subscriptions, torra_confirmed = self._subscriptions()
+        subscriptions, source_confirmation = self._subscriptions()
         inflight = [
             action for action in (
                 self.repository.find_inflight_action("torra", ANALYSIS_ACTION_TYPE),
@@ -664,7 +673,7 @@ class QualityWatchScheduler:
                         "processed": missing_processed,
                     }
         selected = self._select_fair(
-            self._due_contexts(config, subscriptions, torra_confirmed), config, state
+            self._due_contexts(config, subscriptions, source_confirmation), config, state
         )
         processed = list(missing_processed)
         for context in selected:

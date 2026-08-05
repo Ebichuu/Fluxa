@@ -210,6 +210,135 @@ class QualityWatchKeyMigrationTests(unittest.TestCase):
 
             self.assertIsNotNone(quality.get_watch_unit(public_unit))
 
+    def test_public_reference_used_as_json_key_blocks_and_report_stays_redacted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _path, quality, _rss = self.repositories(directory)
+            remote_id = "remote-json-object-key"
+            public_key = torra_public_subscription_key(remote_id)
+            public_unit = self.seed_unit(
+                quality, public_key, remote_id,
+                current_evidence={public_key: {"state": "legacy"}},
+            )
+
+            with self.assertRaises(QualityWatchKeyMigrationError) as error:
+                run_quality_watch_key_migration(quality, clock=lambda: NOW)
+
+            report = Path(error.exception.result["report"]).read_text(encoding="utf-8")
+            self.assertIn("unknown_json_key_reference", report)
+            self.assertNotIn(public_key, report)
+            self.assertNotIn(remote_id, report)
+            self.assertIsNotNone(quality.get_watch_unit(public_unit))
+
+    def test_rss_only_candidate_migrates_without_quality_watch_unit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _path, quality, rss = self.repositories(directory)
+            remote_id = "remote-rss-only"
+            public_key = torra_public_subscription_key(remote_id)
+            canonical_key = f"torra:{remote_id}"
+            public_unit = make_unit_key(public_key, "tv", 1, 2)
+            canonical_unit = make_unit_key(canonical_key, "tv", 1, 2)
+            source = rss.save_source({
+                "name": "测试", "feedUrl": "https://tracker.example/rss", "enabled": True,
+            })
+            rss.upsert_items(source["id"], [{
+                "fingerprint": "rss-only", "guid": "rss-only",
+                "title": "Example S01E01-E04", "media_type": "tv",
+                "season_number": 1, "episode_start": 1, "episode_end": 4,
+                "published_at": "2026-08-05T02:00:00Z",
+            }])
+            item = rss.search_items(limit=1)["items"][0]
+            match = rss.create_match(item["id"], public_key, public_unit, {
+                "mediaType": "tv",
+                "season": {"item": 1, "unit": 1},
+                "episode": {"start": 1, "end": 4, "unit": 2},
+            })
+            rss.set_match_binding(
+                match["id"], torra_subscription_id=remote_id,
+                target_key="tv:tmdb:202:season:1:episodes:1-4",
+                artifact_key="artifact:rss-only",
+            )
+            action = quality.claim_action(
+                "rss-shadow:rss-only", public_key, "fluxa", "rss-candidate-evaluation",
+                unit_key=public_unit, request_summary={"targetKey": public_unit},
+            )["action"]
+            quality.complete_action(action["action_id"], "succeeded", {})
+
+            result = run_quality_watch_key_migration(quality, clock=lambda: NOW)
+
+            self.assertTrue(result["applied"])
+            stored = rss.get_match(match["id"])
+            self.assertEqual(stored["subscriptionId"], canonical_key)
+            self.assertEqual(stored["unitId"], canonical_unit)
+            stored_action = quality.get_action(action["action_id"])
+            self.assertEqual(stored_action["subscription_key"], canonical_key)
+            self.assertEqual(stored_action["unit_key"], canonical_unit)
+            self.assertEqual(stored_action["request_summary"]["targetKey"], canonical_unit)
+
+    def test_unowned_blocked_rss_match_is_archived_without_removing_rss_item(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _path, quality, rss = self.repositories(directory)
+            public_key = torra_public_subscription_key("removed-remote")
+            public_unit = make_unit_key(public_key, "tv", 1, 3)
+            source = rss.save_source({
+                "name": "测试", "feedUrl": "https://tracker.example/rss", "enabled": True,
+            })
+            rss.upsert_items(source["id"], [{
+                "fingerprint": "orphan-rss", "guid": "orphan-rss",
+                "title": "Example S01E01-E04", "media_type": "tv",
+                "season_number": 1, "episode_start": 1, "episode_end": 4,
+                "published_at": "2026-08-05T02:00:00Z",
+            }])
+            item = rss.search_items(limit=1)["items"][0]
+            match = rss.create_match(item["id"], public_key, public_unit, {
+                "mediaType": "tv",
+                "season": {"item": 1, "unit": 1},
+                "episode": {"start": 1, "end": 4, "unit": 3},
+            })
+            action = quality.claim_action(
+                "rss-shadow:orphan", public_key, "fluxa", "rss-candidate-evaluation",
+                unit_key=public_unit, request_summary={"targetKey": public_unit},
+            )["action"]
+            quality.complete_action(action["action_id"], "succeeded", {})
+            with quality.runtime.transaction(immediate=True) as connection:
+                connection.execute(
+                    "UPDATE rss_subscription_matches SET evaluation_status='blocked', "
+                    "evaluation_reason='subscription_missing', evaluation_action_id=? WHERE id=?",
+                    (action["action_id"], match["id"]),
+                )
+
+            run_quality_watch_key_migration(quality, clock=lambda: NOW)
+
+            raw_match = self.raw_rows(
+                quality, "SELECT * FROM rss_subscription_matches WHERE id=?", (match["id"],)
+            )[0]
+            self.assertEqual(raw_match["archive_state"], "archived")
+            self.assertEqual(raw_match["archive_reason_code"], "canonical_key_identity_unavailable")
+            self.assertTrue(raw_match["subscription_key"].startswith("rss-archive:"))
+            self.assertEqual(
+                self.raw_rows(quality, "SELECT COUNT(*) AS count FROM rss_items")[0]["count"], 1
+            )
+
+    def test_identical_conflict_reuses_first_backup_and_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path, quality, _rss = self.repositories(directory)
+            remote_id = "duplicate-conflict"
+            public_key = torra_public_subscription_key(remote_id)
+            self.seed_unit(quality, public_key, remote_id)
+            self.seed_unit(quality, f"torra:{remote_id}", remote_id)
+
+            with self.assertRaises(QualityWatchKeyMigrationError) as first:
+                run_quality_watch_key_migration(quality, clock=lambda: NOW)
+            with self.assertRaises(QualityWatchKeyMigrationError) as second:
+                run_quality_watch_key_migration(quality, clock=lambda: NOW)
+
+            self.assertEqual(first.exception.result["backup"], second.exception.result["backup"])
+            self.assertEqual(first.exception.result["report"], second.exception.result["report"])
+            self.assertFalse(second.exception.result["backupCreated"])
+            self.assertEqual(len(list((path.parent / "migrations").glob("*.sqlite3"))), 1)
+            self.assertEqual(
+                len(list(path.parent.glob("*.quality-watch-canonical-key-v4.conflict.*.json"))), 1
+            )
+
     def test_registered_json_field_with_wrong_key_kind_blocks_migration(self):
         with tempfile.TemporaryDirectory() as directory:
             _path, quality, _rss = self.repositories(directory)

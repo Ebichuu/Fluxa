@@ -141,6 +141,7 @@ class QualityWatchSchedulerTests(unittest.TestCase):
         rss_runtime=None,
         automation_runtime=None,
         calendar_service=None,
+        subscription_loader=None,
     ):
         return QualityWatchScheduler(
             self.repository,
@@ -148,7 +149,7 @@ class QualityWatchSchedulerTests(unittest.TestCase):
                 environment if environment is not None else {"MCC_TORRA_QUALITY_WATCH_ENABLED": "true"},
                 self.torra,
                 self.qb,
-                lambda: {"items": self.subscriptions},
+                subscription_loader or (lambda: {"items": self.subscriptions}),
                 lambda: self.config,
                 rss_runtime=rss_runtime,
                 automation_runtime=automation_runtime,
@@ -235,6 +236,25 @@ class QualityWatchSchedulerTests(unittest.TestCase):
         self.assertEqual(result["processed"], [])
         self.assertEqual(updated["state"], ready["state"])
         self.assertEqual(updated["last_result"]["reason"], "torra_source_unavailable")
+        self.assertEqual(self.torra.submissions, [])
+
+    def test_local_subscription_read_failure_does_not_block_local_unit(self):
+        key = "tv:303"
+        unit = self.repository.ensure_watch_unit(
+            key, "tv", 1, 1, window_hours=24, torra_subscription_id="remote-local",
+        )
+        ready = self.repository.mark_baseline_ready(unit["unit_key"], offsets_minutes=[30, 1440])
+        self.now[0] += timedelta(minutes=31)
+
+        def fail_local_read():
+            raise OSError("sqlite temporarily unavailable")
+
+        result = self._scheduler(subscription_loader=fail_local_read).run_once()
+        updated = self.repository.get_watch_unit(unit["unit_key"])
+
+        self.assertEqual(result["processed"], [])
+        self.assertEqual(updated["state"], ready["state"])
+        self.assertEqual(updated["last_result"]["reason"], "local_source_unavailable")
         self.assertEqual(self.torra.submissions, [])
 
     @staticmethod

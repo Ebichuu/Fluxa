@@ -298,6 +298,33 @@ class TorraReadRuntimeContractTests(unittest.TestCase):
         self.assertEqual(session.requests[1][2]["headers"]["Authorization"], "Bearer token-one")
         self.assertEqual(session.requests[3][2]["headers"]["Authorization"], "Bearer token-two")
 
+    def test_subscription_list_rejects_malformed_success_payload(self):
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        session = FakeSession([
+            FakeResponse(payload={"success": True, "data": {"unexpected": "shape"}}),
+        ])
+        client = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "响应结构无法确认"):
+            client.list_subscriptions()
+
+    def test_subscription_list_accepts_confirmed_empty_payload(self):
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        session = FakeSession([
+            FakeResponse(payload={"success": True, "data": {"subscriptions": []}}),
+        ])
+        client = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+        )
+
+        self.assertEqual(client.list_subscriptions(), [])
+
     def test_meta_weight_rules_use_only_the_official_read_endpoint(self):
         from app.torra_read_runtime import TorraReadClient, TorraReadConfig
 

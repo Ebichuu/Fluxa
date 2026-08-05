@@ -57,8 +57,8 @@ def _iso_timestamp(value: datetime) -> str:
     )
 
 
-def extract_subscription_rows(data) -> list[dict]:
-    rows = []
+def extract_subscription_rows(data, *, strict=False) -> list[dict]:
+    rows = None
     if isinstance(data, list):
         rows = data
     elif isinstance(data, dict):
@@ -67,6 +67,12 @@ def extract_subscription_rows(data) -> list[dict]:
             rows = body["subscriptions"]
         elif isinstance(data.get("subscriptions"), list):
             rows = data["subscriptions"]
+    if rows is None:
+        if strict:
+            raise RuntimeError("Torra 订阅响应结构无法确认")
+        return []
+    if strict and any(not isinstance(row, dict) for row in rows):
+        raise RuntimeError("Torra 订阅响应包含无效条目")
     return [row for row in rows if isinstance(row, dict)]
 
 
@@ -311,7 +317,7 @@ class TorraReadClient:
             raise RuntimeError("Torra Token 无效或已过期")
         if status >= 400:
             raise RuntimeError(f"Torra 响应异常：{status}")
-        return extract_subscription_rows(data)
+        return extract_subscription_rows(data, strict=True)
 
     def list_meta_weight_rules(self) -> list[dict]:
         """Read Torra's rule source without mutating its configuration."""
