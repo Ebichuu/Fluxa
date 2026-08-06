@@ -1646,6 +1646,103 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertNotIn("tracker.example", str(preview))
         self.assertNotIn("private", str(preview))
 
+    def test_exact_download_preview_blocks_all_active_qb_target_states(self):
+        _torra, qb, group, _preview = self._prepare_ready_exact_download()
+        baseline_task = dict(qb.tasks[0])
+
+        for status in ("downloading", "stalled", "queued", "paused"):
+            with self.subTest(status=status):
+                qb.tasks = [baseline_task, {
+                    "name": "Test Show S01E02 candidate.mkv",
+                    "status": status,
+                }]
+
+                preview, _fingerprint, _match_ids = self.runtime.preview_artifact_exact_download(
+                    group["id"], persist=False
+                )
+
+                self.assertFalse(preview["ready"])
+                self.assertIn(
+                    "RSS_EXACT_QB_BUSY",
+                    [row["code"] for row in preview["blockers"]],
+                )
+                self.assertEqual(qb.added, [])
+
+        qb.tasks = [baseline_task, {
+            "name": "Test Show S02E02 candidate.mkv",
+            "status": "queued",
+        }]
+        preview, _fingerprint, _match_ids = self.runtime.preview_artifact_exact_download(
+            group["id"], persist=False
+        )
+        self.assertTrue(preview["ready"])
+
+    def test_legacy_qb_preflight_blocks_queued_and_paused_targets(self):
+        unit = self._watch("tv:202:s1", episode=1, title="Test Show")
+        torra, qb = self._enable_analysis()
+        self._configure_shadow_torra(torra)
+        inserted = self._insert("Test Show S01E01 2160p WEB-DL.mkv", start=1, end=1)
+        match = self.rss.get_match(inserted["_match_ids"][0])
+        context = {
+            "subscription": self.subscriptions[0],
+            "unit": self.watch.get_watch_unit(unit["unit_key"]),
+            "match": match,
+            "torra_id": "torra-202",
+        }
+
+        for status in ("queued", "paused"):
+            with self.subTest(status=status):
+                qb.tasks = [{
+                    "name": "Test Show S01E01 candidate.mkv",
+                    "status": status,
+                }]
+                self.assertEqual(self.runtime._qb_preflight(context), "qb_busy")
+
+    def test_artifact_exact_download_rejects_download_url_drift(self):
+        _torra, qb, group, preview = self._prepare_ready_exact_download()
+        representative = group["representativeMatch"]
+        item = self.rss.get_item(representative["itemId"], public=False)
+        self.rss.upsert_items(self.source["id"], [{
+            "fingerprint": item["fingerprint"],
+            "title": item["title"],
+            "published_at": item["published_at"],
+            "media_type": item["media_type"],
+            "season_number": item["season_number"],
+            "episode_start": item["episode_start"],
+            "episode_end": item["episode_end"],
+            "size_bytes": item["size_bytes"],
+            "download_url": "https://tracker.example/download?passkey=replaced",
+        }])
+
+        with self.assertRaises(RssExactDownloadError) as raised:
+            self.runtime.execute_artifact_exact_download(
+                group["id"], preview["previewToken"], "manual-request-url-drift"
+            )
+
+        self.assertEqual(raised.exception.code, "RSS_EXACT_PREVIEW_STALE")
+        self.assertEqual(qb.added, [])
+        self.assertNotIn("tracker.example", raised.exception.message)
+        self.assertNotIn("replaced", raised.exception.message)
+
+    def test_artifact_exact_download_rechecks_qb_occupancy_before_submit(self):
+        _torra, qb, group, preview = self._prepare_ready_exact_download()
+        baseline_task = dict(qb.tasks[0])
+
+        for status in ("queued", "paused"):
+            with self.subTest(status=status):
+                qb.tasks = [baseline_task, {
+                    "name": "Test Show S01E02 candidate.mkv",
+                    "status": status,
+                }]
+
+                with self.assertRaises(RssExactDownloadError) as raised:
+                    self.runtime.execute_artifact_exact_download(
+                        group["id"], preview["previewToken"], f"manual-request-{status}"
+                    )
+
+                self.assertEqual(raised.exception.code, "RSS_EXACT_PREVIEW_STALE")
+                self.assertEqual(qb.added, [])
+
     def test_artifact_exact_download_submits_once_and_replays_stable_receipt(self):
         _torra, qb, group, preview = self._prepare_ready_exact_download()
 

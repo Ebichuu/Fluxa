@@ -92,6 +92,24 @@ class ProblemGroupRuntimeTests(unittest.TestCase):
 
         self.assertEqual(projection["summary"]["actionRequiredResources"], 1)
 
+    def test_pipeline_outcome_reason_overrides_stale_top_level_qb_text(self):
+        item = problem_item("symedia-failure")
+        item["reasonCode"] = "QB_STALLED"
+        item["reasonText"] = "qB 下载卡住"
+        item["userReasonText"] = "qB 下载需要检查"
+        item["pipelineOutcome"] = {
+            "state": "action_required",
+            "stage": "symedia",
+            "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+            "reasonText": "Symedia 作品识别失败",
+        }
+
+        group = derive_problem_groups([item])["groups"][0]
+
+        self.assertEqual(group["stage"], "symedia")
+        self.assertEqual(group["reasonCode"], "SYMEDIA_LIBRARY_FAILED")
+        self.assertEqual(group["reasonText"], "Symedia 作品识别失败")
+
 
 if __name__ == "__main__":
     unittest.main()

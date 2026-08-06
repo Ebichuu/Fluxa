@@ -42,11 +42,34 @@ def _resource_ref(item: dict) -> str:
     return str(item.get("chainId") or item.get("targetKey") or item.get("id") or "").strip()
 
 
+def _pipeline_outcome(item: dict):
+    outcome = item.get("pipelineOutcome")
+    if not isinstance(outcome, dict):
+        return None
+    if not str(outcome.get("stage") or "").strip():
+        return None
+    if not str(outcome.get("reasonCode") or "").strip():
+        return None
+    return outcome
+
+
 def _stage_reason(item: dict) -> tuple[str, str]:
-    outcome = item.get("pipelineOutcome") if isinstance(item.get("pipelineOutcome"), dict) else {}
-    stage = str(outcome.get("stage") or item.get("currentStep") or "").strip().lower()
-    reason_code = str(outcome.get("reasonCode") or item.get("reasonCode") or "").strip().upper()
+    outcome = _pipeline_outcome(item)
+    if outcome is not None:
+        return (
+            str(outcome.get("stage") or "").strip().lower(),
+            str(outcome.get("reasonCode") or "").strip().upper(),
+        )
+    stage = str(item.get("currentStep") or "").strip().lower()
+    reason_code = str(item.get("reasonCode") or "").strip().upper()
     return stage, reason_code
+
+
+def _reason_text(item: dict) -> str:
+    outcome = _pipeline_outcome(item)
+    if outcome is not None:
+        return str(outcome.get("reasonText") or "当前任务需要处理")
+    return str(item.get("userReasonText") or item.get("reasonText") or "当前任务需要处理")
 
 
 def _group_key(item: dict):
@@ -129,7 +152,7 @@ def derive_problem_groups(items) -> dict:
             "seasonNumber": season or 0,
             "stage": stage,
             "reasonCode": reason_code,
-            "reasonText": str(primary.get("userReasonText") or primary.get("reasonText") or "当前任务需要处理"),
+            "reasonText": _reason_text(primary),
             "resourceCount": len(ordered_members),
             "identityUnconfirmedResources": sum(not _reliable_identity(member) for member in ordered_members),
             "episodeNumbers": episodes,

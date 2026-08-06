@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from app.private_rss_parser import parse_private_feed
+from app.private_rss_parser import extract_release_scope, parse_private_feed
 
 
 MTEAM_FIXTURE = Path(__file__).with_name("fixtures") / "mteam_rss_sanitized.xml"
@@ -43,6 +43,12 @@ RSS_YEAR_EPISODE_SAMPLE = '''<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel><title>Variety</title><item>
 <title>Ai Qing Bao Wei Zhan S2026E70 1080p WEB-DL</title><guid>variety-70</guid>
 <category>综艺</category></item></channel></rss>'''.encode("utf-8")
+
+RSS_X265_MOVIE_SAMPLE = '''<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Movies</title><item>
+<title>Sense and Sensibility 1995 1080p BluRay HDR10 x265 10bit</title>
+<guid>sense-and-sensibility-x265</guid><category>Movie</category>
+</item></channel></rss>'''.encode("utf-8")
 
 
 class PrivateRssParserTests(unittest.TestCase):
@@ -141,6 +147,22 @@ class PrivateRssParserTests(unittest.TestCase):
         self.assertEqual(item["media_type"], "tv")
         self.assertIsNone(item["season_number"])
         self.assertEqual((item["episode_start"], item["episode_end"]), (70, 70))
+
+    def test_nxm_scope_excludes_video_codec_tokens(self):
+        movie = parse_private_feed(RSS_X265_MOVIE_SAMPLE)["items"][0]
+
+        self.assertEqual(movie["media_type"], "movie")
+        self.assertIsNone(movie["season_number"])
+        self.assertIsNone(movie["episode_start"])
+        self.assertIsNone(movie["episode_end"])
+        self.assertEqual(extract_release_scope("Show 1x03"), ("tv", 1, 3, 3))
+        self.assertEqual(extract_release_scope("Show 1 x 03"), ("tv", 1, 3, 3))
+        for codec in ("x264", "x265", "x266"):
+            with self.subTest(codec=codec):
+                self.assertEqual(
+                    extract_release_scope(f"Movie HDR10 {codec} 10bit", ["Movie"]),
+                    ("movie", None, None, None),
+                )
 
 
 if __name__ == "__main__":

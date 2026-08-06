@@ -150,9 +150,10 @@ def extract_release_scope(title, categories=None):
         season_match = re.search(r"(?i)\bS(\d{1,2})\b", text)
         if not season_match:
             season_match = re.search(r"(?i)(?:Season\s*|第\s*)(\d{1,2})(?:\s*季)", text)
+        nxm_text = re.sub(r"(?i)\bx(?:264|265|266)\b", "", text)
         season_episode_match = re.search(
             r"(?i)(?<!\d)(\d{1,2})\s*x\s*(\d{1,4})(?:\s*[-~]\s*(\d{1,4}))?",
-            text,
+            nxm_text,
         )
         episode_match = re.search(r"第\s*(\d{1,4})(?:\s*[-~至]\s*(\d{1,4}))?\s*[集话]", text)
         if not episode_match:

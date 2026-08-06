@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import secrets
@@ -37,6 +38,7 @@ ANALYSIS_ACTION_TYPE = "rewash-analysis"
 DOWNLOAD_ACTION_TYPE = "rewash-download"
 SHADOW_EVALUATION_ACTION_TYPE = "rss-candidate-evaluation"
 MANUAL_SUBSCRIPTION_SOURCE = "manual-subscription"
+QB_TARGET_OCCUPYING_STATES = {"downloading", "stalled", "queued", "paused"}
 PERMANENT_RECLAIM_CONTEXT_CODES = {
     "window_expired": "RSS_REWASH_WINDOW_EXPIRED",
     "watch_unit_missing": "RSS_REWASH_WATCH_UNIT_MISSING",
@@ -184,7 +186,7 @@ def _truthy(value):
 
 
 def qb_task_matches(task, subscription, unit):
-    if str(task.get("status") or "").lower() not in {"downloading", "stalled"}:
+    if str(task.get("status") or "").lower() not in QB_TARGET_OCCUPYING_STATES:
         return False
     canonical, aliases = _subscription_aliases(subscription)
     if not any(_contains_title(task.get("name"), alias) for alias in (*canonical, *aliases)):
@@ -201,6 +203,10 @@ def qb_task_matches(task, subscription, unit):
         and _int(match.group(2)) <= episode <= _int(match.group(3) or match.group(2))
         for match in matches
     )
+
+
+def _secret_digest(value) -> str:
+    return hashlib.sha256(_text(value).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -1908,6 +1914,7 @@ class RssSubscriptionMatchRuntime:
                             routing = {
                                 "subscriptionKey": _text(internal_match.get("subscription_key")),
                                 "downloadUrl": _text(item.get("download_url")),
+                                "downloadUrlDigest": _secret_digest(item.get("download_url")),
                                 "savePath": save_path,
                                 "downloaderId": downloader_id,
                                 "category": category,
@@ -1972,7 +1979,10 @@ class RssSubscriptionMatchRuntime:
             for validation in validations
             if isinstance(validation.get("_execution"), dict) and validation.get("_execution")
         ]
-        routing_keys = ("subscriptionKey", "downloadUrl", "savePath", "downloaderId", "category", "artifactKey", "ruleHash")
+        routing_keys = (
+            "subscriptionKey", "downloadUrl", "downloadUrlDigest", "savePath",
+            "downloaderId", "category", "artifactKey", "ruleHash",
+        )
         if len(routes) != len(unit_results) or not routes:
             add_blocker("RSS_EXACT_ROUTE_UNCONFIRMED", "订阅级下载参数暂未确认")
         elif any(
