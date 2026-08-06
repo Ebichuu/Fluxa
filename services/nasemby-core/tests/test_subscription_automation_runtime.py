@@ -192,6 +192,18 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
         self.assertEqual(current.status_code, 200)
         self.assertEqual(current.get_json()["lifecycleMode"], "follow_rss")
         self.assertFalse(current.get_json()["missingFallbackEnabled"])
+        self.assertEqual(current.get_json()["analysisState"], "collecting")
+        self.assertEqual(current.get_json()["executionMode"], "disabled")
+        self.assertFalse(current.get_json()["executionEnvironmentEnabled"])
+        self.assertEqual(current.get_json()["automaticEligibleCount"], 0)
+        self.assertEqual(current.get_json()["baselineCounts"], {
+            "total": 1,
+            "ready": 1,
+            "pending": 0,
+            "missing": 0,
+            "conflict": 0,
+            "expired": 0,
+        })
         updated = self.client.patch("/api/v2/subscription-automation/settings", json={
             "enabled": True,
             "missingFallbackEnabled": True,
@@ -223,6 +235,83 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
             json={"missingFallbackEnabled": "true"},
         )
         self.assertEqual(invalid_fallback.status_code, 422)
+        unconfirmed_execution = self.client.patch(
+            "/api/v2/subscription-automation/settings",
+            json={"executionMode": "manual"},
+        )
+        self.assertEqual(unconfirmed_execution.status_code, 422)
+        automatic_execution = self.client.patch(
+            "/api/v2/subscription-automation/settings",
+            json={"executionMode": "automatic", "executionModeConfirm": True},
+        )
+        self.assertEqual(automatic_execution.status_code, 422)
+        manual_execution = self.client.patch(
+            "/api/v2/subscription-automation/settings",
+            json={"executionMode": "manual", "executionModeConfirm": True},
+        )
+        self.assertEqual(manual_execution.status_code, 200)
+        self.assertEqual(manual_execution.get_json()["executionMode"], "manual")
+        disabled_execution = self.client.patch(
+            "/api/v2/subscription-automation/settings",
+            json={"executionMode": "disabled", "executionModeConfirm": True},
+        )
+        self.assertEqual(disabled_execution.status_code, 200)
+        self.assertEqual(disabled_execution.get_json()["executionMode"], "disabled")
+
+    def test_settings_analysis_state_uses_only_local_candidate_projection(self):
+        source = self.rss.save_source({
+            "name": "Contract RSS",
+            "feedUrl": "https://tracker.example/contract.xml",
+        })
+        self.rss.upsert_items(source["id"], [{
+            "fingerprint": "contract-upgrade",
+            "title": "测试剧 S01E01 2160p",
+        }])
+        item = self.rss.search_items(source_id=source["id"])["items"][0]
+        match = self.rss.create_match(
+            item["id"], "tv:202", self.unit["unit_key"],
+            {
+                "mediaType": "tv",
+                "season": {"item": 1, "unit": 1},
+                "episode": {"start": 1, "end": 1, "unit": 1},
+            },
+        )
+
+        scoring = self.client.get("/api/v2/subscription-automation/settings").get_json()
+        self.assertEqual(scoring["analysisState"], "scoring")
+
+        self.rss.set_match_binding(
+            match["id"],
+            torra_subscription_id="torra-202",
+            target_key="tv:tmdb:202:season:1:episodes:1-1",
+            artifact_key="rss:contract-upgrade",
+        )
+        self.rss.save_match_evaluation([match["id"]], {
+            "ruleId": "rule-1",
+            "ruleHash": "rule-hash-1",
+            "candidateScore": 90,
+            "baselineScore": 70,
+            "status": "scored",
+            "decision": "current_best",
+        })
+        self.rss.save_candidate_decisions([{
+            "matchIds": [match["id"]],
+            "decision": "current_best",
+            "reason": "higher_score",
+            "bestCandidate": True,
+        }])
+        self.config["torra_quality_execution_mode"] = "manual"
+
+        ready = self.client.get("/api/v2/subscription-automation/settings").get_json()
+
+        self.assertEqual(ready["analysisState"], "ready")
+        self.assertEqual(ready["executionMode"], "manual")
+        self.assertEqual(ready["automaticEligibleCount"], 1)
+        self.assertEqual((self.torra.analyses, self.torra.downloads), ([], []))
+
+        self.environment["MCC_TORRA_QUALITY_WATCH_ENABLED"] = "false"
+        disabled = self.client.get("/api/v2/subscription-automation/settings").get_json()
+        self.assertEqual(disabled["analysisState"], "disabled")
 
     def test_bridge_rollout_and_baseline_preview_routes_are_local_and_auditable(self):
         summary = self.client.get("/api/v2/subscription-automation/bridge-summary")
@@ -705,6 +794,93 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
         self.assertEqual(missing.get_json()["code"], "RSS_MATCH_NOT_FOUND")
         self.assertEqual(calls, ["public-match", "missing"])
         self.assertEqual((self.torra.analyses, self.torra.downloads), ([], []))
+
+    def test_rss_artifact_exact_download_routes_reject_client_routing_and_redact_action(self):
+        calls = []
+        claimed = self.repository.claim_action(
+            "rss-exact-api-test",
+            "torra:remote-private-id",
+            "qbittorrent",
+            "rss-exact-download",
+            unit_key="rss-artifact:public-group",
+            request_summary={"source": "manual-rss-artifact"},
+        )["action"]
+        action = self.repository.complete_action(
+            claimed["action_id"],
+            "succeeded",
+            {
+                "accepted": True,
+                "savePath": "/downloads/private",
+                "downloadUrl": "https://tracker.example/download?passkey=private",
+                "groupId": "rss-artifact:public-group",
+            },
+        )
+
+        def preview(group_id):
+            calls.append(("preview", group_id))
+            return ({
+                "status": "ready",
+                "ready": True,
+                "capabilityState": "ready",
+                "groupId": group_id,
+                "matchId": "public-match",
+                "episodeLabel": "S01E01–E02",
+                "coveredUnitCount": 2,
+                "candidateScore": 30,
+                "baselineScore": 10,
+                "scoreGain": 20,
+                "downloadCategory": "anime",
+                "downloadCategoryConfigured": True,
+                "destinationConfigured": True,
+                "previewToken": "public-preview-token",
+                "expiresAt": "2026-07-18T01:10:00Z",
+                "blockers": [],
+                "observedAt": "2026-07-18T01:00:00Z",
+            }, "fingerprint", ["public-match"])
+
+        def execute(group_id, preview_token, idempotency_key):
+            calls.append(("execute", group_id, preview_token, idempotency_key))
+            return action
+
+        self.rss_runtime.preview_artifact_exact_download = preview
+        self.rss_runtime.execute_artifact_exact_download = execute
+        preview_response = self.client.post(
+            "/api/v2/rss-artifact-groups/public-group/exact-download-previews",
+            json={},
+        )
+        injected = self.client.post(
+            "/api/v2/rss-artifact-groups/public-group/exact-downloads",
+            json={
+                "confirm": True,
+                "previewToken": "public-preview-token",
+                "idempotencyKey": "manual-request-0001",
+                "savePath": "/downloads/other",
+            },
+        )
+        accepted = self.client.post(
+            "/api/v2/rss-artifact-groups/public-group/exact-downloads",
+            json={
+                "confirm": True,
+                "previewToken": "public-preview-token",
+                "idempotencyKey": "manual-request-0001",
+            },
+        )
+
+        self.assertEqual(preview_response.status_code, 200)
+        self.assertEqual(preview_response.get_json()["coveredUnitCount"], 2)
+        self.assertEqual(injected.status_code, 422)
+        self.assertEqual(injected.get_json()["code"], "SUBSCRIPTION_AUTOMATION_FIELDS_INVALID")
+        self.assertEqual(accepted.status_code, 202)
+        self.assertEqual(accepted.get_json()["type"], "rss-exact-download")
+        public_text = accepted.get_data(as_text=True)
+        self.assertNotIn("remote-private-id", public_text)
+        self.assertNotIn("/downloads/private", public_text)
+        self.assertNotIn("tracker.example", public_text)
+        self.assertNotIn("passkey", public_text)
+        self.assertEqual(calls, [
+            ("preview", "public-group"),
+            ("execute", "public-group", "public-preview-token", "manual-request-0001"),
+        ])
 
     def test_rss_match_download_rejects_expired_observation_window(self):
         match, analysis_id = self._rss_match_with_analysis("expired-window")

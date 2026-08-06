@@ -18,6 +18,7 @@ SENSITIVE_KEY_PARTS = {
     "feed_url",
     "headers",
     "passkey",
+    "path",
     "password",
     "payload",
     "remote",

@@ -247,13 +247,32 @@ export interface RssMatchGroup {
   unitId: string;
   title: string;
   episodeLabel: string;
-  state: 'initial_best' | 'waiting_baseline' | 'monitoring_rss' | 'upgrade_available' | 'protected' | 'needs_cleanup' | 'blocked' | string;
+  state: 'initial_best' | 'waiting_baseline' | 'monitoring_rss' | 'upgrade_available' | 'partially_best' | 'protected' | 'needs_cleanup' | 'blocked' | string;
   candidateCount: number;
   bestMatchId?: string;
   bestArtifactKey?: string;
   bestCandidateScore?: number | null;
   baselineScore?: number | null;
   baselineSummary?: RssScoreSummary;
+  baselineState?: 'baseline_ready' | 'baseline_pending' | 'baseline_missing' | 'baseline_conflict' | 'baseline_expired' | string;
+  blockerCode?: string;
+  nextAction?: string;
+  coveredUnits?: string[];
+  coveredEpisodeStart?: number | null;
+  coveredEpisodeEnd?: number | null;
+  winsAllCoveredUnits?: boolean;
+  representativeMatch?: RssMatch | null;
+  unitResults?: Array<{
+    unitId: string;
+    seasonNumber?: number | null;
+    episodeNumber?: number | null;
+    state: string;
+    winsUnit: boolean;
+    baselineState?: string;
+    blockerCode?: string;
+    nextAction?: string;
+    match: RssMatch | null;
+  }>;
   lastCandidateAt?: string;
   ownerships?: Array<{
     matchId: string;
@@ -313,6 +332,7 @@ export interface RssMatchGroupListResponse {
     waitingBaseline: number;
     monitoringRss: number;
     upgradeAvailable: number;
+    partiallyBest?: number;
     protected: number;
     needsCleanup?: number;
     blocked: number;
@@ -322,13 +342,23 @@ export interface RssMatchGroupListResponse {
 export interface RssExactDownloadPreview {
   status: 'blocked' | 'ready' | string;
   ready: boolean;
-  capabilityState: 'unsupported' | 'available' | string;
+  capabilityState: 'blocked' | 'ready' | string;
+  groupId?: string;
   matchId: string;
   targetKey?: string;
   versionSummary?: string;
   candidateScore?: number | null;
   baselineScore?: number | null;
   scoreGain?: number | null;
+  episodeLabel?: string;
+  coveredUnitCount?: number;
+  coveredEpisodeStart?: number | null;
+  coveredEpisodeEnd?: number | null;
+  downloadCategory?: string;
+  downloadCategoryConfigured?: boolean;
+  destinationConfigured?: boolean;
+  previewToken?: string;
+  expiresAt?: string;
   blockers: Array<{
     code: string;
     message: string;

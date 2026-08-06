@@ -908,6 +908,18 @@ export interface SubscriptionAutomationSettings {
   hourlyLimit: number;
   dailyLimit: number;
   batchSize: number;
+  analysisState?: 'disabled' | 'collecting' | 'scoring' | 'ready' | 'blocked' | 'unknown' | string;
+  executionMode?: 'disabled' | 'manual' | 'automatic' | string;
+  executionEnvironmentEnabled?: boolean;
+  baselineCounts?: {
+    total: number;
+    ready: number;
+    pending: number;
+    missing: number;
+    conflict: number;
+    expired: number;
+  } | null;
+  automaticEligibleCount?: number | null;
   bridgeMode?: QualityWatchBridgeMode;
 }
 

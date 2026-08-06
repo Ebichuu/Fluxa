@@ -7,7 +7,11 @@ from pathlib import Path
 
 from app.private_rss_repository import PrivateRssRepository
 from app.quality_watch_repository import QualityWatchRepository
-from app.rss_subscription_match_runtime import RssAnalysisDependencies, RssSubscriptionMatchRuntime
+from app.rss_subscription_match_runtime import (
+    RssAnalysisDependencies,
+    RssExactDownloadError,
+    RssSubscriptionMatchRuntime,
+)
 from app.subscription_reconciliation_runtime import torra_public_subscription_key
 from app.torra_quality_runtime import TorraQualityClient
 
@@ -45,9 +49,27 @@ class FakeTorra:
 class FakeQb:
     def __init__(self):
         self.tasks = []
+        self.added = []
+        self.confirm_added_task = True
 
     def summary(self):
         return {"configured": True, "connected": True, "tasks": list(self.tasks)}
+
+    def add_torrent(self, download_url, save_path, category, tags):
+        self.added.append({
+            "downloadUrl": download_url,
+            "savePath": save_path,
+            "category": category,
+            "tags": list(tags),
+        })
+        if self.confirm_added_task:
+            self.tasks.append({
+                "hash": f"hash-{len(self.added)}",
+                "name": "Test Show S01E02 2160p WEB-DL.mkv",
+                "status": "downloading",
+                "tags": ",".join(tags),
+            })
+        return {"accepted": True}
 
 
 class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
@@ -103,6 +125,7 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         environment = environment if environment is not None else {
             "MCC_PRIVATE_RSS_ENABLED": "true",
             "MCC_TORRA_QUALITY_WATCH_ENABLED": "true",
+            "TORRA_DOWNLOADER_ID": "qb-main",
         }
         config = config if config is not None else {
             "torra_quality_watch_enabled": True,
@@ -121,6 +144,9 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
             "tmdb_id": "202",
             "season_number": 1,
             "category": "anime",
+            "download_category": "anime",
+            "save_path": "/downloads/anime",
+            "downloader_id": "qb-main",
             "is_running": False,
             "is_mutating": False,
         }]
@@ -193,6 +219,56 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
             }],
             on_insert=self.runtime.match_inserted_rows,
         )
+
+    def _prepare_ready_exact_download(self, *, confirm_added_task=True):
+        self._watch(
+            "tv:202:s1",
+            episode=2,
+            title="Test Show",
+            media_category="anime",
+        )
+        qb = FakeQb()
+        qb.confirm_added_task = confirm_added_task
+        torra, qb = self._enable_analysis(
+            qb=qb,
+            environment={
+                "MCC_PRIVATE_RSS_ENABLED": "true",
+                "MCC_TORRA_QUALITY_WATCH_ENABLED": "true",
+                "MCC_TORRA_REWASH_DOWNLOAD_ENABLED": "true",
+                "TORRA_DOWNLOADER_ID": "qb-main",
+            },
+            config={
+                "torra_quality_watch_enabled": True,
+                "torra_quality_execution_mode": "manual",
+                "torra_quality_min_interval_minutes": 60,
+                "torra_quality_hourly_limit": 4,
+                "torra_quality_daily_limit": 30,
+            },
+        )
+        self._configure_shadow_torra(torra)
+        torra.rows[0]["downloaded_episode_files"] = {
+            "2": ["/downloads/Test.Show.S01E02.1080p.WEB-DL.mkv"],
+        }
+        qb.tasks = [{
+            "name": "Test.Show.S01E02.1080p.WEB-DL.mkv",
+            "size": 2_000_000_000,
+            "status": "completed",
+        }]
+        inserted = self._insert(
+            "Test Show S01E02 2160p WEB-DL.mkv",
+            start=2,
+            end=2,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=2_000_000_000,
+            download_url="https://tracker.example/download?passkey=private",
+        )
+        self.runtime.wake_matches(inserted["_match_ids"])
+        group = self.rss.list_candidate_artifact_groups(
+            match_id=inserted["_match_ids"][0], limit=1
+        )["groups"][0]
+        preview, _fingerprint, _match_ids = self.runtime.preview_artifact_exact_download(group["id"])
+        self.assertTrue(preview["ready"])
+        return torra, qb, group, preview
 
     def test_matches_only_active_episode_and_deduplicates_repeated_item(self):
         first = self._watch("tv:202:s1", episode=3)
@@ -275,6 +351,17 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(len(groups), 1)
         self.assertEqual(groups[0]["state"], "initial_best")
         self.assertEqual(groups[0]["candidateCount"], 2)
+        artifact_groups = self.rss.list_candidate_artifact_groups()["groups"]
+        self.assertEqual(len(artifact_groups), 2)
+        self.assertIn("initial_best", {group["state"] for group in artifact_groups})
+        self.assertNotIn("upgrade_available", {group["state"] for group in artifact_groups})
+        for group in artifact_groups:
+            preview = self.runtime.preview_artifact_exact_download(group["id"])[0]
+            self.assertFalse(preview["ready"])
+            self.assertIn(
+                "RSS_EXACT_BASELINE_UNCONFIRMED",
+                {row["code"] for row in preview["blockers"]},
+            )
         self.assertEqual(self.watch.list_candidate_watch_units(self.now[0]), [])
 
     def test_rss_candidate_without_file_extension_is_ranked_but_not_downloadable(self):
@@ -304,7 +391,6 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         preview = self.runtime.preview_exact_download(match["id"])
         blocker_codes = [row["code"] for row in preview["blockers"]]
         self.assertIn("RSS_EXACT_VERSION_UNCONFIRMED", blocker_codes)
-        self.assertIn("TORRA_EXACT_RESOURCE_ENDPOINT_UNAVAILABLE", blocker_codes)
         self.assertNotIn("tracker.example", str(preview))
         self.assertNotIn("private", str(preview))
         self.assertEqual(torra.submissions, [])
@@ -1468,7 +1554,7 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(stored_unit["best_match_id"], match["id"])
         self.assertEqual(stored_unit["best_candidate_score"], 30.0)
 
-    def test_exact_download_preview_stops_at_missing_torra_subscription_endpoint(self):
+    def test_exact_download_preview_returns_ready_without_submitting(self):
         self._watch(
             "tv:202:s1",
             episode=2,
@@ -1497,15 +1583,14 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
 
         preview = self.runtime.preview_exact_download(inserted["_match_ids"][0])
 
-        self.assertFalse(preview["ready"])
-        self.assertEqual(preview["capabilityState"], "unsupported")
+        self.assertTrue(preview["ready"])
+        self.assertEqual(preview["capabilityState"], "ready")
         self.assertEqual(preview["candidateScore"], 30.0)
         self.assertEqual(preview["baselineScore"], 10.0)
         self.assertEqual(preview["scoreGain"], 20.0)
-        self.assertEqual(
-            [row["code"] for row in preview["blockers"]],
-            ["TORRA_EXACT_RESOURCE_ENDPOINT_UNAVAILABLE"],
-        )
+        self.assertEqual(preview["blockers"], [])
+        self.assertTrue(preview["previewToken"])
+        self.assertEqual(preview["downloadCategory"], "anime")
         self.assertNotIn("tracker.example", str(preview))
         self.assertNotIn("private", str(preview))
         self.assertEqual(torra.submissions, [])
@@ -1546,6 +1631,7 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(
             [row["code"] for row in preview["blockers"]],
             [
+                "RSS_EXACT_ARTIFACT_NOT_UNIQUE_WINNER",
                 "RSS_EXACT_SCORE_UNCONFIRMED",
                 "RSS_EXACT_VERSION_UNCONFIRMED",
                 "RSS_EXACT_NOT_CURRENT_BEST",
@@ -1553,12 +1639,325 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
                 "RSS_EXACT_SUBSCRIPTION_UNCONFIRMED",
                 "RSS_EXACT_TARGET_UNCONFIRMED",
                 "RSS_EXACT_CONTEXT_UNAVAILABLE",
-                "TORRA_EXACT_RESOURCE_ENDPOINT_UNAVAILABLE",
+                "RSS_EXACT_ROUTE_UNCONFIRMED",
             ],
         )
         self.assertEqual(torra.submissions, [])
         self.assertNotIn("tracker.example", str(preview))
         self.assertNotIn("private", str(preview))
+
+    def test_artifact_exact_download_submits_once_and_replays_stable_receipt(self):
+        _torra, qb, group, preview = self._prepare_ready_exact_download()
+
+        action = self.runtime.execute_artifact_exact_download(
+            group["id"], preview["previewToken"], "manual-request-0001"
+        )
+        replay = self.runtime.execute_artifact_exact_download(
+            group["id"], preview["previewToken"], "manual-request-0002"
+        )
+
+        self.assertEqual(action["status"], "succeeded")
+        self.assertEqual(replay["action_id"], action["action_id"])
+        self.assertEqual(len(qb.added), 1)
+        self.assertEqual(qb.added[0]["savePath"], "/downloads/anime")
+        self.assertEqual(qb.added[0]["category"], "anime")
+        self.assertEqual(qb.added[0]["tags"][0], "fluxa-rss")
+        stored = self.rss.list_matches_by_ids([
+            result["match"]["id"] for result in group["unitResults"]
+        ])
+        self.assertEqual({row["downloadActionId"] for row in stored}, {action["action_id"]})
+        self.assertNotIn("tracker.example", str(action))
+        self.assertNotIn("private", str(action))
+        self.assertNotIn("/downloads/anime", str(action))
+
+    def test_artifact_exact_download_rejects_unreleased_automatic_mode(self):
+        _torra, qb, group, preview = self._prepare_ready_exact_download()
+        analysis = self.runtime.analysis
+        self.runtime.analysis = RssAnalysisDependencies(
+            analysis.environment,
+            analysis.torra,
+            analysis.qb,
+            lambda: {
+                "torra_quality_watch_enabled": True,
+                "torra_quality_execution_mode": "automatic",
+                "torra_quality_min_interval_minutes": 60,
+                "torra_quality_hourly_limit": 4,
+                "torra_quality_daily_limit": 30,
+            },
+            symedia=analysis.symedia,
+        )
+
+        with self.assertRaises(RssExactDownloadError) as raised:
+            self.runtime.execute_artifact_exact_download(
+                group["id"], preview["previewToken"], "automatic-request-0001"
+            )
+
+        self.assertEqual(raised.exception.code, "RSS_EXACT_EXECUTION_DISABLED")
+        self.assertEqual(qb.added, [])
+
+    def test_artifact_exact_download_stays_submitted_until_qb_task_is_observed(self):
+        _torra, qb, group, preview = self._prepare_ready_exact_download(
+            confirm_added_task=False
+        )
+
+        submitted = self.runtime.execute_artifact_exact_download(
+            group["id"], preview["previewToken"], "manual-request-0001"
+        )
+
+        self.assertEqual(submitted["status"], "submitted")
+        self.assertEqual(len(qb.added), 1)
+        stored = self.rss.list_matches_by_ids([
+            result["match"]["id"] for result in group["unitResults"]
+        ])
+        self.assertEqual({row["downloadActionId"] for row in stored}, {""})
+
+        audit_tag = next(tag for tag in qb.added[0]["tags"] if tag.startswith("fluxa-action-"))
+        qb.tasks.append({
+            "hash": "confirmed-hash",
+            "name": "Test Show S01E02 2160p WEB-DL.mkv",
+            "status": "downloading",
+            "tags": audit_tag,
+        })
+        confirmed = self.runtime.execute_artifact_exact_download(
+            group["id"], preview["previewToken"], "manual-request-0002"
+        )
+
+        self.assertEqual(confirmed["status"], "succeeded")
+        self.assertEqual(confirmed["action_id"], submitted["action_id"])
+        self.assertEqual(len(qb.added), 1)
+
+    def test_artifact_exact_download_recovers_qb_task_after_runtime_restart(self):
+        _torra, qb, group, preview = self._prepare_ready_exact_download(
+            confirm_added_task=False
+        )
+        submitted = self.runtime.execute_artifact_exact_download(
+            group["id"], preview["previewToken"], "manual-request-0001"
+        )
+        audit_tag = next(tag for tag in qb.added[0]["tags"] if tag.startswith("fluxa-action-"))
+        qb.tasks.append({
+            "hash": "restart-confirmed-hash",
+            "name": "Test Show S01E02 2160p WEB-DL.mkv",
+            "status": "downloading",
+            "tags": audit_tag,
+        })
+        restarted = RssSubscriptionMatchRuntime(
+            self.rss,
+            self.watch,
+            lambda: {"items": self.subscriptions},
+            clock=lambda: self.now[0],
+            analysis=self.runtime.analysis,
+        )
+
+        recovered = restarted.recover_pending_exact_download()
+
+        self.assertEqual(recovered["status"], "succeeded")
+        self.assertEqual(recovered["actionId"], submitted["action_id"])
+        self.assertEqual(len(qb.added), 1)
+        self.assertEqual(
+            self.watch.get_action(submitted["action_id"])["status"], "succeeded"
+        )
+
+    def test_artifact_exact_download_preview_expires_at_ten_minutes(self):
+        _torra, _qb, group, preview = self._prepare_ready_exact_download()
+        self.now[0] += timedelta(minutes=10)
+
+        with self.assertRaises(RssExactDownloadError) as raised:
+            self.runtime.execute_artifact_exact_download(
+                group["id"], preview["previewToken"], "manual-request-0001"
+            )
+
+        self.assertEqual(raised.exception.code, "RSS_EXACT_PREVIEW_EXPIRED")
+
+    def test_artifact_exact_download_rejects_rule_drift(self):
+        torra, qb, group, preview = self._prepare_ready_exact_download()
+        torra.rules[0]["custom_weight"] = 2
+
+        with self.assertRaises(RssExactDownloadError) as raised:
+            self.runtime.execute_artifact_exact_download(
+                group["id"], preview["previewToken"], "manual-request-0001"
+            )
+
+        self.assertEqual(raised.exception.code, "RSS_EXACT_PREVIEW_STALE")
+        self.assertEqual(qb.added, [])
+
+    def test_artifact_exact_download_rejects_other_torra_downloader(self):
+        _torra, qb, group, _preview = self._prepare_ready_exact_download()
+        self.runtime.analysis.environment["TORRA_DOWNLOADER_ID"] = "qb-other"
+
+        preview, _fingerprint, _match_ids = self.runtime.preview_artifact_exact_download(
+            group["id"]
+        )
+
+        self.assertFalse(preview["ready"])
+        self.assertIn(
+            "RSS_EXACT_QB_DOWNLOADER_MISMATCH",
+            [row["code"] for row in preview["blockers"]],
+        )
+        self.assertEqual(qb.added, [])
+
+    def test_artifact_exact_download_omits_media_category_for_qb(self):
+        torra, qb, group, _preview = self._prepare_ready_exact_download()
+        torra.rows[0].pop("download_category")
+
+        preview, _fingerprint, _match_ids = self.runtime.preview_artifact_exact_download(
+            group["id"]
+        )
+
+        self.assertEqual(torra.rows[0]["category"], "anime")
+        self.assertTrue(preview["ready"])
+        self.assertEqual(preview["downloadCategory"], "")
+        self.assertFalse(preview["downloadCategoryConfigured"])
+
+        action = self.runtime.execute_artifact_exact_download(
+            group["id"], preview["previewToken"], "manual-request-no-category"
+        )
+
+        self.assertEqual(action["status"], "succeeded")
+        self.assertEqual(len(qb.added), 1)
+        self.assertEqual(qb.added[0]["category"], "")
+
+    def test_artifact_exact_download_honors_global_singleflight(self):
+        _torra, qb, group, preview = self._prepare_ready_exact_download()
+        self.watch.claim_action(
+            "other-exact-action",
+            "tv:other:s1",
+            "qbittorrent",
+            "rss-exact-download",
+            unit_key="rss-artifact:other",
+        )
+
+        with self.assertRaises(RssExactDownloadError) as raised:
+            self.runtime.execute_artifact_exact_download(
+                group["id"], preview["previewToken"], "manual-request-0001"
+            )
+
+        self.assertEqual(raised.exception.code, "RSS_EXACT_GLOBAL_BUSY")
+        self.assertEqual(qb.added, [])
+
+    def test_artifact_exact_download_honors_subscription_cooldown(self):
+        _torra, qb, group, preview = self._prepare_ready_exact_download()
+        prior = self.watch.claim_action(
+            "prior-exact-action",
+            group["subscriptionId"],
+            "qbittorrent",
+            "rss-exact-download",
+            unit_key=group["id"],
+        )["action"]
+        self.watch.complete_action(prior["action_id"], "succeeded", {"accepted": True})
+
+        with self.assertRaises(RssExactDownloadError) as raised:
+            self.runtime.execute_artifact_exact_download(
+                group["id"], preview["previewToken"], "manual-request-0001"
+            )
+
+        self.assertEqual(raised.exception.code, "RSS_EXACT_COOLDOWN")
+        self.assertEqual(qb.added, [])
+
+    def test_artifact_exact_download_honors_hourly_limit(self):
+        _torra, qb, group, preview = self._prepare_ready_exact_download()
+        config = self.runtime.analysis.config_loader()
+        config["torra_quality_min_interval_minutes"] = 1
+        config["torra_quality_hourly_limit"] = 1
+        prior = self.watch.claim_action(
+            "prior-hourly-action",
+            group["subscriptionId"],
+            "qbittorrent",
+            "rss-exact-download",
+            unit_key="rss-artifact:prior",
+        )["action"]
+        self.watch.complete_action(prior["action_id"], "succeeded", {"accepted": True})
+        self.now[0] += timedelta(minutes=2)
+
+        with self.assertRaises(RssExactDownloadError) as raised:
+            self.runtime.execute_artifact_exact_download(
+                group["id"], preview["previewToken"], "manual-request-0001"
+            )
+
+        self.assertEqual(raised.exception.code, "RSS_EXACT_RATE_LIMITED")
+        self.assertEqual(qb.added, [])
+
+    def test_artifact_exact_download_honors_daily_limit(self):
+        _torra, qb, group, preview = self._prepare_ready_exact_download()
+        config = self.runtime.analysis.config_loader()
+        config["torra_quality_min_interval_minutes"] = 1
+        config["torra_quality_hourly_limit"] = 4
+        config["torra_quality_daily_limit"] = 1
+        prior = self.watch.claim_action(
+            "prior-daily-action",
+            group["subscriptionId"],
+            "qbittorrent",
+            "rss-exact-download",
+            unit_key="rss-artifact:prior",
+        )["action"]
+        self.watch.complete_action(prior["action_id"], "succeeded", {"accepted": True})
+        self.now[0] += timedelta(hours=2)
+        preview, _fingerprint, _match_ids = self.runtime.preview_artifact_exact_download(
+            group["id"]
+        )
+
+        with self.assertRaises(RssExactDownloadError) as raised:
+            self.runtime.execute_artifact_exact_download(
+                group["id"], preview["previewToken"], "manual-request-0001"
+            )
+
+        self.assertEqual(raised.exception.code, "RSS_EXACT_RATE_LIMITED")
+        self.assertEqual(qb.added, [])
+
+    def test_range_artifact_exact_download_creates_one_qb_task(self):
+        for episode in (2, 3):
+            self._watch(
+                "tv:202:s1", episode=episode, title="Test Show", media_category="anime"
+            )
+        qb = FakeQb()
+        torra, qb = self._enable_analysis(
+            qb=qb,
+            environment={
+                "MCC_PRIVATE_RSS_ENABLED": "true",
+                "MCC_TORRA_QUALITY_WATCH_ENABLED": "true",
+                "MCC_TORRA_REWASH_DOWNLOAD_ENABLED": "true",
+                "TORRA_DOWNLOADER_ID": "qb-main",
+            },
+            config={
+                "torra_quality_watch_enabled": True,
+                "torra_quality_execution_mode": "manual",
+                "torra_quality_min_interval_minutes": 60,
+                "torra_quality_hourly_limit": 4,
+                "torra_quality_daily_limit": 30,
+            },
+        )
+        self._configure_shadow_torra(torra)
+        torra.rows[0]["downloaded_episode_files"] = {
+            str(episode): [f"/downloads/Test.Show.S01E0{episode}.1080p.WEB-DL.mkv"]
+            for episode in (2, 3)
+        }
+        qb.tasks = [{
+            "name": f"Test.Show.S01E0{episode}.1080p.WEB-DL.mkv",
+            "size": 2_000_000_000,
+            "status": "completed",
+        } for episode in (2, 3)]
+        inserted = self._insert(
+            "Test Show S01E02-E03 2160p WEB-DL.mkv",
+            start=2,
+            end=3,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=4_000_000_000,
+            download_url="https://tracker.example/download?passkey=private",
+        )
+        self.runtime.wake_matches(inserted["_match_ids"])
+        group = self.rss.list_candidate_artifact_groups(
+            match_id=inserted["_match_ids"][0], limit=1
+        )["groups"][0]
+        preview, _fingerprint, _match_ids = self.runtime.preview_artifact_exact_download(group["id"])
+
+        action = self.runtime.execute_artifact_exact_download(
+            group["id"], preview["previewToken"], "manual-range-0001"
+        )
+
+        self.assertEqual(action["status"], "succeeded")
+        self.assertEqual(preview["coveredUnitCount"], 2)
+        self.assertEqual(len(qb.added), 1)
+        stored = self.rss.list_matches_by_ids(inserted["_match_ids"])
+        self.assertEqual({row["downloadActionId"] for row in stored}, {action["action_id"]})
 
     def test_new_batch_reconciles_existing_candidates_and_keeps_one_champion(self):
         unit = self._watch(
@@ -1689,6 +2088,24 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertNotIn(
             self.watch.get_watch_unit(units[0]["unit_key"])["best_match_id"],
             ranged["_match_ids"],
+        )
+        self.rss.save_candidate_decisions([{
+            "matchIds": [ranged["_match_ids"][0]],
+            "decision": "current_best",
+            "reason": "test_partial_projection",
+            "bestCandidate": True,
+        }])
+        ranged_group = self.rss.list_candidate_artifact_groups(
+            match_id=ranged["_match_ids"][0], limit=1
+        )["groups"][0]
+        preview, _fingerprint, _match_ids = self.runtime.preview_artifact_exact_download(
+            ranged_group["id"]
+        )
+        self.assertEqual(ranged_group["state"], "partially_best")
+        self.assertFalse(preview["ready"])
+        self.assertIn(
+            "RSS_EXACT_ARTIFACT_NOT_UNIQUE_WINNER",
+            [row["code"] for row in preview["blockers"]],
         )
 
     def test_persisted_baseline_survives_temporary_upstream_evidence_loss(self):

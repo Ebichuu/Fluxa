@@ -29,6 +29,7 @@ RSS_GROUP_STATES = {
     "needs_cleanup",
     "blocked",
 }
+RSS_ARTIFACT_GROUP_STATES = RSS_GROUP_STATES | {"partially_best"}
 MATCH_EVALUATION_COLUMNS = {
     "torra_subscription_id": "TEXT NOT NULL DEFAULT ''",
     "target_key": "TEXT NOT NULL DEFAULT ''",
@@ -1595,6 +1596,57 @@ class PrivateRssRepository:
         return "季集暂未确认"
 
     @staticmethod
+    def _candidate_group_contract(candidates, group_state):
+        best = next((row for row in candidates if row.get("bestCandidate")), None)
+        baseline = next((
+            row for row in candidates
+            if isinstance(row.get("baselineScore"), (int, float))
+            and not isinstance(row.get("baselineScore"), bool)
+        ), None)
+        reasons = [
+            str(row.get("evaluationReason") or "")
+            for row in candidates
+            if str(row.get("evaluationReason") or "")
+        ]
+        if "observation_expired" in reasons:
+            baseline_state = "baseline_expired"
+        elif baseline:
+            baseline_state = "baseline_ready"
+        elif any(row.get("downloadActionId") for row in candidates):
+            baseline_state = "baseline_pending"
+        elif group_state == "blocked" and any("conflict" in reason for reason in reasons):
+            baseline_state = "baseline_conflict"
+        else:
+            baseline_state = "baseline_missing"
+
+        if group_state == "needs_cleanup":
+            blocker_code = "subscription_missing"
+            next_action = "review_match_cleanup"
+        elif group_state == "blocked":
+            blocker_code = next((reason for reason in reasons if reason), "candidate_blocked")
+            next_action = "review_candidate_blocker"
+        elif group_state == "upgrade_available":
+            blocker_code = ""
+            next_action = "preview_exact_download"
+        elif baseline_state in {"baseline_missing", "baseline_conflict"}:
+            blocker_code = baseline_state
+            next_action = "preview_baseline_initialization"
+        elif baseline_state == "baseline_pending":
+            blocker_code = "baseline_pending"
+            next_action = "wait_for_baseline"
+        elif group_state == "monitoring_rss" and not best:
+            blocker_code = next((reason for reason in reasons if reason), "scoring_pending")
+            next_action = "wait_for_scoring"
+        else:
+            blocker_code = ""
+            next_action = "continue_monitoring"
+        return {
+            "baselineState": baseline_state,
+            "blockerCode": blocker_code,
+            "nextAction": next_action,
+        }
+
+    @staticmethod
     def _candidate_groups_query(where=""):
         active_where = f"{where} AND archive_state='active'" if where else "WHERE archive_state='active'"
         return (
@@ -1832,6 +1884,7 @@ class PrivateRssRepository:
                         continue
                     seen_ownerships.add(identity)
                     ownerships.append(ownership)
+            group_state_value = self._candidate_group_state(candidates)
             groups.append({
                 "id": "rss-group:" + hashlib.sha256(
                     f"{key[0]}|{key[1]}".encode("utf-8")
@@ -1840,7 +1893,7 @@ class PrivateRssRepository:
                 "unitId": key[1],
                 "title": str((best or (candidates[0] if candidates else {})).get("itemTitle") or "")[:240],
                 "episodeLabel": self._candidate_group_episode_label(candidates),
-                "state": self._candidate_group_state(candidates),
+                "state": group_state_value,
                 "candidateCount": len(candidates),
                 "bestMatchId": str((best or {}).get("id") or ""),
                 "bestArtifactKey": str((best or {}).get("artifactKey") or ""),
@@ -1853,6 +1906,7 @@ class PrivateRssRepository:
                 ), default=""),
                 "ownerships": ownerships,
                 "candidates": candidates,
+                **self._candidate_group_contract(candidates, group_state_value),
             })
         return {
             "groups": groups,
@@ -1865,6 +1919,322 @@ class PrivateRssRepository:
                 **state_counts,
             },
         }
+
+    def candidate_contract_summary(self):
+        """Summarize locally persisted candidate decisions without provider reads."""
+        grouped_query = self._candidate_groups_query()
+        with closing(self.runtime.connect()) as connection:
+            rows = connection.execute(
+                grouped_query
+                + "SELECT group_state, COUNT(*) AS count FROM candidate_groups GROUP BY group_state"
+            ).fetchall()
+            eligible = connection.execute(
+                "SELECT COUNT(*) AS count FROM ("
+                "SELECT artifact_key FROM rss_subscription_matches "
+                "WHERE archive_state='active' AND artifact_key<>'' GROUP BY artifact_key "
+                "HAVING COUNT(DISTINCT subscription_key)=1 "
+                "AND MIN(CASE WHEN is_best_candidate=1 AND decision='current_best' "
+                "AND evaluation_status='scored' AND torra_subscription_id<>'' "
+                "AND target_key<>'' AND rule_id<>'' AND rule_hash<>'' "
+                "AND candidate_score IS NOT NULL AND baseline_score IS NOT NULL "
+                "AND candidate_score>baseline_score THEN 1 ELSE 0 END)=1"
+                ") eligible_artifacts"
+            ).fetchone()
+        counts = {state: 0 for state in RSS_GROUP_STATES}
+        counts.update({str(row["group_state"]): int(row["count"] or 0) for row in rows})
+        return {
+            "total": sum(counts.values()),
+            "automatic_eligible_count": int(eligible["count"] or 0),
+            "counts": counts,
+        }
+
+    @staticmethod
+    def _candidate_episode_scope(candidate):
+        reason = candidate.get("reason") if isinstance(candidate.get("reason"), dict) else {}
+        media_type = str(reason.get("mediaType") or "").lower()
+        season = reason.get("season") if isinstance(reason.get("season"), dict) else {}
+        episode = reason.get("episode") if isinstance(reason.get("episode"), dict) else {}
+        season_number = season.get("unit") or season.get("item")
+        episode_number = episode.get("unit")
+        if not isinstance(season_number, int):
+            match = re.search(r":s(\d+):", str(candidate.get("unitId") or ""))
+            season_number = int(match.group(1)) if match else None
+        if not isinstance(episode_number, int):
+            match = re.search(r":e(\d+)$", str(candidate.get("unitId") or ""))
+            episode_number = int(match.group(1)) if match else None
+        return media_type, season_number, episode_number
+
+    @classmethod
+    def _artifact_group_projection(cls, subscription_key, artifact_key, candidates):
+        candidates = sorted(candidates, key=lambda row: (
+            str(row.get("unitId") or ""),
+            0 if row.get("bestCandidate") else 1,
+            -float(row.get("candidateScore") or 0),
+            str(row.get("createdAt") or ""),
+            str(row.get("id") or ""),
+        ))
+        by_unit = {}
+        for candidate in candidates:
+            by_unit.setdefault(str(candidate.get("unitId") or ""), []).append(candidate)
+        unit_results = []
+        for unit_key, rows in sorted(by_unit.items()):
+            representative = next((row for row in rows if row.get("bestCandidate")), rows[0])
+            media_type, season_number, episode_number = cls._candidate_episode_scope(representative)
+            wins_unit = any(
+                row.get("bestCandidate") and row.get("decision") == "current_best"
+                for row in rows
+            )
+            unit_results.append({
+                "unitId": unit_key,
+                "seasonNumber": season_number,
+                "episodeNumber": episode_number,
+                "state": cls._candidate_group_state(rows),
+                "winsUnit": wins_unit,
+                "match": representative,
+                **cls._candidate_group_contract(rows, cls._candidate_group_state(rows)),
+            })
+
+        wins_all = bool(artifact_key and unit_results) and all(
+            result["winsUnit"] for result in unit_results
+        )
+        wins_any = any(result["winsUnit"] for result in unit_results)
+        unit_states = {result["state"] for result in unit_results}
+        if wins_all:
+            state = "upgrade_available"
+        elif wins_any:
+            state = "partially_best"
+        elif unit_states == {"initial_best"}:
+            state = "initial_best"
+        elif "waiting_baseline" in unit_states:
+            state = "waiting_baseline"
+        elif unit_states and unit_states <= {"protected"}:
+            state = "protected"
+        elif unit_states and unit_states <= {"needs_cleanup"}:
+            state = "needs_cleanup"
+        elif unit_states and unit_states <= {"blocked", "needs_cleanup"}:
+            state = "blocked"
+        else:
+            state = "monitoring_rss"
+
+        representative = next((row for row in candidates if row.get("bestCandidate")), candidates[0])
+        scopes = [cls._candidate_episode_scope(row) for row in candidates]
+        seasons = sorted({scope[1] for scope in scopes if isinstance(scope[1], int)})
+        episodes = sorted({scope[2] for scope in scopes if isinstance(scope[2], int)})
+        media_types = {scope[0] for scope in scopes if scope[0]}
+        if media_types == {"movie"}:
+            episode_label = "电影"
+        elif len(seasons) == 1 and episodes:
+            start, end = episodes[0], episodes[-1]
+            episode_label = (
+                f"S{seasons[0]:02d}E{start:02d}"
+                if start == end else f"S{seasons[0]:02d}E{start:02d}–E{end:02d}"
+            )
+        else:
+            episode_label = "季集范围暂未确认"
+        baseline_scores = {
+            float(row["baselineScore"])
+            for row in candidates
+            if isinstance(row.get("baselineScore"), (int, float))
+            and not isinstance(row.get("baselineScore"), bool)
+        }
+        baseline_states = {result["baselineState"] for result in unit_results}
+        baseline_state = (
+            next(iter(baseline_states)) if len(baseline_states) == 1 else "baseline_conflict"
+        )
+        if state == "partially_best":
+            blocker_code = "artifact_partially_best"
+            next_action = "continue_monitoring"
+        else:
+            contract = cls._candidate_group_contract(candidates, state)
+            blocker_code = contract["blockerCode"]
+            next_action = contract["nextAction"]
+        return {
+            "id": "rss-artifact:" + hashlib.sha256(
+                f"{subscription_key}|{artifact_key or representative.get('id')}".encode("utf-8")
+            ).hexdigest()[:24],
+            "subscriptionId": subscription_key,
+            "artifactKey": artifact_key,
+            "title": str(representative.get("itemTitle") or "")[:240],
+            "episodeLabel": episode_label,
+            "state": state,
+            "candidateCount": len(candidates),
+            "coveredUnits": sorted(by_unit),
+            "coveredEpisodeStart": episodes[0] if episodes else None,
+            "coveredEpisodeEnd": episodes[-1] if episodes else None,
+            "winsAllCoveredUnits": wins_all,
+            "representativeMatch": representative,
+            "bestCandidateScore": representative.get("candidateScore"),
+            "baselineScore": next(iter(baseline_scores)) if len(baseline_scores) == 1 else None,
+            "baselineState": baseline_state,
+            "blockerCode": blocker_code,
+            "nextAction": next_action,
+            "lastCandidateAt": max((
+                str(row.get("evaluatedAt") or row.get("createdAt") or "") for row in candidates
+            ), default=""),
+            "unitResults": unit_results,
+        }
+
+    def list_candidate_artifact_groups(
+        self,
+        status="",
+        group_state="",
+        group_scope="",
+        subscription_id="",
+        media_type="",
+        season_number=None,
+        episode_number=None,
+        match_id="",
+        limit=20,
+        offset=0,
+    ):
+        status = str(status or "").strip().lower()
+        if status and status not in MATCH_STATUSES:
+            raise ValueError("RSS 匹配状态无效")
+        group_state = str(group_state or "").strip().lower()
+        if group_state and group_state not in RSS_ARTIFACT_GROUP_STATES:
+            raise ValueError("RSS 产物候选状态无效")
+        group_scope = str(group_scope or "").strip().lower()
+        if group_scope and group_scope not in RSS_GROUP_SCOPES:
+            raise ValueError("RSS 产物候选范围无效")
+        media_type = str(media_type or "").strip().lower()
+        if media_type and media_type not in {"movie", "tv"}:
+            raise ValueError("媒体类型无效")
+        try:
+            season = int(season_number) if season_number not in (None, "") else None
+            episode = int(episode_number) if episode_number not in (None, "") else None
+        except (TypeError, ValueError) as exc:
+            raise ValueError("季集筛选无效") from exc
+        if season is not None and not 0 < season <= 999:
+            raise ValueError("季号无效")
+        if episode is not None and not 0 < episode <= 100_000:
+            raise ValueError("集号无效")
+        if episode is not None and season is None:
+            raise ValueError("集号筛选需要季号")
+        limit = max(1, min(int(limit or 20), 50))
+        offset = max(0, int(offset or 0))
+
+        with closing(self.runtime.connect()) as connection:
+            where = ["m.archive_state='active'"]
+            params = []
+            if status:
+                where.append("m.match_status=?")
+                params.append(status)
+            selected_subscription = self._stored_subscription_key(connection, subscription_id)
+            if subscription_id:
+                where.append("m.subscription_key=?")
+                params.append(selected_subscription)
+            if match_id:
+                selected = connection.execute(
+                    "SELECT subscription_key, artifact_key, id FROM rss_subscription_matches WHERE id=?",
+                    (str(match_id),),
+                ).fetchone()
+                if not selected:
+                    return {
+                        "groups": [], "total": 0, "limit": limit, "offset": offset,
+                        "counts": {state: 0 for state in RSS_ARTIFACT_GROUP_STATES},
+                    }
+                where.append("m.subscription_key=?")
+                params.append(selected["subscription_key"])
+                if selected["artifact_key"]:
+                    where.append("m.artifact_key=?")
+                    params.append(selected["artifact_key"])
+                else:
+                    where.append("m.id=?")
+                    params.append(selected["id"])
+            if media_type == "movie":
+                if not selected_subscription:
+                    raise ValueError("媒体类型筛选需要订阅 ID")
+                where.append("m.unit_key=?")
+                params.append(f"{selected_subscription}:movie")
+            elif season is not None:
+                if not selected_subscription:
+                    raise ValueError("季集筛选需要订阅 ID")
+                if episode is not None:
+                    where.append("m.unit_key=?")
+                    params.append(f"{selected_subscription}:s{season}:e{episode}")
+                else:
+                    prefix = f"{selected_subscription}:s{season}:"
+                    where.append("substr(m.unit_key, 1, length(?))=?")
+                    params.extend((prefix, prefix))
+            rows = connection.execute(
+                "SELECT m.*, i.title AS item_title, i.published_at AS item_published_at "
+                "FROM rss_subscription_matches m JOIN rss_items i ON i.id=m.item_id WHERE "
+                + " AND ".join(where)
+                + " ORDER BY m.created_at DESC, m.id DESC",
+                tuple(params),
+            ).fetchall()
+
+        grouped = {}
+        for row in rows:
+            candidate = self._match(row)
+            candidate["itemTitle"] = str(row["item_title"] or "")[:240]
+            candidate["publishedAt"] = str(row["item_published_at"] or "")
+            artifact_key = str(candidate.get("artifactKey") or "")
+            identity = (candidate["subscriptionId"], artifact_key or f"match:{candidate['id']}")
+            grouped.setdefault(identity, []).append(candidate)
+        groups = [
+            self._artifact_group_projection(subscription, "" if artifact.startswith("match:") else artifact, candidates)
+            for (subscription, artifact), candidates in grouped.items()
+        ]
+        groups.sort(key=lambda group: (
+            str(group.get("lastCandidateAt") or ""), str(group.get("id") or "")
+        ), reverse=True)
+        counts = {state: 0 for state in RSS_ARTIFACT_GROUP_STATES}
+        for group in groups:
+            counts[group["state"]] += 1
+        filtered = groups
+        if group_state:
+            filtered = [group for group in filtered if group["state"] == group_state]
+        if group_scope == "scoreable":
+            filtered = [group for group in filtered if group["state"] != "needs_cleanup"]
+        elif group_scope == "cleanup":
+            filtered = [group for group in filtered if group["state"] == "needs_cleanup"]
+        return {
+            "groups": filtered[offset:offset + limit],
+            "total": len(filtered),
+            "limit": limit,
+            "offset": offset,
+            "counts": {"total": len(groups), **counts},
+        }
+
+    def get_candidate_artifact_group(self, group_id):
+        group_id = str(group_id or "").strip()
+        if not group_id.startswith("rss-artifact:") or len(group_id) > 80:
+            return None
+        offset = 0
+        while True:
+            page = self.list_candidate_artifact_groups(limit=50, offset=offset)
+            found = next((row for row in page["groups"] if row.get("id") == group_id), None)
+            if found:
+                return found
+            offset += len(page["groups"])
+            if offset >= page["total"] or not page["groups"]:
+                return None
+
+    def record_artifact_download_action(self, match_ids, action_id):
+        ids = sorted({
+            str(value or "").strip() for value in match_ids or [] if str(value or "").strip()
+        })
+        action_id = str(action_id or "").strip()
+        if not ids or not action_id:
+            raise ValueError("RSS 产物下载动作缺少匹配或动作 ID")
+        placeholders = ",".join("?" for _ in ids)
+        now = _iso()
+        with self.runtime.transaction(immediate=True) as connection:
+            rows = connection.execute(
+                f"SELECT id, download_action_id, archive_state FROM rss_subscription_matches WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+            if len(rows) != len(ids) or any(row["archive_state"] != "active" for row in rows):
+                raise KeyError("RSS 产物匹配不存在")
+            if any(row["download_action_id"] not in {"", action_id} for row in rows):
+                raise RssMatchCleanupConflict("RSS 产物已有其他下载动作")
+            connection.execute(
+                "UPDATE rss_subscription_matches SET match_status='confirmed', download_action_id=?, "
+                f"trigger_action_id=?, updated_at=?, version=version+1 WHERE id IN ({placeholders})",
+                (action_id, action_id, now, *ids),
+            )
+        return self.list_matches_by_ids(ids)
 
     def resource_center_summary(self, published_from, published_before):
         published_from = str(published_from or "").strip()

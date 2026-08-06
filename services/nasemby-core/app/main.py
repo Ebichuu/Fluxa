@@ -1701,6 +1701,7 @@ def create_app(
             bridge_runtime=quality_watch_bridge,
             baseline_initializer=baseline_initializer,
             clock=quality_repository.clock,
+            rss_repository=private_rss_service.repository,
         )
     )
     automation_service.bridge_runtime = quality_watch_bridge

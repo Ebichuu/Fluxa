@@ -23,14 +23,16 @@ import {
   backfillRssIdentities,
   deleteRssSource,
   getAutomationAction,
+  getRssArtifactGroups,
   getRssMatchGroups,
   getRssSeedItem,
   getRssSeedItems,
   getRssSources,
-  previewRssExactDownload,
+  previewRssArtifactExactDownload,
   previewRssMatchCleanup,
   runRssMatcher,
   saveRssSource,
+  startRssArtifactExactDownload,
   startRssMatchAnalysis,
   startRssMatchDownload,
   testRssSource
@@ -269,6 +271,9 @@ function matchActionLabel(action: AutomationAction | undefined, matchStatus: Rss
   }
   if (action.status === 'failed') return action.error?.message || '操作失败，请稍后重试';
   if (action.status === 'cancelled') return '操作已取消';
+  if (action.type === 'rss-exact-download') {
+    return action.status === 'succeeded' ? 'qB 已确认精准下载任务' : 'qB 正在确认精准下载任务';
+  }
   if (action.status !== 'succeeded') {
     return action.type === 'rewash-download' ? 'Torra 正在接收下载任务' : 'Torra 正在检查可用版本';
   }
@@ -308,14 +313,14 @@ const shadowReasonLabels: Record<string, string> = {
   rule_weight_invalid: '规则权重无法安全解析',
   rule_score_invalid: '规则分值无法安全解析',
   version_entries_missing: '版本控制条件不完整',
-  version_entry_unsupported: '版本控制条件暂不支持影子评分',
+  version_entry_unsupported: '版本控制条件暂不支持 Torra 规则评分',
   version_entry_invalid: '版本控制条件无效',
-  version_attribute_unsupported: '版本字段暂不支持影子评分',
-  version_match_mode_unsupported: '版本匹配方式暂不支持影子评分',
+  version_attribute_unsupported: '版本字段暂不支持 Torra 规则评分',
+  version_match_mode_unsupported: '版本匹配方式暂不支持 Torra 规则评分',
   version_condition_values_missing: '版本条件值不完整',
   version_condition_values_invalid: '版本条件值无效',
   version_fields_unconfirmed: '候选版本字段暂未确认',
-  always_override_unsupported: '强制覆盖规则不参与影子评分'
+  always_override_unsupported: '强制覆盖规则不参与 Torra 规则评分'
 };
 
 function scoreLabel(value: number | null | undefined) {
@@ -346,10 +351,23 @@ function shadowEvaluationLabel(match: RssMatch) {
     const reason = shadowReasonLabels[match.evaluationReason || ''] || '评分条件暂未确认';
     return `评分暂未确认 · ${reason}`;
   }
-  return '等待 Torra 规则影子评分';
+  return '等待 Torra 规则评分';
 }
 
 function candidateGroupScoreLabel(group: RssMatchGroup) {
+  if (group.coveredUnits?.length) {
+    const score = typeof group.bestCandidateScore === 'number'
+      ? `${scoreLabel(group.bestCandidateScore)} 分`
+      : '评分暂未确认';
+    const conclusion = group.winsAllCoveredUnits
+      ? '当前唯一冠军'
+      : group.state === 'partially_best'
+        ? '仅部分集胜出，禁止提交'
+        : group.state === 'protected'
+          ? '当前版本已保护'
+          : '继续观察';
+    return `覆盖 ${group.coveredUnits.length} 集 · ${score} · ${conclusion}`;
+  }
   if (group.state === 'initial_best') {
     const candidate = typeof group.bestCandidateScore === 'number'
       ? `首轮最高 ${scoreLabel(group.bestCandidateScore)} 分`
@@ -370,10 +388,10 @@ function seedProcessingStateLabel(match: RssMatch | undefined, action: Automatio
   if (action?.type === 'rewash-download' || match.status === 'confirmed') return 'Torra 已接收';
   if (action && !['succeeded', 'failed', 'cancelled'].includes(action.status)) return 'Torra 分析中';
   if (match.evaluationStatus === 'scored' && typeof match.candidateScore === 'number') {
-    return `影子评分 ${scoreLabel(match.candidateScore)} 分`;
+    return `Torra 规则评分 ${scoreLabel(match.candidateScore)} 分`;
   }
   if (match.evaluationStatus === 'blocked') return '评分暂未确认';
-  return '等待影子评分';
+  return '等待 Torra 规则评分';
 }
 
 function seedPriorityReason(item: RssSeedItem, scope: ReturnType<typeof classifyRssResourceScope>) {
@@ -421,6 +439,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const [matchPollTimedOut, setMatchPollTimedOut] = useState<Record<string, boolean>>({});
   const [matchBusy, setMatchBusy] = useState('');
   const [downloadTarget, setDownloadTarget] = useState<{ match: RssMatch; analysis: AutomationAction } | null>(null);
+  const [exactDownloadTarget, setExactDownloadTarget] = useState<{ group: RssMatchGroup; preview: RssExactDownloadPreview } | null>(null);
   const [cleanupPreview, setCleanupPreview] = useState<RssMatchCleanupPreview | null>(null);
   const [cleanupBusy, setCleanupBusy] = useState(false);
   const [query, setQuery] = useState(initialUrlState.query);
@@ -537,8 +556,9 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
         resourceContext.subscriptionId || resourceContext.mediaType || resourceContext.seasonNumber
         || resourceContext.episodeNumber || resourceContext.matchId
       );
+      const groupLoader = view === 'cleanup' ? getRssMatchGroups : getRssArtifactGroups;
       const [payload, globalPayload] = await Promise.all([
-        getRssMatchGroups({
+        groupLoader({
           groupState: view === 'upgrades' ? 'upgrade_available' : undefined,
           groupScope: view === 'cleanup' ? 'cleanup' : 'scoreable',
           subscriptionId: resourceContext.subscriptionId || undefined,
@@ -549,8 +569,8 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
           limit: 10,
           offset: nextOffset
         }, { signal: controller.signal }),
-        hasScopedContext
-          ? getRssMatchGroups({ limit: 1, offset: 0 }, { signal: controller.signal })
+        hasScopedContext || view === 'cleanup'
+          ? getRssArtifactGroups({ limit: 1, offset: 0 }, { signal: controller.signal })
           : Promise.resolve(null)
       ]);
       if (controller.signal.aborted) return {};
@@ -562,7 +582,9 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       setMatchesTotal(payload.total);
       if (globalPayload?.counts ?? payload.counts) setMatchGroupCounts((globalPayload?.counts ?? payload.counts)!);
       setMatchesOffset(payload.offset);
-      const groupedMatches = view === 'cleanup' ? [] : payload.groups.flatMap((group) => group.candidates);
+      const groupedMatches = view === 'cleanup' ? [] : Array.from(new Map(
+        payload.groups.flatMap((group) => group.candidates).map((match) => [match.id, match])
+      ).values());
       const linkedActions = await Promise.all(groupedMatches.map(async (match) => {
         if (!match.triggerActionId) return null;
         try {
@@ -763,23 +785,54 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       .finally(() => setMatchBusy(''));
   };
 
-  const previewExactDownload = (match: RssMatch) => {
-    setMatchBusy(`exact-preview:${match.id}`);
-    previewRssExactDownload(match.id)
+  const previewExactDownload = (group: RssMatchGroup) => {
+    setMatchBusy(`exact-preview:${group.id}`);
+    previewRssArtifactExactDownload(group.id)
       .then((preview) => {
-        setExactPreviews((current) => ({ ...current, [match.id]: preview }));
-        const providerBlocker = preview.blockers.find(
-          (blocker) => blocker.code === 'TORRA_EXACT_RESOURCE_ENDPOINT_UNAVAILABLE'
-        );
-        const primary = providerBlocker || preview.blockers[0];
+        setExactPreviews((current) => ({ ...current, [group.id]: preview }));
+        const primary = preview.blockers[0];
+        if (preview.ready && preview.previewToken) {
+          setExactDownloadTarget({ group, preview });
+        }
         setFeedback({
           tone: preview.ready ? 'ok' : 'error',
-          message: primary?.message || (preview.ready ? '精准下载预检通过' : '精准下载预检未通过')
+          message: primary?.message || (preview.ready
+            ? preview.downloadCategoryConfigured === false
+              ? '精准下载预检通过 · 未设置 qB 分类，将按订阅目录提交'
+              : '精准下载预检通过'
+            : '精准下载预检未通过')
         });
       })
       .catch((reason: unknown) => setFeedback({
         tone: 'error',
         message: reason instanceof Error ? reason.message : '精准下载预检失败'
+      }))
+      .finally(() => setMatchBusy(''));
+  };
+
+  const confirmExactDownload = () => {
+    const previewToken = exactDownloadTarget?.preview.previewToken;
+    if (!exactDownloadTarget || !previewToken) return;
+    const { group, preview } = exactDownloadTarget;
+    const match = group.representativeMatch
+      || group.candidates.find((candidate) => candidate.bestCandidate)
+      || group.candidates[0];
+    if (!match) return;
+    setExactDownloadTarget(null);
+    setMatchBusy(`exact-download:${group.id}`);
+    startRssArtifactExactDownload(group.id, {
+      confirm: true,
+      previewToken,
+      idempotencyKey: createIdempotencyKey()
+    })
+      .then((action) => {
+        setMatchActions((current) => ({ ...current, [match.id]: action }));
+        setFeedback({ tone: 'ok', message: '已提交 qB，正在确认下载任务。' });
+        void pollMatchAction(match.id, action.id);
+      })
+      .catch((reason: unknown) => setFeedback({
+        tone: 'error',
+        message: reason instanceof Error ? reason.message : '精准下载提交失败'
       }))
       .finally(() => setMatchBusy(''));
   };
@@ -986,10 +1039,33 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       ? '待整理候选'
       : 'Torra 规则候选决策';
   const matchPanelSummary = resourceView === 'upgrades'
-    ? matchesTotal ? `${matchesTotal} 个严格高于当前基线的季集候选组` : '当前没有可洗版的更高分候选'
+    ? matchesTotal ? `${matchesTotal} 个覆盖范围全部胜出的唯一产物` : '当前没有可洗版的更高分候选'
     : resourceView === 'cleanup'
       ? matchesTotal ? `${matchesTotal} 个候选组失去可靠订阅归属` : '当前没有待整理候选'
-      : matchesTotal ? `最近 ${matchesTotal} 个季集候选组 · 只读评估，不会自动下载` : '新资源会自动匹配并评分，不会自动下载';
+      : matchesTotal ? `最近 ${matchesTotal} 个唯一产物 · 只读评估，不会自动下载` : '新资源会自动匹配并评分，不会自动下载';
+  const upgradeEmpty = (matchGroupCounts.waitingBaseline ?? 0) > 0
+    ? {
+        title: `${matchGroupCounts.waitingBaseline} 个候选组正在等待当前版本基线`,
+        detail: '候选已经到达，但尚不能证明它严格优于当前入库版本。',
+        action: 'baseline' as const
+      }
+    : ((matchGroupCounts.blocked ?? 0) + (matchGroupCounts.needsCleanup ?? 0)) > 0
+      ? {
+          title: '部分候选的身份、规则或订阅归属尚未确认',
+          detail: '这些候选不会进入下载，需先在候选评分或待整理视图解决阻断。',
+          action: 'blocked' as const
+        }
+      : (matchGroupCounts.monitoringRss ?? 0) > 0
+        ? {
+            title: '候选仍在评分或持续观察',
+            detail: 'Torra 规则评分完成后，只会把严格高于当前版本的候选列在这里。',
+            action: 'scoring' as const
+          }
+        : {
+            title: '当前没有可洗版的更高分候选',
+            detail: '已评分候选均未严格高于当前入库版本。',
+            action: 'none' as const
+          };
   const hasResourceContext = Boolean(
     resourceContext.publishedDate || resourceContext.subscriptionId || resourceContext.tmdbId || resourceContext.matchId
   );
@@ -1231,24 +1307,30 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
               <button className="ops-link" disabled={matchesLoading} type="button" onClick={() => void loadMatches(matchesOffset)}><RefreshCcw size={13} />刷新</button>
             </header>
             {matchesLoading && <small className="sub-detail__hint">正在查看是否有种子匹配到追更作品…</small>}
-            {!matchesLoading && matchGroups.length === 0 && <div className="rss-match-empty"><CheckCircle2 size={15} /><span><strong>{resourceView === 'upgrades' ? '当前没有可洗版的更高分候选' : resourceView === 'cleanup' ? '当前没有待整理候选' : summary.enabled && summary.errorSources === 0 ? 'RSS 正常收集，但暂未匹配到追更作品' : '暂未匹配到追更作品'}</strong><small>{resourceView === 'upgrades' ? '已评分候选均未严格高于当前入库版本。' : resourceView === 'cleanup' ? '候选评分主列表只保留具备当前订阅归属的候选组。' : summary.enabled ? '可用来源会继续自动检查；现在无需处理。' : '开启收集后，新资源会自动尝试匹配。'}</small></span></div>}
+            {!matchesLoading && matchGroups.length === 0 && <div className="rss-match-empty"><CheckCircle2 size={15} /><span><strong>{resourceView === 'upgrades' ? upgradeEmpty.title : resourceView === 'cleanup' ? '当前没有待整理候选' : summary.enabled && summary.errorSources === 0 ? 'RSS 正常收集，但暂未匹配到追更作品' : '暂未匹配到追更作品'}</strong><small>{resourceView === 'upgrades' ? upgradeEmpty.detail : resourceView === 'cleanup' ? '候选评分主列表只保留具备当前订阅归属的候选组。' : summary.enabled ? '可用来源会继续自动检查；现在无需处理。' : '开启收集后，新资源会自动尝试匹配。'}</small>{resourceView === 'upgrades' && upgradeEmpty.action === 'baseline' && <button className="ops-link" type="button" onClick={() => onNavigate('subscription-settings')}><ShieldCheck size={13} />预览历史基线</button>}</span></div>}
             <div className="rss-match-list">
               {matchGroups.map((group) => {
-                const match = group.candidates.find((candidate) => candidate.bestCandidate) || group.candidates[0];
+                const match = group.representativeMatch
+                  || group.candidates.find((candidate) => candidate.bestCandidate)
+                  || group.candidates[0];
                 if (!match) return null;
                 const seed = items.find((item) => item.id === match.itemId);
                 const action = matchActions[match.id];
-                const exactPreview = exactPreviews[match.id];
+                const exactPreview = exactPreviews[group.id];
                 const pollTimedOut = Boolean(matchPollTimedOut[match.id]);
                 const actionRunning = action && !pollTimedOut && !['succeeded', 'failed', 'cancelled'].includes(action.status);
                 const selectedCount = action?.type === 'rewash-analysis' && action.status === 'succeeded' ? action.result?.selectedCount ?? 0 : 0;
-                const isSubmitting = matchBusy.endsWith(`:${match.id}`);
+                const isSubmitting = matchBusy.endsWith(`:${match.id}`) || matchBusy.endsWith(`:${group.id}`);
                 const canAnalyze = match.status === 'candidate' || action?.status === 'failed' || action?.status === 'cancelled';
-                const downloadFailed = action?.type === 'rewash-download' && ['failed', 'cancelled'].includes(action.status);
-                const downloadConfirmed = !downloadFailed && (action?.type === 'rewash-download' || match.status === 'confirmed');
+                const isDownloadAction = action?.type === 'rewash-download' || action?.type === 'rss-exact-download';
+                const downloadFailed = Boolean(isDownloadAction && ['failed', 'cancelled'].includes(action.status));
+                const downloadConfirmed = !downloadFailed && (Boolean(isDownloadAction) || match.status === 'confirmed');
                 const sourceFocused = Boolean(
                   resourceContext.matchId && group.candidates.some((candidate) => candidate.id === resourceContext.matchId)
                 );
+                const canPreviewExact = group.coveredUnits?.length
+                  ? group.state === 'upgrade_available' && group.winsAllCoveredUnits === true
+                  : ['upgrade_available', 'initial_best'].includes(group.state);
                 return (
                   <article className={sourceFocused ? 'rss-match-row rss-match-row--focused' : 'rss-match-row'} key={group.id}>
                     <div className="rss-match-row__content">
@@ -1274,33 +1356,38 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                           )}
                         </div>
                       )}
-                      {resourceView !== 'cleanup' && ['upgrade_available', 'initial_best'].includes(group.state) && (
+                      {resourceView !== 'cleanup' && canPreviewExact && (
                         <button
                           className="ops-link rss-exact-preview"
                           disabled={Boolean(matchBusy)}
                           title="只读复核订阅、规则、版本和下载器状态"
                           type="button"
-                          onClick={() => previewExactDownload(match)}
+                          onClick={() => previewExactDownload(group)}
                         >
                           <ShieldCheck size={13} />
-                          {matchBusy === `exact-preview:${match.id}` ? '正在预检' : '精准下载预检'}
+                          {matchBusy === `exact-preview:${group.id}` ? '正在预检' : '精准下载预检'}
                         </button>
                       )}
                       {exactPreview && (
-                        <small className="rss-match-status rss-match-status--error">
-                          精准下发不可用 · {
-                            exactPreview.blockers.find((blocker) => blocker.code === 'TORRA_EXACT_RESOURCE_ENDPOINT_UNAVAILABLE')?.message
-                            || exactPreview.blockers[0]?.message
-                            || '预检未通过'
-                          }
-                          {exactPreview.blockers.length > 1 ? ` · 另有 ${exactPreview.blockers.length - 1} 项未通过` : ''}
+                        <small className={exactPreview.ready ? 'rss-match-status' : 'rss-match-status rss-match-status--error'}>
+                          {exactPreview.ready
+                            ? `精准下载预检通过 · ${exactPreview.coveredUnitCount ?? group.coveredUnits?.length ?? 1} 集`
+                            : `精准下发不可用 · ${exactPreview.blockers[0]?.message || '预检未通过'}`}
+                          {!exactPreview.ready && exactPreview.blockers.length > 1 ? ` · 另有 ${exactPreview.blockers.length - 1} 项未通过` : ''}
                         </small>
                       )}
                       {(action || pollTimedOut) && <small className={action?.status === 'failed' || pollTimedOut ? 'rss-match-status rss-match-status--error' : 'rss-match-status'}>{pollTimedOut ? '人工 Torra 分析状态确认超时' : `人工 Torra 分析 · ${matchActionLabel(action, match.status)}`}</small>}
                       <details className="rss-candidate-group__details">
-                        <summary>查看 {group.candidateCount} 个候选版本</summary>
+                        <summary>{group.unitResults?.length ? `查看 ${group.unitResults.length} 个集级结果` : `查看 ${group.candidateCount} 个候选版本`}</summary>
                         <div className="rss-candidate-group__versions">
-                          {group.candidates.map((candidate) => (
+                          {group.unitResults?.length ? group.unitResults.map((result) => result.match && (
+                            <div className={result.match.id === resourceContext.matchId ? 'rss-candidate-version rss-candidate-version--focused' : 'rss-candidate-version'} key={result.unitId}>
+                              <span>
+                                <strong>{result.seasonNumber && result.episodeNumber ? `S${String(result.seasonNumber).padStart(2, '0')}E${String(result.episodeNumber).padStart(2, '0')}` : '季集暂未确认'} · {result.match.candidateSummary?.versionSummary || '版本信息暂未确认'}</strong>
+                                <small>{result.winsUnit ? '本集冠军' : result.state === 'protected' ? '本集受保护' : '本集未胜出'} · {shadowEvaluationLabel(result.match)}</small>
+                              </span>
+                            </div>
+                          )) : group.candidates.map((candidate) => (
                             <div className={candidate.id === resourceContext.matchId ? 'rss-candidate-version rss-candidate-version--focused' : 'rss-candidate-version'} key={candidate.id}>
                               <span>
                                 <strong>{candidate.candidateSummary?.versionSummary || '版本信息暂未确认'}</strong>
@@ -1498,6 +1585,34 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
           <p id="rss-delete-description">这会删除该来源在 Fluxa 内保存的种子索引，不会修改 PT 站点上的任何数据。</p>
           <div className="ops-confirm-dialog__meta"><span>来源</span><strong>{deleteTarget.domain}</strong><span>影响</span><strong>本地索引</strong></div>
           <div className="ops-confirm-dialog__actions"><button className="ops-action-button" disabled={saving} type="button" onClick={() => setDeleteTarget(null)}>取消</button><button className="ops-action-button ops-action-button--primary" data-dialog-initial-focus disabled={saving} type="button" onClick={confirmDelete}>{saving ? '正在删除' : '确认删除'}</button></div>
+          </>
+        )}
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        busy={Boolean(matchBusy)}
+        labelledBy="rss-exact-download-title"
+        describedBy="rss-exact-download-description"
+        open={Boolean(exactDownloadTarget)}
+        onClose={() => setExactDownloadTarget(null)}
+      >
+        {exactDownloadTarget && (
+          <>
+            <span className="ops-confirm-dialog__signal">人工精准下载</span>
+            <h2 id="rss-exact-download-title">提交这个唯一冠军到 qB？</h2>
+            <p id="rss-exact-download-description">Fluxa 会使用 Torra 订阅当前配置的保存目录和下载器；只有 Torra 明确提供 qB 分类时才会一并提交。当前媒体文件与 RSS 原始记录不会被删除。</p>
+            <div className="ops-confirm-dialog__meta">
+              <span>作品</span><strong>{exactDownloadTarget.group.title || '已匹配追更作品'}</strong>
+              <span>覆盖范围</span><strong>{exactDownloadTarget.preview.episodeLabel || exactDownloadTarget.group.episodeLabel || `${exactDownloadTarget.preview.coveredUnitCount ?? 1} 集`}</strong>
+              <span>分数提升</span><strong>{typeof exactDownloadTarget.preview.scoreGain === 'number' ? scoreLabel(exactDownloadTarget.preview.scoreGain) : '已通过严格高分校验'}</strong>
+              <span>qB 分类</span><strong>{exactDownloadTarget.preview.downloadCategory || '未设置 · 按订阅目录提交'}</strong>
+            </div>
+            <div className="ops-confirm-dialog__actions">
+              <button className="ops-action-button" type="button" onClick={() => setExactDownloadTarget(null)}>取消</button>
+              <button className="ops-action-button ops-action-button--primary" data-dialog-initial-focus type="button" onClick={confirmExactDownload}>
+                <Download size={13} />确认提交 qB
+              </button>
+            </div>
           </>
         )}
       </ConfirmDialog>

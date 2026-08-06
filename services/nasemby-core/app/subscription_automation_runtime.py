@@ -43,6 +43,8 @@ SETTINGS_FIELDS = {
     "batchSize",
     "bridgeMode",
     "bridgeModeConfirm",
+    "executionMode",
+    "executionModeConfirm",
 }
 QUALITY_PATCH_FIELDS = {"paused", "lifecycleMode", "windowHours", "scheduleMinutes"}
 
@@ -101,6 +103,7 @@ class SubscriptionAutomationDependencies:
     bridge_runtime: object = None
     baseline_initializer: object = None
     clock: object = None
+    rss_repository: object = None
 
 
 class SubscriptionAutomationService:
@@ -117,6 +120,11 @@ class SubscriptionAutomationService:
         self.bridge_runtime = dependencies.bridge_runtime
         self.baseline_initializer = dependencies.baseline_initializer
         self.clock = dependencies.clock or (lambda: datetime.now(timezone.utc))
+        self.rss_repository = (
+            dependencies.rss_repository
+            or getattr(self.rss_runtime, "rss_repository", None)
+            or getattr(self.rss_runtime, "repository", None)
+        )
 
     def _config(self):
         value = self.config_loader()
@@ -284,13 +292,79 @@ class SubscriptionAutomationService:
         config = self._config() if config is None else config
         policy = resolve_watch_policy({}, config)
         window = policy["window_hours"]
+        enabled = _truthy(config.get("torra_quality_watch_enabled"))
+        environment_enabled = _truthy(self.environment.get("MCC_TORRA_QUALITY_WATCH_ENABLED"))
+        execution_environment_enabled = _truthy(
+            self.environment.get("MCC_TORRA_REWASH_DOWNLOAD_ENABLED")
+        )
+        execution_mode = _text(config.get("torra_quality_execution_mode")).lower()
+        if execution_mode not in {"disabled", "manual", "automatic"}:
+            execution_mode = "disabled"
+
+        baseline_counts = {
+            "total": 0,
+            "ready": 0,
+            "pending": 0,
+            "missing": 0,
+            "conflict": 0,
+            "expired": 0,
+        }
+        try:
+            stored_baselines = self.repository.baseline_state_counts()
+            baseline_counts = {
+                "total": int(stored_baselines.get("total") or 0),
+                "ready": int(stored_baselines.get("baseline_ready") or 0),
+                "pending": int(stored_baselines.get("baseline_pending") or 0),
+                "missing": int(stored_baselines.get("baseline_missing") or 0),
+                "conflict": int(stored_baselines.get("baseline_conflict") or 0),
+                "expired": int(stored_baselines.get("baseline_expired") or 0),
+            }
+        except Exception:
+            baseline_counts = None
+
+        candidate_summary = None
+        try:
+            if self.rss_repository:
+                candidate_summary = self.rss_repository.candidate_contract_summary()
+        except Exception:
+            candidate_summary = None
+        if not enabled or not environment_enabled:
+            analysis_state = "disabled"
+        elif candidate_summary is None:
+            analysis_state = "unknown"
+        elif int(candidate_summary.get("total") or 0) == 0:
+            analysis_state = "collecting"
+        else:
+            candidate_counts = candidate_summary.get("counts") or {}
+            total = int(candidate_summary.get("total") or 0)
+            blocked = int(candidate_counts.get("blocked") or 0) + int(
+                candidate_counts.get("needs_cleanup") or 0
+            )
+            stable = sum(
+                int(candidate_counts.get(state) or 0)
+                for state in ("initial_best", "upgrade_available", "protected")
+            )
+            if blocked == total:
+                analysis_state = "blocked"
+            elif stable:
+                analysis_state = "ready"
+            else:
+                analysis_state = "scoring"
         result = {
-            "enabled": _truthy(config.get("torra_quality_watch_enabled")),
+            "enabled": enabled,
             "missingFallbackEnabled": _truthy(
                 config.get("torra_quality_missing_fallback_enabled")
             ),
-            "environmentEnabled": _truthy(self.environment.get("MCC_TORRA_QUALITY_WATCH_ENABLED")),
-            "downloadEnvironmentEnabled": _truthy(self.environment.get("MCC_TORRA_REWASH_DOWNLOAD_ENABLED")),
+            "environmentEnabled": environment_enabled,
+            "downloadEnvironmentEnabled": execution_environment_enabled,
+            "analysisState": analysis_state,
+            "executionMode": execution_mode,
+            "executionEnvironmentEnabled": execution_environment_enabled,
+            "baselineCounts": baseline_counts,
+            "automaticEligibleCount": (
+                int(candidate_summary.get("automatic_eligible_count") or 0)
+                if candidate_summary is not None else None
+            ),
             "lifecycleMode": policy["lifecycle_mode"],
             "defaultWindowHours": window,
             "scheduleMinutes": policy["offsets_minutes"],
@@ -312,6 +386,12 @@ class SubscriptionAutomationService:
         if "bridgeModeConfirm" in body and "bridgeMode" not in body:
             raise AutomationApiError(
                 "QUALITY_WATCH_BRIDGE_MODE_REQUIRED", "确认生产桥接时必须指定 bridgeMode", 422
+            )
+        if "executionModeConfirm" in body and "executionMode" not in body:
+            raise AutomationApiError(
+                "SUBSCRIPTION_AUTOMATION_EXECUTION_MODE_REQUIRED",
+                "确认执行模式时必须指定 executionMode",
+                422,
             )
         config = self._config()
         current = self.present_settings(config)
@@ -364,6 +444,20 @@ class SubscriptionAutomationService:
                     "正式桥接前必须先启用影子模式并完成核对",
                     409,
                 )
+        execution_mode = _text(body.get("executionMode", current.get("executionMode", "disabled"))).lower()
+        if "executionMode" in body:
+            if body.get("executionModeConfirm") is not True:
+                raise AutomationApiError(
+                    "SUBSCRIPTION_AUTOMATION_EXECUTION_CONFIRM_REQUIRED",
+                    "切换精准下载执行模式需要明确确认",
+                    422,
+                )
+            if execution_mode not in {"disabled", "manual"}:
+                raise AutomationApiError(
+                    "SUBSCRIPTION_AUTOMATION_EXECUTION_MODE_INVALID",
+                    "自动执行尚未开放；当前只允许 disabled 或 manual",
+                    422,
+                )
         config.update({
             "torra_quality_watch_enabled": body.get("enabled", current["enabled"]),
             "torra_quality_missing_fallback_enabled": body.get(
@@ -384,6 +478,7 @@ class SubscriptionAutomationService:
             "torra_quality_scheduler_batch_size": _integer(
                 body.get("batchSize", current["batchSize"]), "batchSize", 2, 3
             ),
+            "torra_quality_execution_mode": execution_mode,
         })
         saved = self.config_saver(config)
         if "bridgeMode" in body:

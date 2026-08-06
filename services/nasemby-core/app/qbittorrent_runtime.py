@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib.parse import quote
+from urllib.parse import urlsplit
 
 import requests
 from flask import Flask, jsonify
@@ -297,6 +298,58 @@ class QbittorrentClient:
                 f"qBittorrent {'暂停' if action == 'pause' else '恢复'}失败：{response.status_code}"
             )
         self._invalidate_summary_cache()
+
+    def add_torrent(self, download_url: str, save_path: str, category: str, tags: list[str]):
+        download_url = str(download_url or "").strip()
+        save_path = str(save_path or "").strip()
+        category = str(category or "").strip()
+        normalized_tags = sorted({
+            str(value or "").strip()
+            for value in tags or []
+            if str(value or "").strip()
+        })
+        parsed = urlsplit(download_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or len(download_url) > 4096:
+            raise RuntimeError("RSS 下载资源地址无效")
+        if not save_path or len(save_path) > 1024 or any(char in save_path for char in "\r\n\0"):
+            raise RuntimeError("qBittorrent 保存路径无效")
+        if category and (len(category) > 200 or any(char in category for char in "\r\n\0")):
+            raise RuntimeError("qBittorrent 分类无效")
+        if not normalized_tags or any(
+            len(value) > 100 or any(char in value for char in ",\r\n\0")
+            for value in normalized_tags
+        ):
+            raise RuntimeError("qBittorrent 标签无效")
+        if not self.base_url:
+            raise RuntimeError("未配置 QB_BASE_URL")
+        cookie = self._login()
+        headers = {
+            "Accept": "text/plain",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        if cookie:
+            headers["Cookie"] = cookie
+        try:
+            data = {
+                "urls": download_url,
+                "savepath": save_path,
+                "tags": ",".join(normalized_tags),
+            }
+            if category:
+                data["category"] = category
+            response = self.http.request(
+                "POST",
+                f"{self.base_url}/api/v2/torrents/add",
+                headers=headers,
+                data=data,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError("qBittorrent 添加任务请求失败") from exc
+        if response.status_code >= 400 or str(response.text or "").strip() not in {"", "Ok."}:
+            raise RuntimeError(f"qBittorrent 添加任务失败：{response.status_code}")
+        self._invalidate_summary_cache()
+        return {"accepted": True, "category": category, "tags": normalized_tags}
 
     def _read_summary(self) -> dict:
         checked_at = self.clock()

@@ -141,7 +141,7 @@ def _candidate_scan_snapshot(environment, douban, scheduler, now_value=None):
     else:
         state = "healthy"
         label = "候选自动更新正常"
-        detail = _candidate_time_detail(last_run_at, now_value)
+        detail = _candidate_time_detail(last_success_at, now_value)
     return {
         "configured": bool(douban),
         "ruleEnabled": rule_enabled,

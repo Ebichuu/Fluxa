@@ -9,7 +9,7 @@
 - NasEmby 原发现、JustWatch 海外流媒体、订阅、日历、资源规则和调度源码。
 - SQLite 唯一订阅台账、独立发现候选池、Torra 已有订阅单向镜像、旧 JSON 一次性迁移、私人 PT RSS 本地种子索引、活动观察窗口匹配和订阅绑定规则影子评分。
 - 115、Telegram、HDHive / pansou、provider 等原核心能力与接口调用关系。
-- Torra 固定目标推送，以及只读权重规则、追更洗版人工分析、候选下载、job 状态解析、按集 Emby 基准、SQLite 幂等/租约和脱敏审计；自动 RSS 匹配只在 Fluxa 本地影子评分，不触发 Torra 整订阅搜索或下载。订阅级精准下载当前只提供只读预检，并因 Torra 缺少订阅绑定的指定 RSS 资源入口而固定阻断。
+- Torra 固定目标推送，以及只读权重规则、追更洗版人工分析、候选下载、job 状态解析、按集 Emby 基准、SQLite 幂等/租约和脱敏审计；自动 RSS 匹配只在 Fluxa 本地评分，不触发 Torra 整订阅搜索或下载。人工精准下载按唯一 RSS 产物预检并直接写入已确认映射的 qB，目录与下载器必须由实时 Torra 订阅和服务端配置派生；qB 分类只在 Torra 明确提供时使用，自动执行仍未开放。
 - 30 秒缓存的 NAS 系统指标，以及统一脱敏、可筛选的 v2 活动日志。
 - 115、Telegram、HDHive / pansou 和 MoviePilot 的 v2 细分接口继续保留；MoviePilot 阶段 7 已增加默认关闭的人工备用预览/推送，其他能力延期。
 - Emby、qBittorrent、Torra、Symedia 的服务端适配和凭据隔离；Symedia 摘要把 transfer history 与归档监控、云盘监听、Webhook、STRM、归档调度和文件观察分别建模。实机 `/api/v1/system/sync_stats` 只提供按日 STRM 数量，不能绑定媒体目标；STRM 独立结果继续保持 `unknown + NOT_INTEGRATED`。
@@ -73,7 +73,7 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - 第一阶段导入项标记为只读，服务端拒绝改季、屏蔽、清空和删除；删除 Torra 订阅留到第二阶段单独设计。
 - 旧订阅总调度器只在显式开启环境闸门时启动；独立候选来源调度器只在“每日候选更新”开启时更新本地候选池，不访问 Torra 搜索、推送或下载入口。
 - 追更洗版协调器只在 `MCC_TORRA_QUALITY_WATCH_ENABLED=true` 时启动，并继续要求 SQLite 中的追更设置开启；自动 RSS 入口只读 Torra 订阅和权重规则。可选缺集 PT 搜索兜底还要求 `torra_quality_missing_fallback_enabled=true`，只使用已关联日历中的明确已播缺集，默认关闭。
-- 追更洗版候选下载还要求独立的 `MCC_TORRA_REWASH_DOWNLOAD_ENABLED=true`、人工确认和服务端已完成分析动作；打开分析闸门不会自动下载。
+- RSS 精准下载还要求 `executionMode=manual`、`MCC_TORRA_REWASH_DOWNLOAD_ENABLED=true`、`TORRA_DOWNLOADER_ID` 与订阅下载器一致、10 分钟内有效的产物预览和人工确认。Torra 明确提供 `qb_category` 或 `download_category` 时原样提交；缺失时省略 qB 分类，普通媒体 `category`、保存目录、标题和历史任务均不能用于推断。打开评分闸门不会自动下载，设置接口在实机验收前拒绝 `automatic`。
 - MoviePilot 人工备用还要求 `MCC_MOVIEPILOT_BACKUP_ENABLED=true`、观察单元全部 `observation_expired`、Torra/qB 预检通过和明确确认；已有订阅只重搜，没有订阅才复用创建逻辑，默认不接入自动调度。
 - NasEmby 的 115、Telegram、HDHive、缓存预热和 provider 核心 API 保留在统一端口的 URL map 中，但默认返回 `503 PRESERVED_CORE_API_DISABLED`。
 - qB 与 Emby 手动动作仍由各自的确认、目标复查和冷却保护；只读验收阶段不得调用。
@@ -111,7 +111,8 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/v2/rss-sources`、`/api/v2/rss-items`：私人 RSS 来源和本地种子库；支持订阅身份/类型/季号/年份精确筛选，以及兼容全库待复核、已关联追更待识别和未关联追更三种只读范围；电视剧标题候选不强制年份，未知季号只作为人工候选，读取响应不含完整 RSS/下载地址。
 - `/api/v2/rss-items/identity-backfills`：管理员显式触发的本地有界身份回填，每批最多 200 条，不访问 PT 详情页或执行下载；摘要保留最近扫描、识别、冲突、未变化和剩余数量。
 - `/api/v2/rss-matches`：读取本地候选、规范订阅/季集绑定和 Torra 规则影子评分；分组读取可把整组均因 `subscription_missing` 阻断的孤立候选归入 `needs_cleanup`，主评分范围排除该组但旧全量 `total` 保持兼容。POST 可为一个 RSS 搜索结果和明确观察单元建立幂等人工匹配，服务端复核身份、季集、首次下载时间及 Torra 归属，并只读当前规则评分。规则或证据不完整时返回“暂未确认”，不按零分处理；后续人工 Torra 分析和下载仍分别受独立闸门保护。
-- `/api/v2/rss-matches/:id/exact-download-previews`：阶段 C0 只读复核冠军、严格高分、订阅绑定、当前规则、候选评分、基线及 qB/Torra 状态；请求只接受空对象，不创建动作或执行下载。当前固定返回 Torra 正式指定 RSS 资源入口缺失，不使用通用下载器入口。
+- `/api/v2/rss-matches/:id/exact-download-previews`：保留的单匹配兼容预检；普通页面使用产物级接口，避免多集种子重复操作。
+- `/api/v2/rss-artifact-groups/:id/exact-download-previews`、`/exact-downloads`：先只读复核全覆盖冠军、严格高分、订阅身份、实时规则与基线、qB 状态、保存目录和下载器映射，并明确返回 qB 分类是否由 Torra 提供，再以 `previewToken + idempotencyKey` 确认一次 qB 添加。动作使用稳定事实收据、全局单飞、冷却与小时/每日限额；qB 暂未显现时保持 `submitted`，重启后只按审计标签补确认，不盲目新建任务。公开响应不含 RSS 下载地址、Passkey、内部路径或 Torra 原始 ID。
 - `/api/v2/subscription-automation/settings`、`/api/v2/subscription-automation/bridge-summary`、`/api/v2/subscriptions/:id/quality-watch`：追更洗版全局与单条观察设置、生产桥接水位/收据摘要、暂停和恢复；默认 `follow_rss` 只监听并本地评分 RSS 候选，不按旧检查点触发 Torra 整订阅搜索。生产桥接 v4 支持 `off/shadow/apply`，首次影子水位永久保留，摘要只统计 v4 收据并继续保留 v3 及更早审计；可选 `missingFallbackEnabled` 开启可靠缺集的单订阅搜索兜底，显式 `fixed_window` 才保留高级兼容调度。
 - `/api/v2/subscription-automation/baseline-initialization-previews`、`/api/v2/subscription-automation/baseline-initializations`：只从缓存任务快照和稳定 `resource_events` 生成持久预览，最多确认 200 个可靠历史目标；同批漂移全部回滚，真实历史时间决定进入观察或直接过期，不触发任何外部搜索或下载动作。
 - `/api/v2/subscriptions/:id/torra-rewash-analyses`、`/api/v2/subscriptions/:id/torra-rewashes`、`/api/v2/rss-matches/:id/torra-rewash-analyses`、`/api/v2/rss-matches/:id/torra-rewashes`：人工异步分析与候选下载；服务端从观察单元和已完成分析动作读取 Torra ID/候选，不接受浏览器映射。
@@ -145,7 +146,7 @@ python -m unittest discover -s tests -t . -v
 
 测试使用临时台账、隔离的临时活动日志和模拟客户端，不连接真实服务执行写操作。保留接口只在模拟测试中显式开启；Mineradio 注入片段继续使用冻结的 SHA-256 快照保护视觉桥接基线。
 
-当前共 700 项回归测试。SQLite、RSS、Torra、MoviePilot 备用、网盘、日历时间线、追更持久缓存、全局作品搜索和系统指标测试全部使用临时台账、临时活动日志和模拟函数，不连接真实外部服务；覆盖默认闸门、脱敏、原子迁移、候选刷新与追更隔离、候选只读预览与幂等确认加入、历史污染四类预览、备份失败与并发变化回滚、Torra 镜像幂等与公开哈希 ID、旧 Torra 冲突键公开投影、六阶段任务事实、六来源适配、单向兼容投影、媒体最终结果与遗留问题、Symedia `0/1` 状态归一化、能力证据和洗版摘要、Emby 集级分页索引与结果派生、任务公开引用与 qB 动作反解、qB 共享评估与 900 秒观察边界、5 秒单飞快照、全局活跃计数与 `qbActive` 深链、任务用户状态、无 TMDB 任务深链、首页问题组与单一推荐动作、统计范围与确认状态、北京时间自然日、日历全来源可靠集级去重与完整索引、RSS 订阅绑定、范围包单一所有权、Torra 规则影子评分、首版下载期间候选回扫、可靠基线与跨批次冠军、订阅级精准下载只读预检、追更关联待识别、孤立候选待整理、默认跟随 RSS、固定窗口兼容、Torra 搜索策略与批次只读识别、可靠缺集单订阅兜底、provider 级全局并发 1、已有外部 job 续查、RSS 单条安全匹配与匹配级下载确认、追更海报补齐、qB 安全动作、自动化窗口、租约回收终态和完整幂等请求绑定，以及候选来源独立调度、运行槽位恢复、首页/日历/追更缓存投影、并发单飞和规范追更目标去重。
+回归测试全部使用临时台账、临时活动日志和模拟客户端，不连接真实外部服务。RSS 覆盖订阅绑定、范围包单一所有权、Torra 规则评分、可靠基线、跨批次冠军、产物级只读预检、人工精准 qB 提交、稳定事实收据、全局单飞、冷却和小时/每日限额、qB 标签重启恢复及公开脱敏；完整数量以实际测试发现结果为准，不在文档中维护易过期的固定数字。
 
 RSS 身份端到端验收使用临时 SQLite 覆盖结构化 TMDB、简介 IMDb 链接、唯一追更匹配和多候选冲突四类固定样本，不写入正式 RSS 台账。
 

@@ -60,6 +60,21 @@ const bridgeModeLabels: Record<QualityWatchBridgeMode, string> = {
   apply: '正式'
 };
 
+const analysisStateLabels: Record<string, string> = {
+  disabled: '自动评分未开启',
+  collecting: '正在收集候选',
+  scoring: 'Torra 规则评分中',
+  ready: 'Torra 规则评分正常',
+  blocked: '评分存在阻断',
+  unknown: '评分状态暂未确认'
+};
+
+const executionModeLabels: Record<string, string> = {
+  disabled: '未授权',
+  manual: '仅人工确认',
+  automatic: '自动执行'
+};
+
 const baselineCategoryLabels: Record<BaselineInitializationCategory, string> = {
   safe_to_initialize: '可安全初始化',
   needs_review: '需要复核',
@@ -314,6 +329,8 @@ function QualityWatchSettings() {
   const [scheduleText, setScheduleText] = useState('');
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
+  const [modeBusy, setModeBusy] = useState(false);
+  const [pendingExecutionMode, setPendingExecutionMode] = useState<'disabled' | 'manual' | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -360,17 +377,59 @@ function QualityWatchSettings() {
       .finally(() => setSaving(false));
   };
 
+  const applyExecutionMode = () => {
+    if (!pendingExecutionMode) return;
+    setModeBusy(true);
+    setMessage('');
+    updateSubscriptionAutomationSettings({
+      executionMode: pendingExecutionMode,
+      executionModeConfirm: true
+    })
+      .then((payload) => {
+        setSettings(payload);
+        setPendingExecutionMode(null);
+        setMessage(payload.executionMode === 'manual' ? '已启用仅人工确认' : '已关闭精准下载执行授权');
+      })
+      .catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : '执行模式切换失败'))
+      .finally(() => setModeBusy(false));
+  };
+
   return (
     <section className="ops-settings-card ops-settings-card--wide sub-config quality-settings">
       <header className="ops-settings-card__head">
         <div><span><SlidersHorizontal size={16} /></span><div><small>阶段 6 · 质量观察</small><h2>追更洗版策略</h2></div></div>
-        <strong>{settings.environmentEnabled ? (settings.lifecycleMode === 'follow_rss' ? '跟随 RSS' : '固定窗口') : '服务端闸门未开启'}</strong>
+        <strong>{analysisStateLabels[settings.analysisState ?? ''] || (settings.environmentEnabled ? '评分状态暂未确认' : '服务端闸门未开启')}</strong>
       </header>
       <div className="sub-config__toggles">
-        <label><input checked={settings.enabled} disabled={saving} type="checkbox" onChange={(event) => setSettings({ ...settings, enabled: event.target.checked })} />启用质量观察</label>
+        <label><input checked={settings.enabled} disabled={saving} type="checkbox" onChange={(event) => setSettings({ ...settings, enabled: event.target.checked })} />自动评分</label>
         <label><input checked={settings.missingFallbackEnabled} disabled={saving || !settings.enabled} type="checkbox" onChange={(event) => setSettings({ ...settings, missingFallbackEnabled: event.target.checked })} />缺集 PT 搜索兜底</label>
-        <span className="quality-settings__readonly">下载闸门：{settings.downloadEnvironmentEnabled ? '已开启' : '未开启'}</span>
+        <span className="quality-settings__readonly">执行模式：{executionModeLabels[settings.executionMode ?? 'disabled'] || '暂未确认'} · 硬门禁：{(settings.executionEnvironmentEnabled ?? settings.downloadEnvironmentEnabled) ? '已开启' : '未开启'}</span>
       </div>
+      <div className="quality-bridge__modes" role="group" aria-label="精准下载执行模式">
+        {(['disabled', 'manual'] as const).map((mode) => (
+          <button
+            aria-pressed={(settings.executionMode ?? 'disabled') === mode}
+            className={(settings.executionMode ?? 'disabled') === mode ? 'is-active' : ''}
+            disabled={saving || modeBusy}
+            key={mode}
+            onClick={() => (settings.executionMode ?? 'disabled') !== mode && setPendingExecutionMode(mode)}
+            type="button"
+          >
+            <strong>{mode === 'disabled' ? '不允许执行' : '仅人工确认'}</strong>
+            <small>{mode === 'disabled' ? '继续评分，不提交下载' : '每次预检后明确确认'}</small>
+          </button>
+        ))}
+      </div>
+      {settings.baselineCounts && (
+        <div className="quality-bridge__receipts" aria-label="当前版本基线统计">
+          <span>基线已确认 <strong>{settings.baselineCounts.ready}</strong></span>
+          <span>等待基线 <strong>{settings.baselineCounts.pending}</strong></span>
+          <span>缺少基线 <strong>{settings.baselineCounts.missing}</strong></span>
+          <span>基线冲突 <strong>{settings.baselineCounts.conflict}</strong></span>
+          <span>历史过期 <strong>{settings.baselineCounts.expired}</strong></span>
+          <span>可执行冠军 <strong>{settings.automaticEligibleCount ?? '暂未确认'}</strong></span>
+        </div>
+      )}
       <div className="sub-config__row sub-config__row--pair">
         <label>观察模式<select disabled={saving} value={settings.lifecycleMode} onChange={(event) => setSettings({
           ...settings,
@@ -401,6 +460,21 @@ function QualityWatchSettings() {
         <button className="tool-link" disabled={saving} type="button" onClick={save}><Save size={14} />{saving ? '保存中…' : '保存质量观察设置'}</button>
         {message && <small role="status">{message}</small>}
       </div>
+      <ConfirmDialog
+        busy={modeBusy}
+        labelledBy="quality-execution-mode-title"
+        describedBy="quality-execution-mode-description"
+        open={Boolean(pendingExecutionMode)}
+        onClose={() => !modeBusy && setPendingExecutionMode(null)}
+      >
+        <span className="ops-confirm-dialog__signal">精准下载执行授权</span>
+        <h2 id="quality-execution-mode-title">{pendingExecutionMode === 'manual' ? '启用仅人工确认？' : '关闭精准下载执行？'}</h2>
+        <p id="quality-execution-mode-description">{pendingExecutionMode === 'manual' ? '启用后仍需对每个唯一冠军完成预检并明确确认；自动执行不会开启。' : '关闭后继续收集和评分 RSS 候选，但不会再提交新的精准下载。'}</p>
+        <div className="ops-confirm-dialog__actions">
+          <button className="ops-action-button" disabled={modeBusy} onClick={() => setPendingExecutionMode(null)} type="button">取消</button>
+          <button className="ops-action-button ops-action-button--primary" data-dialog-initial-focus disabled={modeBusy} onClick={applyExecutionMode} type="button">{modeBusy ? '切换中…' : '确认切换'}</button>
+        </div>
+      </ConfirmDialog>
     </section>
   );
 }

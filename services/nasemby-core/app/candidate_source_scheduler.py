@@ -206,7 +206,7 @@ class CandidateSourceScheduler:
             finished_at=_iso(_as_utc(self.clock())),
             next_run_at=_iso(context["nextRun"]),
             last_error="" if full_success else "候选来源更新存在失败",
-            last_result=counts,
+            last_result={**counts, "trigger": trigger},
             succeeded=full_success,
         )
         projected_config = self._project_legacy(completed)
@@ -235,13 +235,13 @@ class CandidateSourceScheduler:
             "scheduler": public_state,
         }
 
-    def _complete_failed_run(self, run_id, context):
+    def _complete_failed_run(self, run_id, context, trigger):
         failed = self.repository.complete_candidate_refresh(
             run_id=run_id,
             finished_at=_iso(_as_utc(self.clock())),
             next_run_at=_iso(context["nextRun"]),
             last_error="候选来源更新失败",
-            last_result={},
+            last_result={"trigger": trigger},
             succeeded=False,
         )
         self._project_legacy(failed)
@@ -262,7 +262,7 @@ class CandidateSourceScheduler:
             return response
         except Exception:
             if context:
-                self._complete_failed_run(run_id, context)
+                self._complete_failed_run(run_id, context, trigger)
             raise
         finally:
             self._run_lock.release()

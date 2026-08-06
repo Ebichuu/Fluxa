@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
+import threading
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.private_rss_parser import extract_media_identity, extract_release_scope
 from app.quality_watch_repository import make_unit_key
@@ -41,6 +43,14 @@ PERMANENT_RECLAIM_CONTEXT_CODES = {
     "subscription_missing": "RSS_REWASH_SUBSCRIPTION_MISSING",
     "torra_subscription_missing": "RSS_REWASH_TORRA_SUBSCRIPTION_MISSING",
 }
+
+
+class RssExactDownloadError(RuntimeError):
+    def __init__(self, code, message, status=409):
+        super().__init__(message)
+        self.code = str(code)
+        self.message = str(message)
+        self.status = int(status)
 
 
 def _text(value):
@@ -260,6 +270,8 @@ class RssSubscriptionMatchRuntime:
         self.subscription_loader = subscription_loader or (lambda: [])
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.analysis = analysis
+        self._exact_preview_lock = threading.RLock()
+        self._exact_previews = {}
 
     def _local_subscriptions(self):
         payload = self.subscription_loader()
@@ -1666,7 +1678,7 @@ class RssSubscriptionMatchRuntime:
             match["id"] for match in evaluated
         ])
 
-    def preview_exact_download(self, match_id):
+    def _preview_exact_match(self, match_id):
         match = self.rss_repository.get_match(match_id)
         if not match:
             return {"status": "missing"}
@@ -1701,13 +1713,9 @@ class RssSubscriptionMatchRuntime:
                 "RSS_EXACT_VERSION_UNCONFIRMED",
                 "候选版本条件尚未完全确认",
             )
-        if not match.get("bestCandidate") or match.get("decision") not in {
-            "current_best",
-            "best_available",
-        }:
+        if not match.get("bestCandidate") or match.get("decision") != "current_best":
             add_blocker("RSS_EXACT_NOT_CURRENT_BEST", "当前候选不是该季集唯一最佳版本")
-        initial_best = match.get("decision") == "best_available"
-        if candidate_score is None or (baseline_score is None and not initial_best):
+        if candidate_score is None or baseline_score is None:
             add_blocker("RSS_EXACT_BASELINE_UNCONFIRMED", "当前版本基线暂未确认")
         elif baseline_score is not None and candidate_score <= baseline_score:
             add_blocker("RSS_EXACT_NOT_STRICT_UPGRADE", "候选分数没有严格高于当前版本")
@@ -1728,6 +1736,7 @@ class RssSubscriptionMatchRuntime:
         torra = getattr(self.analysis, "torra", None) if self.analysis else None
         qb = getattr(self.analysis, "qb", None) if self.analysis else None
         torra_row = None
+        routing = {}
         if torra is None:
             add_blocker("RSS_EXACT_TORRA_UNAVAILABLE", "Torra 当前不可读")
         elif not internal_match or not item:
@@ -1833,7 +1842,7 @@ class RssSubscriptionMatchRuntime:
                                 if isinstance(match.get("baselineSummary"), dict)
                                 else {}
                             )
-                            if resolved.get("status") != "ready" and not initial_best:
+                            if resolved.get("status") != "ready":
                                 add_blocker("RSS_EXACT_BASELINE_UNCONFIRMED", "当前版本无法从最新证据重新确认")
                             elif resolved.get("status") == "ready" and (
                                 _text(resolved.get("artifactKey"))
@@ -1862,16 +1871,60 @@ class RssSubscriptionMatchRuntime:
                         or torra_row.get("is_mutating") is True
                     ):
                         add_blocker("RSS_EXACT_TORRA_BUSY", "Torra 当前正在处理该订阅")
-
-        add_blocker(
-            "TORRA_EXACT_RESOURCE_ENDPOINT_UNAVAILABLE",
-            "Torra 未提供订阅绑定的指定 RSS 资源入口",
-        )
+                    if torra_row:
+                        save_path = _text(
+                            torra_row.get("save_path")
+                            or torra_row.get("savePath")
+                            or torra_row.get("download_path")
+                        )
+                        downloader_id = _text(
+                            torra_row.get("downloader_id") or torra_row.get("downloaderId")
+                        )
+                        configured_downloader_id = _text(
+                            (self.analysis.environment or {}).get("TORRA_DOWNLOADER_ID")
+                        )
+                        category = _text(
+                            torra_row.get("qb_category")
+                            or torra_row.get("download_category")
+                        )
+                        if not save_path:
+                            add_blocker("RSS_EXACT_SAVE_PATH_UNCONFIRMED", "Torra 订阅保存目录暂未确认")
+                        if not downloader_id:
+                            add_blocker("RSS_EXACT_DOWNLOADER_UNCONFIRMED", "Torra 订阅下载器暂未确认")
+                        elif not configured_downloader_id:
+                            add_blocker(
+                                "RSS_EXACT_QB_DOWNLOADER_UNCONFIRMED",
+                                "Fluxa 当前 qB 与 Torra 下载器映射暂未确认",
+                            )
+                        elif configured_downloader_id != downloader_id:
+                            add_blocker(
+                                "RSS_EXACT_QB_DOWNLOADER_MISMATCH",
+                                "Torra 订阅没有使用 Fluxa 当前连接的 qB 下载器",
+                            )
+                        if (
+                            save_path and downloader_id and internal_match and item
+                            and configured_downloader_id == downloader_id
+                        ):
+                            routing = {
+                                "subscriptionKey": _text(internal_match.get("subscription_key")),
+                                "downloadUrl": _text(item.get("download_url")),
+                                "savePath": save_path,
+                                "downloaderId": downloader_id,
+                                "category": category,
+                                "artifactKey": _text(match.get("artifactKey")),
+                                "targetKey": _text(match.get("targetKey")),
+                                "ruleHash": _text(match.get("ruleHash")),
+                                "baselineArtifactKey": _text(
+                                    (match.get("baselineSummary") or {}).get("artifactKey")
+                                    if isinstance(match.get("baselineSummary"), dict) else ""
+                                ),
+                            }
         observed_at = _as_utc(self.clock()) or datetime.now(timezone.utc)
+        ready = not blockers and bool(routing)
         return {
-            "status": "blocked",
-            "ready": False,
-            "capabilityState": "unsupported",
+            "status": "ready" if ready else "blocked",
+            "ready": ready,
+            "capabilityState": "ready" if ready else "blocked",
             "matchId": match["id"],
             "targetKey": _text(match.get("targetKey")),
             "versionSummary": _text(candidate_summary.get("versionSummary"))[:240],
@@ -1884,6 +1937,334 @@ class RssSubscriptionMatchRuntime:
             ),
             "blockers": blockers,
             "observedAt": observed_at.isoformat().replace("+00:00", "Z"),
+            "_execution": routing,
+        }
+
+    def _build_artifact_exact_preview(self, group_id):
+        group = self.rss_repository.get_candidate_artifact_group(group_id)
+        if not group:
+            raise RssExactDownloadError("RSS_ARTIFACT_GROUP_NOT_FOUND", "RSS 产物候选不存在", 404)
+        blockers = []
+
+        def add_blocker(code, message):
+            if not any(row["code"] == code for row in blockers):
+                blockers.append({"code": str(code), "message": str(message)})
+
+        if group.get("state") != "upgrade_available" or not group.get("winsAllCoveredUnits"):
+            add_blocker(
+                "RSS_EXACT_ARTIFACT_NOT_UNIQUE_WINNER",
+                "该产物没有在覆盖的全部季集中成为唯一冠军",
+            )
+        unit_results = group.get("unitResults") or []
+        validations = []
+        for result in unit_results:
+            match = result.get("match") if isinstance(result, dict) else None
+            if not isinstance(match, dict) or not _text(match.get("id")):
+                add_blocker("RSS_EXACT_CONTEXT_UNAVAILABLE", "候选季集上下文当前不可读")
+                continue
+            validation = self._preview_exact_match(match["id"])
+            validations.append(validation)
+            for blocker in validation.get("blockers") or []:
+                if isinstance(blocker, dict):
+                    add_blocker(blocker.get("code"), blocker.get("message"))
+        routes = [
+            validation.get("_execution")
+            for validation in validations
+            if isinstance(validation.get("_execution"), dict) and validation.get("_execution")
+        ]
+        routing_keys = ("subscriptionKey", "downloadUrl", "savePath", "downloaderId", "category", "artifactKey", "ruleHash")
+        if len(routes) != len(unit_results) or not routes:
+            add_blocker("RSS_EXACT_ROUTE_UNCONFIRMED", "订阅级下载参数暂未确认")
+        elif any(
+            any(_text(route.get(key)) != _text(routes[0].get(key)) for key in routing_keys)
+            for route in routes[1:]
+        ):
+            add_blocker("RSS_EXACT_ROUTE_CONFLICT", "覆盖季集的订阅级下载参数不一致")
+        match_ids = sorted({
+            _text(result.get("match", {}).get("id"))
+            for result in unit_results if isinstance(result, dict) and isinstance(result.get("match"), dict)
+            and _text(result.get("match", {}).get("id"))
+        })
+        fingerprint = stable_payload_hash({
+            "groupId": group.get("id"),
+            "state": group.get("state"),
+            "winsAllCoveredUnits": bool(group.get("winsAllCoveredUnits")),
+            "matches": [{
+                "id": match.get("id"),
+                "version": match.get("version"),
+                "decision": match.get("decision"),
+                "candidateScore": match.get("candidateScore"),
+                "baselineScore": match.get("baselineScore"),
+                "ruleHash": match.get("ruleHash"),
+                "artifactKey": match.get("artifactKey"),
+                "targetKey": match.get("targetKey"),
+                "baselineArtifactKey": (
+                    match.get("baselineSummary", {}).get("artifactKey")
+                    if isinstance(match.get("baselineSummary"), dict) else ""
+                ),
+            } for match in (
+                result.get("match") for result in unit_results if isinstance(result, dict)
+            ) if isinstance(match, dict)],
+            "routing": [{key: route.get(key) for key in routing_keys if key != "downloadUrl"} for route in routes],
+        })
+        representative = group.get("representativeMatch") or {}
+        candidate_score = group.get("bestCandidateScore")
+        baseline_score = group.get("baselineScore")
+        public = {
+            "status": "ready" if not blockers else "blocked",
+            "ready": not blockers,
+            "capabilityState": "ready" if not blockers else "blocked",
+            "groupId": group.get("id"),
+            "matchId": representative.get("id"),
+            "versionSummary": _text(
+                (representative.get("candidateSummary") or {}).get("versionSummary")
+                if isinstance(representative.get("candidateSummary"), dict) else ""
+            )[:240],
+            "episodeLabel": _text(group.get("episodeLabel"))[:80],
+            "coveredUnitCount": len(group.get("coveredUnits") or []),
+            "coveredEpisodeStart": group.get("coveredEpisodeStart"),
+            "coveredEpisodeEnd": group.get("coveredEpisodeEnd"),
+            "candidateScore": candidate_score,
+            "baselineScore": baseline_score,
+            "scoreGain": (
+                float(candidate_score) - float(baseline_score)
+                if isinstance(candidate_score, (int, float))
+                and not isinstance(candidate_score, bool)
+                and isinstance(baseline_score, (int, float))
+                and not isinstance(baseline_score, bool)
+                else None
+            ),
+            "downloadCategory": _text(routes[0].get("category"))[:120] if routes else "",
+            "downloadCategoryConfigured": bool(_text(routes[0].get("category"))) if routes else False,
+            "destinationConfigured": bool(routes),
+            "blockers": blockers,
+            "observedAt": (_as_utc(self.clock()) or datetime.now(timezone.utc)).isoformat().replace("+00:00", "Z"),
+        }
+        return public, (routes[0] if routes else {}), fingerprint, match_ids
+
+    def preview_artifact_exact_download(self, group_id, *, persist=True):
+        public, _routing, fingerprint, match_ids = self._build_artifact_exact_preview(group_id)
+        if not public["ready"] or not persist:
+            return {**public, "previewToken": "", "expiresAt": ""}, fingerprint, match_ids
+        now = _as_utc(self.clock()) or datetime.now(timezone.utc)
+        expires_at = now + timedelta(minutes=10)
+        token = secrets.token_urlsafe(32)
+        with self._exact_preview_lock:
+            self._exact_previews = {
+                key: value for key, value in self._exact_previews.items()
+                if value["expiresAt"] > now
+            }
+            self._exact_previews[token] = {
+                "groupId": _text(group_id),
+                "fingerprint": fingerprint,
+                "matchIds": list(match_ids),
+                "expiresAt": expires_at,
+            }
+        return {
+            **public,
+            "previewToken": token,
+            "expiresAt": expires_at.isoformat().replace("+00:00", "Z"),
+        }, fingerprint, match_ids
+
+    def preview_exact_download(self, match_id):
+        page = self.rss_repository.list_candidate_artifact_groups(match_id=match_id, limit=1)
+        if not page.get("groups"):
+            return {"status": "missing"}
+        preview, _fingerprint, _match_ids = self.preview_artifact_exact_download(
+            page["groups"][0]["id"]
+        )
+        return preview
+
+    @staticmethod
+    def _qb_task_for_tag(qb, tag):
+        try:
+            summary = qb.summary()
+        except Exception:
+            return None
+        if not isinstance(summary, dict) or summary.get("connected") is not True:
+            return None
+        for task in summary.get("tasks") or []:
+            if not isinstance(task, dict):
+                continue
+            tags = {
+                value.strip() for value in str(task.get("tags") or "").split(",") if value.strip()
+            }
+            if tag in tags:
+                return task
+        return None
+
+    def execute_artifact_exact_download(self, group_id, preview_token, idempotency_key):
+        now = _as_utc(self.clock()) or datetime.now(timezone.utc)
+        with self._exact_preview_lock:
+            receipt = self._exact_previews.get(_text(preview_token))
+        if not receipt or receipt["groupId"] != _text(group_id) or receipt["expiresAt"] <= now:
+            raise RssExactDownloadError("RSS_EXACT_PREVIEW_EXPIRED", "精准下载预览已过期，请重新预览", 409)
+        request_key = _text(idempotency_key)
+        if not 12 <= len(request_key) <= 128:
+            raise RssExactDownloadError("RSS_EXACT_IDEMPOTENCY_INVALID", "幂等键长度必须为 12 到 128 个字符", 422)
+        fingerprint = receipt["fingerprint"]
+        match_ids = receipt["matchIds"]
+        stored_idempotency = "rss-exact:" + stable_payload_hash({
+            "fingerprint": fingerprint,
+        })[:48]
+        existing = self.watch_repository.get_action_by_idempotency(stored_idempotency)
+        qb = getattr(self.analysis, "qb", None) if self.analysis else None
+        if existing:
+            request_summary = existing.get("request_summary") or {}
+            if (
+                _text(request_summary.get("groupId")) != _text(group_id)
+                or _text(request_summary.get("previewFingerprint")) != fingerprint
+            ):
+                raise RssExactDownloadError(
+                    "RSS_EXACT_IDEMPOTENCY_CONFLICT", "精准下载收据与当前候选不一致", 409
+                )
+            if existing.get("status") in {"succeeded", "failed", "cancelled"}:
+                if existing.get("status") == "succeeded":
+                    self.rss_repository.record_artifact_download_action(match_ids, existing["action_id"])
+                return existing
+            external_job = _text(existing.get("external_job_id"))
+            audit_tag = external_job.removeprefix("qb-tag:") if external_job.startswith("qb-tag:") else ""
+            task = self._qb_task_for_tag(qb, audit_tag) if qb is not None and audit_tag else None
+            if task:
+                self.rss_repository.record_artifact_download_action(match_ids, existing["action_id"])
+                existing = self.watch_repository.complete_action(existing["action_id"], "succeeded", {
+                    "accepted": True,
+                    "confirmed": True,
+                    "qbHash": _text(task.get("hash")),
+                    "groupId": _text(group_id),
+                })
+                return existing
+        current, routing, fingerprint, match_ids = self._build_artifact_exact_preview(group_id)
+        if not current["ready"] or fingerprint != receipt["fingerprint"] or match_ids != receipt["matchIds"]:
+            raise RssExactDownloadError("RSS_EXACT_PREVIEW_STALE", "候选事实已经变化，请重新预览", 409)
+        config, config_error = self._analysis_config()
+        if config_error:
+            raise RssExactDownloadError("RSS_EXACT_ANALYSIS_DISABLED", "Torra 规则评分当前未启用", 503)
+        mode = _text(config.get("torra_quality_execution_mode")).lower()
+        if mode != "manual":
+            raise RssExactDownloadError("RSS_EXACT_EXECUTION_DISABLED", "精准下载执行授权未开启", 503)
+        environment = self.analysis.environment or {}
+        if not _truthy(environment.get("MCC_TORRA_REWASH_DOWNLOAD_ENABLED")):
+            raise RssExactDownloadError("RSS_EXACT_DOWNLOAD_GATE_DISABLED", "精准下载硬门禁未开启", 503)
+        if qb is None or not hasattr(qb, "add_torrent"):
+            raise RssExactDownloadError("RSS_EXACT_QB_WRITE_UNAVAILABLE", "qB 精准提交能力不可用", 503)
+        claim = self.watch_repository.claim_action(
+            stored_idempotency,
+            routing["subscriptionKey"],
+            "qbittorrent",
+            "rss-exact-download",
+            unit_key=_text(group_id),
+            request_summary={
+                "source": "manual-rss-artifact",
+                "groupId": _text(group_id),
+                "matchIds": match_ids,
+                "previewFingerprint": fingerprint,
+                "requestKeyHash": stable_payload_hash({"requestKey": request_key})[:16],
+            },
+            cooldown_seconds=int(config.get("torra_quality_min_interval_minutes") or 60) * 60,
+            rate_limits={
+                "hourly": int(config.get("torra_quality_hourly_limit") or 4),
+                "daily": int(config.get("torra_quality_daily_limit") or 30),
+            },
+            require_idle=True,
+        )
+        disposition = claim.get("disposition")
+        action = claim.get("action")
+        if disposition == "conflict":
+            raise RssExactDownloadError("RSS_EXACT_IDEMPOTENCY_CONFLICT", "幂等键已用于其他动作", 409)
+        if disposition in {"global_busy", "cooldown", "rate_limited"}:
+            codes = {
+                "global_busy": "RSS_EXACT_GLOBAL_BUSY",
+                "cooldown": "RSS_EXACT_COOLDOWN",
+                "rate_limited": "RSS_EXACT_RATE_LIMITED",
+            }
+            raise RssExactDownloadError(codes[disposition], "当前已有精准下载或已达到安全限额", 409)
+        if not action:
+            raise RssExactDownloadError("RSS_EXACT_ACTION_UNAVAILABLE", "精准下载动作无法建立", 500)
+        action_id = _text(action.get("action_id"))
+        external_job = _text(action.get("external_job_id"))
+        audit_tag = external_job.removeprefix("qb-tag:") if external_job.startswith("qb-tag:") else ""
+        if disposition in {"replay", "in_progress", "resume"} and audit_tag:
+            task = self._qb_task_for_tag(qb, audit_tag)
+            if task and action.get("status") not in {"succeeded", "failed", "cancelled"}:
+                self.rss_repository.record_artifact_download_action(match_ids, action_id)
+                action = self.watch_repository.complete_action(action_id, "succeeded", {
+                    "accepted": True,
+                    "confirmed": True,
+                    "qbHash": _text(task.get("hash")),
+                    "groupId": _text(group_id),
+                })
+                return action
+            if disposition in {"replay", "in_progress"}:
+                return action
+        if disposition == "replay":
+            if action.get("status") == "succeeded":
+                self.rss_repository.record_artifact_download_action(match_ids, action_id)
+            return action
+        if not audit_tag:
+            audit_tag = f"fluxa-action-{action_id[:8]}"
+            action = self.watch_repository.save_external_job(
+                action_id, f"qb-tag:{audit_tag}", status="submitted", lease_seconds=60
+            )
+        try:
+            qb.add_torrent(
+                routing["downloadUrl"],
+                routing["savePath"],
+                routing["category"],
+                ["fluxa-rss", audit_tag],
+            )
+        except Exception as exc:
+            task = self._qb_task_for_tag(qb, audit_tag)
+            if not task:
+                raise RssExactDownloadError(
+                    "RSS_EXACT_QB_SUBMIT_UNCONFIRMED",
+                    "qB 提交结果暂未确认，请检查带 Fluxa 标签的任务",
+                    502,
+                ) from exc
+        task = self._qb_task_for_tag(qb, audit_tag)
+        if task:
+            self.rss_repository.record_artifact_download_action(match_ids, action_id)
+            action = self.watch_repository.complete_action(action_id, "succeeded", {
+                "accepted": True,
+                "confirmed": True,
+                "qbHash": _text(task.get("hash")),
+                "groupId": _text(group_id),
+            })
+        return action
+
+    def recover_pending_exact_download(self):
+        action = self.watch_repository.find_inflight_action(
+            "qbittorrent", "rss-exact-download"
+        )
+        if not action:
+            return None
+        request_summary = action.get("request_summary") or {}
+        if request_summary.get("source") != "manual-rss-artifact":
+            return None
+        external_job = _text(action.get("external_job_id"))
+        audit_tag = external_job.removeprefix("qb-tag:") if external_job.startswith("qb-tag:") else ""
+        qb = getattr(self.analysis, "qb", None) if self.analysis else None
+        task = self._qb_task_for_tag(qb, audit_tag) if qb is not None and audit_tag else None
+        if not task:
+            return None
+        match_ids = sorted({
+            _text(value) for value in request_summary.get("matchIds") or [] if _text(value)
+        })
+        group_id = _text(request_summary.get("groupId"))
+        if not match_ids or not group_id:
+            return None
+        action_id = _text(action.get("action_id"))
+        self.rss_repository.record_artifact_download_action(match_ids, action_id)
+        action = self.watch_repository.complete_action(action_id, "succeeded", {
+            "accepted": True,
+            "confirmed": True,
+            "qbHash": _text(task.get("hash")),
+            "groupId": group_id,
+        })
+        return {
+            "status": "succeeded",
+            "actionId": action_id,
+            "groupId": group_id,
         }
 
     def backfill_watch_unit(self, unit_key, limit=200):

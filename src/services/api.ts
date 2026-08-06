@@ -694,6 +694,32 @@ export function getRssMatchGroups(input: {
   return readJson<RssMatchGroupListResponse>(`/api/v2/rss-matches?${query.toString()}`, options);
 }
 
+export function getRssArtifactGroups(input: {
+  status?: string;
+  groupState?: RssMatchGroup['state'];
+  groupScope?: 'scoreable' | 'cleanup';
+  subscriptionId?: string;
+  mediaType?: 'movie' | 'tv';
+  seasonNumber?: number;
+  episodeNumber?: number;
+  matchId?: string;
+  limit?: number;
+  offset?: number;
+} = {}, options?: RequestOptions): Promise<RssMatchGroupListResponse> {
+  const query = new URLSearchParams({ view: 'artifact-groups' });
+  if (input.status) query.set('status', input.status);
+  if (input.groupState) query.set('groupState', input.groupState);
+  if (input.groupScope) query.set('groupScope', input.groupScope);
+  if (input.subscriptionId) query.set('subscriptionId', input.subscriptionId);
+  if (input.mediaType) query.set('mediaType', input.mediaType);
+  if (input.seasonNumber != null) query.set('seasonNumber', String(input.seasonNumber));
+  if (input.episodeNumber != null) query.set('episodeNumber', String(input.episodeNumber));
+  if (input.matchId) query.set('matchId', input.matchId);
+  query.set('limit', String(input.limit ?? 20));
+  query.set('offset', String(input.offset ?? 0));
+  return readJson<RssMatchGroupListResponse>(`/api/v2/rss-matches?${query.toString()}`, options);
+}
+
 export function createRssMatch(
   input: CreateRssMatchInput,
   options?: RequestOptions
@@ -743,6 +769,29 @@ export function previewRssExactDownload(
   return postJson<RssExactDownloadPreview>(
     `/api/v2/rss-matches/${encodeURIComponent(matchId)}/exact-download-previews`,
     {},
+    options
+  );
+}
+
+export function previewRssArtifactExactDownload(
+  groupId: string,
+  options?: RequestOptions
+): Promise<RssExactDownloadPreview> {
+  return postJson<RssExactDownloadPreview>(
+    `/api/v2/rss-artifact-groups/${encodeURIComponent(groupId)}/exact-download-previews`,
+    {},
+    options
+  );
+}
+
+export function startRssArtifactExactDownload(
+  groupId: string,
+  input: { confirm: true; previewToken: string; idempotencyKey: string },
+  options?: RequestOptions
+): Promise<AutomationAction> {
+  return postJson<AutomationAction>(
+    `/api/v2/rss-artifact-groups/${encodeURIComponent(groupId)}/exact-downloads`,
+    input,
     options
   );
 }
@@ -841,6 +890,8 @@ export function updateSubscriptionAutomationSettings(
     | 'minIntervalMinutes' | 'hourlyLimit' | 'dailyLimit' | 'batchSize'>> & {
       bridgeMode?: QualityWatchBridgeMode;
       bridgeModeConfirm?: true;
+      executionMode?: 'disabled' | 'manual';
+      executionModeConfirm?: true;
     },
   options?: RequestOptions
 ): Promise<SubscriptionAutomationSettings> {

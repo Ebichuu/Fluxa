@@ -137,6 +137,71 @@ class QbittorrentRuntimeContractTests(unittest.TestCase):
         self.assertEqual(action_response.status_code, 503)
         self.assertEqual(action_response.get_json()["code"], "QB_NOT_CONFIGURED")
 
+    def test_add_torrent_uses_server_derived_fields_and_invalidates_summary_cache(self):
+        from app.qbittorrent_runtime import QbittorrentClient, QbittorrentConfig
+
+        session = self.summary_session({
+            "/api/v2/torrents/add": FakeResponse(text="Ok.", content_type="text/plain"),
+        })
+        client = QbittorrentClient(
+            QbittorrentConfig(base_url="http://qb.example.test:8080"),
+            session=session,
+        )
+        client.summary()
+
+        result = client.add_torrent(
+            "https://tracker.example/download?id=1&passkey=private",
+            "/downloads/00-anime",
+            "anime",
+            ["fluxa-rss", "fluxa-action-ab12"],
+        )
+        client.summary()
+
+        add_request = next(row for row in session.requests if row[1] == "/api/v2/torrents/add")
+        self.assertEqual(add_request[0], "POST")
+        self.assertEqual(add_request[2]["data"], {
+            "urls": "https://tracker.example/download?id=1&passkey=private",
+            "savepath": "/downloads/00-anime",
+            "category": "anime",
+            "tags": "fluxa-action-ab12,fluxa-rss",
+        })
+        self.assertEqual(result, {
+            "accepted": True,
+            "category": "anime",
+            "tags": ["fluxa-action-ab12", "fluxa-rss"],
+        })
+        self.assertEqual(
+            [row[1] for row in session.requests].count("/api/v2/app/version"), 2
+        )
+        with self.assertRaisesRegex(RuntimeError, "资源地址无效"):
+            client.add_torrent("file:///private.torrent", "/downloads", "anime", ["fluxa-rss"])
+
+    def test_add_torrent_omits_optional_category_when_upstream_does_not_provide_one(self):
+        from app.qbittorrent_runtime import QbittorrentClient, QbittorrentConfig
+
+        session = self.summary_session({
+            "/api/v2/torrents/add": FakeResponse(text="Ok.", content_type="text/plain"),
+        })
+        client = QbittorrentClient(
+            QbittorrentConfig(base_url="http://qb.example.test:8080"),
+            session=session,
+        )
+
+        result = client.add_torrent(
+            "https://tracker.example/download?id=2&passkey=private",
+            "/downloads/00-anime",
+            "",
+            ["fluxa-rss", "fluxa-action-cd34"],
+        )
+
+        add_request = next(row for row in session.requests if row[1] == "/api/v2/torrents/add")
+        self.assertEqual(add_request[2]["data"], {
+            "urls": "https://tracker.example/download?id=2&passkey=private",
+            "savepath": "/downloads/00-anime",
+            "tags": "fluxa-action-cd34,fluxa-rss",
+        })
+        self.assertEqual(result["category"], "")
+
     def test_summary_logs_in_once_maps_and_sorts_tasks(self):
         from app.qbittorrent_runtime import QbittorrentClient, QbittorrentConfig
 

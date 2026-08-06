@@ -13,6 +13,47 @@ from app.quality_watch_repository import (
 
 
 class QualityWatchRepositoryTests(unittest.TestCase):
+    def test_baseline_state_counts_are_exclusive_and_reconcile_to_total(self):
+        with tempfile.TemporaryDirectory() as directory:
+            now = datetime(2026, 8, 6, 1, 0, tzinfo=timezone.utc)
+            repository = QualityWatchRepository(
+                Path(directory) / "media_control_center.sqlite3", clock=lambda: now
+            )
+            ready = repository.ensure_watch_unit(
+                "tv:ready", "tv", 1, 1, first_success_at=now
+            )
+            repository.mark_baseline_ready(ready["unit_key"])
+            repository.ensure_watch_unit(
+                "tv:pending", "tv", 1, 1, first_success_at=now
+            )
+            missing = repository.ensure_watch_unit("tv:missing", "tv", 1, 1)
+            repository.update_watch_unit(
+                missing["unit_key"], missing["version"], state="waiting_first_version"
+            )
+            repository.ensure_watch_unit("tv:conflict", "tv", 1, None)
+            expired = repository.ensure_watch_unit(
+                "tv:expired", "tv", 1, 1, first_success_at=now
+            )
+            expired = repository.mark_baseline_ready(expired["unit_key"])
+            repository.update_watch_unit(
+                expired["unit_key"], expired["version"], state="observation_expired"
+            )
+
+            counts = repository.baseline_state_counts()
+
+            self.assertEqual(counts, {
+                "total": 5,
+                "baseline_ready": 1,
+                "baseline_pending": 1,
+                "baseline_missing": 1,
+                "baseline_conflict": 1,
+                "baseline_expired": 1,
+            })
+            self.assertEqual(
+                counts["total"],
+                sum(value for key, value in counts.items() if key != "total"),
+            )
+
     def test_watch_units_keep_independent_fixed_windows(self):
         with tempfile.TemporaryDirectory() as directory:
             now = [datetime(2026, 7, 18, 1, 0, tzinfo=timezone.utc)]

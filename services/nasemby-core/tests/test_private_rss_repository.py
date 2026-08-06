@@ -149,6 +149,9 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             self.assertEqual(scoreable_groups["groups"][0]["candidates"][0]["id"], scoreable["id"])
             self.assertEqual(cleanup_groups["total"], 1)
             self.assertEqual(cleanup_groups["groups"][0]["state"], "needs_cleanup")
+            self.assertEqual(cleanup_groups["groups"][0]["baselineState"], "baseline_missing")
+            self.assertEqual(cleanup_groups["groups"][0]["blockerCode"], "subscription_missing")
+            self.assertEqual(cleanup_groups["groups"][0]["nextAction"], "review_match_cleanup")
             self.assertEqual(cleanup_groups["groups"][0]["candidates"][0]["id"], orphan["id"])
             with self.assertRaisesRegex(ValueError, "候选组范围"):
                 repository.list_candidate_groups(group_scope="unknown")
@@ -215,6 +218,9 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             self.assertEqual(group["state"], "upgrade_available")
             self.assertEqual(group["bestMatchId"], winner["id"])
             self.assertEqual(group["bestCandidateScore"], 90)
+            self.assertEqual(group["baselineState"], "baseline_ready")
+            self.assertEqual(group["blockerCode"], "")
+            self.assertEqual(group["nextAction"], "preview_exact_download")
             self.assertEqual([row["candidateScore"] for row in group["candidates"]], [90, 60])
             self.assertEqual(payload["counts"]["total"], 1)
             self.assertEqual(payload["counts"]["upgrade_available"], 1)
@@ -226,6 +232,7 @@ class PrivateRssRepositoryTests(unittest.TestCase):
                 repository.list_candidate_groups(group_state="protected")["total"],
                 0,
             )
+            self.assertEqual(repository.candidate_contract_summary()["automatic_eligible_count"], 1)
             scoped = repository.list_candidate_groups(
                 subscription_id="tv:123:s1",
                 media_type="tv",
@@ -252,6 +259,92 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             ))
             with self.assertRaisesRegex(ValueError, "候选组状态"):
                 repository.list_candidate_groups(group_state="unknown")
+
+    def test_artifact_groups_merge_range_and_block_partial_winners(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({
+                "name": "Artifact Rules", "feedUrl": "https://tracker.example/artifacts.xml",
+            })
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "range-pack",
+                "title": "Range Show S01E02-E03 2160p",
+            }, {
+                "fingerprint": "episode-three",
+                "title": "Range Show S01E03 REMUX",
+            }])
+            items = {item["title"]: item for item in repository.search_items(limit=10)["items"]}
+            range_matches = []
+            for episode in (2, 3):
+                match = repository.create_match(
+                    items["Range Show S01E02-E03 2160p"]["id"],
+                    "tv:123:s1",
+                    f"tv:123:s1:s1:e{episode}",
+                    {
+                        "mediaType": "tv",
+                        "season": {"item": 1, "unit": 1},
+                        "episode": {"start": 2, "end": 3, "unit": episode},
+                    },
+                )
+                repository.set_match_binding(
+                    match["id"],
+                    torra_subscription_id="torra-123",
+                    target_key="tv:tmdb:123:season:1:episodes:2-3",
+                    artifact_key="rss:range-pack",
+                )
+                repository.save_match_evaluation([match["id"]], {
+                    "ruleId": "rule-1", "ruleHash": "hash-1",
+                    "candidateScore": 80, "baselineScore": 60,
+                    "status": "scored", "decision": "current_best" if episode == 2 else "superseded",
+                })
+                repository.save_candidate_decisions([{
+                    "matchIds": [match["id"]],
+                    "decision": "current_best" if episode == 2 else "superseded",
+                    "reason": "higher_score",
+                    "bestCandidate": episode == 2,
+                }])
+                range_matches.append(match)
+            single = repository.create_match(
+                items["Range Show S01E03 REMUX"]["id"],
+                "tv:123:s1",
+                "tv:123:s1:s1:e3",
+                {
+                    "mediaType": "tv",
+                    "season": {"item": 1, "unit": 1},
+                    "episode": {"start": 3, "end": 3, "unit": 3},
+                },
+            )
+            repository.set_match_binding(
+                single["id"],
+                torra_subscription_id="torra-123",
+                target_key="tv:tmdb:123:season:1:episodes:3-3",
+                artifact_key="rss:episode-three",
+            )
+            repository.save_match_evaluation([single["id"]], {
+                "ruleId": "rule-1", "ruleHash": "hash-1",
+                "candidateScore": 90, "baselineScore": 60,
+                "status": "scored", "decision": "current_best",
+            })
+            repository.save_candidate_decisions([{
+                "matchIds": [single["id"]], "decision": "current_best",
+                "reason": "higher_score", "bestCandidate": True,
+            }])
+
+            payload = repository.list_candidate_artifact_groups(limit=10)
+            ranged = next(group for group in payload["groups"] if group["candidateCount"] == 2)
+
+            self.assertEqual(payload["total"], 2)
+            self.assertEqual(ranged["state"], "partially_best")
+            self.assertEqual(ranged["episodeLabel"], "S01E02–E03")
+            self.assertEqual(ranged["coveredEpisodeStart"], 2)
+            self.assertEqual(ranged["coveredEpisodeEnd"], 3)
+            self.assertEqual(len(ranged["coveredUnits"]), 2)
+            self.assertFalse(ranged["winsAllCoveredUnits"])
+            self.assertEqual(ranged["blockerCode"], "artifact_partially_best")
+            self.assertEqual(payload["counts"]["partially_best"], 1)
+            self.assertEqual(
+                repository.list_candidate_artifact_groups(group_state="partially_best")["total"], 1
+            )
 
     def test_needs_review_filter_uses_full_repository_scope(self):
         with tempfile.TemporaryDirectory() as directory:

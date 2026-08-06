@@ -489,6 +489,37 @@ class QualityWatchRepository:
         ).fetchall()
         return [self._watch_unit(row) for row in rows]
 
+    def baseline_state_counts(self):
+        """Return a local, read-only summary of the current baseline projection.
+
+        The order of the CASE branches is intentional: an expired unit remains
+        historical even when it still has a baseline timestamp, and blocked
+        units are reported as conflicts instead of being counted as pending.
+        """
+        with closing(self.runtime.connect()) as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS total, "
+                "SUM(CASE WHEN state='observation_expired' THEN 1 ELSE 0 END) AS baseline_expired, "
+                "SUM(CASE WHEN state='blocked' THEN 1 ELSE 0 END) AS baseline_conflict, "
+                "SUM(CASE WHEN state NOT IN ('observation_expired', 'blocked') "
+                "AND baseline_ready_at<>'' THEN 1 ELSE 0 END) AS baseline_ready, "
+                "SUM(CASE WHEN state NOT IN ('observation_expired', 'blocked') "
+                "AND state<>'waiting_first_version' AND baseline_ready_at='' "
+                "AND first_success_at<>'' THEN 1 ELSE 0 END) AS baseline_pending, "
+                "SUM(CASE WHEN state NOT IN ('observation_expired', 'blocked') "
+                "AND baseline_ready_at='' AND (state='waiting_first_version' OR first_success_at='') "
+                "THEN 1 ELSE 0 END) AS baseline_missing "
+                "FROM quality_watch_units"
+            ).fetchone()
+        return {
+            "total": int(row["total"] or 0),
+            "baseline_ready": int(row["baseline_ready"] or 0),
+            "baseline_pending": int(row["baseline_pending"] or 0),
+            "baseline_missing": int(row["baseline_missing"] or 0),
+            "baseline_conflict": int(row["baseline_conflict"] or 0),
+            "baseline_expired": int(row["baseline_expired"] or 0),
+        }
+
     def apply_reconcile_plan(self, connection, plan, *, now=None):
         now_text = _iso(_as_utc(now or self.clock()))
         touched = []

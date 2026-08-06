@@ -700,7 +700,7 @@ class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
                 "enabled": True,
                 "rulesEnabled": True,
                 "running": False,
-                "lastRunAt": "2026-08-01T13:05:56Z",
+                "lastRunAt": "2026-08-01T13:35:56Z",
                 "lastSuccessAt": "2026-08-01T13:05:56Z",
                 "nextRunAt": "2026-08-02T00:30:00Z",
                 "lastError": "",

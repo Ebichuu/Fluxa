@@ -50,6 +50,7 @@ class CandidateSourceSchedulerTests(unittest.TestCase):
             self.assertEqual(state["lastAttemptedScheduleKey"], "2026-08-01@08:30")
             self.assertEqual(state["lastSuccessAt"], "2026-08-01T01:00:00Z")
             self.assertEqual(state["nextRunAt"], "2026-08-02T00:30:00Z")
+            self.assertEqual(state["lastResult"]["trigger"], "scheduled")
             self.assertEqual(len(projected), 1)
 
     def test_disabled_scheduler_does_not_refresh_or_report_overdue(self):
@@ -94,6 +95,7 @@ class CandidateSourceSchedulerTests(unittest.TestCase):
             self.assertEqual(result["sourceCounts"], {"succeeded": 1, "failed": 1})
             self.assertEqual(state["lastSuccessAt"], "")
             self.assertEqual(state["lastResult"]["addedCandidates"], 2)
+            self.assertEqual(state["lastResult"]["trigger"], "scheduled")
             self.assertEqual(state["lastError"], "候选来源更新存在失败")
 
     def test_manual_and_scheduled_runs_share_one_nonblocking_lock(self):
@@ -128,6 +130,7 @@ class CandidateSourceSchedulerTests(unittest.TestCase):
             self.assertEqual(duplicate["code"], "CANDIDATE_REFRESH_ALREADY_RUNNING")
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0]["status"], "success")
+            self.assertEqual(results[0]["scheduler"]["lastResult"]["trigger"], "manual")
 
     def test_interrupted_schedule_is_not_automatically_retried_after_recovery(self):
         with tempfile.TemporaryDirectory() as directory:

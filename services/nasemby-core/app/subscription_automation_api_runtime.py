@@ -5,6 +5,7 @@ from flask import jsonify, request
 from app.automation_action_runtime import present_automation_action
 from app.http_runtime import current_request_id
 from app.quality_watch_baseline_init_runtime import BaselineInitializationError
+from app.rss_subscription_match_runtime import RssExactDownloadError
 
 
 class AutomationApiError(RuntimeError):
@@ -71,6 +72,8 @@ def register_subscription_automation(app, service):
         except AutomationApiError as exc:
             return _error_response(exc)
         except BaselineInitializationError as exc:
+            return _error_response(AutomationApiError(exc.code, exc.message, exc.status))
+        except RssExactDownloadError as exc:
             return _error_response(AutomationApiError(exc.code, exc.message, exc.status))
 
     @app.get("/api/v2/subscription-automation/settings")
@@ -159,6 +162,45 @@ def register_subscription_automation(app, service):
             return jsonify(result)
 
         return execute(preview)
+
+    @app.post("/api/v2/rss-artifact-groups/<group_id>/exact-download-previews")
+    def rss_artifact_exact_download_preview(group_id):
+        def preview():
+            if not service.rss_runtime:
+                raise AutomationApiError("RSS_MATCH_RUNTIME_UNAVAILABLE", "RSS 匹配运行时不可用", 503)
+            body = request.get_json(silent=True)
+            if not isinstance(body, dict):
+                raise AutomationApiError(
+                    "SUBSCRIPTION_AUTOMATION_FIELDS_INVALID", "请求必须是 JSON 空对象", 422
+                )
+            service._validate_fields(body, set())
+            result, _fingerprint, _match_ids = service.rss_runtime.preview_artifact_exact_download(group_id)
+            return jsonify(result)
+
+        return execute(preview)
+
+    @app.post("/api/v2/rss-artifact-groups/<group_id>/exact-downloads")
+    def rss_artifact_exact_download(group_id):
+        def create():
+            service._require_write()
+            body = request.get_json(silent=True)
+            body = body if isinstance(body, dict) else {}
+            service._validate_fields(body, {"confirm", "previewToken", "idempotencyKey"})
+            if body.get("confirm") is not True:
+                raise AutomationApiError("RSS_EXACT_CONFIRMATION_REQUIRED", "精准下载需要明确确认", 422)
+            if not str(body.get("previewToken") or "").strip():
+                raise AutomationApiError("RSS_EXACT_PREVIEW_REQUIRED", "精准下载需要有效预览", 422)
+            service._validate_idempotency(body)
+            if not service.rss_runtime:
+                raise AutomationApiError("RSS_MATCH_RUNTIME_UNAVAILABLE", "RSS 匹配运行时不可用", 503)
+            action = service.rss_runtime.execute_artifact_exact_download(
+                group_id,
+                body.get("previewToken"),
+                body.get("idempotencyKey"),
+            )
+            return _accepted_response(action)
+
+        return execute(create)
 
     @app.post("/api/v2/rss-matches/<match_id>/torra-rewashes")
     def rss_match_rewash_download(match_id):

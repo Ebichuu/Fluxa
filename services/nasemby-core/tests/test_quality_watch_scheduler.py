@@ -60,6 +60,7 @@ class FakeRssRuntime:
     def __init__(self):
         self.matches = []
         self.pending = []
+        self.recovery = None
         self.executable_candidate = False
         self.candidate_checks = []
 
@@ -69,6 +70,9 @@ class FakeRssRuntime:
 
     def wake_pending_candidates(self):
         return list(self.pending)
+
+    def recover_pending_exact_download(self):
+        return self.recovery
 
     def has_executable_candidate(self, subscription_key, **scope):
         self.candidate_checks.append((subscription_key, scope))
@@ -436,6 +440,27 @@ class QualityWatchSchedulerTests(unittest.TestCase):
             "status": "submitted",
             "actionId": "rss-next",
         }])
+        self.assertEqual(self.torra.submissions, [])
+
+    def test_exact_download_receipt_recovery_runs_without_enabling_new_actions(self):
+        rss_runtime = FakeRssRuntime()
+        rss_runtime.recovery = {
+            "status": "succeeded",
+            "actionId": "exact-action",
+            "groupId": "rss-artifact:group",
+        }
+
+        result = self._scheduler(environment={}, rss_runtime=rss_runtime).run_once()
+
+        self.assertEqual(result, {
+            "status": "ok",
+            "processed": [{
+                "source": "private-rss-exact-download",
+                "status": "succeeded",
+                "actionId": "exact-action",
+                "groupId": "rss-artifact:group",
+            }],
+        })
         self.assertEqual(self.torra.submissions, [])
 
     def test_follow_rss_default_keeps_observing_without_scheduled_torra_analysis(self):

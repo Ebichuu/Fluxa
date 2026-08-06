@@ -247,6 +247,9 @@ def _present_rss_match_group(group):
         "bestCandidateScore": group.get("bestCandidateScore"),
         "baselineScore": group.get("baselineScore"),
         "baselineSummary": _public_score_summary(group.get("baselineSummary"), baseline=True),
+        "baselineState": str(group.get("baselineState") or "baseline_missing")[:80],
+        "blockerCode": str(group.get("blockerCode") or "")[:80],
+        "nextAction": str(group.get("nextAction") or "continue_monitoring")[:80],
         "lastCandidateAt": str(group.get("lastCandidateAt") or "")[:80],
         "ownerships": ownerships,
         "candidates": [
@@ -277,6 +280,88 @@ def _present_rss_match_group_list(payload):
         "waitingBaseline": max(0, int(counts.get("waiting_baseline") or 0)),
         "monitoringRss": max(0, int(counts.get("monitoring_rss") or 0)),
         "upgradeAvailable": max(0, int(counts.get("upgrade_available") or 0)),
+        "protected": max(0, int(counts.get("protected") or 0)),
+        "needsCleanup": max(0, int(counts.get("needs_cleanup") or 0)),
+        "blocked": max(0, int(counts.get("blocked") or 0)),
+    }
+    return value
+
+
+def _present_artifact_candidate(match):
+    value = _present_rss_match(match)
+    if value:
+        value.pop("artifactKey", None)
+    return value
+
+
+def _present_rss_artifact_group(group):
+    if not isinstance(group, dict):
+        return None
+    subscription_id, _ = torra_public_match_keys(group.get("subscriptionId"), "")
+    representative = _present_artifact_candidate(group.get("representativeMatch"))
+    unit_results = []
+    for row in group.get("unitResults") or []:
+        if not isinstance(row, dict):
+            continue
+        _, unit_id = torra_public_match_keys(group.get("subscriptionId"), row.get("unitId"))
+        unit_results.append({
+            "unitId": unit_id,
+            "seasonNumber": row.get("seasonNumber"),
+            "episodeNumber": row.get("episodeNumber"),
+            "state": str(row.get("state") or "monitoring_rss")[:80],
+            "winsUnit": bool(row.get("winsUnit")),
+            "baselineState": str(row.get("baselineState") or "baseline_missing")[:80],
+            "blockerCode": str(row.get("blockerCode") or "")[:80],
+            "nextAction": str(row.get("nextAction") or "continue_monitoring")[:80],
+            "match": _present_artifact_candidate(row.get("match")),
+        })
+    return {
+        "id": str(group.get("id") or "")[:80],
+        "subscriptionId": subscription_id,
+        "unitId": str((representative or {}).get("unitId") or "")[:200],
+        "title": safe_public_text(group.get("title"))[:240],
+        "episodeLabel": safe_public_text(group.get("episodeLabel"))[:80],
+        "state": str(group.get("state") or "monitoring_rss")[:80],
+        "candidateCount": max(0, int(group.get("candidateCount") or 0)),
+        "coveredUnits": [row["unitId"] for row in unit_results],
+        "coveredEpisodeStart": group.get("coveredEpisodeStart"),
+        "coveredEpisodeEnd": group.get("coveredEpisodeEnd"),
+        "winsAllCoveredUnits": bool(group.get("winsAllCoveredUnits")),
+        "representativeMatch": representative,
+        "bestMatchId": str((representative or {}).get("id") or "")[:80],
+        "bestCandidateScore": group.get("bestCandidateScore"),
+        "baselineScore": group.get("baselineScore"),
+        "baselineSummary": (representative or {}).get("baselineSummary") or {},
+        "baselineState": str(group.get("baselineState") or "baseline_missing")[:80],
+        "blockerCode": str(group.get("blockerCode") or "")[:80],
+        "nextAction": str(group.get("nextAction") or "continue_monitoring")[:80],
+        "lastCandidateAt": str(group.get("lastCandidateAt") or "")[:80],
+        "unitResults": unit_results,
+        "ownerships": [],
+        "candidates": [row["match"] for row in unit_results if row.get("match")],
+    }
+
+
+def _present_rss_artifact_group_list(payload):
+    value = dict(payload) if isinstance(payload, dict) else {}
+    value["groups"] = [
+        presented
+        for presented in (
+            _present_rss_artifact_group(group) for group in value.get("groups") or []
+        )
+        if presented is not None
+    ]
+    counts = value.get("counts") if isinstance(value.get("counts"), dict) else {}
+    value["counts"] = {
+        "total": max(0, int(counts.get("total") or 0)),
+        "scoreableTotal": max(
+            0, int(counts.get("total") or 0) - int(counts.get("needs_cleanup") or 0)
+        ),
+        "initialBest": max(0, int(counts.get("initial_best") or 0)),
+        "waitingBaseline": max(0, int(counts.get("waiting_baseline") or 0)),
+        "monitoringRss": max(0, int(counts.get("monitoring_rss") or 0)),
+        "upgradeAvailable": max(0, int(counts.get("upgrade_available") or 0)),
+        "partiallyBest": max(0, int(counts.get("partially_best") or 0)),
         "protected": max(0, int(counts.get("protected") or 0)),
         "needsCleanup": max(0, int(counts.get("needs_cleanup") or 0)),
         "blocked": max(0, int(counts.get("blocked") or 0)),
@@ -608,8 +693,23 @@ def register_private_rss(
     def rss_matches_list():
         try:
             view = str(request.args.get("view") or "").strip().lower()
-            if view not in {"", "groups"}:
+            if view not in {"", "groups", "artifact-groups"}:
                 raise ValueError
+            if view == "artifact-groups":
+                return jsonify(_present_rss_artifact_group_list(
+                    service.repository.list_candidate_artifact_groups(
+                        status=request.args.get("status") or "",
+                        group_state=request.args.get("groupState") or "",
+                        group_scope=request.args.get("groupScope") or "",
+                        subscription_id=request.args.get("subscriptionId") or "",
+                        media_type=request.args.get("mediaType") or "",
+                        season_number=request.args.get("seasonNumber") or None,
+                        episode_number=request.args.get("episodeNumber") or None,
+                        match_id=request.args.get("matchId") or "",
+                        limit=request.args.get("limit") or 20,
+                        offset=request.args.get("offset") or 0,
+                    )
+                ))
             if view == "groups":
                 return jsonify(_present_rss_match_group_list(
                     service.repository.list_candidate_groups(

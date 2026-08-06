@@ -32,7 +32,7 @@ interface OverviewProps {
 
 const metricDefinitions = [
   { key: 'archivedToday', label: '今日入库', unit: '个文件', icon: Library, target: 'archived' },
-  { key: 'activeDownloadTasks', label: '正在下载', unit: '个任务', icon: Download, target: 'qb_active' },
+  { key: 'activeDownloadTasks', label: 'qB 活跃任务', unit: '个任务', icon: Download, target: 'qb_active' },
   { key: 'waitingAutoRecovery', label: '等待自动恢复', unit: '个任务', icon: RefreshCw, target: 'secupload' },
   { key: 'actionRequiredGroups', label: '需要处理', unit: '个问题组', icon: TriangleAlert, target: 'action_required' }
 ] as const;
@@ -70,7 +70,7 @@ function emptySummary(): HomeSummaryResponse {
       observedAt: ''
     },
     focusItems: [
-      emptyFocusItem('current_downloads', '正在下载', '个任务', '/tasks?qbActive=1'),
+      emptyFocusItem('current_downloads', 'qB 活跃任务', '个任务', '/tasks?qbActive=1'),
       emptyFocusItem('secupload_failures', '秒传失败', '个', '/tasks?systemIssue=secupload_failures'),
       emptyFocusItem('downloaded_not_archived', '下载完成未入库', '个', '/tasks?outcomeState=in_progress'),
       emptyFocusItem('archived_today', '今日入库', '个文件', `/tasks?archivedDate=${shanghaiDateKey()}`),
@@ -86,10 +86,11 @@ function emptySummary(): HomeSummaryResponse {
 
 function homeQbCopy(value: string) {
   return value
-    .replace(/qB 下载任务/g, '正在下载')
-    .replace(/qB 当前有 (\d+) 个下载任务正在执行/g, '当前有 $1 个下载任务正在执行')
-    .replace(/qB 已连接，当前没有正在下载的任务/g, '当前没有正在下载的任务')
-    .replace(/qB 当前没有提供可验证的下载任务状态/g, '正在下载状态暂未确认');
+    .replace(/qB 下载任务/g, 'qB 活跃任务')
+    .replace(/qB 当前有 (\d+) 个下载任务正在执行/g, 'qB 当前有 $1 个活跃任务')
+    .replace(/qB 已连接，当前没有正在下载的任务/g, 'qB 当前没有活跃任务')
+    .replace(/qB 当前没有提供可验证的下载任务状态/g, 'qB 活跃任务暂未确认')
+    .replace(/正在下载/g, 'qB 活跃任务');
 }
 
 export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
@@ -225,7 +226,7 @@ export function Overview({ onNavigate, onNavigatePath }: OverviewProps) {
         <div className="home-summary__headline">
           <p className="ops-eyebrow">首页 · 今日状态</p>
           <span className="home-summary__status-icon" aria-hidden="true"><StatusIcon size={22} /></span>
-          <h1>{error ? '暂时无法确认影音中心状态' : summary.headline}</h1>
+          <h1>{error ? '暂时无法确认影音中心状态' : homeQbCopy(summary.headline)}</h1>
           <p>{error || homeQbCopy(summary.detail)}</p>
           <small>{summary.generatedAt ? <>最近读取 <RelativeTime value={summary.generatedAt} /></> : '等待第一份状态证据'}</small>
         </div>
