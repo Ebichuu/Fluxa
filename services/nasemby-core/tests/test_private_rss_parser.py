@@ -164,6 +164,31 @@ class PrivateRssParserTests(unittest.TestCase):
                     ("movie", None, None, None),
                 )
 
+    def test_repeated_season_episode_ranges_require_one_forward_season(self):
+        for title in (
+            "Show S01E15-E16",
+            "Show S01E15-S01E16",
+            "Show S01E15 - S01E16",
+            "Show S01E15 ~ S01E16",
+        ):
+            with self.subTest(title=title):
+                self.assertEqual(extract_release_scope(title), ("tv", 1, 15, 16))
+
+        for title in (
+            "Show S01E15-S02E01",
+            "Show S01E16-S01E15",
+        ):
+            with self.subTest(title=title):
+                self.assertEqual(extract_release_scope(title, ["TV"]), ("tv", None, None, None))
+
+        self.assertEqual(extract_release_scope("Show 1x03"), ("tv", 1, 3, 3))
+        self.assertEqual(extract_release_scope("Show 1 x 03"), ("tv", 1, 3, 3))
+        self.assertEqual(extract_release_scope("Variety S2026E70", ["TV"]), ("tv", None, 70, 70))
+        self.assertEqual(
+            extract_release_scope("Movie HDR10 x265 10bit", ["Movie"]),
+            ("movie", None, None, None),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

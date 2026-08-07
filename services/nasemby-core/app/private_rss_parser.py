@@ -138,11 +138,18 @@ def extract_release_scope(title, categories=None):
         r"(?i)\bS((?:19|20)\d{2})\s*E(\d{1,4})(?:\s*[-~]\s*E?(\d{1,4}))?",
         text,
     )
-    match = re.search(r"(?i)\bS(\d{1,2})\s*E(\d{1,4})(?:\s*[-~]\s*E?(\d{1,4}))?", text)
+    match = re.search(
+        r"(?i)\bS(\d{1,2})\s*E(\d{1,4})"
+        r"(?:\s*[-~]\s*(?:S(\d{1,2})\s*)?E?(\d{1,4}))?",
+        text,
+    )
     if match:
         season = int(match.group(1))
         episode_start = int(match.group(2))
-        episode_end = int(match.group(3) or match.group(2))
+        repeated_season = int(match.group(3)) if match.group(3) else season
+        episode_end = int(match.group(4) or match.group(2))
+        if repeated_season != season or episode_end < episode_start:
+            return "tv", None, None, None
     elif year_episode_match:
         episode_start = int(year_episode_match.group(2))
         episode_end = int(year_episode_match.group(3) or year_episode_match.group(2))
