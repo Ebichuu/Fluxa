@@ -4,8 +4,9 @@ import { ImageOff } from 'lucide-react';
 interface PosterImageProps {
   className: string;
   fallbackClassName?: string;
-  fallbackVariant?: 'icon' | 'initial';
+  fallbackVariant?: 'icon' | 'initial' | 'none';
   loading?: 'eager' | 'lazy';
+  onUnavailable?: () => void;
   src?: string;
   title: string;
 }
@@ -83,11 +84,14 @@ function imageSource(value?: string) {
   return source;
 }
 
-export function PosterImage({ className, fallbackClassName, fallbackVariant = 'initial', loading = 'lazy', src, title }: PosterImageProps) {
+export function PosterImage({ className, fallbackClassName, fallbackVariant = 'initial', loading = 'lazy', onUnavailable, src, title }: PosterImageProps) {
   const resolvedSource = useMemo(() => imageSource(src), [src]);
   const [failed, setFailed] = useState(() => failedPosterSources.has(resolvedSource));
 
   useEffect(() => setFailed(!resolvedSource || failedPosterSources.has(resolvedSource)), [resolvedSource]);
+  useEffect(() => {
+    if (failed && resolvedSource) onUnavailable?.();
+  }, [failed, onUnavailable, resolvedSource]);
 
   const rejectSource = () => {
     if (resolvedSource) failedPosterSources.add(resolvedSource);
@@ -95,6 +99,7 @@ export function PosterImage({ className, fallbackClassName, fallbackVariant = 'i
   };
 
   if (!resolvedSource || failed) {
+    if (fallbackVariant === 'none') return null;
     return (
       <span aria-hidden="true" className={`${className} ${fallbackClassName ?? ''}`.trim()}>
         {fallbackVariant === 'icon' ? <ImageOff aria-hidden="true" size={22} strokeWidth={1.5} /> : title.trim().charAt(0) || '影'}

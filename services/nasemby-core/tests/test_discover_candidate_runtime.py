@@ -14,6 +14,29 @@ from app.subscription_repository import SubscriptionRepository
 class DiscoverCandidateRuntimeTests(unittest.TestCase):
     NOW = datetime(2026, 7, 28, 8, 0, tzinfo=timezone.utc)
 
+    def test_rss_media_metadata_reads_existing_cache_without_remote_fetch(self):
+        discover_runtime.set_discover_item_cache({
+            "title": "缓存作品中文名",
+            "media_type": "tv",
+            "tmdb_id": "908070",
+            "first_air_date": "2026-04-03",
+            "poster_url": "https://image.tmdb.org/t/p/w342/cached.jpg",
+        }, "test")
+
+        with patch.object(
+            discover_runtime,
+            "http_json",
+            side_effect=AssertionError("RSS 卡片读取不得访问 TMDB"),
+        ):
+            result = discover_runtime.read_cached_rss_media_metadata({("tv", "908070", 2)})
+
+        self.assertEqual(result[("tv", "908070", 2)]["mediaTitle"], "缓存作品中文名")
+        self.assertEqual(result[("tv", "908070", 2)]["mediaYear"], "2026")
+        self.assertEqual(
+            result[("tv", "908070", 2)]["posterUrl"],
+            "https://image.tmdb.org/t/p/w342/cached.jpg",
+        )
+
     def add_candidate(self, repository, *, tmdb_id="200", media_type="tv", season=1, **payload):
         source = {
             "title": payload.pop("title", "日播候选"),

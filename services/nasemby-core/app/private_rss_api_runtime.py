@@ -532,9 +532,15 @@ def register_private_rss(
     subscription_loader=None,
     config_loader=None,
     match_runtime=None,
+    media_metadata_cache_loader=None,
 ):
     resolved_environment = os.environ if environment is None else environment
-    repository = repository or PrivateRssRepository(database_path)
+    repository = repository or PrivateRssRepository(
+        database_path,
+        media_metadata_cache_loader=media_metadata_cache_loader,
+    )
+    if media_metadata_cache_loader and hasattr(repository, "set_media_metadata_cache_loader"):
+        repository.set_media_metadata_cache_loader(media_metadata_cache_loader)
     watch_repository = app.extensions.get("mcc_quality_watch_repository") or QualityWatchRepository(database_path)
     match_runtime = match_runtime or RssSubscriptionMatchRuntime(
         repository,

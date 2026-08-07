@@ -49,6 +49,7 @@ import {
 import { formatTimeAgo } from '../../utils/formatters';
 import { createIdempotencyKey } from '../../utils/idempotency';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
+import { PosterImage } from '../layout/PosterImage';
 import { RelativeTime } from '../status/RelativeTime';
 import type { AppNavigate } from '../layout/AppTopNav';
 
@@ -384,21 +385,22 @@ function candidateGroupScoreLabel(group: RssMatchGroup) {
 }
 
 function seedProcessingStateLabel(match: RssMatch | undefined, action: AutomationAction | undefined) {
-  if (!match) return '未处理';
+  if (!match) return '未关联';
   if (action?.type === 'rewash-download' || match.status === 'confirmed') return 'Torra 已接收';
-  if (action && !['succeeded', 'failed', 'cancelled'].includes(action.status)) return 'Torra 分析中';
+  if (action && !['succeeded', 'failed', 'cancelled'].includes(action.status)) return '分析中';
   if (match.evaluationStatus === 'scored' && typeof match.candidateScore === 'number') {
     return `Torra 规则评分 ${scoreLabel(match.candidateScore)} 分`;
   }
   if (match.evaluationStatus === 'blocked') return '评分暂未确认';
-  return '等待 Torra 规则评分';
+  return '等待评分';
 }
 
 function seedPriorityReason(item: RssSeedItem, scope: ReturnType<typeof classifyRssResourceScope>) {
   const identityKnown = item.identityStatus === 'identified';
-  if (identityKnown && scope === 'explicit_episode') return '精确身份优先 · 明确季集优先';
+  const rangeKnown = scope === 'explicit_episode' || scope === 'explicit_multi_episode';
+  if (identityKnown && rangeKnown) return '精确身份优先 · 明确季集优先';
   if (identityKnown) return '精确身份优先';
-  if (scope === 'explicit_episode') return '明确季集优先';
+  if (rangeKnown) return '明确季集优先';
   return '暂无优先证据；最终下载推荐只来自 Torra 分析评分';
 }
 
@@ -463,6 +465,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const [testingSourceId, setTestingSourceId] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<RssSource | null>(null);
   const [detailItem, setDetailItem] = useState<RssSeedItem | null>(null);
+  const [failedPosterUrls, setFailedPosterUrls] = useState<Set<string>>(() => new Set());
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
   const [identityBackfillBusy, setIdentityBackfillBusy] = useState(false);
@@ -472,6 +475,15 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const matchPollRefs = useRef(new Map<string, AbortController>());
   const detailRequestRef = useRef<AbortController | null>(null);
   const pageSize = rssPageSize;
+
+  const markPosterUnavailable = (value: string) => {
+    setFailedPosterUrls((current) => {
+      if (!value || current.has(value)) return current;
+      const next = new Set(current);
+      next.add(value);
+      return next;
+    });
+  };
 
   const syncUrlState = (patch: Partial<RssLibraryUrlState>) => {
     writeRssLibraryUrlState({
@@ -1173,9 +1185,9 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                 void loadItems({ query: nextQuery, offset: 0 });
               }}
             >
-              <Search aria-hidden="true" size={16} />
-              <input aria-label="搜索本地种子" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="片名、制作组、HDR、2160P…" />
-              {query && <button aria-label="清空搜索" title="清空搜索" type="button" onClick={() => { setQuery(''); setOffset(0); syncUrlState({ query: '', offset: 0 }); void loadItems({ query: '', offset: 0 }); }}><X aria-hidden="true" size={14} /></button>}
+              <input aria-label="搜索本地资源" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="中文名、发布名、制作组、HDR…" />
+              {query && <button aria-label="清空搜索" className="rss-search-clear" title="清空搜索" type="button" onClick={() => { setQuery(''); setOffset(0); syncUrlState({ query: '', offset: 0 }); void loadItems({ query: '', offset: 0 }); }}><X aria-hidden="true" size={14} /></button>}
+              <button aria-label="提交资源搜索" className="rss-search-submit" disabled={itemsLoading} title="搜索" type="submit"><Search aria-hidden="true" size={15} /></button>
             </form>
             <div className="rss-window-tabs" aria-label="更新时间范围">
               {([
@@ -1222,49 +1234,63 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
               const scope = classifyRssResourceScope(item);
               const itemMatch = matchByItemId.get(item.id);
               const itemAction = itemMatch ? matchActions[itemMatch.id] : undefined;
+              const showPoster = Boolean(item.posterUrl && !failedPosterUrls.has(item.posterUrl));
               return (
               <article className="rss-seed-row" key={item.id}>
                 <div className="rss-seed-time"><span /> <RelativeTime value={item.publishedAt || item.lastSeenAt} /></div>
-                <div className="rss-seed-body">
-                  <div className="rss-seed-card-head">
-                    <span>{item.sourceName}</span>
-                    <RelativeTime value={item.publishedAt || item.lastSeenAt} />
-                    <span className={`rss-identity-chip rss-identity-chip--${item.identityStatus}`}>{identityLabel(item.identityStatus)}</span>
-                    {item.followState === 'unlinked' && <span className="rss-follow-chip">未关联追更</span>}
-                  </div>
-                  <h2>{item.title}</h2>
-                  <div className="rss-seed-desktop-meta">
-                    <div className="rss-seed-meta">
-                      <span>{episodeLabel(item)}</span>
-                      <span>{rssResourceScopeLabel(scope)}</span>
-                      <span>{sizeLabel(item.sizeBytes)}</span>
+                <div className={showPoster ? 'rss-seed-body rss-seed-body--with-poster' : 'rss-seed-body'}>
+                  {showPoster && (
+                    <PosterImage
+                      className="rss-seed-poster"
+                      fallbackVariant="none"
+                      src={item.posterUrl}
+                      title={item.mediaTitle || item.title}
+                      onUnavailable={() => markPosterUnavailable(item.posterUrl || '')}
+                    />
+                  )}
+                  <div className="rss-seed-content">
+                    <div className="rss-seed-card-head">
+                      <span>{item.sourceName}</span>
+                      <RelativeTime value={item.publishedAt || item.lastSeenAt} />
+                      <span className={`rss-identity-chip rss-identity-chip--${item.identityStatus}`}>{identityLabel(item.identityStatus)}</span>
+                      <span className="rss-processing-chip">{seedProcessingStateLabel(itemMatch, itemAction)}</span>
                     </div>
-                    <div className="rss-version-line">
-                      {item.versionSummary
-                        ? item.versionSummary.split(' · ').map((value) => <span key={value}>{value}</span>)
-                        : <span className="rss-version-muted">等待版本信息</span>}
+                    <h2>{item.title}</h2>
+                    {item.mediaTitle && item.mediaTitle.trim().toLocaleLowerCase() !== item.title.trim().toLocaleLowerCase() && (
+                      <p className="rss-media-title"><strong>{item.mediaTitle}</strong>{item.mediaYear && <span>{item.mediaYear}</span>}</p>
+                    )}
+                    <div className="rss-seed-desktop-meta">
+                      <div className="rss-seed-meta">
+                        <span>{episodeLabel(item)}</span>
+                        <span>{rssResourceScopeLabel(scope)}</span>
+                        <span>{sizeLabel(item.sizeBytes)}</span>
+                      </div>
+                      <div className="rss-version-line">
+                        {item.versionSummary
+                          ? item.versionSummary.split(' · ').map((value) => <span key={value}>{value}</span>)
+                          : <span className="rss-version-muted">等待版本信息</span>}
+                      </div>
                     </div>
+                    <details className="rss-seed-technical">
+                      <summary>技术信息</summary>
+                      <dl>
+                        <div><dt>类型与范围</dt><dd>{episodeLabel(item)} · {rssResourceScopeLabel(scope)}</dd></div>
+                        <div><dt>大小</dt><dd>{sizeLabel(item.sizeBytes)}</dd></div>
+                        <div><dt>版本</dt><dd>{item.versionSummary || '等待版本信息'}</dd></div>
+                        <div><dt>来源地址</dt><dd>{item.sourceDomain}</dd></div>
+                        <div><dt>匹配原因</dt><dd>{rssMatchMethodLabel(item.matchMethod, item.matchConfidence)}</dd></div>
+                        <div><dt>官种</dt><dd>无法判断</dd></div>
+                        <div><dt>下载 / 入库 / 重复</dt><dd>尚未确认</dd></div>
+                        <div><dt>当前处理状态</dt><dd>{seedProcessingStateLabel(itemMatch, itemAction)}</dd></div>
+                        <div><dt>优先检查理由</dt><dd>{seedPriorityReason(item, scope)}</dd></div>
+                      </dl>
+                      <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}><PanelRightOpen aria-hidden="true" size={13} />查看识别证据</button>
+                    </details>
                   </div>
-                  <details className="rss-seed-technical">
-                    <summary>技术信息</summary>
-                    <dl>
-                      <div><dt>类型与范围</dt><dd>{episodeLabel(item)} · {rssResourceScopeLabel(scope)}</dd></div>
-                      <div><dt>大小</dt><dd>{sizeLabel(item.sizeBytes)}</dd></div>
-                      <div><dt>版本</dt><dd>{item.versionSummary || '等待版本信息'}</dd></div>
-                      <div><dt>来源地址</dt><dd>{item.sourceDomain}</dd></div>
-                      <div><dt>匹配原因</dt><dd>{rssMatchMethodLabel(item.matchMethod, item.matchConfidence)}</dd></div>
-                      <div><dt>官种</dt><dd>无法判断</dd></div>
-                      <div><dt>下载 / 入库 / 重复</dt><dd>尚未确认</dd></div>
-                      <div><dt>当前处理状态</dt><dd>{seedProcessingStateLabel(itemMatch, itemAction)}</dd></div>
-                      <div><dt>优先检查理由</dt><dd>{seedPriorityReason(item, scope)}</dd></div>
-                    </dl>
-                    <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}><PanelRightOpen aria-hidden="true" size={13} />查看识别证据</button>
-                  </details>
                 </div>
                 <div className="rss-seed-state">
                   <span className="state-chip">{seedProcessingStateLabel(itemMatch, itemAction)}</span>
                   <span className={`rss-identity-chip rss-identity-chip--${item.identityStatus}`}>{identityLabel(item.identityStatus)}</span>
-                  {item.followState === 'unlinked' && <span className="rss-follow-chip">未关联追更</span>}
                   <small>{item.sourceDomain}</small>
                   <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}>
                     <PanelRightOpen aria-hidden="true" size={13} />详情

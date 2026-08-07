@@ -7,6 +7,7 @@ from pathlib import Path
 from app.main import create_app
 from app.private_rss_repository import PrivateRssRepository
 from app.quality_watch_repository import QualityWatchRepository
+from app.subscription_repository import SubscriptionRepository
 from app.torra_subscription_keys import torra_public_subscription_key
 
 
@@ -36,6 +37,57 @@ class FakeManualMatchRuntime:
 
 
 class PrivateRssApiRuntimeTests(unittest.TestCase):
+    def test_rss_items_api_exposes_local_media_metadata_without_sensitive_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "media_control_center.sqlite3"
+            subscriptions = SubscriptionRepository(database)
+            subscriptions.upsert_item({
+                "title": "资源卡片中文名",
+                "media_type": "tv",
+                "tmdb_id": "778899",
+                "target_season": 1,
+                "year": "2026",
+                "poster_url": "https://image.example/poster.jpg?token=poster-secret",
+                "private_note": "subscription-payload-secret",
+            }, "tv:metadata-api")
+            repository = PrivateRssRepository(database)
+            source = repository.save_source({
+                "name": "测试站",
+                "feedUrl": "https://tracker.example/rss?passkey=source-secret",
+            })
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "metadata-api",
+                "title": "Release.Name.S01E01.2160p",
+                "media_type": "tv",
+                "season_number": 1,
+                "episode_start": 1,
+                "episode_end": 1,
+                "tmdb_id": "778899",
+                "identity_status": "identified",
+                "download_url": "https://tracker.example/download?passkey=item-secret",
+            }])
+            app = create_app(
+                access_environment={"NASEMBY_CORE_WRITE_ENABLED": "false", "MCC_PRIVATE_RSS_ENABLED": "false"},
+                private_rss_repository=repository,
+                private_rss_collector=FakeCollector(),
+                quality_watch_repository=QualityWatchRepository(database),
+            )
+
+            response = app.test_client().get("/api/v2/rss-items?query=资源卡片中文名")
+            payload = response.get_json()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(payload["total"], 1)
+            self.assertEqual(payload["items"][0]["mediaTitle"], "资源卡片中文名")
+            self.assertEqual(payload["items"][0]["mediaYear"], "2026")
+            self.assertEqual(payload["items"][0]["posterUrl"], "https://image.example/poster.jpg")
+            response_text = response.get_data(as_text=True)
+            for forbidden in (
+                "poster-secret", "subscription-payload-secret", "source-secret", "item-secret",
+                "download_url", "downloadUrl", "feedUrl", "passkey", "token=",
+            ):
+                self.assertNotIn(forbidden, response_text)
+
     def test_cleanup_preview_confirm_and_audit_are_safe_and_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "media_control_center.sqlite3"

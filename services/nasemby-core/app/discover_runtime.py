@@ -5361,6 +5361,88 @@ def get_cached_discover_item(item):
     return None
 
 
+def read_cached_rss_media_metadata(identities):
+    """Read card metadata from the existing discover cache without refreshing it."""
+    normalized = set()
+    for media_type, tmdb_id, season_number in identities or []:
+        media_type = "tv" if str(media_type or "").lower() == "tv" else "movie"
+        tmdb_id = str(tmdb_id or "").strip()
+        try:
+            season = int(season_number or 0) if media_type == "tv" else 0
+        except (TypeError, ValueError):
+            continue
+        if not tmdb_id.isdigit() or (media_type == "tv" and season <= 0):
+            continue
+        normalized.add((media_type, tmdb_id, season))
+    path = Path(DISCOVER_CACHE_DB_PATH)
+    if not normalized or not path.exists():
+        return {}
+
+    keys = {}
+    for identity in normalized:
+        media_type, tmdb_id, _season = identity
+        keys[discover_cache_key("discover_item", {"key": f"tmdb:{media_type}:{tmdb_id}"})] = (
+            identity, "discover_item",
+        )
+        keys[discover_cache_key("tmdb_detail", {
+            "media_type": media_type,
+            "tmdb_id": tmdb_id,
+            "append": "",
+        })] = (identity, "tmdb_detail")
+
+    cached = {}
+    connection = None
+    try:
+        connection = sqlite3.connect(f"file:{path.resolve().as_posix()}?mode=ro", uri=True)
+        key_list = list(keys)
+        for index in range(0, len(key_list), 400):
+            chunk = key_list[index:index + 400]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = connection.execute(
+                f"SELECT cache_key, payload FROM discover_cache WHERE cache_key IN ({placeholders}) "
+                "AND expires_at>=?",
+                (*chunk, int(time.time())),
+            ).fetchall()
+            for cache_key, payload_text in rows:
+                identity, category = keys[cache_key]
+                try:
+                    payload = json.loads(payload_text or "{}")
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                source = payload.get("item") if category == "discover_item" else payload.get("detail")
+                if not isinstance(source, dict):
+                    continue
+                title = str(
+                    source.get("title")
+                    or source.get("name")
+                    or source.get("original_title")
+                    or source.get("original_name")
+                    or ""
+                ).strip()
+                if not title:
+                    continue
+                date_value = source.get("release_date") or source.get("first_air_date") or source.get("year")
+                year = extract_year(date_value)
+                poster = str(source.get("poster_url") or source.get("poster") or "").strip()
+                if not poster and source.get("poster_path"):
+                    poster = tmdb_image(source.get("poster_path"), "w342")
+                value = {"mediaTitle": title}
+                if year:
+                    value["mediaYear"] = year
+                if poster:
+                    value["posterUrl"] = poster
+                if category == "discover_item" or identity not in cached:
+                    cached[identity] = value
+    except Exception:
+        return {}
+    finally:
+        if connection is not None:
+            connection.close()
+    return cached
+
+
 def merge_cached_discover_item(item):
     if not isinstance(item, dict):
         return item

@@ -52,6 +52,9 @@ export interface RssSeedItem {
   sourceName: string;
   sourceDomain: string;
   title: string;
+  mediaTitle?: string;
+  mediaYear?: string;
+  posterUrl?: string;
   description: string;
   publishedAt: string;
   category: string;
@@ -77,13 +80,13 @@ export interface RssSeedItem {
 
 export type RssIdentityStatus = '' | RssSeedItem['identityStatus'];
 
-// 三类互斥的资源范围口径：每条资源只允许归入唯一分类，
-// 且 明确单集 + 季包 + 范围待确认 = 资源总数（由 classifyRssResourceScope 的全覆盖分支保证）。
-export type RssResourceScope = 'explicit_episode' | 'season_pack' | 'scope_pending';
+// 四类互斥的资源范围口径：每条资源只允许归入唯一分类。
+export type RssResourceScope = 'explicit_episode' | 'explicit_multi_episode' | 'season_pack' | 'scope_pending';
 
 export interface RssResourceScopeCounts {
   total: number;
   explicitEpisode: number;
+  explicitMultiEpisode: number;
   seasonPack: number;
   scopePending: number;
 }
@@ -95,7 +98,8 @@ export function classifyRssResourceScope(
   if (!seasonConfirmed) return 'scope_pending';
   if (item.episodeStart != null) {
     const end = item.episodeEnd ?? item.episodeStart;
-    return end === item.episodeStart ? 'explicit_episode' : 'scope_pending';
+    if (end === item.episodeStart) return 'explicit_episode';
+    return end > item.episodeStart ? 'explicit_multi_episode' : 'scope_pending';
   }
   return item.seasonScopeState === 'confirmed' ? 'season_pack' : 'scope_pending';
 }
@@ -104,6 +108,7 @@ export function countRssResourceScopes(scopes: RssResourceScope[]): RssResourceS
   return {
     total: scopes.length,
     explicitEpisode: scopes.filter((scope) => scope === 'explicit_episode').length,
+    explicitMultiEpisode: scopes.filter((scope) => scope === 'explicit_multi_episode').length,
     seasonPack: scopes.filter((scope) => scope === 'season_pack').length,
     scopePending: scopes.filter((scope) => scope === 'scope_pending').length
   };
@@ -111,12 +116,15 @@ export function countRssResourceScopes(scopes: RssResourceScope[]): RssResourceS
 
 export function rssResourceScopeLabel(scope: RssResourceScope) {
   if (scope === 'explicit_episode') return '明确单集';
+  if (scope === 'explicit_multi_episode') return '明确多集';
   if (scope === 'season_pack') return '季包';
   return '范围待确认';
 }
 
 export function rssResourceScopeSummaryText(counts: RssResourceScopeCounts) {
-  return `${counts.total} 个资源 · 明确单集 ${counts.explicitEpisode} · 季包 ${counts.seasonPack} · 范围待确认 ${counts.scopePending}`;
+  return `${counts.total} 个资源 · 明确单集 ${counts.explicitEpisode} · `
+    + `明确多集 ${counts.explicitMultiEpisode} · 季包 ${counts.seasonPack} · `
+    + `范围待确认 ${counts.scopePending}`;
 }
 
 export function rssMatchMethodLabel(method?: string, confidence?: string) {

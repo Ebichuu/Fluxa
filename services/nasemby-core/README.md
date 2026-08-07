@@ -108,7 +108,7 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/v2/torra/subscription-sync/*`：Torra 已有订阅状态、只读预览、幂等确认导入和手动状态同步。
 - `/api/v2/activity/logs`：读取或经确认清空统一脱敏活动日志；React 任务中心使用读取接口。
 - `/api/v2/system/metrics`：缓存、白名单映射的系统指标。
-- `/api/v2/rss-sources`、`/api/v2/rss-items`：私人 RSS 来源和本地种子库；支持订阅身份/类型/季号/年份精确筛选，以及兼容全库待复核、已关联追更待识别和未关联追更三种只读范围；电视剧标题候选不强制年份，未知季号只作为人工候选，读取响应不含完整 RSS/下载地址。
+- `/api/v2/rss-sources`、`/api/v2/rss-items`：私人 RSS 来源和本地种子库；支持订阅身份/类型/季号/年份精确筛选，以及兼容全库待复核、已关联追更待识别和未关联追更三种只读范围；已识别资源可从匹配订阅、精确订阅、发现候选和现有 TMDB 缓存补充可选媒体标题、年份与海报，并支持媒体标题搜索。电视剧标题候选不强制年份，未知季号只作为人工候选；卡片查询不访问外部服务，读取响应不含完整 RSS/下载地址或订阅原始 payload。
 - `/api/v2/rss-items/identity-backfills`：管理员显式触发的本地有界身份回填，每批最多 200 条，不访问 PT 详情页或执行下载；摘要保留最近扫描、识别、冲突、未变化和剩余数量。
 - 历史 RSS 范围修复仅允许管理员显式运行 `python -m app.admin repair-rss-scope --preview`，确认后使用 `--apply <preview-fingerprint>`；预览指纹漂移、备份/事务/审计失败会拒绝或整批回滚。该命令只重解析本地 RSS、归档安全候选匹配并保留原始条目，不调用 Torra、qB、115、Symedia 或其他外部写接口，也不会在启动时自动执行。
 - `/api/v2/rss-matches`：读取本地候选、规范订阅/季集绑定和 Torra 规则影子评分；分组读取可把整组均因 `subscription_missing` 阻断的孤立候选归入 `needs_cleanup`，主评分范围排除该组但旧全量 `total` 保持兼容。POST 可为一个 RSS 搜索结果和明确观察单元建立幂等人工匹配，服务端复核身份、季集、首次下载时间及 Torra 归属，并只读当前规则评分。规则或证据不完整时返回“暂未确认”，不按零分处理；后续人工 Torra 分析和下载仍分别受独立闸门保护。

@@ -11,9 +11,157 @@ from app.private_rss_repository import (
     PrivateRssRepository,
     RssMatchCleanupStale,
 )
+from app.subscription_repository import SubscriptionRepository
 
 
 class PrivateRssRepositoryTests(unittest.TestCase):
+    @staticmethod
+    def _identified_item(fingerprint, title, tmdb_id, season=1):
+        return {
+            "fingerprint": fingerprint,
+            "title": title,
+            "media_type": "tv",
+            "season_number": season,
+            "episode_start": 1,
+            "episode_end": 1,
+            "tmdb_id": str(tmdb_id),
+            "identity_status": "identified",
+            "identity_source": "subscription_match",
+            "identity_confidence": "strong",
+        }
+
+    def test_media_metadata_uses_matched_subscription_priority_and_chinese_search(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "media_control_center.sqlite3"
+            subscriptions = SubscriptionRepository(database)
+            subscriptions.upsert_item({
+                "title": "低优先级标题",
+                "media_type": "tv",
+                "tmdb_id": "101",
+                "target_season": 1,
+                "poster_url": "https://image.example/lower.jpg",
+                "year": "2025",
+            }, "tv:lower")
+            subscriptions.upsert_item({
+                "title": "匹配订阅中文名",
+                "media_type": "tv",
+                "tmdb_id": "101",
+                "target_season": 1,
+                "poster_url": "https://image.example/matched.jpg?token=must-not-leak",
+                "year": "2026",
+            }, "tv:matched")
+            subscriptions.upsert_item({
+                "title": "第二部中文作品",
+                "media_type": "tv",
+                "tmdb_id": "202",
+                "target_season": 1,
+                "poster_url": "https://image.example/second.jpg",
+                "year": "2026",
+            }, "tv:second")
+
+            repository = PrivateRssRepository(database)
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [
+                self._identified_item("matched", "Release.Name.S01E01.2160p", "101"),
+                self._identified_item("second", "Another.Release.S01E01.1080p", "202"),
+            ])
+            rows = {row["title"]: row for row in repository.search_items(limit=10)["items"]}
+            repository.create_match(
+                rows["Release.Name.S01E01.2160p"]["id"],
+                "tv:matched",
+                "tv:matched:s1:e1",
+                {},
+            )
+
+            matched = repository.search_items(query="匹配订阅中文名")
+            self.assertEqual(matched["total"], 1)
+            self.assertEqual(matched["items"][0]["mediaTitle"], "匹配订阅中文名")
+            self.assertEqual(matched["items"][0]["mediaYear"], "2026")
+            self.assertEqual(matched["items"][0]["posterUrl"], "https://image.example/matched.jpg")
+            self.assertNotIn("must-not-leak", str(matched))
+
+            first_page = repository.search_items(query="中文", limit=1, offset=0)
+            second_page = repository.search_items(query="中文", limit=1, offset=1)
+            self.assertEqual(first_page["total"], 2)
+            self.assertEqual(second_page["total"], 2)
+            self.assertNotEqual(first_page["items"][0]["id"], second_page["items"][0]["id"])
+
+    def test_media_metadata_falls_back_to_discover_and_local_tmdb_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "media_control_center.sqlite3"
+            subscriptions = SubscriptionRepository(database)
+            subscriptions.upsert_discover_candidates([{
+                "title": "发现候选中文名",
+                "media_type": "tv",
+                "tmdb_id": "303",
+                "season_number": 1,
+                "poster_url": "https://image.example/discover.jpg",
+                "year": "2026",
+            }])
+            cache_calls = []
+
+            def cache_loader(identities):
+                cache_calls.append(set(identities))
+                return {
+                    ("tv", "404", 1): {
+                        "mediaTitle": "缓存中文名",
+                        "mediaYear": "2024",
+                        "posterUrl": "https://image.example/cache.jpg",
+                    }
+                }
+
+            repository = PrivateRssRepository(database, media_metadata_cache_loader=cache_loader)
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [
+                self._identified_item("discover", "Discover.Release.S01E01", "303"),
+                self._identified_item("cache", "Cache.Release.S01E01", "404"),
+            ])
+
+            discover = repository.search_items(query="发现候选中文名")
+            cached = repository.search_items(query="缓存中文名")
+
+            self.assertEqual(discover["items"][0]["posterUrl"], "https://image.example/discover.jpg")
+            self.assertEqual(cached["items"][0]["mediaTitle"], "缓存中文名")
+            self.assertTrue(cache_calls)
+            self.assertIn(("tv", "404", 1), set().union(*cache_calls))
+
+    def test_media_metadata_conflict_stops_fallback_and_rejects_private_poster(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "media_control_center.sqlite3"
+            subscriptions = SubscriptionRepository(database)
+            subscriptions.upsert_item({
+                "title": "冲突标题甲", "media_type": "tv", "tmdb_id": "505", "target_season": 1,
+            }, "tv:conflict-a")
+            subscriptions.upsert_item({
+                "title": "冲突标题乙", "media_type": "tv", "tmdb_id": "505", "target_season": 1,
+            }, "tv:conflict-b")
+            subscriptions.upsert_item({
+                "title": "安全标题",
+                "media_type": "tv",
+                "tmdb_id": "606",
+                "target_season": 1,
+                "poster_url": "http://192.168.50.126/private.jpg",
+            }, "tv:private-poster")
+            subscriptions.upsert_discover_candidates([{
+                "title": "不应降级到这里",
+                "media_type": "tv",
+                "tmdb_id": "505",
+                "season_number": 1,
+            }])
+            repository = PrivateRssRepository(database)
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [
+                self._identified_item("conflict", "Conflict.Release.S01E01", "505"),
+                self._identified_item("private", "Private.Release.S01E01", "606"),
+            ])
+
+            rows = {row["tmdbId"]: row for row in repository.search_items(limit=10)["items"]}
+
+            self.assertNotIn("mediaTitle", rows["505"])
+            self.assertNotIn("posterUrl", rows["505"])
+            self.assertEqual(rows["606"]["mediaTitle"], "安全标题")
+            self.assertNotIn("posterUrl", rows["606"])
+
     def _cleanup_match(self, repository, source_id, fingerprint, subscription_key):
         repository.upsert_items(source_id, [{
             "fingerprint": fingerprint,

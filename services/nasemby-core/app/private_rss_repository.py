@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 from app.sqlite_runtime import SQLiteRuntime
+from app.rss_media_metadata_runtime import media_title_matches, resolve_rss_media_metadata
 from app.torra_subscription_keys import torra_public_storage_key
 
 
@@ -343,10 +344,14 @@ class FetchRunRecord:
 
 
 class PrivateRssRepository:
-    def __init__(self, database_path):
+    def __init__(self, database_path, media_metadata_cache_loader=None):
         self.runtime = SQLiteRuntime(database_path)
+        self.media_metadata_cache_loader = media_metadata_cache_loader
         self.runtime.initialize()
         self.initialize()
+
+    def set_media_metadata_cache_loader(self, loader):
+        self.media_metadata_cache_loader = loader
 
     def initialize(self):
         with self.runtime.transaction(immediate=True) as connection:
@@ -519,6 +524,18 @@ class PrivateRssRepository:
         if "follow_state" in row.keys() and row["follow_state"] in {"linked", "unlinked"}:
             item["followState"] = row["follow_state"]
         return item
+
+    def _public_items(self, connection, rows):
+        source_rows = list(rows)
+        items = [self._public_item(row) for row in source_rows]
+        metadata = resolve_rss_media_metadata(
+            connection,
+            source_rows,
+            cache_loader=self.media_metadata_cache_loader,
+        )
+        for item in items:
+            item.update(metadata.get(str(item.get("id") or ""), {}))
+        return items
 
     def list_sources(self):
         with closing(self.runtime.connect()) as connection:
@@ -810,9 +827,12 @@ class PrivateRssRepository:
                         [match],
                     )
 
+                public_by_id = {
+                    item["id"]: item for item in self._public_items(connection, rows_by_id.values())
+                }
                 items = []
                 for row in rows_by_id.values():
-                    item = self._public_item(row)
+                    item = public_by_id[str(row["id"])]
                     matched = _target_match(
                         item,
                         tmdb_id=target_tmdb_id,
@@ -831,7 +851,6 @@ class PrivateRssRepository:
                 total = len(items)
                 return {"items": items[offset:offset + limit], "total": total, "limit": limit, "offset": offset}
 
-            joins = []
             where = list(base_where)
             params = list(base_params)
             if target_media_type:
@@ -840,26 +859,49 @@ class PrivateRssRepository:
             if target_season is not None:
                 where.append("i.season_number=?")
                 params.append(target_season)
-            if match:
-                joins.append("JOIN rss_item_search f ON f.item_id=i.id")
-                where.append("f.search_text MATCH ?")
-                params.append(match)
             if target_year:
                 where.append("i.title LIKE ?")
                 params.append(f"%{target_year}%")
             where_sql = f"WHERE {' AND '.join(where)}" if where else ""
-            join_sql = " ".join(joins)
+            if match:
+                rows = connection.execute(
+                    "SELECT i.*, s.name AS source_name, s.domain AS source_domain, "
+                    f"{follow_state_select} FROM rss_items i "
+                    f"JOIN rss_sources s ON s.id=i.source_id {where_sql} "
+                    "ORDER BY COALESCE(NULLIF(i.published_at, ''), i.created_at) DESC, i.id DESC",
+                    params,
+                ).fetchall()
+                fts_ids = {
+                    str(row["item_id"])
+                    for row in connection.execute(
+                        "SELECT item_id FROM rss_item_search WHERE search_text MATCH ?",
+                        (match,),
+                    ).fetchall()
+                }
+                query_tokens = _search_text(query_text).split()
+                items = [
+                    item for item in self._public_items(connection, rows)
+                    if item["id"] in fts_ids
+                    or media_title_matches(item.get("mediaTitle"), query_tokens)
+                ]
+                total = len(items)
+                return {
+                    "items": items[offset:offset + limit],
+                    "total": total,
+                    "limit": limit,
+                    "offset": offset,
+                }
             total = int(connection.execute(
-                f"SELECT COUNT(DISTINCT i.id) AS count FROM rss_items i {join_sql} {where_sql}", params
+                f"SELECT COUNT(DISTINCT i.id) AS count FROM rss_items i {where_sql}", params
             ).fetchone()["count"])
             rows = connection.execute(
                 "SELECT i.*, s.name AS source_name, s.domain AS source_domain, "
                 f"{follow_state_select} FROM rss_items i "
-                f"JOIN rss_sources s ON s.id=i.source_id {join_sql} {where_sql} "
+                f"JOIN rss_sources s ON s.id=i.source_id {where_sql} "
                 "ORDER BY COALESCE(NULLIF(i.published_at, ''), i.created_at) DESC, i.id DESC LIMIT ? OFFSET ?",
                 (*params, limit, offset),
             ).fetchall()
-        items = [self._public_item(row) for row in rows]
+            items = self._public_items(connection, rows)
         if target_media_type or target_season is not None or target_year:
             for item in items:
                 if target_media_type == "tv" and target_season is not None:
@@ -881,9 +923,9 @@ class PrivateRssRepository:
                 "FROM rss_items i "
                 "JOIN rss_sources s ON s.id=i.source_id WHERE i.id=?", (item_id,)
             ).fetchone()
-        if not row:
-            return None
-        return self._public_item(row) if public else dict(row)
+            if not row:
+                return None
+            return self._public_items(connection, [row])[0] if public else dict(row)
 
     def list_unidentified_items(self, limit=50):
         limit = max(1, min(int(limit or 50), 200))
