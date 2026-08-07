@@ -799,6 +799,14 @@ def _present_problem_groups(projection: dict) -> list[dict]:
                 if key in public
             })
         primary = public_members[0] if public_members else {}
+        public_reason = present_task_item({
+            "pipelineOutcome": {
+                "stage": group.get("stage"),
+                "reasonCode": group.get("reasonCode"),
+            },
+            "reasonCode": group.get("reasonCode"),
+            "reasonText": group.get("reasonText"),
+        }).get("reasonText")
         result.append({
             "groupId": str(group.get("groupId") or ""),
             "title": str(primary.get("title") or "未命名媒体"),
@@ -807,7 +815,7 @@ def _present_problem_groups(projection: dict) -> list[dict]:
             "seasonNumber": int(group.get("seasonNumber") or 0),
             "stage": str(group.get("stage") or ""),
             "reasonCode": str(group.get("reasonCode") or ""),
-            "reasonText": str(primary.get("userReasonText") or primary.get("reasonText") or "当前任务需要处理"),
+            "reasonText": str(public_reason or "当前任务需要处理"),
             "resourceCount": int(group.get("resourceCount") or 0),
             "identityUnconfirmedResources": int(group.get("identityUnconfirmedResources") or 0),
             "episodeNumbers": list(group.get("episodeNumbers") or []),

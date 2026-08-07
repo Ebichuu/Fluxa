@@ -266,6 +266,50 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(result["problemGroups"][0]["episodeNumbers"], [2, 3, 4])
         self.assertEqual(len(result["problemGroups"][0]["members"]), 3)
 
+    def test_problem_group_api_preserves_derived_symedia_reason_over_stale_qb_fields(self):
+        app = Flask(f"{__name__}-problem-group-derived-reason")
+        register_task_chain_v2(app)
+        service = app.extensions["mcc_task_chain_v2_service"]
+        service.full_snapshot = lambda force=False: {
+            "contractVersion": 2,
+            "generatedAt": "2026-08-07T02:00:00Z",
+            "version": "snapshot-symedia-reason",
+            "items": [{
+                "id": "task-symedia-failed",
+                "chainId": "chain-symedia-failed",
+                "targetKey": "tv:tmdb:101:season:1:episode:15",
+                "title": "测试剧",
+                "mediaType": "tv",
+                "tmdbId": "101",
+                "seasonNumber": 1,
+                "episodeNumber": 15,
+                "identityState": "linked",
+                "outcomeState": "action_required",
+                "pipelineOutcome": {
+                    "state": "action_required",
+                    "stage": "symedia",
+                    "reasonCode": "SYMEDIA_MEDIA_NOT_FOUND",
+                    "reasonText": "Symedia 未查询到对应媒体信息",
+                },
+                "reasonCode": "QB_DOWNLOAD_FAILED",
+                "reasonText": "qB 下载任务未正常继续",
+                "userReasonText": "qB 下载任务未正常继续",
+                "resultText": "qB 下载任务未正常继续",
+            }],
+            "counts": {"total": 1},
+            "services": {},
+            "outcomeCounts": {"action_required": 1},
+        }
+
+        response = app.test_client().get("/api/v2/tasks/chains?outcomeState=action_required")
+        payload = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["problemGroups"][0]["stage"], "symedia")
+        self.assertEqual(payload["problemGroups"][0]["reasonCode"], "SYMEDIA_MEDIA_NOT_FOUND")
+        self.assertEqual(payload["problemGroups"][0]["reasonText"], "Symedia 未查询到对应媒体信息")
+        self.assertNotIn("qB 下载任务未正常继续", payload["problemGroups"][0]["reasonText"])
+
     def test_verified_emby_episode_projects_playable_to_legacy_completed(self):
         chain = FakeTaskChain().get_chain()
         chain["items"][0]["episodeNumber"] = 3
