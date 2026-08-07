@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 
 from app.admin_auth import AdminAuth, AdminCredentialStore
 from app.config import AUTH_DB_PATH
+from app import discover_runtime
+from app.private_rss_repository import PrivateRssRepository
+from app.rss_scope_repair import RssScopeRepairError, RssScopeRepairService
 
 
 def reset_password():
@@ -26,13 +30,34 @@ def reset_password():
     return 0
 
 
+def repair_rss_scope(mode, fingerprint=""):
+    repository = PrivateRssRepository(discover_runtime.subscription_database_path())
+    service = RssScopeRepairService(repository)
+    try:
+        result = service.preview() if mode == "preview" else service.apply(fingerprint)
+    except RssScopeRepairError as exc:
+        print(json.dumps({"status": "failed", "code": exc.code, "error": exc.message}))
+        return 1
+    print(json.dumps(result, ensure_ascii=True, sort_keys=True))
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m app.admin")
     subcommands = parser.add_subparsers(dest="command", required=True)
     subcommands.add_parser("reset-password")
+    repair = subcommands.add_parser("repair-rss-scope")
+    repair_group = repair.add_mutually_exclusive_group(required=True)
+    repair_group.add_argument("--preview", action="store_true")
+    repair_group.add_argument("--apply", metavar="PREVIEW_FINGERPRINT")
     arguments = parser.parse_args(argv)
     if arguments.command == "reset-password":
         return reset_password()
+    if arguments.command == "repair-rss-scope":
+        return repair_rss_scope(
+            "preview" if arguments.preview else "apply",
+            arguments.apply or "",
+        )
     return 1
 
 

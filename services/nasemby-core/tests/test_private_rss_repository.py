@@ -63,6 +63,10 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             self.assertEqual(result, replay)
             self.assertEqual(result["archivedCount"], 1)
             self.assertEqual(repository.search_items(limit=100)["total"], before_items)
+            self.assertNotIn(
+                match["itemId"],
+                {row["id"] for row in repository.list_items_for_match(limit=100)},
+            )
             self.assertEqual(repository.list_candidate_groups(group_scope="cleanup")["total"], 0)
             archived = repository.get_match(match["id"])
             self.assertEqual(archived["archiveState"], "archived")

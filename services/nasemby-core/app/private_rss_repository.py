@@ -451,6 +451,24 @@ class PrivateRssRepository:
                 "match_id TEXT NOT NULL, match_version INTEGER NOT NULL, reason_code TEXT NOT NULL, "
                 "status TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(run_id, match_id))"
             )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS rss_scope_repair_runs ("
+                "run_id TEXT PRIMARY KEY, status TEXT NOT NULL, fingerprint TEXT NOT NULL, "
+                "backup_ref TEXT NOT NULL DEFAULT '', result_json TEXT NOT NULL DEFAULT '{}', "
+                "error_code TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rss_scope_repair_fingerprint "
+                "ON rss_scope_repair_runs(fingerprint, status, created_at DESC)"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS rss_scope_repair_items ("
+                "run_id TEXT NOT NULL REFERENCES rss_scope_repair_runs(run_id) ON DELETE CASCADE, "
+                "item_id TEXT NOT NULL, disposition TEXT NOT NULL, reason_code TEXT NOT NULL DEFAULT '', "
+                "before_scope_json TEXT NOT NULL, after_scope_json TEXT NOT NULL, "
+                "match_count INTEGER NOT NULL DEFAULT 0, match_ids_json TEXT NOT NULL DEFAULT '[]', "
+                "PRIMARY KEY(run_id, item_id))"
+            )
 
     @staticmethod
     def _public_source(row):
@@ -893,7 +911,8 @@ class PrivateRssRepository:
                 "SELECT i.*, s.name AS source_name, s.domain AS source_domain "
                 "FROM rss_items i JOIN rss_sources s ON s.id=i.source_id "
                 "WHERE i.identity_status<>'conflict' AND NOT EXISTS ("
-                "SELECT 1 FROM rss_subscription_matches m WHERE m.item_id=i.id) "
+                "SELECT 1 FROM rss_subscription_matches m WHERE m.item_id=i.id AND NOT ("
+                "m.archive_state='archived' AND m.archive_reason_code='rss-scope-repair-v1')) "
                 "ORDER BY i.match_checked_at ASC, "
                 "COALESCE(NULLIF(i.published_at, ''), i.created_at) DESC, i.id DESC LIMIT ?",
                 (limit,),
@@ -904,7 +923,8 @@ class PrivateRssRepository:
             return int(connection.execute(
                 "SELECT COUNT(*) AS count FROM rss_items i "
                 "WHERE i.identity_status<>'conflict' AND NOT EXISTS ("
-                "SELECT 1 FROM rss_subscription_matches m WHERE m.item_id=i.id)"
+                "SELECT 1 FROM rss_subscription_matches m WHERE m.item_id=i.id AND NOT ("
+                "m.archive_state='archived' AND m.archive_reason_code='rss-scope-repair-v1'))"
             ).fetchone()["count"])
 
     def count_unchecked_items_for_match(self):
@@ -912,7 +932,8 @@ class PrivateRssRepository:
             return int(connection.execute(
                 "SELECT COUNT(*) AS count FROM rss_items i "
                 "WHERE i.identity_status<>'conflict' AND i.match_checked_at='' AND NOT EXISTS ("
-                "SELECT 1 FROM rss_subscription_matches m WHERE m.item_id=i.id)"
+                "SELECT 1 FROM rss_subscription_matches m WHERE m.item_id=i.id AND NOT ("
+                "m.archive_state='archived' AND m.archive_reason_code='rss-scope-repair-v1'))"
             ).fetchone()["count"])
 
     @staticmethod
@@ -1299,7 +1320,15 @@ class PrivateRssRepository:
             target.execute(
                 "INSERT INTO rss_subscription_matches ("
                 "id, item_id, subscription_key, unit_key, match_status, match_reason_json, created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, 'candidate', ?, ?, ?) ON CONFLICT(item_id, unit_key) DO NOTHING",
+                ") VALUES (?, ?, ?, ?, 'candidate', ?, ?, ?) ON CONFLICT(item_id, unit_key) DO UPDATE SET "
+                "subscription_key=excluded.subscription_key, match_status='candidate', "
+                "match_reason_json=excluded.match_reason_json, trigger_action_id='', "
+                "evaluation_action_id='', download_action_id='', candidate_score=NULL, baseline_score=NULL, "
+                "evaluation_status='pending', decision='', evaluation_reason='', candidate_summary_json='{}', "
+                "baseline_summary_json='{}', is_best_candidate=0, evaluated_at='', archive_state='active', "
+                "archived_at='', archive_reason_code='', archive_run_id='', updated_at=excluded.updated_at, "
+                "version=version+1 WHERE rss_subscription_matches.archive_state='archived' "
+                "AND rss_subscription_matches.archive_reason_code='rss-scope-repair-v1'",
                 (uuid.uuid4().hex, item_id, subscription_key, unit_key, _json_dump(reason), now, now),
             )
             return target.execute(
