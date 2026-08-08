@@ -2324,6 +2324,23 @@ class RssSubscriptionMatchRuntime:
             return {}, "quality_watch_disabled"
         return config, ""
 
+    def _subscription_target_analysis_context(self, match, context):
+        evaluation, reason = self._evaluation_context(
+            match,
+            context.get("torraRows") or [],
+        )
+        if reason:
+            return None, reason
+        return {
+            "match": evaluation["match"],
+            "unit": evaluation["unit"],
+            "subscription": {
+                **evaluation["subscription"],
+                **evaluation["torraRow"],
+            },
+            "torra_id": evaluation["torraSubscriptionId"],
+        }, ""
+
     def _local_analysis_context(self, match):
         subscription_id = _text(match.get("subscriptionId"))
         unit = None
@@ -2339,6 +2356,8 @@ class RssSubscriptionMatchRuntime:
         )
         unit = unit or self.watch_repository.get_watch_unit(internal_unit_id)
         if not unit:
+            if context["internalKey"].startswith("torra:"):
+                return self._subscription_target_analysis_context(match, context)
             return None, "watch_unit_missing"
         if _text(unit.get("subscription_key")) != context["internalKey"]:
             return None, "watch_unit_missing"

@@ -995,6 +995,81 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(self.runtime.start_analysis(match["id"])["reason"], "qb_busy")
         self.assertEqual(torra.submissions, [])
 
+    def test_manual_analysis_supports_torra_subscription_target_without_watch_unit(self):
+        torra, _qb = self._enable_analysis()
+        self._configure_shadow_torra(torra)
+        self._insert(
+            "Test Show S01E20 2160p WEB-DL.mkv",
+            start=20,
+            end=20,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=5_600_000_000,
+        )
+        match = self.rss.list_matches()["items"][0]
+
+        result = self.runtime.start_analysis(
+            match["id"],
+            idempotency_key="manual-target-only-analysis",
+            source="manual-rss",
+            require_rss_gate=False,
+        )
+
+        self.assertEqual(result["status"], "submitted")
+        self.assertEqual(torra.submissions, ["torra-202"])
+        self.assertEqual(self.watch.list_watch_units("torra:torra-202"), [])
+        action = self.watch.get_action(result["actionId"])
+        self.assertEqual(action["subscription_key"], "torra:torra-202")
+        self.assertEqual(action["unit_key"], "torra:torra-202:s1:e20")
+
+    def test_manual_analysis_target_without_watch_unit_preserves_qb_duplicate_check(self):
+        torra, qb = self._enable_analysis()
+        self._configure_shadow_torra(torra)
+        qb.tasks = [{
+            "name": "Test Show S01E20 2160p WEB-DL.mkv",
+            "status": "queued",
+        }]
+        self._insert(
+            "Test Show S01E20 2160p WEB-DL.mkv",
+            start=20,
+            end=20,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=5_600_000_000,
+        )
+        match = self.rss.list_matches()["items"][0]
+
+        result = self.runtime.start_analysis(
+            match["id"],
+            idempotency_key="manual-target-only-qb-duplicate",
+            source="manual-rss",
+            require_rss_gate=False,
+        )
+
+        self.assertEqual(result, {"status": "blocked", "reason": "qb_busy"})
+        self.assertEqual(torra.submissions, [])
+
+    def test_manual_analysis_target_without_watch_unit_rechecks_torra_identity(self):
+        torra, _qb = self._enable_analysis()
+        self._configure_shadow_torra(torra)
+        self._insert(
+            "Test Show S01E20 2160p WEB-DL.mkv",
+            start=20,
+            end=20,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=5_600_000_000,
+        )
+        match = self.rss.list_matches()["items"][0]
+        torra.rows[0]["tmdb_id"] = "303"
+
+        result = self.runtime.start_analysis(
+            match["id"],
+            idempotency_key="manual-target-only-identity-changed",
+            source="manual-rss",
+            require_rss_gate=False,
+        )
+
+        self.assertEqual(result, {"status": "blocked", "reason": "identity_unconfirmed"})
+        self.assertEqual(torra.submissions, [])
+
     def test_analysis_submits_once_and_restart_polls_original_job(self):
         self._watch("tv:202:s1", episode=1)
         self._insert("测试剧 S01E01 2160p")
