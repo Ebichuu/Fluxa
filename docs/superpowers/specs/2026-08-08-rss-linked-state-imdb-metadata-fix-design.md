@@ -1,7 +1,7 @@
 # Fluxa RSS 关联状态与 IMDb-only 元数据修复设计
 
 日期：2026-08-08
-状态：已确认，待实施
+状态：已实施，待发布验收
 实施边界：只修改 Fluxa 资源中心的展示与只读数据解析；不修改外部系统或 RSS 身份台账
 
 ## 1. 问题与目标
@@ -85,3 +85,12 @@ IMDb-only 补充必须同时满足：
 不修改数据库结构、API 请求格式、Torra/qB/Symedia/p115client，也不触发搜索、下载、归档或外部写操作。
 
 回滚时可整体撤销本补丁；所有新增行为均为响应组装和展示逻辑，不需要数据库迁移或数据恢复。
+
+## 6. 实施验证
+
+- 资源仓库相关测试：`python -m unittest tests.test_private_rss_repository -v`，28 项通过。
+- 完整后端回归：`python -m unittest discover -s tests -t . -v`，785 项通过。
+- 前端状态回归测试已接入 `npm test`，覆盖 `linked`、`unlinked`、旧接口和已加载候选回退。
+- TypeScript 类型检查与生产构建通过。
+- 生产构建仍保留既有的单包超过 500 KB 提示，本补丁未增加新的运行依赖。
+- 验证过程没有调用 Torra、qBittorrent、Symedia、p115client 或外部 TMDB 写接口。

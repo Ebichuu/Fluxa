@@ -48,6 +48,7 @@ import {
 } from '../../types/rssSeedLibrary';
 import { formatTimeAgo } from '../../utils/formatters';
 import { createIdempotencyKey } from '../../utils/idempotency';
+import { rssSeedFollowStateLabel } from '../../utils/rssProcessingState';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
 import { PosterImage } from '../layout/PosterImage';
 import { RelativeTime } from '../status/RelativeTime';
@@ -384,7 +385,13 @@ function candidateGroupScoreLabel(group: RssMatchGroup) {
   return `${baseline} · ${candidate} · ${group.candidateCount} 个版本`;
 }
 
-function seedProcessingStateLabel(match: RssMatch | undefined, action: AutomationAction | undefined) {
+function seedProcessingStateLabel(
+  followState: RssSeedItem['followState'] | undefined,
+  match: RssMatch | undefined,
+  action: AutomationAction | undefined
+) {
+  const resourceState = rssSeedFollowStateLabel(followState, Boolean(match));
+  if (resourceState) return resourceState;
   if (!match) return '未关联';
   if (action?.type === 'rewash-download' || match.status === 'confirmed') return 'Torra 已接收';
   if (action && !['succeeded', 'failed', 'cancelled'].includes(action.status)) return '分析中';
@@ -1253,7 +1260,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                       <span>{item.sourceName}</span>
                       <RelativeTime value={item.publishedAt || item.lastSeenAt} />
                       <span className={`rss-identity-chip rss-identity-chip--${item.identityStatus}`}>{identityLabel(item.identityStatus)}</span>
-                      <span className="rss-processing-chip">{seedProcessingStateLabel(itemMatch, itemAction)}</span>
+                      <span className="rss-processing-chip">{seedProcessingStateLabel(item.followState, itemMatch, itemAction)}</span>
                     </div>
                     <h2>{item.title}</h2>
                     {item.mediaTitle && item.mediaTitle.trim().toLocaleLowerCase() !== item.title.trim().toLocaleLowerCase() && (
@@ -1281,7 +1288,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                         <div><dt>匹配原因</dt><dd>{rssMatchMethodLabel(item.matchMethod, item.matchConfidence)}</dd></div>
                         <div><dt>官种</dt><dd>无法判断</dd></div>
                         <div><dt>下载 / 入库 / 重复</dt><dd>尚未确认</dd></div>
-                        <div><dt>当前处理状态</dt><dd>{seedProcessingStateLabel(itemMatch, itemAction)}</dd></div>
+                        <div><dt>当前处理状态</dt><dd>{seedProcessingStateLabel(item.followState, itemMatch, itemAction)}</dd></div>
                         <div><dt>优先检查理由</dt><dd>{seedPriorityReason(item, scope)}</dd></div>
                       </dl>
                       <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}><PanelRightOpen aria-hidden="true" size={13} />查看识别证据</button>
@@ -1289,7 +1296,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                   </div>
                 </div>
                 <div className="rss-seed-state">
-                  <span className="state-chip">{seedProcessingStateLabel(itemMatch, itemAction)}</span>
+                  <span className="state-chip">{seedProcessingStateLabel(item.followState, itemMatch, itemAction)}</span>
                   <span className={`rss-identity-chip rss-identity-chip--${item.identityStatus}`}>{identityLabel(item.identityStatus)}</span>
                   <small>{item.sourceDomain}</small>
                   <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}>
@@ -1695,7 +1702,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
               <span>匹配原因</span><strong>{rssMatchMethodLabel(detailItem.matchMethod, detailItem.matchConfidence)}</strong>
               <span>官种</span><strong>无法判断</strong>
               <span>下载 / 入库 / 重复</span><strong>尚未确认</strong>
-              <span>当前处理状态</span><strong>{seedProcessingStateLabel(matchByItemId.get(detailItem.id), matchByItemId.get(detailItem.id) ? matchActions[matchByItemId.get(detailItem.id)!.id] : undefined)}</strong>
+              <span>当前处理状态</span><strong>{seedProcessingStateLabel(detailItem.followState, matchByItemId.get(detailItem.id), matchByItemId.get(detailItem.id) ? matchActions[matchByItemId.get(detailItem.id)!.id] : undefined)}</strong>
             </div>
             <section className="rss-detail-description" aria-labelledby="rss-detail-description-title">
               <h3 id="rss-detail-description-title">RSS 简介</h3>

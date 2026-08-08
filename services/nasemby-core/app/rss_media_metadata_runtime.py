@@ -219,7 +219,7 @@ def _discover_sources(connection):
 
 
 def _cache_sources(cache_loader, identities):
-    if not cache_loader:
+    if not cache_loader or not identities:
         return {}
     try:
         loaded = cache_loader(set(identities))
@@ -238,17 +238,50 @@ def _resolve_identity(identity, matched_rows, subscription_rows, discover_rows, 
     return _public_metadata(cached)
 
 
+def _imdb_only_subscription_metadata(row, matched_keys, subscriptions_by_key):
+    """Resolve a subscription title for one IMDb-only item without mutating its identity."""
+    keys = {str(key or "").strip() for key in matched_keys if str(key or "").strip()}
+    if len(keys) != 1:
+        return {}
+    subscription = subscriptions_by_key.get(next(iter(keys)))
+    if not subscription:
+        return {}
+    subscription_identity = media_identity(subscription)
+    if not subscription_identity:
+        return {}
+
+    item_type = _media_type(_value(row, "media_type"))
+    if item_type and item_type != subscription_identity[0]:
+        return {}
+    item_season = _value(row, "season_number")
+    if subscription_identity[0] == "tv" and item_season not in (None, "", 0, "0"):
+        if _integer(item_season) != subscription_identity[2]:
+            return {}
+    return _metadata(subscription)
+
+
 def resolve_rss_media_metadata(connection, rows, cache_loader=None):
     item_identities = {
         str(_value(row, "id")): identity
         for row in rows
         if row is not None and (identity := media_identity(row, require_identified=True))
     }
-    if not item_identities:
+    imdb_only_rows = {
+        str(_value(row, "id")): row
+        for row in rows
+        if row is not None
+        and _text(_value(row, "identity_status"), 30) == "identified"
+        and not _text(_value(row, "tmdb_id"), 24)
+        and _text(_value(row, "imdb_id"), 24)
+    }
+    if not item_identities and not imdb_only_rows:
         return {}
 
     subscriptions_by_key, subscriptions_by_identity = _subscription_sources(connection)
-    matched_keys = _matched_subscription_keys(connection, item_identities)
+    matched_keys = _matched_subscription_keys(
+        connection,
+        set(item_identities) | set(imdb_only_rows),
+    )
     discover_by_identity = _discover_sources(connection)
     cache_values = _cache_sources(cache_loader, item_identities.values())
 
@@ -265,6 +298,14 @@ def resolve_rss_media_metadata(connection, rows, cache_loader=None):
             subscriptions_by_identity.get(identity, []),
             discover_by_identity.get(identity, []),
             cache_values.get(identity),
+        )
+        if value:
+            resolved[item_id] = value
+    for item_id, row in imdb_only_rows.items():
+        value = _imdb_only_subscription_metadata(
+            row,
+            matched_keys.get(item_id, []),
+            subscriptions_by_key,
         )
         if value:
             resolved[item_id] = value

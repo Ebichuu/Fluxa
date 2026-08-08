@@ -30,6 +30,22 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             "identity_confidence": "strong",
         }
 
+    @staticmethod
+    def _imdb_only_item(fingerprint, title, imdb_id="tt1234567", season=1):
+        return {
+            "fingerprint": fingerprint,
+            "title": title,
+            "media_type": "tv",
+            "season_number": season,
+            "episode_start": 1,
+            "episode_end": 1,
+            "tmdb_id": "",
+            "imdb_id": imdb_id,
+            "identity_status": "identified",
+            "identity_source": "rss_description",
+            "identity_confidence": "strong",
+        }
+
     def test_media_metadata_uses_matched_subscription_priority_and_chinese_search(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "media_control_center.sqlite3"
@@ -161,6 +177,95 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             self.assertNotIn("posterUrl", rows["505"])
             self.assertEqual(rows["606"]["mediaTitle"], "安全标题")
             self.assertNotIn("posterUrl", rows["606"])
+
+    def test_imdb_only_media_metadata_uses_unique_subscription_without_persisting_tmdb(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "media_control_center.sqlite3"
+            subscriptions = SubscriptionRepository(database)
+            subscriptions.upsert_item({
+                "title": "这一秒过火",
+                "media_type": "tv",
+                "tmdb_id": "707",
+                "target_season": 1,
+                "poster_url": "https://image.example/overheat.jpg?token=secret",
+                "year": "2026",
+            }, "tv:overheat")
+            cache_calls = []
+
+            def cache_loader(identities):
+                cache_calls.append(set(identities))
+                return {}
+
+            repository = PrivateRssRepository(database, media_metadata_cache_loader=cache_loader)
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [
+                self._imdb_only_item("imdb-only", "Release.Name.S01E01", season=1),
+            ])
+            row = repository.search_items(limit=10)["items"][0]
+            repository.create_match(row["id"], "tv:overheat", "tv:overheat:s1:e1", {})
+            repository.create_match(row["id"], "tv:overheat", "tv:overheat:s1:e2", {})
+
+            result = repository.search_items(limit=10)["items"][0]
+            searched = repository.search_items(query="这一秒过火")
+
+            self.assertEqual(result["mediaTitle"], "这一秒过火")
+            self.assertEqual(result["mediaYear"], "2026")
+            self.assertEqual(result["posterUrl"], "https://image.example/overheat.jpg")
+            self.assertEqual(result["tmdbId"], "")
+            self.assertEqual(result["imdbId"], "tt1234567")
+            self.assertEqual(searched["total"], 1)
+            self.assertEqual(searched["items"][0]["id"], result["id"])
+            self.assertEqual(cache_calls, [])
+            with closing(subscriptions.runtime.connect()) as connection:
+                stored = connection.execute(
+                    "SELECT tmdb_id, identity_source FROM rss_items WHERE id=?", (row["id"],)
+                ).fetchone()
+            self.assertEqual((stored["tmdb_id"], stored["identity_source"]), ("", "rss_description"))
+
+    def test_imdb_only_media_metadata_rejects_multiple_subscriptions_and_missing_subscription(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "media_control_center.sqlite3"
+            subscriptions = SubscriptionRepository(database)
+            subscriptions.upsert_item({
+                "title": "候选标题甲", "media_type": "tv", "tmdb_id": "708", "target_season": 1,
+            }, "tv:conflict-a")
+            subscriptions.upsert_item({
+                "title": "候选标题乙", "media_type": "tv", "tmdb_id": "708", "target_season": 1,
+            }, "tv:conflict-b")
+            repository = PrivateRssRepository(database)
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [
+                self._imdb_only_item("multi-subscription", "Conflict.Release.S01E01"),
+                self._imdb_only_item("missing-subscription", "Missing.Release.S01E01", imdb_id="tt7654321"),
+            ])
+            rows = {row["title"]: row for row in repository.search_items(limit=10)["items"]}
+            repository.create_match(rows["Conflict.Release.S01E01"]["id"], "tv:conflict-a", "unit:a", {})
+            repository.create_match(rows["Conflict.Release.S01E01"]["id"], "tv:conflict-b", "unit:b", {})
+            repository.create_match(rows["Missing.Release.S01E01"]["id"], "tv:missing", "unit:missing", {})
+
+            result = {row["title"]: row for row in repository.search_items(limit=10)["items"]}
+
+            self.assertNotIn("mediaTitle", result["Conflict.Release.S01E01"])
+            self.assertNotIn("mediaTitle", result["Missing.Release.S01E01"])
+
+    def test_imdb_only_media_metadata_rejects_subscription_season_conflict(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "media_control_center.sqlite3"
+            subscriptions = SubscriptionRepository(database)
+            subscriptions.upsert_item({
+                "title": "季号冲突作品", "media_type": "tv", "tmdb_id": "709", "target_season": 2,
+            }, "tv:season-conflict")
+            repository = PrivateRssRepository(database)
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [
+                self._imdb_only_item("season-conflict", "Conflict.Release.S01E01", season=1),
+            ])
+            row = repository.search_items(limit=10)["items"][0]
+            repository.create_match(row["id"], "tv:season-conflict", "unit:season-conflict", {})
+
+            result = repository.search_items(limit=10)["items"][0]
+
+            self.assertNotIn("mediaTitle", result)
 
     def _cleanup_match(self, repository, source_id, fingerprint, subscription_key):
         repository.upsert_items(source_id, [{

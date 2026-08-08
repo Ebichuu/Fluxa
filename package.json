@@ -9,7 +9,8 @@
     "dev:api": "cd services/nasemby-core && python -m app.main",
     "typecheck": "tsc -p tsconfig.app.json",
     "build": "npm run typecheck && vite build",
-    "test": "npm run typecheck",
+    "test": "npm run typecheck && npm run test:rss-processing-state",
+    "test:rss-processing-state": "node --experimental-strip-types tests/rssProcessingState.test.ts",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
