@@ -1130,10 +1130,19 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.now[0] += timedelta(hours=1)
         self._insert("测试剧 S01E01 REMUX")
         failed = next(match for match in self.rss.list_matches()["items"] if match["id"] != upgrade["id"])
-        torra.jobs = [{"status": "failed", "result": None}]
+        torra.jobs = [{
+            "status": "failed",
+            "result": None,
+            "error": "Emby 中未找到可用于洗版比对的已入库文件",
+        }]
         self.runtime.start_analysis(failed["id"])
         self.now[0] += timedelta(seconds=61)
         self.assertEqual(self.runtime.start_analysis(failed["id"])["status"], "failed")
+        failed_action = self.watch.get_action(self.rss.get_match(failed["id"])["triggerActionId"])
+        self.assertEqual(
+            failed_action["error_message"],
+            "Emby 中未找到可用于洗版比对的已入库文件",
+        )
         submission_count = len(torra.submissions)
         self.assertEqual(self.runtime.start_analysis(failed["id"])["status"], "replay")
         self.assertEqual(len(torra.submissions), submission_count)

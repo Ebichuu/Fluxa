@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from urllib.parse import quote
 
+from app.task_public_runtime import safe_public_text
 from app.torra_read_runtime import TorraReadClient, TorraReadConfig
 
 
@@ -187,6 +188,9 @@ class TorraQualityClient(TorraReadClient):
             "job_id": job_id,
             "status": status,
             "result": result if status == "success" else None,
+            "error": safe_public_text(data.get("error") or data.get("message"))
+            if status in {"failed", "cancelled"}
+            else "",
         }
 
     @staticmethod

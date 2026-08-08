@@ -103,6 +103,23 @@ class TorraQualityRuntimeTests(unittest.TestCase):
         self.assertEqual(actual, statuses)
         self.assertEqual([request[1] for request in session.requests], [f"/api/v1/jobs/job-{i}" for i in range(5)])
 
+    def test_failed_job_exposes_only_sanitized_upstream_reason(self):
+        session = FakeSession([success({
+            "status": "failed",
+            "error": "Emby 中未找到 /volume/media/show.mkv，详情 http://torra.example.test/jobs/secret",
+        })])
+        client = TorraQualityClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+        )
+
+        job = client.get_job("job-failed")
+
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("Emby 中未找到", job["error"])
+        self.assertNotIn("/volume/media/show.mkv", job["error"])
+        self.assertNotIn("torra.example.test", job["error"])
+
     def test_analysis_selects_only_highest_positive_upgrade_per_row(self):
         selection = TorraQualityClient.select_upgrade_candidates({
             "status": "success",

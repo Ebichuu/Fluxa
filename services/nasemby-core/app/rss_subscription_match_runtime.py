@@ -2469,12 +2469,13 @@ class RssSubscriptionMatchRuntime:
             self.watch_repository.save_external_job(action_id, action["external_job_id"], status="polling")
             return {"status": "polling", "actionId": action_id}
         if status in {"failed", "cancelled"}:
+            error_message = str(job.get("error") or "").strip() or f"Torra 分析任务{status}"
             self.watch_repository.complete_action(
                 action_id,
                 status,
                 {"jobStatus": status},
                 error_code=f"TORRA_ANALYSIS_{status.upper()}",
-                error_message=f"Torra 分析任务{status}",
+                error_message=error_message,
             )
             self.rss_repository.update_match(match["id"], "candidate", action_id)
             return {"status": status, "actionId": action_id}

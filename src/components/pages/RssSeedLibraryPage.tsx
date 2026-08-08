@@ -59,6 +59,8 @@ type ResourceView = 'new' | 'identify' | 'scoring' | 'upgrades' | 'cleanup';
 type FollowStateFilter = '' | 'linked' | 'unlinked';
 const RSS_INTERVAL_PRESETS = [1, 3, 5] as const;
 const rssPageSize = 50;
+const matchActionPollIntervalMs = 1500;
+const matchActionPollAttempts = 70;
 
 interface RssLibraryUrlState {
   view: ResourceView;
@@ -754,7 +756,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       return next;
     });
     try {
-      for (let attempt = 0; attempt < 40; attempt += 1) {
+      for (let attempt = 0; attempt < matchActionPollAttempts; attempt += 1) {
         const action = await getAutomationAction(actionId, { signal: controller.signal });
         if (controller.signal.aborted) return;
         setMatchActions((current) => ({ ...current, [matchId]: action }));
@@ -768,7 +770,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
           return;
         }
         await new Promise<void>((resolve) => {
-          const timer = window.setTimeout(resolve, 1500);
+          const timer = window.setTimeout(resolve, matchActionPollIntervalMs);
           controller.signal.addEventListener('abort', () => {
             window.clearTimeout(timer);
             resolve();
