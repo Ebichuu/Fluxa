@@ -1,15 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AppTopNav, type AppNavigate, type PageId, type TaskNavigationTarget, type ThemeMode } from '../components/layout/AppTopNav';
-import { MediaHall } from '../components/media-hall/MediaHall';
-import { CalendarPage } from '../components/pages/CalendarPage';
-import { ControlRoom } from '../components/pages/ControlRoom';
-import { DiscoverPage } from '../components/pages/DiscoverPage';
+import { LazyRouteBoundary } from '../components/layout/LazyRouteBoundary';
 import { Overview } from '../components/pages/Overview';
-import { MediaOverviewPage } from '../components/pages/MediaOverviewPage';
-import { SettingsPage } from '../components/pages/SettingsPage';
-import { SubscriptionSettingsPage } from '../components/pages/SubscriptionSettingsPage';
-import { TasksCenter } from '../components/pages/TasksCenter';
-import { RssSeedLibraryPage } from '../components/pages/RssSeedLibraryPage';
 import { usePolling } from '../hooks/usePolling';
 import { getHomeSummary } from '../services/api';
 import type { HomeSummaryResponse } from '../types/homeSummary';
@@ -20,6 +12,16 @@ import { initializeHistoryEntry, saveCurrentScrollPosition, scrollPositionFromHi
 
 const VISUAL_FX_VERSION = '4';
 const THEME_STORAGE_KEY = 'mcc-ui-theme';
+
+const MediaHall = lazy(() => import('../components/media-hall/MediaHall').then((module) => ({ default: module.MediaHall })));
+const CalendarPage = lazy(() => import('../components/pages/CalendarPage').then((module) => ({ default: module.CalendarPage })));
+const ControlRoom = lazy(() => import('../components/pages/ControlRoom').then((module) => ({ default: module.ControlRoom })));
+const DiscoverPage = lazy(() => import('../components/pages/DiscoverPage').then((module) => ({ default: module.DiscoverPage })));
+const MediaOverviewPage = lazy(() => import('../components/pages/MediaOverviewPage').then((module) => ({ default: module.MediaOverviewPage })));
+const SettingsPage = lazy(() => import('../components/pages/SettingsPage').then((module) => ({ default: module.SettingsPage })));
+const SubscriptionSettingsPage = lazy(() => import('../components/pages/SubscriptionSettingsPage').then((module) => ({ default: module.SubscriptionSettingsPage })));
+const TasksCenter = lazy(() => import('../components/pages/TasksCenter').then((module) => ({ default: module.TasksCenter })));
+const RssSeedLibraryPage = lazy(() => import('../components/pages/RssSeedLibraryPage').then((module) => ({ default: module.RssSeedLibraryPage })));
 
 function initialTheme(): ThemeMode {
   const saved = readLocalStorage(THEME_STORAGE_KEY);
@@ -204,28 +206,32 @@ export function App() {
         theme={theme}
       />
       {page === 'overview' && <Overview onNavigate={navigate} onNavigatePath={navigatePath} />}
-      {page === 'media' && <MediaOverviewPage target={navigationTarget} onNavigate={navigate} onNavigatePath={navigatePath} />}
-      {page === 'hall' && (
-        <MediaHall
-          visualFx={visualFx}
-          onVisualFxChange={(nextVisualFx) =>
-            setVisualFx((currentVisualFx) => normalizeVisualFx({ ...currentVisualFx, ...nextVisualFx }))
-          }
-        />
+      {page !== 'overview' && (
+        <LazyRouteBoundary routeKey={page}>
+          {page === 'media' && <MediaOverviewPage target={navigationTarget} onNavigate={navigate} onNavigatePath={navigatePath} />}
+          {page === 'hall' && (
+            <MediaHall
+              visualFx={visualFx}
+              onVisualFxChange={(nextVisualFx) =>
+                setVisualFx((currentVisualFx) => normalizeVisualFx({ ...currentVisualFx, ...nextVisualFx }))
+              }
+            />
+          )}
+          {page === 'control' && <ControlRoom />}
+          {page === 'tasks' && <TasksCenter target={navigationTarget} onClearTarget={() => setNavigationTarget(null)} onNavigate={navigate} />}
+          {page === 'calendar' && <CalendarPage onNavigate={navigate} />}
+          {(page === 'discover' || page === 'subscriptions') && (
+            <DiscoverPage
+              navigationTarget={page === 'subscriptions' ? navigationTarget : null}
+              onNavigate={navigate}
+              view={page === 'subscriptions' ? 'subscriptions' : 'discover'}
+            />
+          )}
+          {page === 'subscription-settings' && <SubscriptionSettingsPage onNavigate={navigate} />}
+          {page === 'rss-library' && <RssSeedLibraryPage onNavigate={navigate} />}
+          {page === 'settings' && <SettingsPage />}
+        </LazyRouteBoundary>
       )}
-      {page === 'control' && <ControlRoom />}
-      {page === 'tasks' && <TasksCenter target={navigationTarget} onClearTarget={() => setNavigationTarget(null)} onNavigate={navigate} />}
-      {page === 'calendar' && <CalendarPage onNavigate={navigate} />}
-      {(page === 'discover' || page === 'subscriptions') && (
-        <DiscoverPage
-          navigationTarget={page === 'subscriptions' ? navigationTarget : null}
-          onNavigate={navigate}
-          view={page === 'subscriptions' ? 'subscriptions' : 'discover'}
-        />
-      )}
-      {page === 'subscription-settings' && <SubscriptionSettingsPage onNavigate={navigate} />}
-      {page === 'rss-library' && <RssSeedLibraryPage onNavigate={navigate} />}
-      {page === 'settings' && <SettingsPage />}
     </div>
   );
 }
