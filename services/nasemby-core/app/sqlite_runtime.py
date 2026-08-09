@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from contextlib import closing, contextmanager
 from pathlib import Path
 
@@ -23,15 +24,34 @@ def resolve_database_path(project_root=None, environment=None, legacy_path=None)
 class SQLiteRuntime:
     def __init__(self, database_path):
         self.database_path = Path(database_path)
+        self._journal_lock = threading.Lock()
+        self._journal_ready = False
+
+    def _ensure_wal(self):
+        if self._journal_ready:
+            return
+        with self._journal_lock:
+            if self._journal_ready:
+                return
+            self.database_path.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(self.database_path, timeout=5, isolation_level=None)
+            try:
+                connection.execute("PRAGMA busy_timeout=5000")
+                journal = connection.execute("PRAGMA journal_mode").fetchone()[0]
+                if str(journal or "").lower() != "wal":
+                    connection.execute("PRAGMA journal_mode=WAL")
+                self._journal_ready = True
+            finally:
+                connection.close()
 
     def connect(self):
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_wal()
         connection = sqlite3.connect(self.database_path, timeout=5, isolation_level=None)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA synchronous=NORMAL")
         connection.execute("PRAGMA busy_timeout=5000")
-        connection.execute("PRAGMA journal_mode=WAL")
         return connection
 
     @contextmanager

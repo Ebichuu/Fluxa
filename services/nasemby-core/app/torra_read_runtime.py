@@ -12,6 +12,7 @@ from flask import Flask, jsonify
 from app.secupload_result_runtime import (
     merge_secupload_failure_files,
     parse_secupload_failure_files,
+    parse_secupload_success_files,
     parse_secupload_run_counts,
     secupload_file_path_key,
 )
@@ -133,6 +134,15 @@ def _run_batches(runs: list[dict]) -> list[dict]:
         failure_files = merge_secupload_failure_files(
             file for run in batch_runs for file in run.get("failureFiles") or []
         )
+        success_files = []
+        seen_success = set()
+        for run in batch_runs:
+            for file in run.get("successFiles") or []:
+                file_key = str(file.get("fileKey") or "")
+                if not file_key or file_key in seen_success:
+                    continue
+                seen_success.add(file_key)
+                success_files.append(file)
         failed_total = sum(known_failed) if known_failed else None
         if statuses & active_statuses:
             status = "running"
@@ -158,6 +168,13 @@ def _run_batches(runs: list[dict]) -> list[dict]:
             "startedAt": min((str(run.get("startedAt") or "") for run in batch_runs if run.get("startedAt")), default=""),
             "finishedAt": max((str(run.get("finishedAt") or "") for run in batch_runs if run.get("finishedAt")), default=""),
             "failureFiles": failure_files,
+            "successFiles": sorted(
+                success_files,
+                key=lambda row: (
+                    str(row.get("displayName") or "").casefold(),
+                    str(row.get("fileKey") or ""),
+                ),
+            ),
         })
     return sorted(batches, key=lambda batch: str(batch.get("startedAt") or ""), reverse=True)
 
@@ -675,6 +692,7 @@ class TorraReadClient:
             "schedules": [],
             "recentRuns": [],
             "failureFiles": [],
+            "successFiles": [],
             "lastCheckedAt": _iso_timestamp(self.clock()),
             "error": "",
         }
@@ -760,6 +778,12 @@ class TorraReadClient:
                     batch_key=_run_batch_key(recent_run),
                     observed_at=recent_run["finishedAt"] or recent_run["startedAt"],
                 )
+                recent_run["successFiles"] = parse_secupload_success_files(
+                    result,
+                    target_item_id=recent_run["targetItemId"],
+                    batch_key=_run_batch_key(recent_run),
+                    observed_at=recent_run["finishedAt"] or recent_run["startedAt"],
+                )
                 recent_runs.append(recent_run)
 
             recent_runs.sort(
@@ -787,6 +811,7 @@ class TorraReadClient:
                 if latest_failed_count != 0
                 else []
             )
+            success_files = list((latest_batch or {}).get("successFiles") or [])
             next_run_at = min(
                 (str(row.get("nextRunAt") or "") for row in schedules if row.get("enabled") and row.get("nextRunAt")),
                 default="",
@@ -806,6 +831,7 @@ class TorraReadClient:
                 "latestRun": latest_run,
                 "latestBatch": latest_batch,
                 "failureFiles": failure_files,
+                "successFiles": success_files,
                 "lastRunAt": str((latest_batch or {}).get("finishedAt") or (latest_run or {}).get("finishedAt") or ""),
                 "nextRunAt": next_run_at,
                 "lastCheckedAt": _iso_timestamp(self.clock()),

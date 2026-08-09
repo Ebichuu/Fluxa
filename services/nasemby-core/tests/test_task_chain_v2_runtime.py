@@ -11,7 +11,7 @@ from flask import Flask
 from app.resource_identity_runtime import chain_id
 from app.resource_task_repository import ResourceTaskRepository
 from app.task_chain_v2_runtime import TaskChainV2Service, adapt_task_chain, register_task_chain_v2
-from app.task_public_runtime import safe_public_text
+from app.task_public_runtime import present_pipeline_fact, safe_public_text
 
 
 def pipeline_fact(stage, state, *, reason_code, reason_text, scope="file"):
@@ -55,6 +55,19 @@ class FakeTaskChain:
 
 
 class TaskChainV2RuntimeTests(unittest.TestCase):
+    def test_public_protected_symedia_reason_uses_version_rule_copy(self):
+        fact = present_pipeline_fact(pipeline_fact(
+            "symedia",
+            "protected",
+            reason_code="QUALITY_VERSION_RULE_NOT_MATCHED",
+            reason_text="Symedia 未查询到对应媒体信息",
+        ))
+
+        self.assertEqual(
+            fact["reasonText"],
+            "未命中允许入库的版本规则，已保留现有版本",
+        )
+
     def test_bridge_failure_does_not_break_persisted_task_snapshot(self):
         class Repository:
             def record_snapshot(self, _payload):
@@ -335,7 +348,10 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(item["outcomeState"], "protected")
         self.assertEqual(item["userState"], "no_action")
-        self.assertEqual(item["resultText"], "未命中允许入库的版本规则")
+        self.assertEqual(
+            item["resultText"],
+            "未命中允许入库的版本规则，已保留现有版本",
+        )
         self.assertEqual(payload["problemGroups"], [])
         self.assertEqual(payload["problemGroupSummary"]["actionRequiredGroups"], 0)
 

@@ -71,6 +71,20 @@ def _symedia_season(row: dict) -> int:
     return int(match.group(1)) if match else 0
 
 
+def _single_episode_number(evidence, season_number=None):
+    targets = {
+        (int(row.get("seasonNumber") or 0), int(row.get("episodeStart") or 0))
+        for row in evidence or []
+        if isinstance(row, dict)
+        and str(row.get("ownerTargetKey") or "").strip()
+        and int(row.get("episodeStart") or 0) > 0
+        and int(row.get("episodeStart") or 0) == int(row.get("episodeEnd") or 0)
+    }
+    if season_number is not None:
+        targets = {target for target in targets if target[0] == int(season_number or 0)}
+    return next(iter(targets))[1] if len(targets) == 1 else None
+
+
 def _iso_datetime(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
@@ -430,8 +444,12 @@ def _build_subscription_item(
         "timestamp": subscription["createdAt"],
         "source": f"{subscription_source} + Torra" if torra else subscription_source,
     }
+    episode_number = _single_episode_number(
+        episode_evidence,
+        subscription.get("seasonNumber") or 0,
+    )
     pipeline_facts = _pipeline_source_facts(
-        subscription,
+        {**subscription, "episodeNumber": episode_number},
         {
             "torra": torra,
             "qbTasks": matched_qb,
@@ -461,6 +479,7 @@ def _build_subscription_item(
         "mediaType": subscription["mediaType"],
         "tmdbId": subscription["tmdbId"],
         "seasonNumber": subscription.get("seasonNumber") or 0,
+        "episodeNumber": episode_number,
         "posterUrl": subscription["posterUrl"],
         "origin": "subscription",
         "channel": "PT",
@@ -519,12 +538,7 @@ def _build_evidence_target_item(
         qb_pairs=bucket["qb"],
         symedia_pairs=bucket["symedia"],
     )
-    episode_number = (
-        episode_evidence[0]["episodeStart"]
-        if len(episode_evidence) == 1
-        and episode_evidence[0]["episodeStart"] == episode_evidence[0]["episodeEnd"]
-        else None
-    )
+    episode_number = _single_episode_number(episode_evidence, target["seasonNumber"])
     target_item = {
         "mediaType": target["mediaType"],
         "tmdbId": target["tmdbId"],
@@ -615,11 +629,7 @@ def _orphan_qb_item(
         "detail": "未关联订阅中枢", "timestamp": "", "source": "",
     }
     episode_evidence = build_episode_evidence(qb_pairs=[(task, ownership)])
-    episode_number = (
-        episode_evidence[0]["episodeStart"]
-        if len(episode_evidence) == 1 and episode_evidence[0]["episodeStart"] == episode_evidence[0]["episodeEnd"]
-        else None
-    )
+    episode_number = _single_episode_number(episode_evidence)
     target_item = {
         "mediaType": "unknown",
         "tmdbId": "",
@@ -678,11 +688,7 @@ def _orphan_symedia_item(
     row_id = _string(row.get("id") or f"{row.get('date')}:{row.get('src')}")
     media_type = _string(row.get("type"))
     episode_evidence = build_episode_evidence(symedia_pairs=[(row, ownership)])
-    episode_number = (
-        episode_evidence[0]["episodeStart"]
-        if len(episode_evidence) == 1 and episode_evidence[0]["episodeStart"] == episode_evidence[0]["episodeEnd"]
-        else None
-    )
+    episode_number = _single_episode_number(episode_evidence, _symedia_season(row))
     target_item = {
         "mediaType": media_type if media_type in {"movie", "tv"} else "unknown",
         "tmdbId": _string(row.get("tmdbid")),
@@ -741,10 +747,9 @@ def _orphan_torra_item(
         "detail": "Torra 订阅存在，但尚未关联 Fluxa 目标", "timestamp": "", "source": "Torra",
     }
     episode_evidence = build_episode_evidence(torra_pairs=[(row, ownership)])
-    episode_number = (
-        episode_evidence[0]["episodeStart"]
-        if len(episode_evidence) == 1 and episode_evidence[0]["episodeStart"] == episode_evidence[0]["episodeEnd"]
-        else None
+    episode_number = _single_episode_number(
+        episode_evidence,
+        int(_number(row.get("season_number"))),
     )
     target_item = {
         "mediaType": _torra_media_type(row),

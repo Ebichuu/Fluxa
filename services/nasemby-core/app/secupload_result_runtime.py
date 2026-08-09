@@ -179,6 +179,78 @@ def parse_secupload_failure_files(
     )
 
 
+def _success_detail_rows(result) -> list[tuple[dict, str]]:
+    rows = []
+    detail_fields = {
+        "file_name", "path", "relative_path", "recorded_path", "source_relative_path",
+        "uploaded_at", "completed_at", "finished_at",
+    }
+    for payload in _result_payloads(result):
+        value = next((payload.get(key) for key in (
+            "success_details", "successful_files", "uploaded_files", "completed_files",
+        ) if payload.get(key) is not None), None)
+        if value is None and payload.get("outcome") in {"success", "succeeded", "uploaded", "completed"}:
+            value = payload
+        if isinstance(value, list):
+            rows.extend((row, "") for row in value if isinstance(row, dict))
+        elif isinstance(value, dict) and set(value) & detail_fields:
+            rows.append((value, ""))
+        elif isinstance(value, dict):
+            rows.extend((row, str(key)) for key, row in value.items() if isinstance(row, dict))
+    return rows
+
+
+def _success_file(detail, fallback, context):
+    raw_path = next((
+        str(detail.get(key) or "").strip()
+        for key in ("path", "relative_path", "recorded_path", "source_relative_path")
+        if str(detail.get(key) or "").strip()
+    ), fallback)
+    display_name = _failure_display_name(detail, fallback)
+    path_key = secupload_file_path_key(raw_path)
+    identity = path_key or hashlib.sha256(display_name.casefold().encode("utf-8")).hexdigest()
+    file_key = hashlib.sha256(
+        f"secupload-file\0{context['targetItemId']}\0{identity}".encode("utf-8")
+    ).hexdigest()
+    return {
+        "fileKey": file_key,
+        "batchKey": context["batchKey"],
+        "targetItemId": context["targetItemId"],
+        "pathKey": path_key,
+        "displayName": display_name,
+        "observedAt": str(
+            detail.get("uploaded_at")
+            or detail.get("completed_at")
+            or detail.get("finished_at")
+            or context["observedAt"]
+            or ""
+        ),
+    }
+
+
+def parse_secupload_success_files(
+    result,
+    *,
+    target_item_id: str,
+    batch_key: str,
+    observed_at: str,
+) -> list[dict]:
+    deduped = {}
+    context = {
+        "targetItemId": target_item_id,
+        "batchKey": batch_key,
+        "observedAt": observed_at,
+    }
+    for detail, fallback in _success_detail_rows(result):
+        candidate = _success_file(detail, fallback, context)
+        if candidate["fileKey"]:
+            deduped[candidate["fileKey"]] = candidate
+    return sorted(
+        deduped.values(),
+        key=lambda row: (row["displayName"].casefold(), row["fileKey"]),
+    )
+
+
 def merge_secupload_failure_files(values) -> list[dict]:
     deduped = {}
     for row in values:

@@ -203,7 +203,7 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
 
         adapted = adapt_task_chain(result, now=datetime(2026, 7, 25, 2, 1, tzinfo=timezone.utc))
         self.assertEqual(len(adapted["items"]), 1)
-        self.assertEqual(adapted["items"][0]["targetKey"], "tv:tmdb:808:season:1")
+        self.assertEqual(adapted["items"][0]["targetKey"], "tv:tmdb:808:season:1:episode:1")
         self.assertEqual(adapted["items"][0]["identityState"], "linked")
         self.assertEqual(adapted["items"][0]["embyEvidenceScope"], "title")
         self.assertEqual(adapted["items"][0]["pipelineOutcome"]["state"], "evidence_insufficient")
@@ -213,7 +213,7 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
         )
         self.assertEqual(
             next(fact for fact in adapted["items"][0]["pipelineFacts"] if fact["stage"] == "strm")["state"],
-            "unknown",
+            "succeeded",
         )
 
         input_data["embyIndex"] = {"movies": set(), "series": set()}
@@ -226,7 +226,9 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
         self.assertNotEqual(without_emby["healthState"], "action_required")
 
     def test_tmdb_file_and_symedia_evidence_form_strong_completed_chain(self):
+        from app.secupload_result_runtime import secupload_file_path_key
         from app.task_chain_runtime import build_task_chain
+        from app.task_chain_v2_runtime import adapt_task_chain
 
         result = build_task_chain({
             "subscriptions": [{
@@ -248,7 +250,18 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
                 "season_number": 1,
                 "downloaded_file_names": ["测试剧.Test.Show.S01E01.1080p.mkv"],
             }],
-            "qb": qb_summary([qb_task()]),
+            "torraUpload": {
+                "readable": True,
+                "successFiles": [{
+                    "fileKey": "cloud-success-1",
+                    "batchKey": "cloud-batch-1",
+                    "pathKey": secupload_file_path_key(
+                        "/downloads/tv/测试剧.Test.Show.S01E01.1080p.mkv"
+                    ),
+                    "observedAt": "2026-07-14T00:30:00Z",
+                }],
+            },
+            "qb": qb_summary([qb_task(savePath="/downloads/tv")]),
             "symediaRows": [{
                 "id": 1,
                 "title": "测试剧",
@@ -266,7 +279,11 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
                 "connected": True,
                 "totals": {"processedToday": 31, "archivedToday": 24, "protectedToday": 7, "failedToday": 0},
             },
-            "embyIndex": {"movies": set(), "series": {"123"}},
+            "embyIndex": {
+                "movies": set(),
+                "series": {"123"},
+                "episodes": {("123", 1, 1)},
+            },
             "urls": {
                 "qb": "http://qb.example.test",
                 "torra": "http://torra.example.test",
@@ -277,13 +294,21 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
         })
 
         item = result["items"][0]
+        adapted = adapt_task_chain(
+            result,
+            now=datetime(2026, 7, 14, 1, 1, tzinfo=timezone.utc),
+        )["items"][0]
         self.assertEqual(item["confidence"], "strong")
         self.assertEqual(item["state"], "completed")
+        self.assertEqual(item["episodeNumber"], 1)
         self.assertTrue(item["embyIndexed"])
-        self.assertEqual(item["embyEvidenceScope"], "title")
+        self.assertEqual(item["embyEvidenceScope"], "episode")
         self.assertIn("Emby 已收录该作品", item["steps"][-1]["detail"])
         self.assertEqual(result["services"]["symedia"]["totals"]["archivedToday"], 24)
         self.assertEqual([step["status"] for step in item["steps"]], ["done"] * 4)
+        self.assertEqual(adapted["targetKey"], "tv:tmdb:123:season:1:episode:1")
+        self.assertEqual(adapted["confirmedStageCount"], 6)
+        self.assertEqual(adapted["pipelineOutcome"]["state"], "playable")
         self.assertEqual(
             [(row["seasonNumber"], row["episodeStart"], row["stage"]) for row in item["episodeEvidence"]],
             [(1, 1, "download"), (1, 1, "download"), (1, 1, "library")],

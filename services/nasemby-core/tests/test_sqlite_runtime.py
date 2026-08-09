@@ -43,6 +43,22 @@ class SQLiteRuntimeTests(unittest.TestCase):
                 ).fetchone()
             self.assertIsNone(exists)
 
+    def test_new_runtime_connects_while_existing_writer_holds_wal_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "media_control_center.sqlite3"
+            first = SQLiteRuntime(database)
+            first.initialize()
+            writer = first.connect()
+            try:
+                writer.execute("BEGIN IMMEDIATE")
+                second = SQLiteRuntime(database)
+                with closing(second.connect()) as connection:
+                    journal = connection.execute("PRAGMA journal_mode").fetchone()[0]
+                self.assertEqual(journal.lower(), "wal")
+            finally:
+                writer.rollback()
+                writer.close()
+
 
 if __name__ == "__main__":
     unittest.main()

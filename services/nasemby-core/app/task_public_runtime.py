@@ -105,6 +105,15 @@ def _public_task_reason(stage, reason_code, value, fallback="") -> str:
     text = str(value or "").strip()
     code = str(reason_code or "").strip().upper()
     stage_name = str(stage or "").strip().lower()
+    if stage_name in {"symedia", "library"} and code in {
+        "QUALITY_SCORE_LOWER",
+        "QUALITY_WEIGHT_NOT_HIGHER",
+        "QUALITY_HIGHER_VERSION_EXISTS",
+        "QUALITY_VERSION_RULE_NOT_MATCHED",
+        "QUALITY_OVERWRITE_CANCELLED",
+        "QUALITY_OVERWRITE_SKIPPED",
+    }:
+        return "未命中允许入库的版本规则，已保留现有版本"
     is_symedia = stage_name in {"symedia", "library"} or code.startswith("SYMEDIA_")
     if is_symedia and any(marker in text for marker in (
         "文件转移错误", "未找到", "未查询到", "媒体信息", "识别", "TMDB",

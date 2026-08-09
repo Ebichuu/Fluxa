@@ -307,8 +307,57 @@ def _cloud115_failure_fact(matched, window):
     return fact
 
 
+def _cloud115_success_files(context, summary):
+    path_keys = _cloud115_path_keys(context)
+    candidates = {}
+    for key in ("successFiles", "completedFiles", "uploadedFiles"):
+        for row in summary.get(key) or []:
+            if not isinstance(row, dict) or _text(row.get("pathKey")) not in path_keys:
+                continue
+            reference = _text(row.get("fileKey")) or _text(row.get("pathKey"))
+            candidates[reference] = row
+    return list(candidates.values())
+
+
+def _cloud115_success_fact(matched, window):
+    units = []
+    for row in matched:
+        reference = _text(row.get("fileKey")) or _text(row.get("pathKey"))
+        unit = {
+            "unitKey": reference,
+            "state": "succeeded",
+            "scope": "file",
+            "evidence": "verified",
+            **window,
+            "sourceRef": _text(row.get("batchKey")) or reference,
+            "reasonCode": "CLOUD115_FILE_UPLOADED",
+            "reasonText": "115 文件已完成秒传",
+            "resultRef": _text(row.get("batchKey")) or reference,
+        }
+        event_at = _event_at(row.get("observedAt") or row.get("finishedAt"))
+        if event_at:
+            unit["eventAt"] = event_at
+        units.append(unit)
+    return _fact(
+        "cloud115",
+        "succeeded",
+        "file",
+        window,
+        source="Torra secupload_115",
+        source_ref=_text(matched[0].get("batchKey")) if len(matched) == 1 else "",
+        reason_code="CLOUD115_FILE_UPLOADED",
+        reason_text=f"{len(units)} 个 115 文件已通过逐文件结果确认",
+        event_at=_latest_event_at(units, window["observedAt"]),
+        result_ref=_text(matched[0].get("batchKey")) if len(matched) == 1 else "",
+        units=units,
+    )
+
+
 def _cloud115_fact(context, window):
     summary = context.get("cloud115") or {}
+    successful = _cloud115_success_files(context, summary)
+    if successful:
+        return _cloud115_success_fact(successful, window)
     matched = _cloud115_matched_files(context, summary)
     if matched:
         return _cloud115_failure_fact(matched, window)
@@ -394,12 +443,18 @@ def _symedia_fact(context, window):
         )
     units = [_symedia_unit(row, index, window) for index, row in enumerate(rows)]
     state = _summary_state(units, ("failed", "succeeded", "protected", "unknown"))
-    code = {
+    default_code = {
         "failed": "SYMEDIA_LIBRARY_FAILED",
         "succeeded": "SYMEDIA_ORGANIZED",
         "protected": "SYMEDIA_PROTECTED",
         "unknown": "SYMEDIA_STATUS_UNKNOWN",
     }[state]
+    selected_codes = {
+        _text(unit.get("reasonCode"))
+        for unit in units
+        if unit.get("state") == state and _text(unit.get("reasonCode"))
+    }
+    code = next(iter(selected_codes)) if state == "protected" and len(selected_codes) == 1 else default_code
     return _fact(
         "symedia",
         state,
@@ -414,13 +469,52 @@ def _symedia_fact(context, window):
     )
 
 
-def _strm_fact(scope, window):
-    return _unknown(
+def _strm_fact(context, scope, window):
+    units = []
+    for index, row in enumerate(context.get("symediaRows") or []):
+        if not isinstance(row, dict) or normalize_symedia_status(row.get("status")) is not True:
+            continue
+        strm_path = next((
+            _text(row.get(key))
+            for key in ("strmPath", "strm_path", "dest")
+            if _text(row.get(key)).lower().endswith(".strm")
+        ), "")
+        if not strm_path:
+            continue
+        reference = _text(row.get("id")) or f"row-{index}"
+        unit = {
+            "unitKey": reference,
+            "state": "succeeded",
+            "scope": "file",
+            "evidence": "verified",
+            **window,
+            "sourceRef": reference,
+            "reasonCode": "STRM_CREATED",
+            "reasonText": "STRM 播放入口已生成",
+            "resultRef": reference,
+            "eventAt": _event_at(row.get("date"), default_timezone=BEIJING_TZ),
+        }
+        units.append(unit)
+    if not units:
+        return _unknown(
+            "strm",
+            scope,
+            window,
+            "STRM_INDEPENDENT_RESULT_MISSING",
+            reason_text="Symedia 未提供独立 STRM 结果",
+        )
+    return _fact(
         "strm",
+        "succeeded",
         scope,
         window,
-        "STRM_INDEPENDENT_RESULT_MISSING",
-        reason_text="Symedia 未提供独立结果",
+        source="Symedia STRM 结果",
+        source_ref=units[0]["sourceRef"] if len(units) == 1 else "",
+        reason_code="STRM_CREATED",
+        reason_text=f"{len(units)} 个 STRM 播放入口已生成",
+        event_at=_latest_event_at(units),
+        result_ref=units[0]["resultRef"] if len(units) == 1 else "",
+        units=units,
     )
 
 
@@ -560,7 +654,7 @@ def build_pipeline_source_facts(context: dict, *, observed_at: str) -> list[dict
         _qb_fact(context, window),
         _cloud115_fact(context, window),
         _symedia_fact(context, window),
-        _strm_fact(scope, window),
+        _strm_fact(context, scope, window),
         _emby_fact(context, scope, window),
     ]
     if tuple(fact["stage"] for fact in facts) != PIPELINE_STAGES:

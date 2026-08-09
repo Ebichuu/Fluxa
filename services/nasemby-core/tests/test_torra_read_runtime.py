@@ -515,6 +515,42 @@ class TorraReadRuntimeContractTests(unittest.TestCase):
         self.assertEqual(summary["recentBatches"][1]["counts"], {"success": 3, "failed": 1})
         self.assertEqual(summary["nextRunAt"], "2026-07-24T16:00:00+08:00")
 
+    def test_secupload_summary_exposes_explicit_success_file_keys(self):
+        from app.secupload_result_runtime import secupload_file_path_key
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        private_path = "/private/pending/Show.S01E03.mkv"
+        session = FakeSession([FakeResponse(payload={
+            "data": {
+                "manifest": {"enabled": True},
+                "recent_runs": [{
+                    "run_id": "success-file-run",
+                    "task_key": "watcher",
+                    "target_item_id": "category-tv",
+                    "status": "success",
+                    "started_at": "2026-07-24T08:00:00+08:00",
+                    "finished_at": "2026-07-24T08:00:06+08:00",
+                    "result": {
+                        "success_count": 1,
+                        "failed_count": 0,
+                        "success_details": [{
+                            "file_name": "Show.S01E03.mkv",
+                            "path": private_path,
+                            "completed_at": "2026-07-24T08:00:05+08:00",
+                        }],
+                    },
+                }],
+            },
+        })])
+        summary = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+        ).get_secupload_summary()
+
+        self.assertEqual(len(summary["successFiles"]), 1)
+        self.assertEqual(summary["successFiles"][0]["pathKey"], secupload_file_path_key(private_path))
+        self.assertNotIn(private_path, str(summary))
+
     def test_secupload_summary_prefers_structured_counts_and_sanitizes_file_details(self):
         from app.torra_read_runtime import TorraReadClient, TorraReadConfig
 

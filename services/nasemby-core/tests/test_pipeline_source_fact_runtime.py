@@ -200,7 +200,7 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
         ), observed_at=OBSERVED_AT)
         self.assertEqual(by_stage(unmatched, "cloud115")["state"], "unknown")
 
-    def test_symedia_success_and_aggregate_sync_stats_do_not_infer_strm(self):
+    def test_symedia_explicit_strm_destination_confirms_strm(self):
         facts = build_pipeline_source_facts(context(
             symediaRows=[{
                 "id": "symedia-private-1",
@@ -214,11 +214,35 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
 
         self.assertEqual(by_stage(facts, "symedia")["state"], "succeeded")
         self.assertEqual(by_stage(facts, "symedia")["eventAt"], "2026-07-27T03:30:00Z")
-        self.assertEqual(by_stage(facts, "strm")["state"], "unknown")
-        self.assertEqual(by_stage(facts, "strm")["reasonCode"], "STRM_INDEPENDENT_RESULT_MISSING")
-        self.assertEqual(by_stage(facts, "strm")["reasonText"], "Symedia 未提供独立结果")
+        self.assertEqual(by_stage(facts, "strm")["state"], "succeeded")
+        self.assertEqual(by_stage(facts, "strm")["reasonCode"], "STRM_CREATED")
         self.assertEqual(by_stage(facts, "emby")["state"], "unknown")
         self.assertEqual(by_stage(facts, "emby")["reasonCode"], "EMBY_EPISODE_EVIDENCE_MISSING")
+
+    def test_cloud115_success_requires_path_bound_success_file(self):
+        from app.torra_read_runtime import secupload_file_path_key
+
+        path = "/downloads/tv/Show.S01E03.mkv"
+        facts = build_pipeline_source_facts(context(
+            qbTasks=[{
+                "hash": "hash-a",
+                "name": "Show.S01E03.mkv",
+                "savePath": "/downloads/tv",
+                "status": "completed",
+            }],
+            cloud115={"readable": True, "successFiles": [{
+                "fileKey": "success-file",
+                "batchKey": "success-batch",
+                "pathKey": secupload_file_path_key(path),
+                "observedAt": OBSERVED_AT,
+            }]},
+        ), observed_at=OBSERVED_AT)
+
+        cloud = by_stage(facts, "cloud115")
+        self.assertEqual(
+            (cloud["state"], cloud["evidence"], cloud["reasonCode"]),
+            ("succeeded", "verified", "CLOUD115_FILE_UPLOADED"),
+        )
 
     def test_symedia_protection_and_real_failure_remain_distinct(self):
         protected = build_pipeline_source_facts(context(symediaRows=[{
@@ -235,6 +259,10 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
         }]), observed_at=OBSERVED_AT)
 
         self.assertEqual(by_stage(protected, "symedia")["state"], "protected")
+        self.assertEqual(
+            by_stage(protected, "symedia")["reasonCode"],
+            "QUALITY_HIGHER_VERSION_EXISTS",
+        )
         self.assertEqual(by_stage(failed, "symedia")["state"], "failed")
         self.assertEqual(by_stage(failed, "symedia")["reasonText"], "media lookup failed")
 
