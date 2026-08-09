@@ -204,17 +204,25 @@ def _nonnegative_integer(value):
     return result if result >= 0 else None
 
 
+def _is_strm_path(value) -> bool:
+    return str(value or "").strip().replace("\\", "/").casefold().endswith(".strm")
+
+
 def _tmdb_library_index(rows) -> dict[str, set]:
     movies: set[str] = set()
     series: set[str] = set()
     series_by_id: dict[str, str] = {}
     episodes: set[tuple[str, int, int]] = set()
+    strm_movies: set[str] = set()
+    strm_episodes: set[tuple[str, int, int]] = set()
     for item in rows:
         if not isinstance(item, dict) or not item.get("Path"):
             continue
         tmdb_id = _tmdb_id(item)
         if tmdb_id and item.get("Type") == "Movie":
             movies.add(tmdb_id)
+            if _is_strm_path(item.get("Path")):
+                strm_movies.add(tmdb_id)
         if tmdb_id and item.get("Type") == "Series":
             series.add(tmdb_id)
             series_by_id[str(item.get("Id") or "")] = tmdb_id
@@ -225,8 +233,17 @@ def _tmdb_library_index(rows) -> dict[str, set]:
         season = _nonnegative_integer(item.get("ParentIndexNumber"))
         episode = _nonnegative_integer(item.get("IndexNumber"))
         if tmdb_id and season is not None and episode is not None:
-            episodes.add((tmdb_id, season, episode))
-    return {"movies": movies, "series": series, "episodes": episodes}
+            episode_key = (tmdb_id, season, episode)
+            episodes.add(episode_key)
+            if _is_strm_path(item.get("Path")):
+                strm_episodes.add(episode_key)
+    return {
+        "movies": movies,
+        "series": series,
+        "episodes": episodes,
+        "strmMovies": strm_movies,
+        "strmEpisodes": strm_episodes,
+    }
 
 
 class EmbyClient:

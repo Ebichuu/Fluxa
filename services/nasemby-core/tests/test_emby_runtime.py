@@ -280,11 +280,11 @@ class EmbyRuntimeContractTests(IsolatedActivityLogMixin, unittest.TestCase):
                 "DateCreated": "2026-07-16T08:00:00.000Z",
             }]}),
             FakeResponse(payload={"Items": [
-                {"Id": "movie-1", "Type": "Movie", "ProviderIds": {"Tmdb": "100"}, "Path": "/movies/a.mkv"},
+                {"Id": "movie-1", "Type": "Movie", "ProviderIds": {"Tmdb": "100"}, "Path": "/movies/a.strm"},
                 {"Id": "series-1", "Type": "Series", "ProviderIds": {"tmdb": "200"}, "Path": "/series/a"},
                 {
                     "Id": "episode-1", "Type": "Episode", "SeriesId": "series-1",
-                    "ParentIndexNumber": 1, "IndexNumber": 3, "Path": "/series/a/S01E03.mkv",
+                    "ParentIndexNumber": 1, "IndexNumber": 3, "Path": "/series/a/S01E03.STRM",
                 },
                 {"Id": "missing", "Type": "Movie", "ProviderIds": {"Tmdb": "300"}},
             ]}),
@@ -310,6 +310,8 @@ class EmbyRuntimeContractTests(IsolatedActivityLogMixin, unittest.TestCase):
             "movies": {"100"},
             "series": {"200"},
             "episodes": {("200", 1, 3)},
+            "strmMovies": {"100"},
+            "strmEpisodes": {("200", 1, 3)},
         })
         self.assertEqual(len(session.requests), 5)
         for _method, url, _kwargs in session.requests:
@@ -339,7 +341,7 @@ class EmbyRuntimeContractTests(IsolatedActivityLogMixin, unittest.TestCase):
                 "TotalRecordCount": 3,
                 "Items": [{
                     "Id": "episode-1", "Type": "Episode", "SeriesId": "series-1",
-                    "ParentIndexNumber": 2, "IndexNumber": 8, "Path": "/series/a/S02E08.mkv",
+                    "ParentIndexNumber": 2, "IndexNumber": 8, "Path": "/series/a/S02E08.strm",
                 }],
             }),
         ])
@@ -355,6 +357,8 @@ class EmbyRuntimeContractTests(IsolatedActivityLogMixin, unittest.TestCase):
         self.assertEqual(index["movies"], {"100"})
         self.assertEqual(index["series"], {"200"})
         self.assertEqual(index["episodes"], {("200", 2, 8)})
+        self.assertEqual(index["strmMovies"], set())
+        self.assertEqual(index["strmEpisodes"], {("200", 2, 8)})
         start_indexes = [
             parse_qs(urlsplit(url).query)["StartIndex"][0]
             for _method, url, _kwargs in session.requests

@@ -353,6 +353,80 @@ class TaskChainRuntimeContractTests(unittest.TestCase):
         self.assertEqual(item["pipelineOutcome"]["state"], "playable")
         self.assertEqual(item["pipelineOutcome"]["stage"], "emby")
 
+    def test_target_matched_115_arrival_and_emby_strm_path_complete_six_stage_chain(self):
+        from app.task_chain_runtime import build_task_chain
+        from app.task_chain_v2_runtime import adapt_task_chain
+
+        now = datetime(2026, 8, 10, 4, 30, tzinfo=timezone.utc)
+        result = build_task_chain({
+            "subscriptions": [{
+                "id": "sub-300727",
+                "title": "公寓黑风暴",
+                "mediaType": "tv",
+                "tmdbId": "300727",
+                "posterUrl": "",
+                "year": "2026",
+                "seasonNumber": 1,
+                "createdAt": "2026-08-09T12:00:00.000Z",
+                "updatedAt": "2026-08-09T12:00:00.000Z",
+            }],
+            "torraRows": [{
+                "id": "torra-300727",
+                "name": "公寓黑风暴",
+                "media_type": "tv",
+                "tmdb_id": 300727,
+                "season_number": 1,
+                "downloaded_file_names": ["Apartment.Storm.S01E10.1080p.mkv"],
+            }],
+            "torraUpload": {
+                "connected": True,
+                "readable": True,
+                "perFileEvidence": False,
+            },
+            "qb": qb_summary([qb_task(
+                name="Apartment.Storm.S01E10.1080p.mkv",
+                savePath="/downloads/tv",
+            )]),
+            "symediaRows": [{
+                "id": "symedia-300727-e10",
+                "title": "公寓黑风暴",
+                "type": "tv",
+                "tmdbid": 300727,
+                "season": 1,
+                "episode": 10,
+                "src": "/CloudNAS/CloudDrive/115/00-待整理/Apartment.Storm.S01E10.1080p.mkv",
+                "dest": "/media/tv/公寓黑风暴/Season 01/公寓黑风暴 S01E10.mkv",
+                "status": True,
+                "date": "2026-08-10 12:15:00",
+            }],
+            "symediaTotal": 1,
+            "embyIndex": {
+                "movies": set(),
+                "series": {"300727"},
+                "episodes": {("300727", 1, 10)},
+                "strmMovies": set(),
+                "strmEpisodes": {("300727", 1, 10)},
+            },
+            "urls": {
+                "qb": "http://qb.example.test",
+                "torra": "http://torra.example.test",
+                "symedia": "http://symedia.example.test",
+                "emby": "http://emby.example.test",
+            },
+            "now": now,
+        })
+
+        item = adapt_task_chain(result, now=now)["items"][0]
+        facts = {fact["stage"]: fact for fact in item["pipelineFacts"]}
+
+        self.assertEqual(item["targetKey"], "tv:tmdb:300727:season:1:episode:10")
+        self.assertEqual(item["confirmedStageCount"], 6)
+        self.assertEqual(item["pipelineOutcome"]["state"], "playable")
+        self.assertEqual(facts["cloud115"]["reasonCode"], "CLOUD115_FILE_ARRIVED")
+        self.assertIn("上传方式未确认", facts["cloud115"]["reasonText"])
+        self.assertEqual(facts["strm"]["reasonCode"], "STRM_INDEXED_BY_EMBY")
+        self.assertEqual(facts["strm"]["source"], "Emby 媒体路径")
+
     def test_completed_download_without_file_level_upload_evidence_stays_unknown(self):
         from app.task_chain_runtime import build_task_chain
 

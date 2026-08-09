@@ -20,7 +20,10 @@ def context(**updates):
         "qbTasks": [],
         "cloud115": {"readable": True, "perFileEvidence": False},
         "symediaRows": [],
-        "embyIndex": {"movies": set(), "series": set(), "episodes": set()},
+        "embyIndex": {
+            "movies": set(), "series": set(), "episodes": set(),
+            "strmMovies": set(), "strmEpisodes": set(),
+        },
     }
     value.update(updates)
     return value
@@ -243,6 +246,104 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
             (cloud["state"], cloud["evidence"], cloud["reasonCode"]),
             ("succeeded", "verified", "CLOUD115_FILE_UPLOADED"),
         )
+
+    def test_cloud115_arrival_can_be_confirmed_by_current_symedia_115_source(self):
+        facts = build_pipeline_source_facts(context(symediaRows=[{
+            "id": "symedia-arrival-1",
+            "status": True,
+            "date": "2026-07-27 11:30:00",
+            "src": "/CloudNAS/CloudDrive/115/00-待整理/03-日韩剧/Show.S01E03.mkv",
+            "dest": "/CloudNAS/CloudDrive/115/媒体库/电视剧/Show/Show.S01E03.mkv",
+        }]), observed_at=OBSERVED_AT)
+
+        cloud = by_stage(facts, "cloud115")
+        self.assertEqual(
+            (cloud["state"], cloud["evidence"], cloud["reasonCode"]),
+            ("succeeded", "verified", "CLOUD115_FILE_ARRIVED"),
+        )
+        self.assertIn("上传方式未确认", cloud["reasonText"])
+        self.assertEqual(cloud["eventAt"], "2026-07-27T03:30:00Z")
+
+        local_source = build_pipeline_source_facts(context(symediaRows=[{
+            "id": "symedia-local-1",
+            "status": True,
+            "date": "2026-07-27 11:30:00",
+            "src": "/downloads/Show.S01E03.mkv",
+            "dest": "/library/Show.S01E03.mkv",
+        }]), observed_at=OBSERVED_AT)
+        self.assertEqual(by_stage(local_source, "cloud115")["state"], "unknown")
+
+    def test_cloud115_explicit_failure_wins_unless_a_later_arrival_is_verified(self):
+        from app.secupload_result_runtime import secupload_file_path_key
+
+        failure = {
+            "fileKey": "failed-file",
+            "batchKey": "failed-batch",
+            "pathKey": secupload_file_path_key("/downloads/Show.S01E03.mkv"),
+            "displayName": "Show.S01E03.mkv",
+            "errorCategory": "retry_failed",
+            "errorLabel": "重试后仍失败",
+        }
+        values = {
+            "qbTasks": [{"name": "Show.S01E03.mkv", "savePath": "/downloads"}],
+            "cloud115": {"readable": True, "failureFiles": [failure]},
+            "symediaRows": [{
+                "id": "symedia-arrival-1",
+                "status": True,
+                "date": "2026-07-27 11:30:00",
+                "src": "/CloudNAS/CloudDrive/115/00-待整理/Show.S01E03.mkv",
+            }],
+        }
+        missing_failure_time = build_pipeline_source_facts(
+            context(**values), observed_at=OBSERVED_AT,
+        )
+        failure["observedAt"] = "2026-07-27T03:30:00Z"
+        simultaneous_arrival = build_pipeline_source_facts(
+            context(**values), observed_at=OBSERVED_AT,
+        )
+        failure["observedAt"] = "2026-07-27T03:00:00Z"
+        later_arrival = build_pipeline_source_facts(
+            context(**values), observed_at=OBSERVED_AT,
+        )
+
+        self.assertEqual(by_stage(missing_failure_time, "cloud115")["state"], "failed")
+        self.assertEqual(by_stage(simultaneous_arrival, "cloud115")["state"], "failed")
+        self.assertEqual(by_stage(later_arrival, "cloud115")["state"], "succeeded")
+
+        values["symediaRows"].append({
+            "id": "symedia-arrival-2",
+            "status": True,
+            "date": "2026-07-27 11:45:00",
+            "src": "/CloudNAS/CloudDrive/115/00-待整理/Show.S01E03.alt.mkv",
+        })
+        ambiguous_arrivals = build_pipeline_source_facts(
+            context(**values), observed_at=OBSERVED_AT,
+        )
+        self.assertEqual(by_stage(ambiguous_arrivals, "cloud115")["state"], "failed")
+
+    def test_emby_strm_path_confirms_only_the_exact_target(self):
+        exact = build_pipeline_source_facts(context(embyIndex={
+            "movies": set(),
+            "series": {"100"},
+            "episodes": {("100", 1, 3)},
+            "strmMovies": set(),
+            "strmEpisodes": {("100", 1, 3)},
+        }), observed_at=OBSERVED_AT)
+        ordinary_media = build_pipeline_source_facts(context(embyIndex={
+            "movies": set(),
+            "series": {"100"},
+            "episodes": {("100", 1, 3)},
+            "strmMovies": set(),
+            "strmEpisodes": set(),
+        }), observed_at=OBSERVED_AT)
+
+        strm = by_stage(exact, "strm")
+        self.assertEqual(
+            (strm["state"], strm["evidence"], strm["reasonCode"]),
+            ("succeeded", "verified", "STRM_INDEXED_BY_EMBY"),
+        )
+        self.assertEqual(strm["reasonText"], "Emby 已索引目标 STRM 播放入口")
+        self.assertEqual(by_stage(ordinary_media, "strm")["state"], "unknown")
 
     def test_symedia_protection_and_real_failure_remain_distinct(self):
         protected = build_pipeline_source_facts(context(symediaRows=[{

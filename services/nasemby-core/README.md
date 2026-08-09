@@ -12,10 +12,10 @@
 - Torra 固定目标推送，以及只读权重规则、追更洗版人工分析、候选下载、job 状态解析、按集 Emby 基准、SQLite 幂等/租约和脱敏审计；自动 RSS 匹配只在 Fluxa 本地评分，不触发 Torra 整订阅搜索或下载。人工精准下载按唯一 RSS 产物预检并直接写入已确认映射的 qB，目录与下载器必须由实时 Torra 订阅和服务端配置派生；qB 分类只在 Torra 明确提供时使用，自动执行仍未开放。
 - 30 秒缓存的 NAS 系统指标，以及统一脱敏、可筛选的 v2 活动日志。
 - 115、Telegram、HDHive / pansou 和 MoviePilot 的 v2 细分接口继续保留；MoviePilot 阶段 7 已增加默认关闭的人工备用预览/推送，其他能力延期。
-- Emby、qBittorrent、Torra、Symedia 的服务端适配和凭据隔离；Symedia 摘要把 transfer history 与归档监控、云盘监听、Webhook、STRM、归档调度和文件观察分别建模。实机 `/api/v1/system/sync_stats` 只提供按日 STRM 数量，不能绑定媒体目标；STRM 独立结果继续保持 `unknown + NOT_INTEGRATED`。
+- Emby、qBittorrent、Torra、Symedia 的服务端适配和凭据隔离；Symedia 摘要把 transfer history 与归档监控、云盘监听、Webhook、STRM、归档调度和文件观察分别建模。实机 `/api/v1/system/sync_stats` 只提供按日 STRM 数量，不能绑定媒体目标，其独立能力继续保持 `unknown + NOT_INTEGRATED`；只有 Emby 返回的精确电影或季集目标 `Path` 明确以 `.strm` 结尾时，任务事实才确认该目标的 STRM 播放入口。
 - 可选的 Torra 秒传 → Symedia 单文件交接：首次启用只建立当前水位，之后每 30 秒消费新成功秒传 job；按 Torra 配置源/目标与唯一 Symedia 归档任务严格映射，只提交一个精确媒体文件，不扫描 115 历史待整理目录。提交、重试和 Symedia 历史确认均写入 SQLite，旧同名历史不能确认新任务。
 - 统一任务链、qB 暂停/恢复和证据驱动的 Emby 刷新。
-- 六阶段独立事实契约与统一结果派生：`torra/qb/cloud115/symedia/strm/emby` 分别保存；P0.2 已接入 Torra、qB、Symedia 与 Emby 明确证据，115 分类摘要不能绑定媒体时及 STRM 独立来源未接入时保持 `unknown + missing`。任务、首页、作品、追更和日历已消费新结果，旧状态只由六阶段事实作兼容投影。
+- 六阶段独立事实契约与统一结果派生：`torra/qb/cloud115/symedia/strm/emby` 分别保存；115 优先使用 Torra 逐文件结果，没有该结果时只允许从当前目标已匹配且成功的 Symedia `115` 源路径确认“文件已到达 115”，不能确认秒传或原始上传方式；STRM 只接受 Symedia 明确 `.strm` 结果或 Emby 精确目标的 `.strm` 路径。任务、首页、作品、追更和日历已消费新结果，旧状态只由六阶段事实作兼容投影。
 - 全局作品搜索与单作品生命周期聚合：合并本地追更、已识别 RSS、任务、日历和 Emby，并在本地无结果时使用 TMDB 只读补充。
 - 按明确 TMDB 身份补充本地追更海报，并保持仅 Torra 条目只读。
 - 单一 `data/`、`db/`、`upload/` 持久边界。

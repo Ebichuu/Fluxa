@@ -133,7 +133,7 @@ P0.4 可选增加 `mediaResult` 与 `residualIssues`。`mediaResult` 只取目�
 
 新事实契约固定为 `torra/qb/cloud115/symedia/strm/emby` 六个独立阶段，状态固定为 `unknown/waiting/active/succeeded/failed/protected/not_applicable`。`missing` 证据必须且只能搭配 `unknown`；过期事实保留并标记 `isStale`，但不进入当前结果。多个同阶段当前事实冲突时返回 `unknown + missing + EVIDENCE_CONFLICT`，不得选择一个伪造赢家。公开 `sourceRef/unitKey` 均为稳定不透明引用。
 
-新 `pipelineOutcome` 固定为 `waiting/in_progress/protected/action_required/playable/evidence_insufficient`，只有当前 `verified` 事实参与派生。Torra `succeeded` 只表示获取目标满足，Symedia `succeeded` 只表示整理完成，STRM `succeeded` 只表示播放入口生成；只有当前目标的 Emby movie 证据或明确 episode 证据可以生成 `playable`。P0.2 已接入 Torra、qB、Symedia 和 Emby 明确证据；Torra 秒传摘要没有当前媒体文件级绑定时只返回 `system-category + unknown`，STRM 没有独立来源时返回 `unknown + missing`。Emby 作品级 Series 命中只作诊断，不能替代集级证据；索引必须完整分页后才能给出未收录结论。任何阶段都不得从旧字段反推。
+新 `pipelineOutcome` 固定为 `waiting/in_progress/protected/action_required/playable/evidence_insufficient`，只有当前 `verified` 事实参与派生。Torra `succeeded` 只表示获取目标满足，Symedia `succeeded` 只表示整理完成，STRM `succeeded` 只表示播放入口生成；只有当前目标的 Emby movie 证据或明确 episode 证据可以生成 `playable`。115 优先使用与当前 qB 完整路径绑定的 Torra 逐文件结果；没有逐文件成功结果时，当前目标唯一匹配且成功的 Symedia 记录只有在源路径含独立 `115` 路径段时，才可确认文件已到达 115，同时必须声明秒传或原始上传方式未确认。Torra 的文件级失败保持权威；只有失败和到达记录均唯一、且到达发生时间严格更晚时才允许恢复，多文件歧义继续保留失败。STRM 可由 Symedia 当前目标的明确 `.strm` 结果确认，也可由 Emby 精确 movie 或 episode 的 `Path` 明确以 `.strm` 结尾直接确认；普通 Emby 收录、Series 作品级命中和 Symedia 按日数量均不能确认 STRM。索引必须完整分页后才能给出未收录结论，任何阶段都不得从旧字段反推。
 
 qB 六阶段事实在兼容摘要状态之外区分下载中、等待、无速度、卡住、校验、做种和失败。`missing/error` 立即失败；普通 `stalled` 或零速度按 `observedAt - lastActivity` 进入 900 秒观察窗，小于阈值或时间无效时等待，达到阈值才需要处理，恢复正速度立即回到处理中。不得用任务创建时间或轮询时间代替活动时间；观察窗的 waiting/failed 均只属于当前投影，不写入永久事件。
 

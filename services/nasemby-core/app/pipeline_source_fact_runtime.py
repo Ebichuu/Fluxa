@@ -353,14 +353,86 @@ def _cloud115_success_fact(matched, window):
     )
 
 
+def _symedia_source_paths(row):
+    values = [row.get(key) for key in ("src", "source", "source_path", "file_path")]
+    for key in ("src_detail", "source_detail"):
+        detail = row.get(key) if isinstance(row.get(key), dict) else {}
+        values.extend(detail.get(path_key) for path_key in ("file_path", "path", "src"))
+    return [_text(value).replace("\\", "/") for value in values if _text(value)]
+
+
+def _is_cloud115_path(value):
+    segments = [segment.casefold() for segment in _text(value).replace("\\", "/").split("/") if segment]
+    return "115" in segments
+
+
+def _cloud115_symedia_arrivals(context, window):
+    units = []
+    for index, row in enumerate(context.get("symediaRows") or []):
+        if not isinstance(row, dict) or normalize_symedia_status(row.get("status")) is not True:
+            continue
+        if not any(_is_cloud115_path(path) for path in _symedia_source_paths(row)):
+            continue
+        reference = _text(row.get("id")) or f"symedia-row-{index}"
+        unit = {
+            "unitKey": reference,
+            "state": "succeeded",
+            "scope": "file",
+            "evidence": "verified",
+            **window,
+            "sourceRef": reference,
+            "reasonCode": "CLOUD115_FILE_ARRIVED",
+            "reasonText": "Symedia 源记录确认文件已进入 115；秒传或原始上传方式未确认",
+            "resultRef": reference,
+        }
+        event_at = _event_at(row.get("date"), default_timezone=BEIJING_TZ)
+        if event_at:
+            unit["eventAt"] = event_at
+        units.append(unit)
+    return units
+
+
+def _cloud115_arrival_fact(units, window):
+    return _fact(
+        "cloud115",
+        "succeeded",
+        "file",
+        window,
+        source="Symedia 115 源记录",
+        source_ref=units[0]["sourceRef"] if len(units) == 1 else "",
+        reason_code="CLOUD115_FILE_ARRIVED",
+        reason_text=(
+            f"{len(units)} 个文件已由 Symedia 源记录确认进入 115；"
+            "秒传或原始上传方式未确认"
+        ),
+        event_at=_latest_event_at(units, window["observedAt"]),
+        result_ref=units[0]["resultRef"] if len(units) == 1 else "",
+        units=units,
+    )
+
+
 def _cloud115_fact(context, window):
     summary = context.get("cloud115") or {}
     successful = _cloud115_success_files(context, summary)
     if successful:
         return _cloud115_success_fact(successful, window)
     matched = _cloud115_matched_files(context, summary)
+    arrivals = _cloud115_symedia_arrivals(context, window)
+    failure_units = [_cloud115_unit(row, window) for row in matched]
+    latest_failure = _latest_event_at(failure_units) if failure_units else ""
+    latest_arrival = _latest_event_at(arrivals) if arrivals else ""
+    if (
+        len(arrivals) == 1
+        and len(matched) == 1
+        and latest_arrival
+        and latest_failure
+        and _parse(latest_arrival) > _parse(latest_failure)
+    ):
+        return _cloud115_arrival_fact(arrivals, window)
     if matched:
         return _cloud115_failure_fact(matched, window)
+    if arrivals:
+        return _cloud115_arrival_fact(arrivals, window)
     if summary.get("readable"):
         return _unknown(
             "cloud115",
@@ -469,6 +541,40 @@ def _symedia_fact(context, window):
     )
 
 
+def _strm_emby_units(context, scope, window):
+    index = context.get("embyIndex")
+    if not isinstance(index, dict):
+        return []
+    tmdb_id = _text(context.get("tmdbId"))
+    if not tmdb_id:
+        return []
+    if _text(context.get("mediaType")) == "movie":
+        if tmdb_id not in (index.get("strmMovies") or set()):
+            return []
+        reference = f"movie:{tmdb_id}"
+    else:
+        season = _integer(context.get("seasonNumber"))
+        episode = _integer(context.get("episodeNumber"))
+        if scope != "episode" or episode <= 0:
+            return []
+        reference_key = _episode_key(tmdb_id, season, episode)
+        if reference_key not in (index.get("strmEpisodes") or set()):
+            return []
+        reference = f"tv:{tmdb_id}:s{season}:e{episode}"
+    return [{
+        "unitKey": reference,
+        "state": "succeeded",
+        "scope": scope,
+        "evidence": "verified",
+        **window,
+        "sourceRef": reference,
+        "reasonCode": "STRM_INDEXED_BY_EMBY",
+        "reasonText": "Emby 已索引目标 STRM 播放入口",
+        "resultRef": reference,
+        "eventAt": window["observedAt"],
+    }]
+
+
 def _strm_fact(context, scope, window):
     units = []
     for index, row in enumerate(context.get("symediaRows") or []):
@@ -496,6 +602,8 @@ def _strm_fact(context, scope, window):
         }
         units.append(unit)
     if not units:
+        units = _strm_emby_units(context, scope, window)
+    if not units:
         return _unknown(
             "strm",
             scope,
@@ -508,10 +616,14 @@ def _strm_fact(context, scope, window):
         "succeeded",
         scope,
         window,
-        source="Symedia STRM 结果",
+        source="Symedia STRM 结果" if units[0]["reasonCode"] == "STRM_CREATED" else "Emby 媒体路径",
         source_ref=units[0]["sourceRef"] if len(units) == 1 else "",
-        reason_code="STRM_CREATED",
-        reason_text=f"{len(units)} 个 STRM 播放入口已生成",
+        reason_code=units[0]["reasonCode"] if len(units) == 1 else "STRM_CREATED",
+        reason_text=(
+            units[0]["reasonText"]
+            if len(units) == 1
+            else f"{len(units)} 个 STRM 播放入口已生成"
+        ),
         event_at=_latest_event_at(units),
         result_ref=units[0]["resultRef"] if len(units) == 1 else "",
         units=units,
