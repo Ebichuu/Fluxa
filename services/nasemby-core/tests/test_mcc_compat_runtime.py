@@ -622,15 +622,33 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
                 self.assertNotIn(key, json.dumps(pushed.get_json(), ensure_ascii=False))
                 self.assertEqual(app.extensions["mcc_torra_client"].pushes[0]["save_path"], "/downloads/torra/00-日漫")
 
-                v2_preview = client.get(f"/api/v2/subscriptions/{key}/torra-push-preview")
+                invalid_preview = client.get(
+                    f"/api/v2/subscriptions/{key}/torra-push-preview?startEpisode=0"
+                )
+                self.assertEqual(invalid_preview.status_code, 400)
+                self.assertEqual(
+                    invalid_preview.get_json()["code"],
+                    "TORRA_PUSH_START_EPISODE_INVALID",
+                )
+                v2_preview = client.get(
+                    f"/api/v2/subscriptions/{key}/torra-push-preview?startEpisode=18"
+                )
                 self.assertEqual(v2_preview.status_code, 200)
                 self.assertTrue(v2_preview.get_json()["preview"]["ready"])
+                self.assertEqual(v2_preview.get_json()["preview"]["startEpisode"], 18)
+                self.assertEqual(v2_preview.get_json()["preview"]["payload"]["start_episode"], 18)
+                self.assertEqual(v2_preview.get_json()["preview"]["payload"]["end_episode"], 0)
                 action = {
                     "confirm": True,
                     "idempotencyKey": "torra-test-action-202",
+                    "startEpisode": 18,
                 }
                 first_push = client.post(f"/api/v2/subscriptions/{key}/torra-pushes", json=action)
                 replayed_push = client.post(f"/api/v2/subscriptions/{key}/torra-pushes", json=action)
+                conflicting_replay = client.post(f"/api/v2/subscriptions/{key}/torra-pushes", json={
+                    **action,
+                    "startEpisode": 19,
+                })
                 cooldown_push = client.post(f"/api/v2/subscriptions/{key}/torra-pushes", json={
                     "confirm": True,
                     "idempotencyKey": "torra-test-action-203",
@@ -638,14 +656,22 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
                 self.assertEqual(first_push.status_code, 200)
                 self.assertFalse(first_push.get_json()["replayed"])
                 self.assertEqual(first_push.get_json()["torraPushState"], "submitted")
-                self.assertEqual(first_push.get_json()["message"], "已提交 Torra · 等待确认")
+                self.assertEqual(first_push.get_json()["message"], "已从 E18 提交 Torra · 不回补此前集数")
+                self.assertEqual(first_push.get_json()["startEpisode"], 18)
                 self.assertEqual(first_push.get_json()["subscriptionId"], "")
                 self.assertNotIn(key, json.dumps(first_push.get_json(), ensure_ascii=False))
                 self.assertEqual(replayed_push.status_code, 200)
                 self.assertTrue(replayed_push.get_json()["replayed"])
+                self.assertEqual(conflicting_replay.status_code, 409)
+                self.assertEqual(
+                    conflicting_replay.get_json()["code"],
+                    "TORRA_PUSH_IDEMPOTENCY_CONFLICT",
+                )
                 self.assertEqual(cooldown_push.status_code, 409)
                 self.assertEqual(cooldown_push.get_json()["code"], "TORRA_PUSH_COOLDOWN")
                 self.assertEqual(len(app.extensions["mcc_torra_client"].pushes), 2)
+                self.assertEqual(app.extensions["mcc_torra_client"].pushes[0]["start_episode"], 1)
+                self.assertEqual(app.extensions["mcc_torra_client"].pushes[1]["start_episode"], 18)
 
                 clock[0] += timedelta(seconds=61)
                 with patch.object(

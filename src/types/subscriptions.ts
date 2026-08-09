@@ -478,6 +478,7 @@ export interface SubscriptionPushPreview {
   } | null;
   categoryReason: string;
   savePath: string;
+  startEpisode?: number | null;
   payload: Record<string, unknown> | null;
   duplicate: {
     checked: boolean;
@@ -506,6 +507,7 @@ export interface TorraPushResult {
   subscriptionId: string;
   message: string;
   torraPushState?: TorraPushState;
+  startEpisode?: number | null;
   requestId: string;
   replayed: boolean;
 }

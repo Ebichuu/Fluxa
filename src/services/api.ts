@@ -990,19 +990,22 @@ export function getSubscriptionPushPreview(id: string): Promise<{ success: boole
   );
 }
 
-export function getTorraPushPreview(id: string): Promise<TorraPushPreviewResponse> {
+export function getTorraPushPreview(id: string, startEpisode?: number): Promise<TorraPushPreviewResponse> {
+  const query = new URLSearchParams();
+  if (startEpisode != null) query.set('startEpisode', String(startEpisode));
   return readJson<TorraPushPreviewResponse>(
-    `/api/v2/subscriptions/${encodeURIComponent(id)}/torra-push-preview`
+    `/api/v2/subscriptions/${encodeURIComponent(id)}/torra-push-preview${query.size ? `?${query.toString()}` : ''}`
   );
 }
 
 export function pushSubscriptionToTorra(
   id: string,
-  idempotencyKey: string
+  idempotencyKey: string,
+  startEpisode?: number
 ): Promise<TorraPushResult> {
   return postJson<TorraPushResult>(
     `/api/v2/subscriptions/${encodeURIComponent(id)}/torra-pushes`,
-    { confirm: true, idempotencyKey }
+    { confirm: true, idempotencyKey, ...(startEpisode != null ? { startEpisode } : {}) }
   );
 }
 

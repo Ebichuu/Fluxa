@@ -260,6 +260,8 @@ def _torra_payload(item, category, environment):
     total = next((integer(item.get(key)) for key in (
         "episode_total", "total_episodes", "total_episode_count", "episode_count"
     ) if integer(item.get(key)) > 0), 0)
+    scoped_start_episode = integer(item.get("torra_start_episode")) if kind == "tv" else 0
+    start_episode = scoped_start_episode if scoped_start_episode > 0 else 1
     payload = {
         "id": f"mcc_{kind}_{tmdb_id}_{season if kind == 'tv' else 0}",
         "name": title,
@@ -275,7 +277,7 @@ def _torra_payload(item, category, environment):
         "season_years": {str(season): year} if kind == "tv" and year else {},
         "season_number": season if kind == "tv" else 0,
         "episode_group": "",
-        "start_episode": 1,
+        "start_episode": start_episode,
         "end_episode": 0,
         "total_episode_count": total,
         "available_episode_numbers": [],
@@ -353,6 +355,8 @@ def _push_preview(item, environment, torra_client):
             duplicate["error"] = "Torra 在线查重未完成"
             if torra_client.is_configured():
                 blockers.append("Torra 在线查重未完成")
+        if integer(item.get("torra_start_episode")) > 0 and duplicate["found"]:
+            blockers.append("Torra 已存在该追更，不能保证按指定集数开始；请先核对远端订阅")
     return {
         "ready": not blockers,
         "blockers": blockers,
@@ -360,6 +364,11 @@ def _push_preview(item, environment, torra_client):
         "category": category,
         "categoryReason": reason,
         "savePath": save_path,
+        "startEpisode": (
+            integer(payload.get("start_episode"))
+            if isinstance(payload, dict) and kind == "tv"
+            else None
+        ),
         "payload": payload,
         "duplicate": duplicate,
     }
@@ -433,7 +442,19 @@ def register_subscription_compat(app: Flask, environment=None, action_repository
         item = _find_item(key)
         if not item:
             return _error("SUBSCRIPTION_NOT_FOUND", "订阅不存在", 404)
-        plan = _push_preview(item, environment, app.extensions["mcc_torra_client"])
+        start_episode_value = request.args.get("startEpisode")
+        scoped_item = dict(item)
+        if start_episode_value not in (None, ""):
+            try:
+                start_episode = int(start_episode_value)
+            except (TypeError, ValueError):
+                return _error("TORRA_PUSH_START_EPISODE_INVALID", "起始集数必须是正整数", 400)
+            if (
+                isinstance(start_episode_value, str) and str(start_episode) != start_episode_value.strip()
+            ) or start_episode < 1 or discover_runtime.discover_item_media_type(item) != "tv":
+                return _error("TORRA_PUSH_START_EPISODE_INVALID", "起始集数只适用于剧集且必须是正整数", 400)
+            scoped_item["torra_start_episode"] = start_episode
+        plan = _push_preview(scoped_item, environment, app.extensions["mcc_torra_client"])
         return jsonify({
             "ok": True,
             "subscription": {

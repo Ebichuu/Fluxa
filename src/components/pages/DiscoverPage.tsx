@@ -778,6 +778,18 @@ function matchingResourceUnits(
   });
 }
 
+function resourceInitialStartEpisode(
+  item: DiscoverResourceItem | null,
+  mediaType: DiscoverResult['mediaType'] | undefined,
+  targetSeason: number | null | undefined
+) {
+  if (mediaType !== 'tv' || item?.scope !== 'explicit_episode' || item.episodes?.length !== 1) return null;
+  const season = Number(item.season);
+  if (targetSeason == null || !Number.isInteger(season) || season !== targetSeason) return null;
+  const episode = Number(item.episodes[0]);
+  return Number.isInteger(episode) && episode > 0 ? episode : null;
+}
+
 function readFollowingFilters() {
   const query = new URLSearchParams(window.location.search);
   const mediaType = query.get('mediaType');
@@ -1944,12 +1956,19 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       ) return;
       setResourceQualityWatch(watch);
       const units = matchingResourceUnits(item, resourceTarget.mediaType, watch);
+      const startEpisode = resourceInitialStartEpisode(
+        item,
+        resourceTarget.mediaType,
+        resourceTarget.seasonNumber
+      );
       setResourceUnitId(units[0]?.id || '');
       setResourceActionMessage(units.length > 0
         ? units.length === 1
           ? `已定位到 ${unitLabel(units[0])}，可以检查可用版本`
           : `这个种子覆盖 ${units.length} 个追更目标，请选择一个季集`
-        : '种子与当前有效观察单元无法唯一对应，请确认季集或等待首个版本入库');
+        : startEpisode != null
+          ? `尚未建立洗版基线；可从 E${String(startEpisode).padStart(2, '0')} 开始创建 Torra 追更，不回补此前集数`
+          : '种子与当前有效观察单元无法唯一对应，请确认季集或等待首个版本入库');
     } catch (reason) {
       if (!controller.signal.aborted) {
         setResourceActionMessage(reason instanceof Error ? reason.message : '质量观察状态读取失败');
@@ -1957,6 +1976,55 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     } finally {
       if (resourceAutomationRequestRef.current === controller) resourceAutomationRequestRef.current = null;
       if (!controller.signal.aborted) setResourceActionBusy('');
+    }
+  };
+
+  const startResourceFollowInTorra = async () => {
+    const subscriptionId = resourceTarget?.source === 'subscription' ? resourceTarget.sourceId : '';
+    const startEpisode = resourceInitialStartEpisode(
+      resourceActionItem,
+      resourceTarget?.mediaType,
+      resourceTarget?.seasonNumber
+    );
+    if (!subscriptionId || startEpisode == null || resourceWorkflowLocked) return;
+    const targetTitle = resourceTarget?.title || '当前作品';
+    setResourceActionBusy('subscription-preview');
+    setResourceActionMessage(`正在检查从 E${String(startEpisode).padStart(2, '0')} 开始追更的分类、路径和远端重复项…`);
+    try {
+      const preview = await getTorraPushPreview(subscriptionId, startEpisode);
+      if (!preview.preview.ready) {
+        setResourceActionMessage(preview.preview.blockers.join('；') || '当前不能创建 Torra 追更');
+        return;
+      }
+      const paddedEpisode = String(startEpisode).padStart(2, '0');
+      const previousRange = startEpisode > 1
+        ? `不会回补 E01–E${String(startEpisode - 1).padStart(2, '0')}；`
+        : '';
+      setResourceActionMessage(`预检通过，可以从 E${paddedEpisode} 开始交给 Torra`);
+      setConfirmation({
+        signal: '首次获取',
+        title: `从 E${paddedEpisode} 开始追更《${targetTitle}》？`,
+        description: `Torra 将从 E${paddedEpisode} 开始处理，${previousRange}之后的新集继续按 Torra 追更规则处理。首个版本入库后，Fluxa 才会建立严格的洗版基线。`,
+        confirmLabel: `从 E${paddedEpisode} 开始`,
+        onConfirm: () => {
+          setResourceActionBusy('subscription-push');
+          setResourceActionMessage(`正在从 E${paddedEpisode} 创建 Torra 追更…`);
+          pushSubscriptionToTorra(subscriptionId, createIdempotencyKey(), startEpisode)
+            .then((result) => {
+              setResourceActionMessage(result.message);
+              setSweepMessage(`${targetTitle}：${result.message}`);
+              loadSubs();
+            })
+            .catch((reason: unknown) => {
+              setResourceActionMessage(reason instanceof Error ? reason.message : 'Torra 追更创建失败');
+            })
+            .finally(() => setResourceActionBusy(''));
+        }
+      });
+    } catch (reason) {
+      setResourceActionMessage(reason instanceof Error ? reason.message : 'Torra 追更预检失败');
+    } finally {
+      setResourceActionBusy((current) => current === 'subscription-preview' ? '' : current);
     }
   };
 
@@ -2436,6 +2504,9 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                   : [];
                 const resourceAction = activeResourceAction ? resourceAutomationAction : null;
                 const upgradeOptions = resourceAction?.result?.upgradeOptions ?? [];
+                const initialStartEpisode = activeResourceAction
+                  ? resourceInitialStartEpisode(item, resourceTarget?.mediaType, resourceTarget?.seasonNumber)
+                  : null;
                 return (
                   <article className="discover-resource-row" key={item.rssItemId || `${item.source_key || item.source || 'rss'}-${item.title || index}-${item.date || index}`}>
                     <div>
@@ -2510,6 +2581,21 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                           </div>
                         )}
                         <div className="discover-resource-workflow__actions">
+                          {!resourceUnitId && initialStartEpisode != null && (
+                            <button
+                              className="ops-action-button ops-action-button--primary"
+                              disabled={Boolean(resourceActionBusy)}
+                              type="button"
+                              onClick={() => void startResourceFollowInTorra()}
+                            >
+                              <Send aria-hidden="true" size={14} />
+                              {resourceActionBusy === 'subscription-preview'
+                                ? '正在预检'
+                                : resourceActionBusy === 'subscription-push'
+                                  ? '正在创建'
+                                  : `从 E${String(initialStartEpisode).padStart(2, '0')} 开始追更`}
+                            </button>
+                          )}
                           {(!resourceMatch || !resourceAction || ['failed', 'cancelled'].includes(resourceAction.status)) && (
                             <button
                               className="ops-action-button ops-action-button--primary"
