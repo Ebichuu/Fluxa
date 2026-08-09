@@ -82,6 +82,46 @@ def concrete_path(path):
 
 
 class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase):
+    def test_subscription_category_uses_tmdb_detail_when_saved_evidence_is_incomplete(self):
+        from app.subscription_compat_runtime import _resolve_category
+
+        item = {
+            "title": "测试国产剧",
+            "media_type": "tv",
+            "tmdb_id": "289116",
+            "target_season": 1,
+        }
+        detail = {
+            "origin_country": ["CN"],
+            "production_countries": [{"iso_3166_1": "CN"}],
+            "original_language": "zh",
+            "genres": [{"id": 18, "name": "剧情"}],
+        }
+
+        with patch.object(discover_runtime, "get_cached_tmdb_detail", return_value=detail) as fetch_detail:
+            category, reason = _resolve_category(item)
+
+        self.assertEqual(category["key"], "tv_cn")
+        self.assertIn("TMDB 详情", reason)
+        fetch_detail.assert_called_once_with("tv", "289116", fetch=True)
+
+    def test_manual_subscription_category_override_has_priority_over_tmdb(self):
+        from app.subscription_compat_runtime import _resolve_category
+
+        item = {
+            "title": "人工分类测试",
+            "media_type": "tv",
+            "tmdb_id": "289116",
+            "media_category": "tv_western",
+        }
+
+        with patch.object(discover_runtime, "get_cached_tmdb_detail") as fetch_detail:
+            category, reason = _resolve_category(item)
+
+        self.assertEqual(category["key"], "tv_western")
+        self.assertEqual(reason, "人工指定分类")
+        fetch_detail.assert_not_called()
+
     def test_subscription_progress_requires_confirmed_episode_evidence(self):
         unconfirmed = map_subscription_item({
             "subscription_key": "tv:progress:1",

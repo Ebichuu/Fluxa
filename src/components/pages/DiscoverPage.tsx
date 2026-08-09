@@ -29,6 +29,7 @@ import {
   runTorraSubscriptionSync,
   saveSubscription,
   searchDiscover,
+  setSubscriptionCategory,
   setSubscriptionSeason,
   startTorraRewashAnalysis,
   startTorraRewashDownload,
@@ -53,6 +54,7 @@ import type {
   DiscoverResponse,
   DiscoverSourceStatus,
   ManualFollowProvider,
+  MediaCategory,
   MoviePilotPreview,
   MoviePilotPushResult,
   QualityWatchResponse,
@@ -93,6 +95,17 @@ interface FilterGroup {
   label: string;
   options: FilterOption[];
 }
+
+const mediaCategoryOptions: Array<{ value: MediaCategory; label: string }> = [
+  { value: 'anime_jp', label: '日漫' },
+  { value: 'anime_cn', label: '国漫' },
+  { value: 'tv_cn', label: '国产剧' },
+  { value: 'tv_asia', label: '日韩剧' },
+  { value: 'tv_western', label: '欧美剧' },
+  { value: 'tv_hk_tw', label: '港台剧' },
+  { value: 'variety', label: '综艺' },
+  { value: 'movie', label: '电影' }
+];
 
 const currentYear = new Date().getFullYear();
 
@@ -896,6 +909,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   const [resourceMatch, setResourceMatch] = useState<RssMatch | null>(null);
   const [resourceActionBusy, setResourceActionBusy] = useState('');
   const [resourceActionMessage, setResourceActionMessage] = useState('');
+  const [resourceTorraPushPreview, setResourceTorraPushPreview] = useState<TorraPushPreviewResponse | null>(null);
   const [resourceQualityWatch, setResourceQualityWatch] = useState<QualityWatchResponse | null>(null);
   const [torraPushPreview, setTorraPushPreview] = useState<TorraPushPreviewResponse | null>(null);
   const [torraPushMessage, setTorraPushMessage] = useState('');
@@ -1707,6 +1721,16 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     });
   };
 
+  const updateLocalSubscriptionCategory = (id: string, category: MediaCategory | null) => {
+    const applyCategory = (items: SubscriptionItem[]) => items.map((item) => (
+      item.id === id
+        ? { ...item, ...(category ? { mediaCategory: category } : { mediaCategory: undefined }) }
+        : item
+    ));
+    setSubs(applyCategory);
+    setWorkbench((current) => current ? { ...current, items: applyCategory(current.items) } : current);
+  };
+
   const previewTorraPush = (item: SubscriptionItem) => {
     if (!item.id) return;
     setTorraPushBusy(`preview:${item.id}`);
@@ -1730,6 +1754,24 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       })
       .catch((error: unknown) => setTorraPushMessage(error instanceof Error ? error.message : 'Torra 推送失败'))
       .finally(() => setTorraPushBusy(''));
+  };
+
+  const changeTorraPushCategory = async (item: SubscriptionItem, category: MediaCategory | null) => {
+    if (!item.id) return;
+    const itemId = item.id;
+    setTorraPushBusy(`category:${itemId}`);
+    setTorraPushMessage('正在保存分类并重新检查…');
+    try {
+      await setSubscriptionCategory(itemId, category);
+      updateLocalSubscriptionCategory(itemId, category);
+      const preview = await getTorraPushPreview(itemId);
+      setTorraPushPreview(preview);
+      setTorraPushMessage(preview.preview.ready ? '分类已保存，推送条件已重新确认' : preview.preview.blockers.join('；'));
+    } catch (reason) {
+      setTorraPushMessage(reason instanceof Error ? reason.message : '媒体分类保存失败');
+    } finally {
+      setTorraPushBusy('');
+    }
   };
 
   const pollAutomationAction = async (
@@ -1940,6 +1982,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     const controller = new AbortController();
     resourceAutomationRequestRef.current = controller;
     setResourceActionItem(item);
+    setResourceTorraPushPreview(null);
     setResourceMatch(null);
     setResourceAutomationAction(null);
     setResourceUnitId('');
@@ -1992,8 +2035,12 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     setResourceActionMessage(`正在检查从 E${String(startEpisode).padStart(2, '0')} 开始追更的分类、路径和远端重复项…`);
     try {
       const preview = await getTorraPushPreview(subscriptionId, startEpisode);
+      setResourceTorraPushPreview(preview);
       if (!preview.preview.ready) {
-        setResourceActionMessage(preview.preview.blockers.join('；') || '当前不能创建 Torra 追更');
+        const categoryBlocked = preview.preview.blockers.some((blocker) => blocker.includes('媒体分类'));
+        setResourceActionMessage(categoryBlocked
+          ? '媒体分类尚未确认，请在下方选择后重新预检'
+          : preview.preview.blockers.join('；') || '当前不能创建 Torra 追更');
         return;
       }
       const paddedEpisode = String(startEpisode).padStart(2, '0');
@@ -2025,6 +2072,31 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       setResourceActionMessage(reason instanceof Error ? reason.message : 'Torra 追更预检失败');
     } finally {
       setResourceActionBusy((current) => current === 'subscription-preview' ? '' : current);
+    }
+  };
+
+  const changeResourceTorraCategory = async (category: MediaCategory | null) => {
+    const subscriptionId = resourceTarget?.source === 'subscription' ? resourceTarget.sourceId : '';
+    const startEpisode = resourceInitialStartEpisode(
+      resourceActionItem,
+      resourceTarget?.mediaType,
+      resourceTarget?.seasonNumber
+    );
+    if (!subscriptionId || startEpisode == null || resourceWorkflowLocked) return;
+    setResourceActionBusy('subscription-category');
+    setResourceActionMessage('正在保存分类并重新检查首次获取条件…');
+    try {
+      await setSubscriptionCategory(subscriptionId, category);
+      updateLocalSubscriptionCategory(subscriptionId, category);
+      const preview = await getTorraPushPreview(subscriptionId, startEpisode);
+      setResourceTorraPushPreview(preview);
+      setResourceActionMessage(preview.preview.ready
+        ? `分类已保存，可以从 E${String(startEpisode).padStart(2, '0')} 开始追更`
+        : preview.preview.blockers.join('；') || '首次获取条件仍未满足');
+    } catch (reason) {
+      setResourceActionMessage(reason instanceof Error ? reason.message : '媒体分类保存失败');
+    } finally {
+      setResourceActionBusy('');
     }
   };
 
@@ -2277,6 +2349,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     setResourceQualityWatch(null);
     setResourceActionBusy('');
     setResourceActionMessage('');
+    setResourceTorraPushPreview(null);
     setResourceLoading(true);
     Promise.resolve(querySource)
       .then((values) => {
@@ -2568,6 +2641,23 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                                 <option key={unit.id} value={unit.id}>{unitLabel(unit)}</option>
                               ))}
                             </select>
+                          </label>
+                        )}
+                        {!resourceUnitId && initialStartEpisode != null && resourceTorraPushPreview && (
+                          <label className="discover-resource-workflow__category">
+                            媒体分类
+                            <select
+                              aria-label="选择首次获取的媒体分类"
+                              disabled={Boolean(resourceActionBusy) || !localWriteEnabled}
+                              value={subs.find((subscription) => subscription.id === resourceTarget?.sourceId)?.mediaCategory || ''}
+                              onChange={(event) => void changeResourceTorraCategory((event.target.value || null) as MediaCategory | null)}
+                            >
+                              <option value="">根据媒体信息自动判断</option>
+                              {mediaCategoryOptions.filter((option) => option.value !== 'movie').map((option) => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
+                              ))}
+                            </select>
+                            <small>{resourceTorraPushPreview.preview.categoryReason}</small>
                           </label>
                         )}
                         {upgradeOptions.length > 0 && (
@@ -3622,6 +3712,25 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                         <div><dt>保存路径</dt><dd><code>{torraPushPreview.preview.savePath || '尚未生成'}</code></dd></div>
                         <div><dt>在线查重</dt><dd>{torraPushPreview.preview.duplicate?.found ? `已存在：${torraPushPreview.preview.duplicate.name || torraPushPreview.preview.duplicate.subscriptionId}` : torraPushPreview.preview.duplicate?.checked ? '未发现重复追更' : '尚未完成'}</dd></div>
                       </dl>
+                      {!item.readOnly && (
+                        <label className="torra-push-panel__category">
+                          <span>媒体分类</span>
+                          <select
+                            aria-label={`选择 ${item.title} 的媒体分类`}
+                            disabled={Boolean(torraPushBusy) || !localWriteEnabled}
+                            value={item.mediaCategory || ''}
+                            onChange={(event) => void changeTorraPushCategory(item, (event.target.value || null) as MediaCategory | null)}
+                          >
+                            <option value="">根据媒体信息自动判断</option>
+                            {mediaCategoryOptions.filter((option) => (
+                              item.mediaType === 'movie' ? option.value === 'movie' : option.value !== 'movie'
+                            )).map((option) => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                          <small>{torraPushPreview.preview.categoryReason}</small>
+                        </label>
+                      )}
                       {torraPushPreview.preview.blockers.length > 0 && (
                         <ul>{torraPushPreview.preview.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>
                       )}

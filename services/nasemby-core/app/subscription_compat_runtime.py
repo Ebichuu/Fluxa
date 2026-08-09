@@ -210,16 +210,10 @@ def _source_catalog():
     return result
 
 
-def _resolve_category(item):
-    selected = str(item.get("media_category") or "")
-    if selected in MEDIA_CATEGORIES:
-        return MEDIA_CATEGORIES[selected], "人工指定分类"
-    kind = discover_runtime.discover_item_media_type(item)
-    if kind == "movie":
-        return MEDIA_CATEGORIES["movie"], "电影统一进入 10-电影"
-    countries = {value.upper() for value in string_array(item.get("origin_country"))}
-    genres = set(number_array(item.get("genre_ids")))
-    language = str(item.get("original_language") or "").lower()
+def _category_from_evidence(countries, genres, language):
+    countries = {str(value or "").upper() for value in countries if str(value or "").strip()}
+    genres = {integer(value) for value in genres if integer(value) > 0}
+    language = str(language or "").lower()
     animation = 16 in genres
     variety = bool({10764, 10767} & genres)
     if animation:
@@ -249,7 +243,52 @@ def _resolve_category(item):
     return None, "缺少可确认地区或语言的证据"
 
 
-def _torra_payload(item, category, environment):
+def _resolve_category(item):
+    selected = str(item.get("media_category") or "")
+    kind = discover_runtime.discover_item_media_type(item)
+    if kind == "movie":
+        return MEDIA_CATEGORIES["movie"], (
+            "人工指定分类" if selected == "movie" else "电影统一进入 10-电影"
+        )
+    if selected in MEDIA_CATEGORIES and selected != "movie":
+        return MEDIA_CATEGORIES[selected], "人工指定分类"
+    countries = string_array(item.get("origin_country"))
+    genres = number_array(item.get("genre_ids"))
+    language = str(item.get("original_language") or "").lower()
+    category, reason = _category_from_evidence(countries, genres, language)
+    if category:
+        return category, reason
+    tmdb_id = str(discover_runtime.discover_item_tmdb_id(item, kind) or "")
+    if not tmdb_id:
+        return None, reason
+    try:
+        detail = discover_runtime.get_cached_tmdb_detail(kind, tmdb_id, fetch=True)
+    except Exception:
+        detail = {}
+    if not isinstance(detail, dict) or not detail:
+        return None, reason
+    detail_countries = string_array(detail.get("origin_country"))
+    detail_countries.extend(
+        str(country.get("iso_3166_1") or "")
+        for country in (detail.get("production_countries") or [])
+        if isinstance(country, dict)
+    )
+    detail_genres = [
+        genre.get("id")
+        for genre in (detail.get("genres") or [])
+        if isinstance(genre, dict)
+    ]
+    detail_category, detail_reason = _category_from_evidence(
+        detail_countries,
+        detail_genres,
+        detail.get("original_language"),
+    )
+    if detail_category:
+        return detail_category, f"TMDB 详情：{detail_reason}"
+    return None, detail_reason
+
+
+def _torra_payload(item, category, environment, downloader_id=""):
     kind = discover_runtime.discover_item_media_type(item) or "movie"
     tmdb_id = str(discover_runtime.discover_item_tmdb_id(item, kind) or "")
     season = discover_runtime.subscription_target_season(item) or (1 if kind == "tv" else 0)
@@ -287,7 +326,7 @@ def _torra_payload(item, category, environment):
         "library_episode_files": {},
         "library_file_names": [],
         "site_ids": [],
-        "downloader_id": str(environment.get("TORRA_DOWNLOADER_ID") or ""),
+        "downloader_id": str(downloader_id or environment.get("TORRA_DOWNLOADER_ID") or ""),
         "save_path": save_path,
         "version_control_enabled": False,
         "version_control_entries": [],
@@ -328,15 +367,40 @@ def _push_preview(item, environment, torra_client):
         blockers.append("无法可靠判断媒体分类，需要人工选择后才能推送")
     if not torra_client.is_configured():
         blockers.append("Torra 尚未配置")
-    if not str(environment.get("TORRA_DOWNLOADER_ID") or ""):
-        blockers.append("TORRA_DOWNLOADER_ID 尚未核对")
+    configured_downloader_id = str(environment.get("TORRA_DOWNLOADER_ID") or "").strip()
+    downloader_id = configured_downloader_id
+    if torra_client.is_configured() and not downloader_id:
+        resolver = getattr(torra_client, "resolve_downloader_id", None)
+        if not callable(resolver):
+            blockers.append("Torra 下载器配置当前无法自动确认")
+        else:
+            try:
+                downloader_id = str(resolver("") or "").strip()
+            except Exception as error:
+                message = str(error or "")
+                safe_messages = {
+                    "Torra Token 无效或已过期",
+                    "Torra 下载器配置当前不可读",
+                    "Torra 下载器配置响应无效",
+                    "Torra 没有唯一可用的下载器",
+                    "Torra 存在多个可用下载器，但默认项无法唯一确认",
+                }
+                blockers.append(
+                    message
+                    if message in safe_messages
+                    else "Torra 下载器配置当前无法自动确认"
+                )
+    if torra_client.is_configured() and not downloader_id and not any(
+        "下载器" in blocker for blocker in blockers
+    ):
+        blockers.append("Torra 下载器配置当前无法自动确认")
     if not _truthy(environment.get("TORRA_PUSH_ENABLED")):
         blockers.append("TORRA_PUSH_ENABLED 当前关闭")
     payload = None
     save_path = ""
     duplicate = None
     if category:
-        payload, save_path = _torra_payload(item, category, environment)
+        payload, save_path = _torra_payload(item, category, environment, downloader_id)
         target = {
             "title": payload["name"],
             "mediaType": payload["media_type"],
@@ -473,6 +537,15 @@ def register_subscription_compat(app: Flask, environment=None, action_repository
         category = body.get("category")
         if category is not None and category not in MEDIA_CATEGORIES:
             return _error("SUBSCRIPTION_CATEGORY_INVALID", "需要有效的八分类 key，或传 null 清除人工覆盖", 400)
+        current = _find_item(key)
+        if not current:
+            return _error("SUBSCRIPTION_NOT_FOUND", "订阅不存在", 404)
+        kind = discover_runtime.discover_item_media_type(current)
+        if category is not None and (
+            (kind == "movie" and category != "movie")
+            or (kind == "tv" and category == "movie")
+        ):
+            return _error("SUBSCRIPTION_CATEGORY_MEDIA_TYPE_MISMATCH", "媒体分类与作品类型不一致", 400)
 
         def update(item):
             if category is None:

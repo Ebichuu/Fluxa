@@ -1192,6 +1192,38 @@
   white-space: normal;
 }
 
+.torra-push-panel__category,
+.discover-resource-workflow__category {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  color: var(--ops-muted);
+  font-size: 11px;
+}
+
+.torra-push-panel__category select,
+.discover-resource-workflow__category select {
+  width: 100%;
+  min-height: 36px;
+  padding: 0 34px 0 10px;
+  border: 1px solid rgba(157, 184, 207, 0.16);
+  border-radius: 6px;
+  color: var(--ops-text);
+  background: rgba(8, 12, 16, 0.5);
+}
+
+.torra-push-panel__category select:focus-visible,
+.discover-resource-workflow__category select:focus-visible {
+  outline: 2px solid var(--ops-accent);
+  outline-offset: 2px;
+}
+
+.torra-push-panel__category small,
+.discover-resource-workflow__category small {
+  color: var(--ops-faint);
+  line-height: 1.5;
+}
+
 .torra-push-panel ul,
 .torra-push-panel > p {
   margin: 0;

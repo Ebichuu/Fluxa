@@ -41,6 +41,7 @@ import type {
   SubscriptionConfigResponse,
   SubscriptionDetailResponse,
   SubscriptionHubConfig,
+  SubscriptionItem,
   SubscriptionListResponse,
   SubscriptionPushPreview,
   SubscriptionCapabilitiesResponse,
@@ -980,7 +981,7 @@ export function setSubscriptionSeason(id: string, seasonNumber: number, seasonNa
 export function setSubscriptionCategory(
   id: string,
   category: MediaCategory | null
-): Promise<{ success: boolean }> {
+): Promise<{ success: boolean; item: SubscriptionItem }> {
   return patchJson(`/api/subscriptions/${encodeURIComponent(id)}/category`, { category });
 }
 

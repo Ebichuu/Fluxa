@@ -720,6 +720,100 @@ class TorraReadRuntimeContractTests(unittest.TestCase):
         self.assertEqual(session.requests[1][2]["json"], {"subscription": subscription})
         self.assertEqual(session.requests[2][1], "/api/v1/subscriptions/run/mcc_tv_100_2")
 
+    def test_explicit_downloader_id_has_priority_without_reading_remote_config(self):
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        session = FakeSession([])
+        client = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+        )
+
+        self.assertEqual(client.resolve_downloader_id("configured-downloader"), "configured-downloader")
+        self.assertEqual(session.requests, [])
+
+    def test_unique_enabled_downloader_is_resolved_from_tracker_config(self):
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        session = FakeSession([FakeResponse(payload={
+            "success": True,
+            "data": {
+                "downloaders": [
+                    {"id": "disabled-downloader", "enabled": False},
+                    {"id": "only-enabled-downloader", "enabled": True},
+                ],
+                "password": "must-not-escape",
+            },
+        })])
+        client = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+        )
+
+        self.assertEqual(client.resolve_downloader_id(), "only-enabled-downloader")
+        self.assertEqual(session.requests[0][1], "/api/v1/tracker/config")
+
+    def test_nested_downloader_items_remain_in_downloader_scope(self):
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        session = FakeSession([FakeResponse(payload={
+            "success": True,
+            "data": {
+                "downloaders": {
+                    "items": [{"id": "nested-downloader", "is_active": True}],
+                },
+            },
+        })])
+        client = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+        )
+
+        self.assertEqual(client.resolve_downloader_id(), "nested-downloader")
+
+    def test_confirmed_default_downloader_wins_when_multiple_are_enabled(self):
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        session = FakeSession([FakeResponse(payload={
+            "success": True,
+            "data": {
+                "default_downloader_id": "default-downloader",
+                "downloaders": [
+                    {"id": "default-downloader", "enabled": True},
+                    {"id": "secondary-downloader", "enabled": True},
+                ],
+            },
+        })])
+        client = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+        )
+
+        self.assertEqual(client.resolve_downloader_id(), "default-downloader")
+
+    def test_multiple_downloaders_without_unique_default_remain_blocked(self):
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        session = FakeSession([FakeResponse(payload={
+            "success": True,
+            "data": {
+                "downloaders": [
+                    {"id": "downloader-a", "enabled": True},
+                    {"id": "downloader-b", "enabled": True},
+                ],
+                "username": "must-not-escape",
+                "password": "must-not-escape",
+            },
+        })])
+        client = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "多个可用下载器") as raised:
+            client.resolve_downloader_id()
+        self.assertNotIn("must-not-escape", str(raised.exception))
+
     def test_network_error_is_safe_and_injected_route_works(self):
         import requests
 

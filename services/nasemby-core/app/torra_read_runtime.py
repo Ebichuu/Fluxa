@@ -194,6 +194,114 @@ def find_subscription(rows: list[dict], target: dict):
     return next((row for row in rows if subscription_matches(row, target)), None)
 
 
+def _boolean_flag(value, fallback=True) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    normalized = str(value if value is not None else "").strip().lower()
+    if normalized in {"1", "true", "yes", "on", "enabled", "active"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled", "inactive"}:
+        return False
+    return fallback
+
+
+def _downloader_row_id(row: dict, fallback="") -> str:
+    for key in ("id", "downloader_id", "downloaderId", "key"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return str(fallback or "").strip()
+
+
+def _downloader_rows(payload: dict) -> list[dict]:
+    rows = []
+
+    def visit(value, parent_key="", depth=0, in_downloader_scope=False):
+        if depth > 6:
+            return
+        normalized_parent = re.sub(r"[^a-z0-9]", "", str(parent_key or "").lower())
+        downloader_scope = in_downloader_scope or "downloader" in normalized_parent
+        if isinstance(value, list):
+            if downloader_scope:
+                rows.extend(dict(item) for item in value[:100] if isinstance(item, dict))
+            return
+        if not isinstance(value, dict):
+            return
+        if downloader_scope and _downloader_row_id(value):
+            rows.append(dict(value))
+            return
+        if downloader_scope:
+            for candidate_id, candidate in list(value.items())[:100]:
+                if not isinstance(candidate, dict) or _downloader_row_id(candidate):
+                    continue
+                if not any(
+                    key in candidate
+                    for key in (
+                        "name", "type", "enabled", "is_enabled", "isEnabled",
+                        "active", "is_active", "is_default", "isDefault",
+                    )
+                ):
+                    continue
+                row = dict(candidate)
+                row["id"] = str(candidate_id or "").strip()
+                if row["id"]:
+                    rows.append(row)
+        for key, nested in value.items():
+            visit(nested, key, depth + 1, downloader_scope)
+
+    visit(payload)
+    unique = {}
+    for row in rows:
+        downloader_id = _downloader_row_id(row)
+        if downloader_id:
+            unique.setdefault(downloader_id, row)
+    return list(unique.values())
+
+
+def _default_downloader_ids(payload: dict, rows: list[dict]) -> set[str]:
+    defaults = set()
+
+    def add(value):
+        if isinstance(value, dict):
+            value = _downloader_row_id(value)
+        downloader_id = str(value or "").strip()
+        if downloader_id:
+            defaults.add(downloader_id)
+
+    def visit(value, depth=0):
+        if depth > 6 or not isinstance(value, dict):
+            return
+        for key, nested in value.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key or "").lower())
+            if normalized in {
+                "defaultdownloader", "defaultdownloaderid",
+            }:
+                add(nested)
+            if isinstance(nested, dict):
+                visit(nested, depth + 1)
+
+    visit(payload)
+    roots = [payload]
+    for root in list(roots):
+        for key in ("data", "config", "tracker", "tracker_config", "settings"):
+            nested = root.get(key) if isinstance(root, dict) else None
+            if isinstance(nested, dict) and nested not in roots:
+                roots.append(nested)
+    for root in roots:
+        for key in ("downloader_id", "downloaderId"):
+            if key in root:
+                add(root.get(key))
+    for row in rows:
+        if any(
+            key in row and _boolean_flag(row.get(key), fallback=False)
+            for key in ("default", "is_default", "isDefault")
+        ):
+            add(row)
+    return defaults
+
+
 class TorraReadClient:
     def __init__(self, config: TorraReadConfig, session=None, clock=None):
         self.config = config
@@ -318,6 +426,38 @@ class TorraReadClient:
         if status >= 400:
             raise RuntimeError(f"Torra 响应异常：{status}")
         return extract_subscription_rows(data, strict=True)
+
+    def resolve_downloader_id(self, configured_id="") -> str:
+        explicit = str(configured_id or "").strip()
+        if explicit:
+            return explicit
+        if not self.is_configured():
+            raise RuntimeError("Torra 尚未配置，无法确认下载器")
+        status, payload = self._fetch_json("/api/v1/tracker/config")
+        if status in {401, 403}:
+            raise RuntimeError("Torra Token 无效或已过期")
+        if status >= 400:
+            raise RuntimeError("Torra 下载器配置当前不可读")
+        if not isinstance(payload, dict) or payload.get("success") is False:
+            raise RuntimeError("Torra 下载器配置响应无效")
+        rows = _downloader_rows(payload)
+        enabled = {
+            _downloader_row_id(row): row
+            for row in rows
+            if _downloader_row_id(row) and all(
+                _boolean_flag(row.get(key))
+            for key in ("enabled", "is_enabled", "isEnabled", "active", "is_active")
+                if key in row
+            )
+        }
+        defaults = _default_downloader_ids(payload, rows) & set(enabled)
+        if len(defaults) == 1:
+            return next(iter(defaults))
+        if len(enabled) == 1:
+            return next(iter(enabled))
+        if not enabled:
+            raise RuntimeError("Torra 没有唯一可用的下载器")
+        raise RuntimeError("Torra 存在多个可用下载器，但默认项无法唯一确认")
 
     def list_meta_weight_rules(self) -> list[dict]:
         """Read Torra's rule source without mutating its configuration."""
@@ -718,8 +858,9 @@ class TorraReadClient:
             raise RuntimeError("未配置 Torra 地址或认证信息")
         if not str(subscription.get("save_path") or "").strip():
             raise RuntimeError("分类保存路径为空，已停止推送")
-        if not str(subscription.get("downloader_id") or "").strip():
-            raise RuntimeError("Torra 下载器 ID 未核对，已停止推送")
+        downloader_id = self.resolve_downloader_id(subscription.get("downloader_id"))
+        if downloader_id != str(subscription.get("downloader_id") or "").strip():
+            subscription = {**subscription, "downloader_id": downloader_id}
         target = {
             "title": subscription.get("name") or subscription.get("keyword") or "",
             "mediaType": subscription.get("media_type") or "",

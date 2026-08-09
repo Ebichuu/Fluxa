@@ -85,10 +85,10 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `POST /api/v2/subscriptions/candidate-migrations` | `confirm=true`、12–128 字符幂等键和最新 `previewFingerprint`；先用 SQLite backup API 创建版本化备份，再在单个即时事务中复核指纹、upsert eligible 候选、删除对应旧追更并保存内部补偿清单；首次创建返回 `201 + Location`，同键回放返回 200；不调用任何外部服务 |
 | `GET /api/v2/subscriptions/candidate-migrations/:runId` | 读取一次迁移的脱敏结果，不返回原订阅 key、原始 payload、Torra/resource 标识、路径或 URL |
 | `POST /api/subscriptions/save` | 标题、TMDB ID、媒体类型和可选元数据；响应可选返回兼容 `activation.state`、用户文案、`provider/queued/reason` 和新增 `torraPushState`；Torra 异步入队为 `queued`，API 接受为 `submitted`，均不得提前声称 `linked`；推送关闭固定返回“追更已保存 · Torra 自动推送已关闭” |
-| `PATCH /api/subscriptions/:id/category` | 八分类 key 或 `null` |
+| `PATCH /api/subscriptions/:id/category` | 八分类 key 或 `null`；只写 Fluxa 本地追更的人工覆盖，电影只接受 `movie`，剧集不接受 `movie`，不修改 Torra 已有订阅 |
 | `GET /api/subscriptions/detail` | 必填 `id`，可选 `season` |
 | `GET /api/subscriptions/calendar` | `year`、`month`、`type` |
-| `GET /api/v2/subscriptions/:id/torra-push-preview` | 路径中的订阅 ID，只读预检 |
+| `GET /api/v2/subscriptions/:id/torra-push-preview` | 路径中的订阅 ID，只读预检；分类证据不足时可读取明确 TMDB 详情补证，人工覆盖优先；下载器按显式配置、Torra 明确默认项、唯一启用项的顺序确认，零个或多个无法唯一确认时阻断；公共响应不返回 Torra 原始配置或认证字段 |
 | `POST /api/v2/subscriptions/:id/torra-pushes` | `confirm=true`、12–128 字符幂等键；成功仅返回 `torraPushState=submitted`，兼容 `subscriptionId` 固定为空且不得依据 POST 响应 ID 建立 linked；后续只读对账确认后由 workbench 投影 `linked` |
 | `PATCH /api/v2/subscription-automation/settings` | camelCase 设置字段；可选布尔 `missingFallbackEnabled`（默认关闭）与 `lifecycleMode=follow_rss/fixed_window`，窗口只允许 24/48 小时，固定窗口时间点严格递增且最早 30 分钟 |
 | `PATCH /api/v2/subscriptions/:id/quality-watch` | 可选 `paused`、`lifecycleMode`、`windowHours`、`scheduleMinutes` |
