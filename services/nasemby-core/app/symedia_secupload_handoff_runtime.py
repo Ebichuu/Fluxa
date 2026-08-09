@@ -17,6 +17,7 @@ JOB_KIND = "plugin.secupload_observer_candidate"
 BEIJING_TZ = timezone(timedelta(hours=8))
 TERMINAL_JOB_STATUSES = {"success", "failed", "cancelled"}
 ACTIVE_HANDOFF_STATUSES = {"waiting_job", "pending", "submitted"}
+MISSING_HISTORY_ERROR = "Symedia 单文件归档在有限重试内未返回历史证据"
 MEDIA_EXTENSIONS = {
     ".3gp", ".avi", ".flv", ".m2ts", ".m4v", ".mkv", ".mov", ".mp4",
     ".mpeg", ".mpg", ".mts", ".rmvb", ".ts", ".webm", ".wmv",
@@ -228,6 +229,18 @@ class SymediaSecuploadHandoffRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def repairable_items(self):
+        placeholders = ",".join("?" for _ in ACTIVE_HANDOFF_STATUSES)
+        with self.runtime.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM symedia_secupload_handoff_items "
+                f"WHERE job_status IN ({placeholders}) "
+                "OR (job_status='failed' AND last_error=?) "
+                "ORDER BY job_created_at, job_id",
+                (*sorted(ACTIVE_HANDOFF_STATUSES), MISSING_HISTORY_ERROR),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def snapshot(self):
         with self.runtime.connect() as connection:
             rows = connection.execute(
@@ -342,12 +355,15 @@ class SymediaSecuploadHandoffService:
             raise RuntimeError("Torra 秒传目标未能唯一匹配 Symedia 归档任务")
         task, task_source = tasks[0]
         task_id = _text(_field(task, "id"))
-        target_path = posixpath.normpath(posixpath.join(task_source, relative_path))
+        # Torra uploads each observed file into the configured remote directory;
+        # the local torrent directory is not recreated in 115.
+        display_name = PurePosixPath(file_path).name
+        target_path = posixpath.normpath(posixpath.join(task_source, display_name))
         if not task_id or posixpath.commonpath((task_source, target_path)) != task_source:
             raise RuntimeError("Symedia 单文件目标路径无效")
         return {
             "configItemId": config_item_id,
-            "displayName": PurePosixPath(file_path).name,
+            "displayName": display_name,
             "targetPath": target_path,
             "transferTaskId": task_id,
         }
@@ -383,6 +399,43 @@ class SymediaSecuploadHandoffService:
                     last_error=safe_public_text(str(exc), "秒传交接目标解析失败"),
                 )
         return resolved
+
+    def _repair_nested_targets(self):
+        candidates = self.repository.repairable_items()
+        if not candidates:
+            return 0
+        task_sources = {
+            _text(_field(task, "id")): _normalized_path(_field(task, "source_dir", "sourceDir"))
+            for task in self.symedia.list_transfer_tasks()
+        }
+        repaired = 0
+        for item in candidates:
+            display_name = _text(item.get("display_name"))
+            task_source = task_sources.get(_text(item.get("transfer_task_id")), "")
+            current_path = _normalized_path(item.get("target_path"))
+            if (
+                not display_name
+                or PurePosixPath(display_name).name != display_name
+                or PurePosixPath(display_name).suffix.lower() not in MEDIA_EXTENSIONS
+                or not task_source
+                or not current_path
+            ):
+                continue
+            expected_path = posixpath.normpath(posixpath.join(task_source, display_name))
+            if current_path == expected_path or PurePosixPath(current_path).name != display_name:
+                continue
+            try:
+                if posixpath.commonpath((task_source, current_path)) != task_source:
+                    continue
+            except ValueError:
+                continue
+            self.repository.update_item(
+                item["job_id"], job_status="pending", target_path=expected_path,
+                attempts=0, next_attempt_at=_iso(self.clock()), last_attempt_at="",
+                last_history_at="", completed_at="", last_error="",
+            )
+            repaired += 1
+        return repaired
 
     @staticmethod
     def _history_source_paths(row):
@@ -472,7 +525,7 @@ class SymediaSecuploadHandoffService:
             if attempts >= self._max_attempts():
                 self.repository.update_item(
                     item["job_id"], job_status="failed", completed_at=_iso(now),
-                    last_error="Symedia 单文件归档在有限重试内未返回历史证据",
+                    last_error=MISSING_HISTORY_ERROR,
                 )
                 continue
             try:
@@ -509,10 +562,12 @@ class SymediaSecuploadHandoffService:
             if discovery["bootstrapped"]:
                 return {"status": "bootstrapped", "discovered": 0, "submitted": 0, "confirmed": 0}
             resolved = self._resolve_waiting_jobs()
+            repaired = self._repair_nested_targets()
             processed = self._process_due()
             self.repository.update_state(last_error="")
             return {
                 "status": "ok", "discovered": discovery["discovered"], "resolved": resolved,
+                "repaired": repaired,
                 **processed,
             }
         except Exception as exc:

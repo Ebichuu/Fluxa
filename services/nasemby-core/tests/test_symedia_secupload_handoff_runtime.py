@@ -168,6 +168,101 @@ class SymediaSecuploadHandoffRuntimeTests(unittest.TestCase):
         self.service.run_once()
         self.assertEqual(len(self.symedia.submissions), 1)
 
+    def test_nested_torrent_file_is_submitted_at_flat_secupload_destination(self):
+        self.service.run_once()
+        self.now[0] += timedelta(minutes=1)
+        file_path = (
+            "/downloads/06-variety/Show.Name.S01.2026.2160p.WEB-DL/"
+            "Show.Name.S01E11.2026.2160p.WEB-DL.mkv"
+        )
+        target_path = (
+            "/CloudNAS/CloudDrive/115/00-待整理/06-综艺/"
+            "Show.Name.S01E11.2026.2160p.WEB-DL.mkv"
+        )
+        self.torra.jobs = [observer_job("nested-job", "2026-08-09T01:01:00.000Z")]
+        self.torra.details["nested-job"] = observer_detail("nested-job", file_path)
+
+        result = self.service.run_once()
+
+        self.assertEqual(result["submitted"], 1)
+        self.assertEqual(self.symedia.submissions, [(target_path, "transfer-variety")])
+
+    def test_legacy_nested_timeout_is_repaired_once_and_retried_flat(self):
+        self.service.run_once()
+        self.repository.add_job("legacy-job", "2026-08-09T00:30:00.000Z")
+        display_name = "Legacy.Show.S01E02.mkv"
+        self.repository.update_item(
+            "legacy-job",
+            job_status="failed",
+            display_name=display_name,
+            target_path=(
+                "/CloudNAS/CloudDrive/115/00-待整理/06-综艺/"
+                f"Legacy.Show.S01/{display_name}"
+            ),
+            transfer_task_id="transfer-variety",
+            attempts=3,
+            completed_at="2026-08-09T00:45:00.000Z",
+            last_error="Symedia 单文件归档在有限重试内未返回历史证据",
+        )
+
+        repaired = self.service.run_once()
+        repeated = self.service.run_once()
+
+        target_path = f"/CloudNAS/CloudDrive/115/00-待整理/06-综艺/{display_name}"
+        self.assertEqual(repaired["repaired"], 1)
+        self.assertEqual(repaired["submitted"], 1)
+        self.assertEqual(repeated["repaired"], 0)
+        self.assertEqual(self.symedia.submissions, [(target_path, "transfer-variety")])
+
+    def test_legacy_nested_submitted_handoff_is_repaired_and_retried_flat(self):
+        self.service.run_once()
+        self.repository.add_job("active-legacy-job", "2026-08-09T00:30:00.000Z")
+        display_name = "Active.Legacy.Show.S01E03.mkv"
+        self.repository.update_item(
+            "active-legacy-job",
+            job_status="submitted",
+            display_name=display_name,
+            target_path=(
+                "/CloudNAS/CloudDrive/115/00-待整理/06-综艺/"
+                f"Active.Legacy.Show.S01/{display_name}"
+            ),
+            transfer_task_id="transfer-variety",
+            attempts=2,
+            next_attempt_at="2026-08-09T02:00:00.000Z",
+            last_attempt_at="2026-08-09T00:45:00.000Z",
+        )
+
+        repaired = self.service.run_once()
+        repeated = self.service.run_once()
+
+        target_path = f"/CloudNAS/CloudDrive/115/00-待整理/06-综艺/{display_name}"
+        self.assertEqual(repaired["repaired"], 1)
+        self.assertEqual(repaired["submitted"], 1)
+        self.assertEqual(repeated["repaired"], 0)
+        self.assertEqual(self.symedia.submissions, [(target_path, "transfer-variety")])
+
+    def test_unrelated_failed_handoff_is_not_repaired(self):
+        self.service.run_once()
+        self.repository.add_job("other-failure", "2026-08-09T00:30:00.000Z")
+        self.repository.update_item(
+            "other-failure",
+            job_status="failed",
+            display_name="Other.Show.S01E01.mkv",
+            target_path=(
+                "/CloudNAS/CloudDrive/115/00-待整理/06-综艺/"
+                "Other.Show.S01/Other.Show.S01E01.mkv"
+            ),
+            transfer_task_id="transfer-variety",
+            attempts=1,
+            last_error="Symedia 单文件归档失败",
+        )
+
+        result = self.service.run_once()
+
+        self.assertEqual(result["repaired"], 0)
+        self.assertEqual(self.repository.item("other-failure")["job_status"], "failed")
+        self.assertEqual(self.symedia.submissions, [])
+
     def test_failed_torra_job_is_ignored_without_symedia_write(self):
         self.service.run_once()
         self.now[0] += timedelta(minutes=1)
