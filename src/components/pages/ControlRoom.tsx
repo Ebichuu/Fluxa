@@ -67,6 +67,7 @@ function symediaTodayComposition(summary: SymediaSummary | null) {
     `今日记录 ${total}`,
     `明确归档 ${totals.archivedToday ?? '暂未确认'}`,
     `低分保护 ${washCount(wash?.lowScoreProtected, wash?.evidenceState)}`,
+    `版本规则保护 ${washCount(wash?.versionRuleProtected, wash?.evidenceState)}`,
     `取消覆盖 ${washCount(wash?.cancelledOverrides, wash?.evidenceState)}`,
     `真实失败 ${washCount(wash?.realFailures, wash?.evidenceState)}`
   ];
@@ -325,7 +326,7 @@ export function ControlRoom() {
         facts: symedia?.connected ? [
           { label: '能力证据', value: symedia.capabilities ? `${availableCapabilities} / 7 项已验证` : '能力明细尚未返回' },
           { label: '今日构成', value: symediaTodayComposition(symedia) },
-          { label: '今日洗版', value: `替换 ${washCount(washSummary?.successfulReplacements, washSummary?.evidenceState)} · 低分保护 ${washCount(washSummary?.lowScoreProtected, washSummary?.evidenceState)} · 取消覆盖 ${washCount(washSummary?.cancelledOverrides, washSummary?.evidenceState)} · 真实失败 ${washCount(washSummary?.realFailures, washSummary?.evidenceState)}` },
+          { label: '今日洗版', value: `替换 ${washCount(washSummary?.successfulReplacements, washSummary?.evidenceState)} · 低分保护 ${washCount(washSummary?.lowScoreProtected, washSummary?.evidenceState)} · 版本规则保护 ${washCount(washSummary?.versionRuleProtected, washSummary?.evidenceState)} · 取消覆盖 ${washCount(washSummary?.cancelledOverrides, washSummary?.evidenceState)} · 真实失败 ${washCount(washSummary?.realFailures, washSummary?.evidenceState)}` },
           { label: '最近对象', value: latestTransfer ? `${latestTransfer.title}${latestTransfer.seasonEpisode ? ` · ${latestTransfer.seasonEpisode}` : ''}` : '暂未确认' }
         ] : [{ label: '连接说明', value: symedia?.error || (servicesLoaded ? '历史接口暂不可用' : '正在读取 Symedia 历史') }],
         icon: <Wrench aria-hidden="true" size={20} />, toolUrl: symedia?.webUrl || ''

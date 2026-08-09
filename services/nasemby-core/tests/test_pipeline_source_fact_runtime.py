@@ -238,6 +238,41 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
         self.assertEqual(by_stage(failed, "symedia")["state"], "failed")
         self.assertEqual(by_stage(failed, "symedia")["reasonText"], "media lookup failed")
 
+    def test_symedia_version_rule_rejection_is_protected_without_hiding_real_failures(self):
+        protected = build_pipeline_source_facts(context(symediaRows=[{
+            "id": "version-rule-protected",
+            "status": False,
+            "errmsg": "未命中允许入库的版本规则",
+        }]), observed_at=OBSERVED_AT)
+        failed = build_pipeline_source_facts(context(symediaRows=[{
+            "id": "recognition-failed",
+            "status": False,
+            "errmsg": "Symedia 未查询到对应媒体信息",
+        }]), observed_at=OBSERVED_AT)
+
+        protected_fact = by_stage(protected, "symedia")
+        failed_fact = by_stage(failed, "symedia")
+        protected_outcome = derive_pipeline_outcome(
+            protected,
+            target_scope="episode",
+            now=datetime(2026, 7, 27, 4, 1, tzinfo=timezone.utc),
+        )
+        failed_outcome = derive_pipeline_outcome(
+            failed,
+            target_scope="episode",
+            now=datetime(2026, 7, 27, 4, 1, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(protected_fact["state"], "protected")
+        self.assertEqual(
+            protected_fact["units"][0]["reasonCode"],
+            "QUALITY_VERSION_RULE_NOT_MATCHED",
+        )
+        self.assertEqual(protected_fact["reasonText"], "未命中允许入库的版本规则")
+        self.assertEqual(protected_outcome["state"], "protected")
+        self.assertEqual(failed_fact["state"], "failed")
+        self.assertEqual(failed_outcome["state"], "action_required")
+
     def test_symedia_mixed_protection_and_real_failure_requires_action(self):
         facts = build_pipeline_source_facts(context(symediaRows=[
             {

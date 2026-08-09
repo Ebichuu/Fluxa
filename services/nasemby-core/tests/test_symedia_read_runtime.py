@@ -209,6 +209,7 @@ class SymediaReadRuntimeContractTests(unittest.TestCase):
             "evidenceState": "partial",
             "successfulReplacements": 1,
             "lowScoreProtected": 1,
+            "versionRuleProtected": 0,
             "cancelledOverrides": 0,
             "realFailures": 1,
             "latestTarget": {
@@ -230,6 +231,7 @@ class SymediaReadRuntimeContractTests(unittest.TestCase):
             {"id": "success-new", "src": "/downloads/show/E01.mkv", "status": True, "date": "2026-07-16 11:50:00"},
             {"id": "success-duplicate", "src": "/downloads/show/E01.mkv", "status": True, "date": "2026-07-16 11:40:00"},
             {"id": "low-score", "src": "/downloads/show/E02.mkv", "status": False, "errmsg": "源文件评分低于目标文件", "date": "2026-07-16 11:30:00"},
+            {"id": "version-rule", "src": "/downloads/show/E06.mkv", "status": False, "errmsg": "未命中允许入库的版本规则", "date": "2026-07-16 11:25:00"},
             {"id": "cancelled", "src": "/downloads/show/E03.mkv", "status": False, "errmsg": "取消覆盖", "date": "2026-07-16 11:20:00"},
             {"id": "failed", "src": "/downloads/show/E04.mkv", "status": False, "errmsg": "媒体识别失败", "date": "2026-07-16 11:10:00"},
             {"id": "unknown", "src": "/downloads/show/E05.mkv", "date": "2026-07-16 11:00:00"},
@@ -245,16 +247,18 @@ class SymediaReadRuntimeContractTests(unittest.TestCase):
         totals = summary["totals"]
         wash = summary["washSummary"]
 
-        self.assertEqual(totals["processedToday"], 5)
+        self.assertEqual(totals["processedToday"], 6)
         self.assertEqual(totals["archivedToday"], 1)
-        self.assertEqual(totals["protectedToday"], 2)
+        self.assertEqual(totals["protectedToday"], 3)
         self.assertEqual(totals["failedToday"], 1)
         self.assertEqual(totals["unknownToday"], 1)
         self.assertEqual(wash["lowScoreProtected"], 1)
+        self.assertEqual(wash["versionRuleProtected"], 1)
         self.assertEqual(wash["cancelledOverrides"], 1)
         self.assertEqual(
             totals["processedToday"],
-            totals["archivedToday"] + wash["lowScoreProtected"] + wash["cancelledOverrides"]
+            totals["archivedToday"] + wash["lowScoreProtected"] + wash["versionRuleProtected"]
+            + wash["cancelledOverrides"]
             + wash["realFailures"] + totals["unknownToday"],
         )
 

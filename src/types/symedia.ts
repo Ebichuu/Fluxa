@@ -33,6 +33,7 @@ export interface SymediaWashSummary {
   evidenceState: 'verified' | 'partial' | 'insufficient';
   successfulReplacements: number | null;
   lowScoreProtected: number | null;
+  versionRuleProtected: number | null;
   cancelledOverrides: number | null;
   realFailures: number | null;
   latestTarget: {

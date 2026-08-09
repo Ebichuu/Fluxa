@@ -310,6 +310,35 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertEqual(payload["problemGroups"][0]["reasonText"], "Symedia 未查询到对应媒体信息")
         self.assertNotIn("qB 下载任务未正常继续", payload["problemGroups"][0]["reasonText"])
 
+    def test_symedia_version_rule_protection_is_no_action_and_not_a_problem_group(self):
+        chain = FakeTaskChain().get_chain()
+        chain["items"][0]["episodeNumber"] = 7
+        chain["items"][0]["pipelineFacts"] = [pipeline_fact(
+            "symedia",
+            "protected",
+            reason_code="QUALITY_VERSION_RULE_NOT_MATCHED",
+            reason_text="未命中允许入库的版本规则",
+        )]
+        app = Flask(f"{__name__}-symedia-version-rule-protection")
+        fake = FakeTaskChain()
+        fake.get_chain = lambda: chain
+        app.extensions["mcc_task_chain_service"] = fake
+        register_task_chain_v2(
+            app,
+            clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+        )
+
+        response = app.test_client().get("/api/v2/tasks/chains?limit=20")
+        payload = response.get_json()
+        item = payload["items"][0]
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(item["outcomeState"], "protected")
+        self.assertEqual(item["userState"], "no_action")
+        self.assertEqual(item["resultText"], "未命中允许入库的版本规则")
+        self.assertEqual(payload["problemGroups"], [])
+        self.assertEqual(payload["problemGroupSummary"]["actionRequiredGroups"], 0)
+
     def test_verified_emby_episode_projects_playable_to_legacy_completed(self):
         chain = FakeTaskChain().get_chain()
         chain["items"][0]["episodeNumber"] = 3

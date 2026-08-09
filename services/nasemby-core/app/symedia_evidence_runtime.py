@@ -8,11 +8,18 @@ LOW_SCORE_PROTECTION_CODES = {
     "QUALITY_WEIGHT_NOT_HIGHER",
     "QUALITY_HIGHER_VERSION_EXISTS",
 }
+VERSION_RULE_PROTECTION_CODES = {
+    "QUALITY_VERSION_RULE_NOT_MATCHED",
+}
 CANCELLED_OVERRIDE_CODES = {
     "QUALITY_OVERWRITE_CANCELLED",
     "QUALITY_OVERWRITE_SKIPPED",
 }
-SYMEDIA_PROTECTION_CODES = LOW_SCORE_PROTECTION_CODES | CANCELLED_OVERRIDE_CODES
+SYMEDIA_PROTECTION_CODES = (
+    LOW_SCORE_PROTECTION_CODES
+    | VERSION_RULE_PROTECTION_CODES
+    | CANCELLED_OVERRIDE_CODES
+)
 
 
 def normalize_symedia_status(value):
@@ -46,6 +53,10 @@ def is_successful_replacement(row: dict) -> bool:
 
 def is_low_score_protection(row: dict) -> bool:
     return symedia_protection_rule(row) in LOW_SCORE_PROTECTION_CODES
+
+
+def is_version_rule_protection(row: dict) -> bool:
+    return symedia_protection_rule(row) in VERSION_RULE_PROTECTION_CODES
 
 
 def is_cancelled_override(row: dict) -> bool:

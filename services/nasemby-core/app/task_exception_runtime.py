@@ -9,6 +9,7 @@ from app.health_state_runtime import evidence
 PROTECTION_RULES = (
     ("QUALITY_SCORE_LOWER", ("评分低于目标", "源文件评分低于", "低分")),
     ("QUALITY_WEIGHT_NOT_HIGHER", ("权重低于或等于", "权重不高于")),
+    ("QUALITY_VERSION_RULE_NOT_MATCHED", ("未命中允许入库的版本规则",)),
     ("QUALITY_OVERWRITE_CANCELLED", ("取消覆盖",)),
     ("QUALITY_OVERWRITE_SKIPPED", ("不执行覆盖", "不覆盖")),
     ("QUALITY_HIGHER_VERSION_EXISTS", ("已有更高质量版本", "现有版本评分更高", "更高版本", "高分版本")),
