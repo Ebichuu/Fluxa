@@ -60,6 +60,7 @@ v1 保留少量历史 HTTP 语义：部分删除和动作使用 POST、创建订
 | `POST /auth/login` | 表单 `access_key`、可选 `next`，正文不超过 2 KiB |
 | `GET /api/media/home` | 可选 `libraryId` |
 | `POST /api/media/emby/refresh` | 无正文，必须有较新 Symedia 证据 |
+| `GET /api/symedia/secupload-handoff` | 只读返回新秒传单文件交接是否启用、是否已建立水位、最近轮询时间、脱敏状态计数与最近结果；不刷新任务、不执行写操作，不返回 Torra/Symedia 内部路径、配置值或凭据 |
 | `POST /api/qbittorrent/actions/:action/preview` | 只读检查最多 20 个 40 位公开任务引用；服务端从实时 qB 快照反解，返回是否允许、影响数量、禁止原因、确认要求、幂等键和冷却时间 |
 | `POST /api/qbittorrent/actions/:action` | `hashes` 字段承载公开任务引用，另含 `taskId`、`title`、可选 `idempotencyKey`；旧客户端真实 hash 输入兼容但响应不回显，执行前重新读取 qB 状态，旧预览键返回 `409 QB_PREVIEW_STALE` |
 | `GET /api/subscriptions/items` | 可选 `include_progress=1` |

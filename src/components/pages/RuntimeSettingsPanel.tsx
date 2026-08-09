@@ -47,6 +47,7 @@ const COMMON_GROUPS: Array<{ id: string; title: string; note: string; keys: stri
     keys: [
       'MCC_SUBSCRIPTION_SCHEDULER_ENABLED', 'MCC_TORRA_SUBSCRIPTION_SYNC_ENABLED',
       'MCC_PRIVATE_RSS_ENABLED', 'MCC_TORRA_QUALITY_WATCH_ENABLED', 'MCC_TORRA_REWASH_DOWNLOAD_ENABLED',
+      'MCC_SYMEDIA_SECUPLOAD_HANDOFF_ENABLED',
       'TORRA_PUSH_ENABLED', 'MCC_MOVIEPILOT_BACKUP_ENABLED',
       'MCC_CLOUD_SEARCH_ENABLED', 'MCC_CLOUD_TRANSFER_ENABLED'
     ]
@@ -113,6 +114,7 @@ const disabledEffects: Record<string, string> = {
   MCC_PRIVATE_RSS_ENABLED: '关闭后停止 RSS 采集，已收集的种子记录保留。',
   MCC_TORRA_QUALITY_WATCH_ENABLED: '关闭后停止创建新的质量观察，已有下载和入库不受影响。',
   MCC_TORRA_REWASH_DOWNLOAD_ENABLED: '关闭后仍可分析候选，但不会允许确认下载。',
+  MCC_SYMEDIA_SECUPLOAD_HANDOFF_ENABLED: '关闭后停止提交新的单文件入库，既有文件和归档历史不受影响。',
   TORRA_PUSH_ENABLED: '关闭后新追更不再推送到 Torra，Torra 现有订阅不受影响。',
   MCC_CLOUD_TRANSFER_ENABLED: '关闭后不再允许云盘转存，已完成文件不会删除。'
 };

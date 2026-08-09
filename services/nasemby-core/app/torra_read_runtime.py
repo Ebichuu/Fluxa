@@ -336,6 +336,69 @@ class TorraReadClient:
             raise RuntimeError("Torra rule response is invalid")
         return rules
 
+    def list_jobs(self, kind_prefix: str, *, limit=200, offset=0) -> list[dict]:
+        """Read Torra job overviews for an exact server-owned kind prefix."""
+        if not self.is_configured():
+            raise RuntimeError("未配置 Torra 地址或认证信息")
+        prefix = str(kind_prefix or "").strip()
+        if not prefix:
+            raise ValueError("Torra job kind_prefix 不能为空")
+        pathname = (
+            f"/api/v1/jobs?kind_prefix={quote(prefix, safe='')}&"
+            f"limit={max(1, min(500, int(limit)))}&offset={max(0, int(offset))}"
+        )
+        status, payload = self._fetch_json(pathname)
+        if status in {401, 403}:
+            raise RuntimeError("Torra Token 无效或已过期")
+        if status >= 400:
+            raise RuntimeError(f"Torra job 列表读取失败：{status}")
+        rows = extract_response_items(payload)
+        if rows is None:
+            raise RuntimeError("Torra job 列表响应结构无效")
+        return [dict(row) for row in rows if isinstance(row, dict)]
+
+    def get_job_snapshot(self, job_id: str) -> dict:
+        """Read a complete Torra job snapshot without projecting away its result."""
+        job_id = str(job_id or "").strip()
+        if not job_id:
+            raise ValueError("Torra job ID 不能为空")
+        if not self.is_configured():
+            raise RuntimeError("未配置 Torra 地址或认证信息")
+        status, payload = self._fetch_json(f"/api/v1/jobs/{quote(job_id, safe='')}")
+        if status in {401, 403}:
+            raise RuntimeError("Torra Token 无效或已过期")
+        if status >= 400:
+            raise RuntimeError(f"Torra job 查询失败：{status}")
+        item = extract_response_object(payload)
+        if item is None:
+            raise RuntimeError("Torra job 详情响应结构无效")
+        return dict(item)
+
+    def get_secupload_config_routes(self) -> list[dict]:
+        """Read private routing data for server-side handoff; never expose it via API."""
+        if not self.is_configured():
+            raise RuntimeError("未配置 Torra 地址或认证信息")
+        status, payload = self._fetch_json(f"/api/v1/plugins/{SECUPLOAD_PLUGIN_KEY}")
+        if status in {401, 403}:
+            raise RuntimeError("Torra Token 无效或已过期")
+        if status >= 400:
+            raise RuntimeError(f"Torra 秒传配置读取失败：{status}")
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            raise RuntimeError("Torra 秒传配置响应结构无效")
+        routes = []
+        for item in data.get("config_items") or []:
+            if not isinstance(item, dict) or item.get("enabled") is False:
+                continue
+            values = item.get("values") if isinstance(item.get("values"), dict) else {}
+            routes.append({
+                "itemId": str(item.get("item_id") or "").strip(),
+                "name": str(item.get("name") or "").strip(),
+                "sourcePath": str(values.get("source_path") or "").strip(),
+                "destPath": str(values.get("dest_path") or "").strip(),
+            })
+        return routes
+
     def _read_optional_items(self, pathname: str, *, unavailable_code: str, failed_code: str):
         try:
             status, payload = self._fetch_json(pathname)

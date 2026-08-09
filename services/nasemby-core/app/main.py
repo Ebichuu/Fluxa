@@ -41,6 +41,11 @@ from app.subscription_reconciliation_runtime import (
 )
 from app.torra_quality_runtime import TorraQualityClient
 from app.symedia_read_runtime import register_symedia_read
+from app.symedia_secupload_handoff_runtime import (
+    SymediaSecuploadHandoffRepository,
+    SymediaSecuploadHandoffService,
+    register_symedia_secupload_handoff,
+)
 from app.task_chain_runtime import register_task_chain
 from app.task_chain_v2_runtime import register_task_chain_v2
 from app.home_summary_runtime import register_home_summary
@@ -134,6 +139,7 @@ _candidate_source_scheduler_started = False
 _torra_subscription_sync_started = False
 _private_rss_collector_started = False
 _quality_watch_scheduler_started = False
+_symedia_secupload_handoff_started = False
 _home_summary_refresh_started = False
 _subscription_workbench_refresh_started = False
 _calendar_snapshot_refresh_started = False
@@ -564,6 +570,37 @@ def start_quality_watch_scheduler():
     thread.start()
 
 
+def _symedia_secupload_handoff_loop():
+    time.sleep(5)
+    while True:
+        try:
+            service = app.extensions.get("mcc_symedia_secupload_handoff")
+            if service:
+                service.run_once()
+        except Exception as exc:
+            logger.error(
+                "background scheduler failed scheduler=symedia-secupload-handoff error_type=%s",
+                type(exc).__name__,
+            )
+        time.sleep(30)
+
+
+def start_symedia_secupload_handoff_scheduler():
+    global _symedia_secupload_handoff_started
+    if _symedia_secupload_handoff_started:
+        return
+    service = app.extensions.get("mcc_symedia_secupload_handoff")
+    if not service:
+        return
+    _symedia_secupload_handoff_started = True
+    thread = threading.Thread(
+        target=_symedia_secupload_handoff_loop,
+        name="symedia-secupload-handoff",
+        daemon=True,
+    )
+    thread.start()
+
+
 def _home_summary_refresh_loop():
     time.sleep(1)
     while True:
@@ -671,6 +708,13 @@ def start_background_runtime():
     if str(os.getenv("MCC_TORRA_QUALITY_WATCH_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}:
         start_quality_watch_scheduler()
         started.append("quality-watch")
+    if _environment_flag_enabled(
+        "MCC_SYMEDIA_SECUPLOAD_HANDOFF_ENABLED",
+        environment=environment,
+    ):
+        start_symedia_secupload_handoff_scheduler()
+        if _symedia_secupload_handoff_started:
+            started.append("symedia-secupload-handoff")
     start_home_summary_refresh_scheduler()
     if _home_summary_refresh_started:
         started.append("home-summary-refresh")
@@ -1485,6 +1529,7 @@ def create_app(
     subscription_automation_service=None,
     moviepilot_backup_service=None,
     secupload_issue_service=None,
+    symedia_secupload_handoff_service=None,
     admin_store=None,
 ):
     environment = os.environ if access_environment is None else access_environment
@@ -1531,11 +1576,24 @@ def create_app(
     application.extensions["mcc_torra_quality_client"] = torra_quality_client or TorraQualityClient(
         resolve_torra_read_config(environment), clock=torra_clock
     )
-    register_symedia_read(
+    symedia_client = register_symedia_read(
         application,
         environment=environment,
         client_factory=symedia_client_factory,
         clock=symedia_clock,
+    )
+    register_symedia_secupload_handoff(
+        application,
+        symedia_secupload_handoff_service or SymediaSecuploadHandoffService(
+            SymediaSecuploadHandoffRepository(
+                discover_runtime.subscription_database_path(),
+                clock=torra_clock,
+            ),
+            torra_read_client,
+            symedia_client,
+            environment=environment,
+            clock=torra_clock,
+        ),
     )
     register_emby_refresh(application)
     register_task_chain(application)

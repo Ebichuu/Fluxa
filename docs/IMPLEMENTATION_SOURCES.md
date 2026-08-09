@@ -47,6 +47,7 @@
 | qB 暂停/恢复 | `app/qbittorrent_action_runtime.py` |
 | Torra 摘要、查重和推送 | `app/torra_read_runtime.py` |
 | Symedia 摘要 | `app/symedia_read_runtime.py` |
+| Torra 秒传单文件交接 | `app/symedia_secupload_handoff_runtime.py` |
 | 四步任务链 | `app/task_chain_runtime.py` |
 
 表中 `app/` 均指 `services/nasemby-core/app/`。

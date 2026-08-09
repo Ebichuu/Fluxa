@@ -47,6 +47,48 @@ class FakeTorraClient:
 
 
 class TorraReadRuntimeContractTests(unittest.TestCase):
+    def test_server_side_handoff_reads_jobs_and_only_required_secupload_routes(self):
+        from app.torra_read_runtime import TorraReadClient, TorraReadConfig
+
+        session = FakeSession([
+            FakeResponse(payload={"data": {"items": [{
+                "id": "observer-job-1", "status": "success",
+                "kind": "plugin.secupload_observer_candidate",
+            }]}}),
+            FakeResponse(payload={"data": {
+                "id": "observer-job-1", "status": "success",
+                "payload": {"config_item_id": "category-tv"},
+                "result": {"file_path": "/downloads/Show.S01E01.mkv"},
+            }}),
+            FakeResponse(payload={"data": {
+                "config_items": [{
+                    "item_id": "category-tv", "name": "电视剧", "enabled": True,
+                    "values": {
+                        "source_path": "/downloads",
+                        "dest_path": "/115/00-待整理/02-国产剧",
+                        "cookie": "must-not-escape",
+                    },
+                }],
+            }}),
+        ])
+        client = TorraReadClient(
+            TorraReadConfig(base_url="http://torra.example.test", token="fixed-token"),
+            session=session,
+        )
+
+        jobs = client.list_jobs("plugin.secupload_observer_candidate")
+        detail = client.get_job_snapshot("observer-job-1")
+        routes = client.get_secupload_config_routes()
+
+        self.assertEqual(jobs[0]["id"], "observer-job-1")
+        self.assertEqual(detail["result"]["file_path"], "/downloads/Show.S01E01.mkv")
+        self.assertEqual(routes, [{
+            "itemId": "category-tv", "name": "电视剧",
+            "sourcePath": "/downloads", "destPath": "/115/00-待整理/02-国产剧",
+        }])
+        self.assertNotIn("must-not-escape", str(routes))
+        self.assertEqual(session.requests[0][1], "/api/v1/jobs")
+
     def test_unconfigured_summary_and_public_route_boundary(self):
         from app import main
 

@@ -347,6 +347,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "MCC_PRIVATE_RSS_ENABLED=false",
             "MCC_TORRA_QUALITY_WATCH_ENABLED=false",
             "MCC_TORRA_REWASH_DOWNLOAD_ENABLED=false",
+            "MCC_SYMEDIA_SECUPLOAD_HANDOFF_ENABLED=false",
             "MCC_MOVIEPILOT_BACKUP_ENABLED=false",
             "MCC_PRESERVED_CORE_API_ENABLED=false",
             "TORRA_PUSH_ENABLED=false",
@@ -479,6 +480,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "_subscription_workbench_refresh_started",
             "_calendar_snapshot_refresh_started",
             "_torra_subscription_sync_started",
+            "_symedia_secupload_handoff_started",
             "_background_runtime_started",
         )
         previous_flags = {name: getattr(main, name) for name in flag_names}
@@ -530,6 +532,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "_subscription_workbench_refresh_started",
             "_calendar_snapshot_refresh_started",
             "_torra_subscription_sync_started",
+            "_symedia_secupload_handoff_started",
             "_background_runtime_started",
         )
         previous_flags = {name: getattr(main, name) for name in flag_names}
@@ -584,6 +587,7 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
             "_subscription_workbench_refresh_started",
             "_calendar_snapshot_refresh_started",
             "_torra_subscription_sync_started",
+            "_symedia_secupload_handoff_started",
             "_background_runtime_started",
         )
         previous_flags = {name: getattr(main, name) for name in flag_names}
@@ -608,6 +612,61 @@ class SourceContractTest(IsolatedActivityLogMixin, unittest.TestCase):
                 "torra-subscription-sync",
                 "candidate-source",
                 "quality-watch",
+                "home-summary-refresh",
+                "subscription-workbench-refresh",
+                "calendar-snapshot-refresh",
+            ],
+        )
+        self.assertEqual(started, started_threads)
+
+    def test_background_runtime_starts_symedia_handoff_only_when_enabled(self):
+        from app import main
+
+        started_threads = []
+
+        class FakeThread:
+            def __init__(self, *, target, name, daemon):
+                self.name = name
+
+            def start(self):
+                started_threads.append(self.name)
+
+        flag_names = (
+            "_hdhive_scheduler_started",
+            "_discover_preload_started",
+            "_subscription_scheduler_started",
+            "_candidate_source_scheduler_started",
+            "_private_rss_collector_started",
+            "_quality_watch_scheduler_started",
+            "_home_summary_refresh_started",
+            "_subscription_workbench_refresh_started",
+            "_calendar_snapshot_refresh_started",
+            "_torra_subscription_sync_started",
+            "_symedia_secupload_handoff_started",
+            "_background_runtime_started",
+        )
+        previous_flags = {name: getattr(main, name) for name in flag_names}
+        try:
+            for name in flag_names:
+                setattr(main, name, False)
+            with patch.object(main.threading, "Thread", FakeThread), patch.dict(
+                main.os.environ,
+                {"MCC_SYMEDIA_SECUPLOAD_HANDOFF_ENABLED": "true"},
+                clear=True,
+            ):
+                started = main.start_background_runtime()
+        finally:
+            for name, value in previous_flags.items():
+                setattr(main, name, value)
+
+        self.assertEqual(
+            started_threads,
+            [
+                "hdhive-checkin",
+                "discover-cache-preload",
+                "torra-subscription-sync",
+                "candidate-source",
+                "symedia-secupload-handoff",
                 "home-summary-refresh",
                 "subscription-workbench-refresh",
                 "calendar-snapshot-refresh",

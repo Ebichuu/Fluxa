@@ -49,6 +49,39 @@ class FakeSymediaClient:
 
 
 class SymediaReadRuntimeContractTests(unittest.TestCase):
+    def test_single_file_handoff_reuses_exact_transfer_task(self):
+        from app.symedia_read_runtime import SymediaReadClient, SymediaReadConfig
+
+        session = FakeSession([
+            FakeResponse(payload={"data": [{
+                "id": "transfer-tv",
+                "source_dir": "/CloudNAS/CloudDrive/115/00-待整理/02-国产剧",
+            }]}),
+            FakeResponse(payload={"success": True, "message": "任务已添加"}),
+        ])
+        client = SymediaReadClient(
+            SymediaReadConfig(base_url="http://symedia.example.test", token="fixed-token"),
+            session=session,
+        )
+
+        tasks = client.list_transfer_tasks()
+        result = client.manual_transfer_file(
+            "/CloudNAS/CloudDrive/115/00-待整理/02-国产剧/Show.S01E01.mkv",
+            "transfer-tv",
+        )
+
+        self.assertEqual(tasks[0]["id"], "transfer-tv")
+        self.assertTrue(result["success"])
+        self.assertEqual(session.requests[1][0], "POST")
+        self.assertTrue(session.requests[1][1].endswith("/api/v1/transfer/manual"))
+        self.assertEqual(session.requests[1][2]["json"], {
+            "items": [{
+                "type": "file",
+                "path": "/CloudNAS/CloudDrive/115/00-待整理/02-国产剧/Show.S01E01.mkv",
+            }],
+            "transfer_task_id": "transfer-tv",
+        })
+
     def test_unconfigured_summary_and_route_boundary(self):
         from app import main
 

@@ -118,15 +118,17 @@ class SymediaReadClient:
         self.access_token = token
         return token
 
-    def _attempt(self, pathname: str):
+    def _attempt(self, pathname: str, *, method="GET", json_payload=None):
         try:
             response = self.http.request(
-                "GET",
+                method,
                 self._api_url(pathname),
                 headers={
                     "Accept": "application/json",
+                    **({"Content-Type": "application/json"} if json_payload is not None else {}),
                     "Authorization": f"Bearer {self.access_token}",
                 },
+                **({"json": json_payload} if json_payload is not None else {}),
                 timeout=REQUEST_TIMEOUT_SECONDS,
             )
         except requests.RequestException as exc:
@@ -137,15 +139,65 @@ class SymediaReadClient:
             data = {}
         return response.status_code, data
 
-    def _authed_get(self, pathname: str):
+    def _authed_request(self, pathname: str, *, method="GET", json_payload=None):
         if not self.access_token:
             self._login()
-        status, data = self._attempt(pathname)
+        status, data = self._attempt(pathname, method=method, json_payload=json_payload)
         if status in {401, 403} and not self.config.token:
             self.access_token = ""
             self._login()
-            status, data = self._attempt(pathname)
+            status, data = self._attempt(pathname, method=method, json_payload=json_payload)
         return status, data
+
+    def _authed_get(self, pathname: str):
+        return self._authed_request(pathname)
+
+    def list_transfer_tasks(self) -> list[dict]:
+        if not self.is_configured():
+            raise RuntimeError("Symedia 未配置")
+        status, data = self._authed_get("transfer/transfer_list")
+        if status in {401, 403}:
+            raise RuntimeError("Symedia 认证失败：Token 无效或账号密码错误")
+        if status >= 400:
+            raise RuntimeError(f"Symedia 归档任务读取失败：{status}")
+        body = data.get("data") if isinstance(data, dict) and "data" in data else data
+        rows = body
+        if isinstance(body, dict):
+            rows = next(
+                (
+                    body.get(key)
+                    for key in ("items", "list", "transfer_list", "tasks")
+                    if isinstance(body.get(key), list)
+                ),
+                None,
+            )
+        if not isinstance(rows, list):
+            raise RuntimeError("Symedia 归档任务响应结构无效")
+        return [dict(row) for row in rows if isinstance(row, dict)]
+
+    def manual_transfer_file(self, file_path: str, transfer_task_id: str) -> dict:
+        if not self.is_configured():
+            raise RuntimeError("Symedia 未配置")
+        file_path = str(file_path or "").strip()
+        transfer_task_id = str(transfer_task_id or "").strip()
+        if not file_path.startswith("/") or not transfer_task_id:
+            raise ValueError("Symedia 单文件归档目标无效")
+        status, data = self._authed_request(
+            "transfer/manual",
+            method="POST",
+            json_payload={
+                "items": [{"type": "file", "path": file_path}],
+                "transfer_task_id": transfer_task_id,
+            },
+        )
+        if status in {401, 403}:
+            raise RuntimeError("Symedia 认证失败：Token 无效或账号密码错误")
+        if status >= 400:
+            raise RuntimeError(f"Symedia 单文件归档提交失败：{status}")
+        if not isinstance(data, dict) or data.get("success") is False:
+            message = str(data.get("message") or "") if isinstance(data, dict) else ""
+            raise RuntimeError(message or "Symedia 未接受单文件归档任务")
+        return data
 
     def list_transfer_history(self, count=200, page=1) -> dict:
         if not self.is_configured():

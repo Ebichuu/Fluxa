@@ -31,6 +31,7 @@ RESTART_REQUIRED = {
     "MCC_SUBSCRIPTION_SCHEDULER_ENABLED",
     "MCC_PRIVATE_RSS_ENABLED",
     "MCC_TORRA_QUALITY_WATCH_ENABLED",
+    "MCC_SYMEDIA_SECUPLOAD_HANDOFF_ENABLED",
 }
 
 
@@ -41,6 +42,7 @@ FIELD_LABELS = {
     "MCC_PRIVATE_RSS_ENABLED": "启用私人 RSS 采集",
     "MCC_TORRA_QUALITY_WATCH_ENABLED": "启用 Torra 质量观察",
     "MCC_TORRA_REWASH_DOWNLOAD_ENABLED": "允许下载升级候选",
+    "MCC_SYMEDIA_SECUPLOAD_HANDOFF_ENABLED": "启用秒传单文件自动入库",
     "MCC_MOVIEPILOT_BACKUP_ENABLED": "启用 MoviePilot 备用通道",
     "MCC_PRESERVED_CORE_API_ENABLED": "启用旧核心兼容接口",
     "MCC_INTEGRATION_PROBE_ENABLED": "启用服务连通性探测",
@@ -140,6 +142,7 @@ FIELD_DESCRIPTIONS = {
     "MCC_PRIVATE_RSS_ENABLED": "允许添加私人 RSS 来源并采集种子；修改后需要重启。",
     "MCC_TORRA_QUALITY_WATCH_ENABLED": "观察 Torra 已下载版本并生成质量升级建议；修改后需要重启。",
     "MCC_TORRA_REWASH_DOWNLOAD_ENABLED": "允许人工确认后下载质量升级候选，关闭时仅分析。",
+    "MCC_SYMEDIA_SECUPLOAD_HANDOFF_ENABLED": "只消费启用后新增且成功的 Torra 秒传任务，并把对应单个文件交给 Symedia；不会扫描历史待整理目录，修改后需要重启。",
     "MCC_MOVIEPILOT_BACKUP_ENABLED": "Torra 主链无结果时允许使用 MoviePilot 备用通道。",
     "MCC_PRESERVED_CORE_API_ENABLED": "保留旧 NasEmby 接口兼容能力，新部署通常保持关闭。",
     "MCC_INTEGRATION_PROBE_ENABLED": "允许主动探测已配置服务的连通性。",

@@ -13,6 +13,7 @@
 - 30 秒缓存的 NAS 系统指标，以及统一脱敏、可筛选的 v2 活动日志。
 - 115、Telegram、HDHive / pansou 和 MoviePilot 的 v2 细分接口继续保留；MoviePilot 阶段 7 已增加默认关闭的人工备用预览/推送，其他能力延期。
 - Emby、qBittorrent、Torra、Symedia 的服务端适配和凭据隔离；Symedia 摘要把 transfer history 与归档监控、云盘监听、Webhook、STRM、归档调度和文件观察分别建模。实机 `/api/v1/system/sync_stats` 只提供按日 STRM 数量，不能绑定媒体目标；STRM 独立结果继续保持 `unknown + NOT_INTEGRATED`。
+- 可选的 Torra 秒传 → Symedia 单文件交接：首次启用只建立当前水位，之后每 30 秒消费新成功秒传 job；按 Torra 配置源/目标与唯一 Symedia 归档任务严格映射，只提交一个精确媒体文件，不扫描 115 历史待整理目录。提交、重试和 Symedia 历史确认均写入 SQLite，旧同名历史不能确认新任务。
 - 统一任务链、qB 暂停/恢复和证据驱动的 Emby 刷新。
 - 六阶段独立事实契约与统一结果派生：`torra/qb/cloud115/symedia/strm/emby` 分别保存；P0.2 已接入 Torra、qB、Symedia 与 Emby 明确证据，115 分类摘要不能绑定媒体时及 STRM 独立来源未接入时保持 `unknown + missing`。任务、首页、作品、追更和日历已消费新结果，旧状态只由六阶段事实作兼容投影。
 - 全局作品搜索与单作品生命周期聚合：合并本地追更、已识别 RSS、任务、日历和 Emby，并在本地无结果时使用 TMDB 只读补充。
@@ -57,6 +58,7 @@ NASEMBY_CORE_WRITE_ENABLED=false
 MCC_PRIVATE_RSS_ENABLED=false
 MCC_TORRA_QUALITY_WATCH_ENABLED=false
 MCC_TORRA_REWASH_DOWNLOAD_ENABLED=false
+MCC_SYMEDIA_SECUPLOAD_HANDOFF_ENABLED=false
 MCC_MOVIEPILOT_BACKUP_ENABLED=false
 MCC_PRESERVED_CORE_API_ENABLED=false
 TORRA_PUSH_ENABLED=false
@@ -74,6 +76,7 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - 旧订阅总调度器只在显式开启环境闸门时启动；独立候选来源调度器只在“每日候选更新”开启时更新本地候选池，不访问 Torra 搜索、推送或下载入口。
 - 追更洗版协调器只在 `MCC_TORRA_QUALITY_WATCH_ENABLED=true` 时启动，并继续要求 SQLite 中的追更设置开启；自动 RSS 入口只读 Torra 订阅和权重规则。可选缺集 PT 搜索兜底还要求 `torra_quality_missing_fallback_enabled=true`，只使用已关联日历中的明确已播缺集，默认关闭。
 - RSS 精准下载还要求 `executionMode=manual`、`MCC_TORRA_REWASH_DOWNLOAD_ENABLED=true`、`TORRA_DOWNLOADER_ID` 与订阅下载器一致、10 分钟内有效的产物预览和人工确认。Torra 明确提供 `qb_category` 或 `download_category` 时原样提交；缺失时省略 qB 分类，普通媒体 `category`、保存目录、标题和历史任务均不能用于推断。打开评分闸门不会自动下载，设置接口在实机验收前拒绝 `automatic`。
+- 秒传单文件交接同时要求总写闸门和 `MCC_SYMEDIA_SECUPLOAD_HANDOFF_ENABLED=true`，修改后重启生效。首次启用不会补扫历史文件；目标配置、目录边界或唯一归档任务任一无法确认时拒绝写入。回滚只需关闭该开关并重启，既有 115 文件和 Symedia 历史不受影响。
 - MoviePilot 人工备用还要求 `MCC_MOVIEPILOT_BACKUP_ENABLED=true`、观察单元全部 `observation_expired`、Torra/qB 预检通过和明确确认；已有订阅只重搜，没有订阅才复用创建逻辑，默认不接入自动调度。
 - NasEmby 的 115、Telegram、HDHive、缓存预热和 provider 核心 API 保留在统一端口的 URL map 中，但默认返回 `503 PRESERVED_CORE_API_DISABLED`。
 - qB 与 Emby 手动动作仍由各自的确认、目标复查和冷却保护；只读验收阶段不得调用。
@@ -85,7 +88,7 @@ MCC_CLOUD_TRANSFER_ENABLED=false
 - `/api/discover/*`：发现、趋势、搜索和资源搜索。
 - `/api/subscriptions/*`：唯一台账、配置、详情、日历和受保护动作。
 - `/api/media/*`：影院大厅与 Emby。
-- `/api/qbittorrent/*`、`/api/torra/summary`、`/api/symedia/summary`；qB 摘要兼容保留原始计数，并新增可选共享 `assessment`，应用内同一客户端通过 5 秒线程安全单飞快照让首页、任务链和控制室复用相同 `lastCheckedAt/counts.active`，任务链和控制室按同一观察时间、900 秒窗口与优先级判断；Torra 摘要可选增加 `searchAutomation`，只读取正式 jobs、job detail 与 schedules 端点，单次批次只接受明确 `auto/rss` 模式，订阅级模式缺失时保持 `unsupported` 并阻断 RSS 优先调整预览；Symedia 摘要兼容保留原统计并新增七项能力证据和脱敏洗版摘要，只有可证明的成功评分替换进入替换计数；缺失状态仍返回 `evidence_insufficient`，界面显示“暂未确认”。
+- `/api/qbittorrent/*`、`/api/torra/summary`、`/api/symedia/summary`；qB 摘要兼容保留原始计数，并新增可选共享 `assessment`，应用内同一客户端通过 5 秒线程安全单飞快照让首页、任务链和控制室复用相同 `lastCheckedAt/counts.active`，任务链和控制室按同一观察时间、900 秒窗口与优先级判断；Torra 摘要可选增加 `searchAutomation`，只读取正式 jobs、job detail 与 schedules 端点，单次批次只接受明确 `auto/rss` 模式，订阅级模式缺失时保持 `unsupported` 并阻断 RSS 优先调整预览；Symedia 摘要兼容保留原统计并新增七项能力证据和脱敏洗版摘要，只有可证明的成功评分替换进入替换计数；缺失状态仍返回 `evidence_insufficient`，界面显示“暂未确认”。`/api/symedia/secupload-handoff` 只返回交接水位、脱敏计数与最近状态，不公开路径、Torra 配置或凭据。
 - `/api/tasks/chain`：订阅到入库的统一证据链。
 - `/api/v2/tasks/summary`：返回唯一任务链、健康/身份/执行三维状态、兼容 `userCounts`、新 `outcomeCounts`、阶段和服务轻量摘要，支持 ETag 条件读取。
 - `/api/v2/tasks/chains`：按 `chainId/targetKey` 合并重复来源，默认分页返回 20 条摘要；支持可重复 `outcomeState`、兼容 `userState`、可播放日期、健康状态、身份、增量时间及独立 `qbActive=1` 筛选，后者按 `qbControl.active` 在分页前保留所有当前下载器活跃链和 orphan qB 任务，不受媒体结果影响；顶层返回 `outcomeState/playableAt`，任务中心按“需要处理 / 处理中 / 已可播放 / 无需处理”消费新结果。
