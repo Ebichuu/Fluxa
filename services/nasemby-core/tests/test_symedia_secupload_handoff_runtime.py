@@ -107,6 +107,28 @@ class SymediaSecuploadHandoffRuntimeTests(unittest.TestCase):
         self.assertEqual(self.symedia.submissions, [])
         self.assertEqual(self.repository.state()["cursor_created_at"], "2026-08-09T01:00:00.000Z")
 
+    def test_naive_torra_beijing_timestamp_before_watermark_stays_ignored(self):
+        self.torra.jobs = [observer_job("old-local-job", "2026-08-09 08:59:00")]
+        self.service.run_once()
+
+        repeated = self.service.run_once()
+
+        self.assertEqual(repeated["discovered"], 0)
+        self.assertEqual(self.repository.active_items(), [])
+        self.assertEqual(self.symedia.submissions, [])
+
+    def test_naive_torra_beijing_timestamp_after_watermark_is_discovered(self):
+        self.service.run_once()
+        self.now[0] += timedelta(minutes=1)
+        file_path = "/downloads/06-variety/Local.Time.S01E01.mkv"
+        self.torra.jobs = [observer_job("new-local-job", "2026-08-09 09:01:00")]
+        self.torra.details["new-local-job"] = observer_detail("new-local-job", file_path)
+
+        result = self.service.run_once()
+
+        self.assertEqual(result["discovered"], 1)
+        self.assertEqual(result["submitted"], 1)
+
     def test_job_at_the_exact_cursor_timestamp_is_not_lost(self):
         self.service.run_once()
         created = "2026-08-09T01:00:00.000Z"

@@ -52,6 +52,22 @@ def _iso(value):
     return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _torra_job_time(value):
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(_text(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    # Torra serializes job timestamps without an offset in the fnOS local
+    # timezone. Treating those values as UTC moves the watermark eight hours
+    # into the future and makes pre-enable jobs look new.
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=BEIJING_TZ)
+    return parsed.astimezone(timezone.utc)
+
+
 def _history_time(row):
     value = _field(row, "date", "created_at", "createdAt", "updated_at", "updatedAt")
     if isinstance(value, datetime):
@@ -258,7 +274,7 @@ class SymediaSecuploadHandoffService:
 
     @staticmethod
     def _job_created_at(job):
-        return _text(_field(job, "created_at", "createdAt", "started_at", "startedAt"))
+        return _torra_job_time(_field(job, "created_at", "createdAt", "started_at", "startedAt"))
 
     @staticmethod
     def _job_status(job):
