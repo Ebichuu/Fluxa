@@ -63,7 +63,12 @@ class SubscriptionWorkbenchCacheTests(unittest.TestCase):
             repository = self.build_repository(directory)
             repository.write_success(payload(), now=NOW)
             restarted = self.build_repository(directory, NOW + timedelta(seconds=10))
-            service = SubscriptionWorkbenchService(Flask(__name__), cache_repository=restarted, clock=lambda: NOW)
+            service = SubscriptionWorkbenchService(
+                Flask(__name__),
+                cache_repository=restarted,
+                clock=lambda: NOW,
+                local_subscription_loader=lambda **_kwargs: {"items": []},
+            )
 
             result = service.snapshot(limit=1, offset=1, media_type="tv", query="小芳")
 
@@ -115,13 +120,78 @@ class SubscriptionWorkbenchCacheTests(unittest.TestCase):
     def test_empty_cache_returns_immediate_unknown_shape_without_live_collection(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = self.build_repository(directory)
-            service = SubscriptionWorkbenchService(Flask(__name__), cache_repository=repository, clock=lambda: NOW)
+            service = SubscriptionWorkbenchService(
+                Flask(__name__),
+                cache_repository=repository,
+                clock=lambda: NOW,
+                local_subscription_loader=lambda **_kwargs: {"items": []},
+            )
 
             result = service.snapshot(limit=24)
 
             self.assertEqual(result["confirmation"], "unknown")
             self.assertEqual(result["items"], [])
             self.assertEqual(result["stats"]["total"], 0)
+
+    def test_cached_snapshot_overlays_new_local_subscription_immediately(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = self.build_repository(directory)
+            repository.write_success(payload(), now=NOW)
+            local_row = {
+                "subscription_key": "tv:genius:tmdb:289116:season:1",
+                "title": "天才，女友",
+                "media_type": "tv",
+                "tmdb_id": "289116",
+                "season_number": 1,
+                "origin": "manual",
+                "source_label": "手动订阅",
+                "updated_at": "2026-08-05 10:01:00",
+            }
+            service = SubscriptionWorkbenchService(
+                Flask(__name__),
+                {"TORRA_PUSH_ENABLED": "false"},
+                cache_repository=repository,
+                clock=lambda: NOW,
+                local_subscription_loader=lambda **_kwargs: {"items": [local_row]},
+            )
+
+            result = service.snapshot(limit=24, media_type="tv", query="天才")
+
+            self.assertEqual(result["page"]["total"], 1)
+            self.assertEqual(result["items"][0]["title"], "天才，女友")
+            self.assertEqual(result["items"][0]["reconciliationState"], "only_fluxa")
+            self.assertEqual(result["items"][0]["torra"]["pushState"], "disabled")
+            self.assertEqual(result["stats"]["total"], 3)
+            self.assertEqual(result["stats"]["onlyFluxa"], 1)
+
+    def test_cached_snapshot_keeps_external_evidence_when_local_metadata_updates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = self.build_repository(directory)
+            value = payload()
+            value["items"][0].update({
+                "origin": "manual",
+                "qb": {"status": "active", "detail": "下载中"},
+            })
+            repository.write_success(value, now=NOW)
+            local_row = {
+                "subscription_key": "a",
+                "title": "小芳（新标题）",
+                "media_type": "tv",
+                "tmdb_id": "296003",
+                "season_number": 1,
+                "origin": "manual",
+            }
+            service = SubscriptionWorkbenchService(
+                Flask(__name__),
+                cache_repository=repository,
+                clock=lambda: NOW,
+                local_subscription_loader=lambda **_kwargs: {"items": [local_row]},
+            )
+
+            result = service.snapshot(limit=24, query="新标题")
+
+            self.assertEqual(result["items"][0]["title"], "小芳（新标题）")
+            self.assertEqual(result["items"][0]["qb"], {"status": "active", "detail": "下载中"})
 
 
 if __name__ == "__main__":

@@ -346,6 +346,31 @@ def _reconciliation_action_required(items):
     return len(seen)
 
 
+def _workbench_stats(items):
+    rows = [item for item in (items or []) if isinstance(item, dict)]
+    playable_count = sum(item.get("outcomeState") == "playable" for item in rows)
+    return {
+        "total": len(rows),
+        "movie": sum(item.get("mediaType") == "movie" for item in rows),
+        "tv": sum(item.get("mediaType") == "tv" for item in rows),
+        "pending": len(rows) - playable_count,
+        "following": sum(
+            (item.get("torraFact") or {}).get("state") in {"waiting", "active"}
+            and item.get("outcomeState") != "action_required"
+            for item in rows
+        ),
+        "playable": playable_count,
+        "completed": playable_count,
+        "actionRequired": sum(
+            item.get("outcomeState") == "action_required"
+            for item in rows
+        ),
+        "inLibrary": sum(item.get("library", {}).get("status") == "done" for item in rows),
+        "reconciliationActionRequired": _reconciliation_action_required(rows),
+        **_reconciliation_composition(rows),
+    }
+
+
 def _chain_item_for_row(row, chain):
     mapped = map_subscription_item(row) or {}
     candidates = [
@@ -428,11 +453,94 @@ def _item_snapshot(row, chain_item=None):
 
 
 class SubscriptionWorkbenchService:
-    def __init__(self, app: Flask, environment=None, clock=None, cache_repository=None):
+    def __init__(
+        self,
+        app: Flask,
+        environment=None,
+        clock=None,
+        cache_repository=None,
+        local_subscription_loader=None,
+    ):
         self.app = app
         self.environment = environment if environment is not None else {}
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.cache_repository = cache_repository
+        self.local_subscription_loader = (
+            local_subscription_loader or discover_runtime.load_subscription_items
+        )
+
+    def _overlay_current_local_subscriptions(self, payload):
+        """Keep local intent immediately visible while external evidence refreshes."""
+        base = dict(payload or {})
+        cached_items = [
+            dict(item) for item in (base.get("items") or []) if isinstance(item, dict)
+        ]
+        try:
+            raw = self.local_subscription_loader(
+                with_progress=False,
+                remove_completed=False,
+                persist_progress=False,
+            )
+        except Exception:
+            return base
+
+        cached_positions = {
+            str(item.get("id") or ""): index
+            for index, item in enumerate(cached_items)
+            if str(item.get("id") or "")
+        }
+        new_items = []
+        updated_existing = False
+        poster_backfill_ids = set(base.get("posterBackfillIds") or [])
+        for source_row in (raw.get("items") or []):
+            if not isinstance(source_row, dict):
+                continue
+            row = dict(source_row)
+            mapped = map_subscription_item(row) or {}
+            local_key = str(
+                mapped.get("id")
+                or discover_runtime.get_subscription_item_key(row)
+                or ""
+            )
+            if not local_key:
+                continue
+            mapped["id"] = local_key
+            mapped["scope"] = _scope(row)
+            mapped["missingEpisodes"] = _missing_episodes(row)
+            position = cached_positions.get(local_key)
+            if position is not None:
+                cached_item = cached_items[position]
+                for optional_key in (
+                    "posterUrl", "backdropUrl", "sourceLabel", "year",
+                    "createdAt", "updatedAt", "seasonName", "tmdbId",
+                ):
+                    if mapped.get(optional_key) in (None, "") and cached_item.get(optional_key):
+                        mapped.pop(optional_key, None)
+                cached_items[position] = {**cached_item, **mapped}
+                updated_existing = True
+                continue
+
+            item = _item_snapshot(row)
+            item["torra"] = _torra_push_snapshot(
+                row,
+                None,
+                _truthy(self.environment.get("TORRA_PUSH_ENABLED")),
+            )
+            item["reconciliationState"] = "only_fluxa"
+            item["fulfillmentState"] = "following"
+            new_items.append(item)
+            if not str(item.get("posterUrl") or "").strip() and str(item.get("tmdbId") or "").isdigit():
+                poster_backfill_ids.add(local_key)
+
+        if not new_items and not updated_existing:
+            return base
+        # Repository order is newest first. New local saves therefore appear on the
+        # first page immediately instead of waiting for the full external refresh.
+        combined = new_items + cached_items
+        base["items"] = combined
+        base["stats"] = _workbench_stats(combined)
+        base["posterBackfillIds"] = list(poster_backfill_ids)
+        return base
 
     def _candidate_scheduler_snapshot(self):
         registry = self.app.extensions.get("mcc_scheduler_status")
@@ -728,27 +836,7 @@ class SubscriptionWorkbenchService:
             ):
                 remote_item["_posterBackfillId"] = str(remote_item.get("id") or "")
             mapped_items.append(remote_item)
-        playable_count = sum(item.get("outcomeState") == "playable" for item in mapped_items)
-        stats = {
-            "total": len(mapped_items),
-            "movie": sum(item.get("mediaType") == "movie" for item in mapped_items),
-            "tv": sum(item.get("mediaType") == "tv" for item in mapped_items),
-            "pending": len(mapped_items) - playable_count,
-            "following": sum(
-                (item.get("torraFact") or {}).get("state") in {"waiting", "active"}
-                and item.get("outcomeState") != "action_required"
-                for item in mapped_items
-            ),
-            "playable": playable_count,
-            "completed": playable_count,
-            "actionRequired": sum(
-                item.get("outcomeState") == "action_required"
-                for item in mapped_items
-            ),
-            "inLibrary": sum(item.get("library", {}).get("status") == "done" for item in mapped_items),
-            "reconciliationActionRequired": _reconciliation_action_required(mapped_items),
-            **_reconciliation_composition(mapped_items),
-        }
+        stats = _workbench_stats(mapped_items)
         chain_available = 'chain_payload' in locals() and isinstance(chain_payload, dict) and not chain_error
         unknown_outcomes = sum(
             item.get("outcomeState") == "evidence_insufficient"
@@ -957,7 +1045,7 @@ class SubscriptionWorkbenchService:
             return self.live_snapshot(limit=limit, offset=offset, media_type=media_type, query=query)
         cached = self.cache_repository.get(now=self.clock())
         if not cached or not cached.get("payload"):
-            return self._project_cached({
+            empty_payload = {
                 "capabilities": [],
                 "stats": {
                     "total": 0, "movie": 0, "tv": 0, "pending": 0, "following": 0,
@@ -972,9 +1060,22 @@ class SubscriptionWorkbenchService:
                 "rss": {},
                 "scheduler": {},
                 "reconciliation": {"ok": False, "summary": {}, "items": []},
-            }, limit=limit, offset=offset, media_type=media_type, query=query, cache_meta=cached or {})
+            }
+            return self._project_cached(
+                self._overlay_current_local_subscriptions(empty_payload),
+                limit=limit,
+                offset=offset,
+                media_type=media_type,
+                query=query,
+                cache_meta=cached or {},
+            )
         return self._project_cached(
-            cached["payload"], limit=limit, offset=offset, media_type=media_type, query=query, cache_meta=cached
+            self._overlay_current_local_subscriptions(cached["payload"]),
+            limit=limit,
+            offset=offset,
+            media_type=media_type,
+            query=query,
+            cache_meta=cached,
         )
 
 

@@ -1047,6 +1047,25 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       });
   }, [loadSubs, subscriptionsOnly]);
 
+  useEffect(() => {
+    if (!subscriptionsOnly || workbench?.refreshState !== 'refreshing') return undefined;
+    let cancelled = false;
+    let timer = 0;
+    let remainingPolls = 72;
+    const schedule = () => {
+      if (cancelled || remainingPolls <= 0) return;
+      remainingPolls -= 1;
+      timer = window.setTimeout(() => {
+        void loadSubs().finally(schedule);
+      }, 5000);
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [loadSubs, subscriptionsOnly, workbench?.refreshState]);
+
   const loadMoreSubs = useCallback(async () => {
     const page = workbench?.page;
     const nextOffset = page?.nextOffset;
@@ -2864,6 +2883,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             <small className="subscription-workbench-summary__updated">
               {subscriptionReadAtLabel(workbench.generatedAt || workbench.lastReadAt)}
               {workbench.stale && ' · 正在显示上一次可靠结果'}
+              {workbench.refreshState === 'refreshing' && ' · 正在更新'}
               {workbench.refreshState === 'failed' && ' · 更新暂时失败'}
             </small>
           </section>
