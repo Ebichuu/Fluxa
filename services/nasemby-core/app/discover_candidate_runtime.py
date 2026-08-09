@@ -170,7 +170,12 @@ class DiscoverCandidateService:
         if duplicate:
             blockers.append("同一媒体和范围已经在追更中")
         capability = manual_follow_snapshot(self.environment, self.config_loader() or {})
-        blockers.extend(capability.get("blockers") or [])
+        # ``saved_only`` is an executable manual-follow mode: the local intent is
+        # persisted even when Torra push (or another downstream provider) is
+        # disabled.  Capability blockers are hard blockers only when local
+        # subscription writes themselves are unavailable.
+        if capability.get("state") == "write_disabled":
+            blockers.extend(capability.get("blockers") or [])
         return {
             "ok": True,
             "candidate": self._public_candidate(row),

@@ -554,7 +554,7 @@ Symedia 历史归档只接受文件单元或持久事件的明确 `eventAt`，�
 
 **变更内容**：新增 `secupload_issue_runtime.py` 纯函数秒传状态机：状态固定 `normal/recovering/action_required/unknown`，600 秒宽限、86400 秒计划上限，时间统一按带时区绝对时间比较；不再只凭失败数或 `nextRunAt` 非空判定。新增 `/api/v2/system-issues/secupload-failures` 只读摘要及重试预检/确认执行/动作轮询三个接口；手动重试复用 `provider_actions`（目标键 `system:torra:secupload`），幂等重放返回原动作、竞争返回 409、run ID 保存为 `external_job_id` 并经插件 `recent_runs` 复查。分类摘要使用稳定公开 ID，不泄露 Torra 原始分类 ID、插件 key、目录或路径；摘要以可选 `systemIssues` 附加到任务 summary/chains 与首页，recovering 用处理中语义、不进入红色真实异常计数，首页深链改为 `/tasks?systemIssue=secupload_failures`。
 
-追更能力接口拆分 `manualFollow` 与 `sourceScan`，后台来源扫描不再参与手动加入结果判定；保存接口按 replaced、队列、推送与错误生成五类 `activation`（已推送/已入队/仅保存/已存在/推送失败），异步入队只返回 `saved_and_queued`。活动 API 新增 `view=important`：在 limit 前折叠 `request_id=background` 且 success/info/skip 的相同 category/action/status 后台活动，折叠项返回 `repeatCount/firstTime/lastTime`，error 与人工请求永不折叠，raw 默认行为不变。
+追更能力接口拆分 `manualFollow` 与 `sourceScan`，后台来源扫描不再参与手动加入结果判定；保存接口按 replaced、队列、推送与错误生成五类 `activation`（已推送/已入队/仅保存/已存在/推送失败），异步入队只返回 `saved_and_queued`。`manualFollow.state=saved_only` 是可执行的本地保存模式，发现候选预检不得把下游推送关闭当成硬阻塞；只有本地写入关闭、身份或范围不完整、重复目标才阻止确认保存。活动 API 新增 `view=important`：在 limit 前折叠 `request_id=background` 且 success/info/skip 的相同 category/action/status 后台活动，折叠项返回 `repeatCount/firstTime/lastTime`，error 与人工请求永不折叠，raw 默认行为不变。
 
 **变更理由**：实机秒传失败此前只能显示红色计数，无法区分"等待 18:00 自动重试"与"需要人工介入"；手动加入追更的结果由前端用调度器运行状态猜测，出现"仅保存"与"自动获取"互相矛盾的文案；重复后台同步会把更早的人工失败挤出活动窗口。
 

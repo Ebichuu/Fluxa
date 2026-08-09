@@ -175,6 +175,49 @@ class DiscoverCandidateRuntimeTests(unittest.TestCase):
             self.assertEqual(saves, [])
             self.assertEqual(activities, [])
 
+    def test_saved_only_capability_remains_ready_and_can_follow(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SubscriptionRepository(Path(directory) / "subscriptions.sqlite3")
+            candidate_id = self.add_candidate(repository)
+            saves = []
+
+            def save(payload):
+                saves.append(payload)
+                return {
+                    "saved_item": {
+                        **payload["item"],
+                        "subscription_key": "tv:200:season:1",
+                    },
+                    "replaced": False,
+                    "subscription_task": {
+                        "mode": "torra",
+                        "enabled": False,
+                        "queued": 0,
+                        "reason": "允许向 Torra 创建订阅已关闭",
+                    },
+                }
+
+            service = self.service(
+                repository,
+                environment={
+                    "NASEMBY_CORE_WRITE_ENABLED": "true",
+                    "TORRA_PUSH_ENABLED": "false",
+                },
+                save_callback=save,
+            )
+
+            preview = service.preview(candidate_id)
+            followed = service.follow(candidate_id, {
+                "confirm": True,
+                "idempotencyKey": "saved-only-key-123",
+            })
+
+            self.assertTrue(preview["ready"])
+            self.assertEqual(preview["manualFollow"]["state"], "saved_only")
+            self.assertEqual(preview["blockers"], [])
+            self.assertEqual(followed["activation"]["state"], "saved_only")
+            self.assertEqual(len(saves), 1)
+
     def test_follow_requires_confirmation_valid_key_and_write_capability(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = SubscriptionRepository(Path(directory) / "subscriptions.sqlite3")
