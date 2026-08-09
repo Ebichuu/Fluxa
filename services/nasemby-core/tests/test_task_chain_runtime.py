@@ -56,6 +56,51 @@ def qb_task(**overrides):
 
 
 class TaskChainRuntimeContractTests(unittest.TestCase):
+    def test_symedia_runtime_version_rule_rejection_projects_no_action(self):
+        from app.task_chain_runtime import build_task_chain
+        from app.task_chain_v2_runtime import adapt_task_chain
+
+        now = datetime(2026, 8, 6, 10, 10, tzinfo=timezone.utc)
+        input_data = {
+            "subscriptions": [],
+            "torraRows": [],
+            "torraUpload": {"connected": True, "readable": True, "perFileEvidence": False},
+            "qb": qb_summary([]),
+            "symediaRows": [{
+                "id": "symedia-version-rule-protected",
+                "title": "版本规则保护测试",
+                "type": "tv",
+                "tmdbid": "286346",
+                "season": 1,
+                "episode": 7,
+                "src": "/115/Test.Show.S01E07.mkv",
+                "dest": "",
+                "status": False,
+                "errmsg": "源文件 Test.Show.S01E07.mkv 未命中任何允许入库的版本规则，取消入库",
+                "date": "2026-08-06 18:05:18",
+            }],
+            "symediaTotal": 1,
+            "embyIndex": {"movies": set(), "series": {"286346"}, "episodes": set()},
+            "urls": {"qb": "", "torra": "", "symedia": "http://symedia", "emby": "http://emby"},
+            "now": now,
+        }
+
+        payload = adapt_task_chain(build_task_chain(input_data), now=now)
+        item = payload["items"][0]
+        symedia_fact = next(
+            fact for fact in item["pipelineFacts"] if fact["stage"] == "symedia"
+        )
+
+        self.assertEqual(symedia_fact["state"], "protected")
+        self.assertEqual(
+            symedia_fact["units"][0]["reasonCode"],
+            "QUALITY_VERSION_RULE_NOT_MATCHED",
+        )
+        self.assertEqual(item["pipelineOutcome"]["state"], "protected")
+        self.assertEqual(item["outcomeState"], "protected")
+        self.assertEqual(item["userState"], "no_action")
+        self.assertEqual(payload["problemGroupSummary"]["actionRequiredGroups"], 0)
+
     def test_legacy_state_is_projected_from_pipeline_facts_only(self):
         from app.pipeline_source_fact_runtime import build_pipeline_source_facts
         from app.task_chain_runtime import _orphan_qb_item, build_task_chain

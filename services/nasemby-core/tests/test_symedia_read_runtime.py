@@ -231,7 +231,7 @@ class SymediaReadRuntimeContractTests(unittest.TestCase):
             {"id": "success-new", "src": "/downloads/show/E01.mkv", "status": True, "date": "2026-07-16 11:50:00"},
             {"id": "success-duplicate", "src": "/downloads/show/E01.mkv", "status": True, "date": "2026-07-16 11:40:00"},
             {"id": "low-score", "src": "/downloads/show/E02.mkv", "status": False, "errmsg": "源文件评分低于目标文件", "date": "2026-07-16 11:30:00"},
-            {"id": "version-rule", "src": "/downloads/show/E06.mkv", "status": False, "errmsg": "未命中允许入库的版本规则", "date": "2026-07-16 11:25:00"},
+            {"id": "version-rule", "src": "/downloads/show/E06.mkv", "status": False, "errmsg": "源文件 E06.mkv 未命中任何允许入库的版本规则，取消入库", "date": "2026-07-16 11:25:00"},
             {"id": "cancelled", "src": "/downloads/show/E03.mkv", "status": False, "errmsg": "取消覆盖", "date": "2026-07-16 11:20:00"},
             {"id": "failed", "src": "/downloads/show/E04.mkv", "status": False, "errmsg": "媒体识别失败", "date": "2026-07-16 11:10:00"},
             {"id": "unknown", "src": "/downloads/show/E05.mkv", "date": "2026-07-16 11:00:00"},

@@ -103,6 +103,7 @@ class TaskExceptionRuntimeTests(unittest.TestCase):
         cases = {
             "源文件评分低于目标文件，取消覆盖": "QUALITY_SCORE_LOWER",
             "源文件权重低于或等于目标，不执行覆盖": "QUALITY_WEIGHT_NOT_HIGHER",
+            "源文件 Test.S01E07.mkv 未命中任何允许入库的版本规则，取消入库": "QUALITY_VERSION_RULE_NOT_MATCHED",
             "未命中允许入库的版本规则": "QUALITY_VERSION_RULE_NOT_MATCHED",
             "已有更高质量版本": "QUALITY_HIGHER_VERSION_EXISTS",
             "重复资源跳过": "DUPLICATE_RESOURCE_SKIPPED",

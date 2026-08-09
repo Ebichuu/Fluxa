@@ -242,7 +242,7 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
         protected = build_pipeline_source_facts(context(symediaRows=[{
             "id": "version-rule-protected",
             "status": False,
-            "errmsg": "未命中允许入库的版本规则",
+            "errmsg": "源文件 Test.S01E07.mkv 未命中任何允许入库的版本规则，取消入库",
         }]), observed_at=OBSERVED_AT)
         failed = build_pipeline_source_facts(context(symediaRows=[{
             "id": "recognition-failed",
@@ -268,7 +268,10 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
             protected_fact["units"][0]["reasonCode"],
             "QUALITY_VERSION_RULE_NOT_MATCHED",
         )
-        self.assertEqual(protected_fact["reasonText"], "未命中允许入库的版本规则")
+        self.assertEqual(
+            protected_fact["reasonText"],
+            "源文件 Test.S01E07.mkv 未命中任何允许入库的版本规则，取消入库",
+        )
         self.assertEqual(protected_outcome["state"], "protected")
         self.assertEqual(failed_fact["state"], "failed")
         self.assertEqual(failed_outcome["state"], "action_required")
