@@ -554,6 +554,9 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             repository.upsert_items(source["id"], [{
                 "fingerprint": "target", "title": "Unrelated English Name S01E01", "tmdb_id": "279323",
                 "identity_status": "identified", "media_type": "tv", "season_number": 1,
+            }, {
+                "fingerprint": "movie-target", "title": "Unrelated Movie 2026", "tmdb_id": "998877",
+                "identity_status": "identified", "media_type": "movie",
             }])
 
             response = app.test_client().get(
@@ -564,7 +567,17 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             self.assertEqual(response.get_json()["total"], 1)
             self.assertEqual(response.get_json()["items"][0]["matchMethod"], "tmdb_exact")
 
+            tv_resources = app.test_client().get("/api/v2/rss-items?resourceType=tv&window=all")
+            movie_resources = app.test_client().get("/api/v2/rss-items?resourceType=movie&window=all")
+            self.assertEqual(tv_resources.status_code, 200)
+            self.assertEqual(tv_resources.get_json()["total"], 1)
+            self.assertEqual(tv_resources.get_json()["items"][0]["mediaType"], "tv")
+            self.assertEqual(movie_resources.status_code, 200)
+            self.assertEqual(movie_resources.get_json()["total"], 1)
+            self.assertEqual(movie_resources.get_json()["items"][0]["mediaType"], "movie")
+
             self.assertEqual(app.test_client().get("/api/v2/rss-items?mediaType=invalid").status_code, 422)
+            self.assertEqual(app.test_client().get("/api/v2/rss-items?resourceType=invalid").status_code, 422)
             self.assertEqual(app.test_client().get("/api/v2/rss-items?seasonNumber=bad").status_code, 422)
 
 

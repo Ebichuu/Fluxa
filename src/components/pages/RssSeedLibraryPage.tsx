@@ -57,6 +57,7 @@ import type { AppNavigate } from '../layout/AppTopNav';
 type WindowFilter = '' | '1h' | '24h' | '7d';
 type ResourceView = 'new' | 'identify' | 'scoring' | 'upgrades' | 'cleanup';
 type FollowStateFilter = '' | 'linked' | 'unlinked';
+type MediaTypeFilter = '' | 'movie' | 'tv';
 const RSS_INTERVAL_PRESETS = [1, 3, 5] as const;
 const rssPageSize = 50;
 const matchActionPollIntervalMs = 1500;
@@ -74,6 +75,7 @@ interface RssLibraryUrlState {
   subscriptionId: string;
   tmdbId: string;
   mediaType: '' | 'movie' | 'tv';
+  resourceType: MediaTypeFilter;
   contextTitle: string;
   seasonNumber: number | null;
   episodeNumber: number | null;
@@ -102,6 +104,7 @@ function readRssLibraryUrlState(location: Location = window.location): RssLibrar
   const followStateValue = params.get('followState');
   const viewValue = params.get('view');
   const mediaTypeValue = params.get('mediaType');
+  const resourceTypeValue = params.get('resourceType');
   const publishedDateValue = params.get('publishedDate') ?? '';
   const parsedOffset = Number(params.get('offset'));
   const parsedSeason = Number(params.get('seasonNumber'));
@@ -128,6 +131,7 @@ function readRssLibraryUrlState(location: Location = window.location): RssLibrar
     subscriptionId: params.get('subscriptionId')?.trim() || '',
     tmdbId: /^\d{1,24}$/.test(params.get('tmdbId') ?? '') ? params.get('tmdbId') ?? '' : '',
     mediaType: mediaTypeValue === 'movie' || mediaTypeValue === 'tv' ? mediaTypeValue : '',
+    resourceType: resourceTypeValue === 'movie' || resourceTypeValue === 'tv' ? resourceTypeValue : '',
     contextTitle: params.get('title')?.trim().slice(0, 240) || '',
     seasonNumber: Number.isInteger(parsedSeason) && parsedSeason > 0 ? parsedSeason : null,
     episodeNumber: Number.isInteger(parsedEpisode) && parsedEpisode > 0 ? parsedEpisode : null,
@@ -148,6 +152,7 @@ function writeRssLibraryUrlState(state: RssLibraryUrlState, mode: UrlHistoryMode
     subscriptionId: state.subscriptionId || null,
     tmdbId: state.tmdbId || null,
     mediaType: state.mediaType || null,
+    resourceType: state.resourceType || null,
     title: state.contextTitle || null,
     seasonNumber: state.seasonNumber,
     episodeNumber: state.episodeNumber,
@@ -189,7 +194,8 @@ function sizeLabel(bytes: number) {
 }
 
 function episodeLabel(item: RssSeedItem) {
-  if (item.mediaType !== 'tv') return '电影';
+  if (item.mediaType === 'movie') return '电影';
+  if (item.mediaType !== 'tv') return '类型待确认';
   const season = item.seasonNumber == null ? '' : `S${String(item.seasonNumber).padStart(2, '0')}`;
   const episodes = item.episodeStart == null
     ? ''
@@ -457,6 +463,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const [sourceId, setSourceId] = useState(initialUrlState.sourceId);
   const [identityStatus, setIdentityStatus] = useState<RssIdentityStatus>(initialUrlState.identityStatus);
   const [followState, setFollowState] = useState<FollowStateFilter>(initialUrlState.followState);
+  const [mediaTypeFilter, setMediaTypeFilter] = useState<MediaTypeFilter>(initialUrlState.resourceType);
   const [windowFilter, setWindowFilter] = useState<WindowFilter>(initialUrlState.windowFilter);
   const [offset, setOffset] = useState(initialUrlState.offset);
   const [urlRevision, setUrlRevision] = useState(0);
@@ -492,6 +499,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       sourceId,
       identityStatus,
       followState,
+      resourceType: mediaTypeFilter,
       windowFilter,
       offset,
       ...patch
@@ -514,6 +522,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       subscriptionId: input.subscriptionId ?? resourceContext.subscriptionId,
       tmdbId: input.tmdbId ?? resourceContext.tmdbId,
       mediaType: input.mediaType ?? resourceContext.mediaType,
+      resourceType: input.resourceType ?? mediaTypeFilter,
       contextTitle: input.contextTitle ?? resourceContext.contextTitle,
       seasonNumber: input.seasonNumber ?? resourceContext.seasonNumber,
       episodeNumber: input.episodeNumber ?? resourceContext.episodeNumber,
@@ -544,6 +553,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
           mediaType: requestedState.mediaType || undefined,
           seasonNumber: requestedState.seasonNumber ?? undefined,
           episodeNumber: requestedState.episodeNumber ?? undefined,
+          resourceType: requestedState.resourceType || undefined,
           limit: pageSize,
           offset: requestedState.offset
         },
@@ -682,7 +692,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   useEffect(() => {
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceId, windowFilter, identityStatus, followState, resourceView, resourceContext, urlRevision]);
+  }, [sourceId, windowFilter, identityStatus, followState, mediaTypeFilter, resourceView, resourceContext, urlRevision]);
 
   useEffect(() => {
     const restoreUrlState = () => {
@@ -702,6 +712,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       setSourceId(next.sourceId);
       setIdentityStatus(next.identityStatus);
       setFollowState(next.followState);
+      setMediaTypeFilter(next.resourceType);
       setWindowFilter(next.windowFilter);
       setOffset(next.offset);
       setUrlRevision((current) => current + 1);
@@ -1012,6 +1023,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       sourceId,
       identityStatus,
       followState,
+      resourceType: mediaTypeFilter,
       windowFilter,
       offset: 0
     }, 'push');
@@ -1130,6 +1142,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       sourceId,
       identityStatus,
       followState: '',
+      resourceType: mediaTypeFilter,
       windowFilter: nextWindow,
       offset: 0
     });
@@ -1224,6 +1237,11 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
           <div className="rss-index-head">
             <span>{loading || itemsLoading ? '正在读取本地索引' : currentRangeText}</span>
             <div className="rss-index-filters">
+              <select aria-label="按媒体类型筛选" value={resourceContext.mediaType || mediaTypeFilter} disabled={Boolean(resourceContext.mediaType)} onChange={(event) => { const next = event.target.value as MediaTypeFilter; setMediaTypeFilter(next); setOffset(0); syncUrlState({ resourceType: next, offset: 0 }); }}>
+                <option value="">全部类型</option>
+                <option value="tv">电视剧</option>
+                <option value="movie">电影</option>
+              </select>
               <select aria-label="按 RSS 来源筛选" value={sourceId} onChange={(event) => { const next = event.target.value; setSourceId(next); setOffset(0); syncUrlState({ sourceId: next, offset: 0 }); }}>
                 <option value="">全部来源</option>
                 {sources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}

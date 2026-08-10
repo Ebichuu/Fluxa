@@ -810,6 +810,7 @@ class PrivateRssRepository:
         media_type="",
         season_number=None,
         episode_number=None,
+        resource_type="",
         year="",
     ):
         limit = max(1, min(int(limit or 50), 100))
@@ -825,6 +826,9 @@ class PrivateRssRepository:
         target_media_type = str(media_type or "").strip().lower()
         if target_media_type and target_media_type not in {"movie", "tv"}:
             raise ValueError("媒体类型无效")
+        resource_type = str(resource_type or "").strip().lower()
+        if resource_type and resource_type not in {"movie", "tv"}:
+            raise ValueError("资源类型无效")
         if season_number in (None, ""):
             target_season = None
         else:
@@ -864,6 +868,9 @@ class PrivateRssRepository:
         if source_id:
             base_where.append("i.source_id=?")
             base_params.append(str(source_id))
+        if resource_type:
+            base_where.append("i.media_type=?")
+            base_params.append(resource_type)
         if window_hours:
             cutoff = _iso(_now() - timedelta(hours=int(window_hours)))
             base_where.append("COALESCE(NULLIF(i.published_at, ''), i.created_at) >= ?")

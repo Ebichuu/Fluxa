@@ -630,6 +630,7 @@ export function getRssSeedItems(input: {
   mediaType?: 'movie' | 'tv';
   seasonNumber?: number;
   episodeNumber?: number;
+  resourceType?: 'movie' | 'tv';
   year?: string;
   limit?: number;
   offset?: number;
@@ -647,6 +648,7 @@ export function getRssSeedItems(input: {
   if (input.mediaType) query.set('mediaType', input.mediaType);
   if (input.seasonNumber != null) query.set('seasonNumber', String(input.seasonNumber));
   if (input.episodeNumber != null) query.set('episodeNumber', String(input.episodeNumber));
+  if (input.resourceType) query.set('resourceType', input.resourceType);
   if (input.year) query.set('year', input.year);
   query.set('limit', String(input.limit ?? 50));
   query.set('offset', String(input.offset ?? 0));

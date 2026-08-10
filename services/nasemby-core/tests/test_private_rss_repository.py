@@ -927,6 +927,12 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             invalid = repository.search_items(query="🦊")
             self.assertEqual(invalid["total"], 0)
             self.assertEqual(repository.search_items()["total"], 2)
+            self.assertEqual(repository.search_items(resource_type="tv")["total"], 1)
+            self.assertEqual(repository.search_items(resource_type="tv")["items"][0]["mediaType"], "tv")
+            self.assertEqual(repository.search_items(resource_type="movie")["total"], 1)
+            self.assertEqual(repository.search_items(resource_type="movie")["items"][0]["mediaType"], "movie")
+            with self.assertRaisesRegex(ValueError, "资源类型"):
+                repository.search_items(resource_type="unknown")
 
     def test_rss_source_title_is_extracted_from_description_and_searchable(self):
         with tempfile.TemporaryDirectory() as directory:

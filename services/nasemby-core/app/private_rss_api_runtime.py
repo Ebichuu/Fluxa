@@ -648,6 +648,7 @@ def register_private_rss(
                 media_type=request.args.get("mediaType") or "",
                 season_number=request.args.get("seasonNumber") or None,
                 episode_number=request.args.get("episodeNumber") or None,
+                resource_type=request.args.get("resourceType") or "",
                 year=request.args.get("year") or "",
             )
         except (TypeError, ValueError):
