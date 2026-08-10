@@ -58,6 +58,7 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             repository.upsert_items(source["id"], [{
                 "fingerprint": "metadata-api",
                 "title": "Release.Name.S01E01.2160p",
+                "description": "❁ 片 名: 资源卡片中文名 ❁ 年 代: 2026",
                 "media_type": "tv",
                 "season_number": 1,
                 "episode_start": 1,
@@ -73,12 +74,16 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
                 quality_watch_repository=QualityWatchRepository(database),
             )
 
-            response = app.test_client().get("/api/v2/rss-items?query=资源卡片中文名")
+            response = app.test_client().get(
+                "/api/v2/rss-items?query=资源卡片中文名&tmdbId=778899"
+                "&mediaType=tv&seasonNumber=1&episodeNumber=1"
+            )
             payload = response.get_json()
 
             self.assertEqual(response.status_code, 200)
             self.assertEqual(payload["total"], 1)
             self.assertEqual(payload["items"][0]["mediaTitle"], "资源卡片中文名")
+            self.assertEqual(payload["items"][0]["sourceTitle"], "资源卡片中文名")
             self.assertEqual(payload["items"][0]["mediaYear"], "2026")
             self.assertEqual(payload["items"][0]["posterUrl"], "https://image.example/poster.jpg")
             response_text = response.get_data(as_text=True)
@@ -243,6 +248,9 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             legacy_list = client.get("/api/v2/rss-matches?limit=10")
             grouped = client.get("/api/v2/rss-matches?view=groups&limit=10")
             artifact_grouped = client.get("/api/v2/rss-matches?view=artifact-groups&limit=10")
+            artifact_grouped_by_item = client.get(
+                f"/api/v2/rss-matches?view=artifact-groups&itemId={item_id}&limit=2"
+            )
             grouped_scoreable = client.get("/api/v2/rss-matches?view=groups&groupScope=scoreable&limit=10")
             grouped_cleanup = client.get("/api/v2/rss-matches?view=groups&groupScope=cleanup&limit=10")
             grouped_monitoring = client.get("/api/v2/rss-matches?view=groups&groupState=monitoring_rss&limit=10")
@@ -267,6 +275,12 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             self.assertNotIn("groups", legacy_list.get_json())
             self.assertEqual(grouped.status_code, 200)
             self.assertEqual(artifact_grouped.status_code, 200)
+            self.assertEqual(artifact_grouped_by_item.status_code, 200)
+            self.assertEqual(artifact_grouped_by_item.get_json()["total"], 1)
+            self.assertEqual(
+                artifact_grouped_by_item.get_json()["groups"][0]["candidates"][0]["itemId"],
+                item_id,
+            )
             self.assertNotIn("items", grouped.get_json())
             self.assertEqual(grouped.get_json()["total"], 1)
             self.assertEqual(len(grouped.get_json()["groups"]), 1)

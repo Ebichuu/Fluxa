@@ -602,6 +602,19 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             self.assertEqual(
                 repository.list_candidate_artifact_groups(group_state="partially_best")["total"], 1
             )
+            ranged_by_item = repository.list_candidate_artifact_groups(
+                item_id=items["Range Show S01E02-E03 2160p"]["id"], limit=2,
+            )
+            single_by_item = repository.list_candidate_artifact_groups(
+                item_id=items["Range Show S01E03 REMUX"]["id"], limit=2,
+            )
+            self.assertEqual(ranged_by_item["total"], 1)
+            self.assertEqual(ranged_by_item["groups"][0]["candidateCount"], 2)
+            self.assertEqual(single_by_item["total"], 1)
+            self.assertEqual(single_by_item["groups"][0]["candidateCount"], 1)
+            self.assertEqual(repository.list_candidate_artifact_groups(item_id="rss:missing")["total"], 0)
+            with self.assertRaisesRegex(ValueError, "资源 ID"):
+                repository.list_candidate_artifact_groups(item_id="x" * 81)
 
     def test_needs_review_filter_uses_full_repository_scope(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -839,6 +852,7 @@ class PrivateRssRepositoryTests(unittest.TestCase):
                 "fingerprint": "one",
                 "guid": "one",
                 "title": "诡秘之主 S01E03 2160p HDR",
+                "description": "❁ 片 名: 诡秘之主 ❁ 年 代: 2026 ❁ 简 介: 测试简介",
                 "published_at": "2026-07-18T01:00:00Z",
                 "download_url": "https://tracker.example/download?passkey=secret-value",
                 "media_type": "tv",
@@ -851,6 +865,7 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             self.assertEqual(result["total"], 1)
             self.assertNotIn("secret-value", str(result))
             self.assertTrue(result["items"][0]["hasDownload"])
+            self.assertEqual(result["items"][0]["sourceTitle"], "诡秘之主")
 
     def test_identity_columns_migrate_filter_and_preserve_reliable_supplement(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -912,6 +927,26 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             invalid = repository.search_items(query="🦊")
             self.assertEqual(invalid["total"], 0)
             self.assertEqual(repository.search_items()["total"], 2)
+
+    def test_rss_source_title_is_extracted_from_description_and_searchable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "source-chinese-title",
+                "title": "Whispers of Southern Song S01E16 2160p",
+                "description": "❁ 片 名: 南戏 ❁ 年 代: 2026 ❁ 简 介: 测试简介",
+                "media_type": "tv",
+                "season_number": 1,
+                "episode_start": 16,
+                "episode_end": 16,
+            }])
+
+            result = repository.search_items(query="南戏")
+
+            self.assertEqual(result["total"], 1)
+            self.assertEqual(result["items"][0]["sourceTitle"], "南戏")
+            self.assertNotIn("mediaTitle", result["items"][0])
 
     def test_targeted_search_prefers_tmdb_identity_and_applies_scope(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -999,6 +1034,117 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             unknown = next(item for item in result["items"] if item["title"] == "清醒点，桃子 E03 2160p")
             self.assertEqual(unknown["matchMethod"], "title_media_scope")
             self.assertEqual(unknown["seasonScopeState"], "unknown")
+
+    def test_tv_targeted_search_filters_episode_ranges_and_keeps_season_packs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "exact-episode",
+                "title": "Target Show S01E03 2160p",
+                "media_type": "tv",
+                "season_number": 1,
+                "episode_start": 3,
+                "episode_end": 3,
+                "tmdb_id": "880001",
+                "identity_status": "identified",
+            }, {
+                "fingerprint": "covering-range",
+                "title": "Target Show S01E02-E04 1080p",
+                "media_type": "tv",
+                "season_number": 1,
+                "episode_start": 2,
+                "episode_end": 4,
+                "tmdb_id": "880001",
+                "identity_status": "identified",
+            }, {
+                "fingerprint": "season-pack",
+                "title": "Target Show S01 2160p",
+                "media_type": "tv",
+                "season_number": 1,
+                "tmdb_id": "880001",
+                "identity_status": "identified",
+            }, {
+                "fingerprint": "outside-episode",
+                "title": "Target Show S01E05 2160p",
+                "media_type": "tv",
+                "season_number": 1,
+                "episode_start": 5,
+                "episode_end": 5,
+                "tmdb_id": "880001",
+                "identity_status": "identified",
+            }])
+
+            result = repository.search_items(
+                tmdb_id="880001", media_type="tv", season_number=1, episode_number=3,
+            )
+
+            self.assertEqual(result["total"], 3)
+            self.assertEqual(
+                {item["episodeMatchState"] for item in result["items"]},
+                {"exact", "range", "season_pack"},
+            )
+            self.assertNotIn("Target Show S01E05 2160p", {item["title"] for item in result["items"]})
+            with self.assertRaisesRegex(ValueError, "集号无效"):
+                repository.search_items(tmdb_id="880001", media_type="tv", episode_number=0)
+
+    def test_tv_targeted_search_merges_subscription_links_with_tmdb_candidates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "linked-imdb",
+                "title": "Tracked Show S01E03 2160p",
+                "media_type": "tv",
+                "season_number": 1,
+                "episode_start": 3,
+                "episode_end": 3,
+                "imdb_id": "tt8800001",
+                "identity_status": "identified",
+            }, {
+                "fingerprint": "linked-wrong-episode",
+                "title": "Tracked Show S01E04 2160p",
+                "media_type": "tv",
+                "season_number": 1,
+                "episode_start": 4,
+                "episode_end": 4,
+                "imdb_id": "tt8800001",
+                "identity_status": "identified",
+            }, {
+                "fingerprint": "tmdb-candidate",
+                "title": "Tracked Show S01E03 1080p",
+                "media_type": "tv",
+                "season_number": 1,
+                "episode_start": 3,
+                "episode_end": 3,
+                "tmdb_id": "880001",
+                "identity_status": "identified",
+            }])
+            rows = {item["title"]: item for item in repository.search_items(limit=10)["items"]}
+            repository.create_match(
+                rows["Tracked Show S01E03 2160p"]["id"], "tv:tracked", "tv:tracked:s1:e3", {},
+            )
+            repository.create_match(
+                rows["Tracked Show S01E04 2160p"]["id"], "tv:tracked", "tv:tracked:s1:e4", {},
+            )
+
+            result = repository.search_items(
+                subscription_id="tv:tracked",
+                tmdb_id="880001",
+                media_type="tv",
+                season_number=1,
+                episode_number=3,
+            )
+
+            self.assertEqual(result["total"], 2)
+            self.assertEqual(
+                [item["matchMethod"] for item in result["items"]],
+                ["subscription_link", "tmdb_exact"],
+            )
+            self.assertEqual(
+                {item["title"] for item in result["items"]},
+                {"Tracked Show S01E03 2160p", "Tracked Show S01E03 1080p"},
+            )
 
     def test_movie_targeted_fallback_still_requires_year(self):
         with tempfile.TemporaryDirectory() as directory:

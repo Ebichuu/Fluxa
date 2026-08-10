@@ -643,9 +643,11 @@ def register_private_rss(
                 published_before=published_before,
                 limit=request.args.get("limit") or 50,
                 offset=request.args.get("offset") or 0,
+                subscription_id=request.args.get("subscriptionId") or "",
                 tmdb_id=request.args.get("tmdbId") or "",
                 media_type=request.args.get("mediaType") or "",
                 season_number=request.args.get("seasonNumber") or None,
+                episode_number=request.args.get("episodeNumber") or None,
                 year=request.args.get("year") or "",
             )
         except (TypeError, ValueError):
@@ -712,6 +714,7 @@ def register_private_rss(
                         season_number=request.args.get("seasonNumber") or None,
                         episode_number=request.args.get("episodeNumber") or None,
                         match_id=request.args.get("matchId") or "",
+                        item_id=request.args.get("itemId") or "",
                         limit=request.args.get("limit") or 20,
                         offset=request.args.get("offset") or 0,
                     )

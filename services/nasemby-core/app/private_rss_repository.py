@@ -10,8 +10,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
-from app.sqlite_runtime import SQLiteRuntime
+from app.private_rss_parser import extract_release_scope
 from app.rss_media_metadata_runtime import media_title_matches, resolve_rss_media_metadata
+from app.sqlite_runtime import SQLiteRuntime
 from app.torra_subscription_keys import torra_public_storage_key
 
 
@@ -98,6 +99,30 @@ def _match_query(value):
     return " AND ".join(f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens[:12])
 
 
+def _rss_source_title(title, description):
+    labels = r"(?:中\s*文\s*名|片\s*名|剧\s*名|译\s*名|又\s*名)"
+    for value in (description, title):
+        text = " ".join(str(value or "").replace("\r", " ").replace("\n", " ").split())
+        match = re.search(
+            rf"(?i)(?:^|[❁◎★●|])\s*{labels}\s*[:：]\s*([^❁◎★●|]{{1,100}})",
+            text,
+        )
+        if match:
+            candidate = re.split(
+                r"\s{2,}|\s+(?:(?:年\s*代|产\s*地|类\s*别|语\s*言)\s*[:：])",
+                match.group(1),
+            )[0].strip(" -_/·:：,，。")[:80]
+            if re.search(r"[\u3400-\u9fff]", candidate):
+                return candidate
+    text = " ".join(str(title or "").replace("\r", " ").replace("\n", " ").split())
+    prefix = re.split(
+        r"(?i)\s+(?=S\d{1,3}(?:E\d{1,4})?\b|E\d{1,4}\b|(?:19|20)\d{2}\b|2160p\b|1080[pi]\b|720p\b)",
+        text,
+        maxsplit=1,
+    )[0].strip(" -_/·:：,，。")[:80]
+    return prefix if re.search(r"[\u3400-\u9fff]", prefix) else ""
+
+
 def _follow_link_exists_sql(item_alias="i"):
     return (
         "EXISTS (SELECT 1 FROM rss_subscription_matches follow_match "
@@ -128,24 +153,49 @@ def _title_seasons(value):
     return seasons
 
 
-def _tv_target_match(item, season_number):
+def _tv_target_match(item, season_number, episode_number=None):
     item_season = item.get("seasonNumber")
+    item_episode_start = item.get("episodeStart")
+    item_episode_end = item.get("episodeEnd") or item_episode_start
+    title_season = None
+    title_episode_start = None
+    title_episode_end = None
+    if item_season is None or item_episode_start is None:
+        parsed_type, parsed_season, parsed_start, parsed_end = extract_release_scope(
+            item.get("title"), [item.get("category")]
+        )
+        if parsed_type == "tv":
+            title_season = parsed_season
+            title_episode_start = parsed_start
+            title_episode_end = parsed_end
+    if item_season is None:
+        item_season = title_season
+    if item_episode_start is None:
+        item_episode_start = title_episode_start
+        item_episode_end = title_episode_end or item_episode_start
     if item_season is not None:
         if season_number is not None and int(item_season) != season_number:
             return None
-        return {
-            "matchMethod": "title_media_season",
-            "matchConfidence": "fallback",
-            "seasonScopeState": "confirmed",
-        }
-    title_seasons = _title_seasons(item.get("title"))
-    if season_number is not None and title_seasons and season_number not in title_seasons:
-        return None
-    return {
-        "matchMethod": "title_media_scope",
+    else:
+        title_seasons = _title_seasons(item.get("title"))
+        if season_number is not None and title_seasons and season_number not in title_seasons:
+            return None
+    if episode_number is not None and item_episode_start is not None:
+        if not int(item_episode_start) <= episode_number <= int(item_episode_end or item_episode_start):
+            return None
+        episode_match_state = "exact" if item_episode_start == item_episode_end else "range"
+    elif episode_number is not None and item_season is not None:
+        episode_match_state = "season_pack"
+    else:
+        episode_match_state = "unknown" if episode_number is not None else None
+    result = {
+        "matchMethod": "title_media_season" if item_season is not None else "title_media_scope",
         "matchConfidence": "fallback",
-        "seasonScopeState": "unknown",
+        "seasonScopeState": "confirmed" if item_season is not None else "unknown",
     }
+    if episode_match_state:
+        result["episodeMatchState"] = episode_match_state
+    return result
 
 
 def _movie_target_match(item, year):
@@ -158,7 +208,7 @@ def _movie_target_match(item, year):
     }
 
 
-def _target_match(item, *, tmdb_id="", media_type="", season_number=None, year=""):
+def _target_match(item, *, tmdb_id="", media_type="", season_number=None, episode_number=None, year=""):
     item_tmdb = str(item.get("tmdbId") or "")
     item_type = str(item.get("mediaType") or "")
     item_season = item.get("seasonNumber")
@@ -168,9 +218,13 @@ def _target_match(item, *, tmdb_id="", media_type="", season_number=None, year="
             return None
         if media_type and item_type and item_type != media_type:
             return None
-        if media_type == "tv" and season_number is not None and item_season is not None:
-            if int(item_season) != season_number:
+        if media_type == "tv":
+            matched = _tv_target_match(item, season_number, episode_number)
+            if not matched:
                 return None
+            matched["matchMethod"] = "tmdb_exact"
+            matched["matchConfidence"] = "strong"
+            return matched
         return {
             "matchMethod": "tmdb_exact",
             "matchConfidence": "strong",
@@ -182,7 +236,7 @@ def _target_match(item, *, tmdb_id="", media_type="", season_number=None, year="
     if media_type and item_type and item_type != media_type:
         return None
     if media_type == "tv":
-        return _tv_target_match(item, season_number)
+        return _tv_target_match(item, season_number, episode_number)
     if media_type == "movie":
         return _movie_target_match(item, year)
     return {
@@ -190,6 +244,24 @@ def _target_match(item, *, tmdb_id="", media_type="", season_number=None, year="
         "matchConfidence": "fallback",
         "seasonScopeState": "unknown",
     }
+
+
+def _subscription_target_match(item, *, tmdb_id="", media_type="", season_number=None, episode_number=None):
+    item_tmdb = str(item.get("tmdbId") or "")
+    item_type = str(item.get("mediaType") or "")
+    if item_tmdb and tmdb_id and item_tmdb != tmdb_id:
+        return None
+    if media_type and item_type and item_type != media_type:
+        return None
+    if media_type == "tv" or item_type == "tv":
+        matched = _tv_target_match(item, season_number, episode_number)
+        if not matched:
+            return None
+    else:
+        matched = {"seasonScopeState": "not_applicable"}
+    matched["matchMethod"] = "subscription_link"
+    matched["matchConfidence"] = "strong"
+    return matched
 
 
 def _json_dump(value):
@@ -503,6 +575,7 @@ class PrivateRssRepository:
             "sourceName": row["source_name"],
             "sourceDomain": row["source_domain"],
             "title": row["title"],
+            "sourceTitle": _rss_source_title(row["title"], row["description"]),
             "description": row["description"],
             "publishedAt": row["published_at"],
             "category": row["category"],
@@ -672,7 +745,12 @@ class PrivateRssRepository:
             values,
         )
         connection.execute("DELETE FROM rss_item_search WHERE item_id=?", (item_id,))
-        search = " ".join((title, str(item.get("category") or ""), str(item.get("version_summary") or "")))
+        search = " ".join((
+            title,
+            _rss_source_title(title, item.get("description")),
+            str(item.get("category") or ""),
+            str(item.get("version_summary") or ""),
+        ))
         connection.execute(
             "INSERT INTO rss_item_search (item_id, title, search_text) VALUES (?, ?, ?)",
             (item_id, title, _search_text(search)),
@@ -727,15 +805,20 @@ class PrivateRssRepository:
         published_before="",
         limit=50,
         offset=0,
+        subscription_id="",
         tmdb_id="",
         media_type="",
         season_number=None,
+        episode_number=None,
         year="",
     ):
         limit = max(1, min(int(limit or 50), 100))
         offset = max(0, int(offset or 0))
         query_text = str(query or "").strip()
         match = _match_query(query_text)
+        target_subscription_id = str(subscription_id or "").strip()
+        if len(target_subscription_id) > 240:
+            raise ValueError("订阅筛选无效")
         target_tmdb_id = str(tmdb_id or "").strip()
         if target_tmdb_id and (not target_tmdb_id.isdigit() or len(target_tmdb_id) > 24):
             raise ValueError("TMDB ID 无效")
@@ -748,6 +831,12 @@ class PrivateRssRepository:
             target_season = int(season_number)
             if target_season < 0 or target_season > 999:
                 raise ValueError("季号无效")
+        if episode_number in (None, ""):
+            target_episode = None
+        else:
+            target_episode = int(episode_number)
+            if target_episode < 1 or target_episode > 10000:
+                raise ValueError("集号无效")
         target_year = str(year or "").strip()
         if target_year and not re.fullmatch(r"(?:19|20)\d{2}", target_year):
             raise ValueError("年份无效")
@@ -797,15 +886,20 @@ class PrivateRssRepository:
             base_where.append("COALESCE(NULLIF(i.published_at, ''), i.created_at) < ?")
             base_params.extend((published_from, published_before))
 
-        targeted = bool(target_tmdb_id or (query_text and (target_media_type or target_season is not None or target_year)))
+        targeted = bool(
+            target_subscription_id
+            or target_tmdb_id
+            or (query_text and (target_media_type or target_season is not None or target_episode is not None or target_year))
+        )
         follow_state_select = (
             f"CASE WHEN {_follow_link_exists_sql()} THEN 'linked' ELSE 'unlinked' END AS follow_state"
         )
         with closing(self.runtime.connect()) as connection:
             if targeted:
                 rows_by_id = {}
+                subscription_item_ids = set()
 
-                def add_candidates(extra_joins, extra_where, extra_params):
+                def add_candidates(extra_joins, extra_where, extra_params, *, subscription_linked=False):
                     where = [*base_where, *extra_where]
                     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
                     rows = connection.execute(
@@ -816,8 +910,19 @@ class PrivateRssRepository:
                         (*base_params, *extra_params),
                     ).fetchall()
                     for row in rows:
-                        rows_by_id[str(row["id"])] = row
+                        item_id = str(row["id"])
+                        rows_by_id[item_id] = row
+                        if subscription_linked:
+                            subscription_item_ids.add(item_id)
 
+                if target_subscription_id:
+                    stored_subscription = self._stored_subscription_key(connection, target_subscription_id)
+                    add_candidates([], [
+                        "EXISTS (SELECT 1 FROM rss_subscription_matches scoped_match "
+                        "WHERE scoped_match.item_id=i.id AND scoped_match.subscription_key=? "
+                        "AND scoped_match.archive_state='active' "
+                        "AND scoped_match.match_status IN ('candidate','triggered','confirmed'))"
+                    ], [stored_subscription], subscription_linked=True)
                 if target_tmdb_id:
                     add_candidates([], ["i.tmdb_id=?"], [target_tmdb_id])
                 if match:
@@ -826,6 +931,12 @@ class PrivateRssRepository:
                         ["i.tmdb_id=''", "i.imdb_id=''", "i.identity_status='unidentified'", "f.search_text MATCH ?"],
                         [match],
                     )
+                    if re.search(r"[\u3400-\u9fff]", query_text):
+                        add_candidates(
+                            [],
+                            ["i.tmdb_id=''", "i.identity_status='unidentified'", "i.description LIKE ?"],
+                            [f"%{query_text}%"],
+                        )
 
                 public_by_id = {
                     item["id"]: item for item in self._public_items(connection, rows_by_id.values())
@@ -833,13 +944,23 @@ class PrivateRssRepository:
                 items = []
                 for row in rows_by_id.values():
                     item = public_by_id[str(row["id"])]
-                    matched = _target_match(
-                        item,
-                        tmdb_id=target_tmdb_id,
-                        media_type=target_media_type,
-                        season_number=target_season,
-                        year=target_year,
-                    )
+                    if item["id"] in subscription_item_ids:
+                        matched = _subscription_target_match(
+                            item,
+                            tmdb_id=target_tmdb_id,
+                            media_type=target_media_type,
+                            season_number=target_season,
+                            episode_number=target_episode,
+                        )
+                    else:
+                        matched = _target_match(
+                            item,
+                            tmdb_id=target_tmdb_id,
+                            media_type=target_media_type,
+                            season_number=target_season,
+                            episode_number=target_episode,
+                            year=target_year,
+                        )
                     if matched:
                         item.update(matched)
                         items.append(item)
@@ -847,7 +968,8 @@ class PrivateRssRepository:
                     key=lambda item: str(item.get("publishedAt") or item.get("lastSeenAt") or ""),
                     reverse=True,
                 )
-                items.sort(key=lambda item: 0 if item.get("matchMethod") == "tmdb_exact" else 1)
+                match_priority = {"subscription_link": 0, "tmdb_exact": 1}
+                items.sort(key=lambda item: match_priority.get(item.get("matchMethod"), 2))
                 total = len(items)
                 return {"items": items[offset:offset + limit], "total": total, "limit": limit, "offset": offset}
 
@@ -883,6 +1005,7 @@ class PrivateRssRepository:
                     item for item in self._public_items(connection, rows)
                     if item["id"] in fts_ids
                     or media_title_matches(item.get("mediaTitle"), query_tokens)
+                    or media_title_matches(item.get("sourceTitle"), query_tokens)
                 ]
                 total = len(items)
                 return {
@@ -2155,6 +2278,7 @@ class PrivateRssRepository:
         season_number=None,
         episode_number=None,
         match_id="",
+        item_id="",
         limit=20,
         offset=0,
     ):
@@ -2181,6 +2305,9 @@ class PrivateRssRepository:
             raise ValueError("集号无效")
         if episode is not None and season is None:
             raise ValueError("集号筛选需要季号")
+        item_id = str(item_id or "").strip()
+        if len(item_id) > 80:
+            raise ValueError("RSS 资源 ID 无效")
         limit = max(1, min(int(limit or 20), 50))
         offset = max(0, int(offset or 0))
 
@@ -2190,6 +2317,9 @@ class PrivateRssRepository:
             if status:
                 where.append("m.match_status=?")
                 params.append(status)
+            if item_id:
+                where.append("m.item_id=?")
+                params.append(item_id)
             selected_subscription = self._stored_subscription_key(connection, subscription_id)
             if subscription_id:
                 where.append("m.subscription_key=?")

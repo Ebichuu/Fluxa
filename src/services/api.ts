@@ -625,9 +625,11 @@ export function getRssSeedItems(input: {
   reviewState?: '' | 'needs_review' | 'follow_needs_review' | 'unlinked';
   followState?: '' | 'linked' | 'unlinked';
   publishedDate?: string;
+  subscriptionId?: string;
   tmdbId?: string;
   mediaType?: 'movie' | 'tv';
   seasonNumber?: number;
+  episodeNumber?: number;
   year?: string;
   limit?: number;
   offset?: number;
@@ -640,9 +642,11 @@ export function getRssSeedItems(input: {
   if (input.reviewState) query.set('reviewState', input.reviewState);
   if (input.followState) query.set('followState', input.followState);
   if (input.publishedDate) query.set('publishedDate', input.publishedDate);
+  if (input.subscriptionId) query.set('subscriptionId', input.subscriptionId);
   if (input.tmdbId) query.set('tmdbId', input.tmdbId);
   if (input.mediaType) query.set('mediaType', input.mediaType);
   if (input.seasonNumber != null) query.set('seasonNumber', String(input.seasonNumber));
+  if (input.episodeNumber != null) query.set('episodeNumber', String(input.episodeNumber));
   if (input.year) query.set('year', input.year);
   query.set('limit', String(input.limit ?? 50));
   query.set('offset', String(input.offset ?? 0));
@@ -704,6 +708,7 @@ export function getRssArtifactGroups(input: {
   seasonNumber?: number;
   episodeNumber?: number;
   matchId?: string;
+  itemId?: string;
   limit?: number;
   offset?: number;
 } = {}, options?: RequestOptions): Promise<RssMatchGroupListResponse> {
@@ -716,6 +721,7 @@ export function getRssArtifactGroups(input: {
   if (input.seasonNumber != null) query.set('seasonNumber', String(input.seasonNumber));
   if (input.episodeNumber != null) query.set('episodeNumber', String(input.episodeNumber));
   if (input.matchId) query.set('matchId', input.matchId);
+  if (input.itemId) query.set('itemId', input.itemId);
   query.set('limit', String(input.limit ?? 20));
   query.set('offset', String(input.offset ?? 0));
   return readJson<RssMatchGroupListResponse>(`/api/v2/rss-matches?${query.toString()}`, options);

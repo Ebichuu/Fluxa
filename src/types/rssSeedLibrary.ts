@@ -52,6 +52,7 @@ export interface RssSeedItem {
   sourceName: string;
   sourceDomain: string;
   title: string;
+  sourceTitle?: string;
   mediaTitle?: string;
   mediaYear?: string;
   posterUrl?: string;
@@ -73,6 +74,7 @@ export interface RssSeedItem {
   matchMethod?: 'tmdb_exact' | 'title_media_season' | 'title_media_year' | 'title_scoped' | string;
   matchConfidence?: 'strong' | 'fallback' | string;
   seasonScopeState?: 'confirmed' | 'unknown' | 'not_applicable' | string;
+  episodeMatchState?: 'exact' | 'range' | 'season_pack' | 'unknown' | string;
   hasDownload: boolean;
   lastSeenAt: string;
   followState?: 'linked' | 'unlinked';

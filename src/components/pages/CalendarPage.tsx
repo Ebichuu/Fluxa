@@ -6,6 +6,7 @@ import {
   ChevronRight,
   CircleHelp,
   Clock3,
+  FileSearch,
   Filter,
   Library,
   ListChecks,
@@ -878,8 +879,23 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                 </div>
                 {entry.reasonText && <p className="calendar-detail-item__reason">{entry.reasonText}</p>}
                 <footer>
+                  <button
+                    className="ops-action-button ops-action-button--primary"
+                    type="button"
+                    onClick={() => onNavigate('rss-library', {
+                      resourceView: 'new',
+                      mediaType: entry.mediaType === 'movie' ? 'movie' : 'tv',
+                      subscriptionId: entry.key,
+                      tmdbId: entry.tmdbId,
+                      title: entry.title,
+                      seasonNumber: entrySeasonNumber(entry),
+                      episodeNumber: entry.episodeNumber
+                    })}
+                  >
+                    <FileSearch aria-hidden="true" size={14} />{entry.episodeNumber ? '查看本集资源' : '查看作品资源'}
+                  </button>
                   <button className="ops-action-button" type="button" onClick={() => onNavigate('subscriptions', { mediaType: entry.mediaType === 'movie' ? 'movie' : 'tv', subscriptionId: entry.key, tmdbId: entry.tmdbId, title: entry.title, seasonNumber: entrySeasonNumber(entry) })}>查看追更</button>
-                  <button className="ops-action-button ops-action-button--primary" type="button" onClick={() => onNavigate('tasks', { mediaType: entry.mediaType === 'movie' ? 'movie' : 'tv', chainId: entry.chainId, targetKey: entry.targetKey, subscriptionId: entry.key, tmdbId: entry.tmdbId, title: entry.title, seasonNumber: entrySeasonNumber(entry) })}>查看任务</button>
+                  <button className="ops-action-button" type="button" onClick={() => onNavigate('tasks', { mediaType: entry.mediaType === 'movie' ? 'movie' : 'tv', chainId: entry.chainId, targetKey: entry.targetKey, subscriptionId: entry.key, tmdbId: entry.tmdbId, title: entry.title, seasonNumber: entrySeasonNumber(entry) })}>查看任务</button>
                 </footer>
               </article>
             );

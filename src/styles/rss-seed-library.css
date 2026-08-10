@@ -578,6 +578,16 @@
   object-fit: cover;
 }
 
+.rss-seed-poster--fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(157, 184, 207, 0.07);
+  color: rgba(209, 221, 231, 0.72);
+  font-size: 20px;
+  font-weight: 650;
+}
+
 .rss-seed-meta,
 .rss-version-line,
 .rss-source-card__meta,
@@ -662,6 +672,28 @@
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.rss-seed-actions,
+.rss-seed-mobile-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+.rss-seed-mobile-actions {
+  display: none;
+}
+
+.rss-seed-download {
+  width: 30px;
+  height: 30px;
+}
+
+.rss-seed-download:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
 }
 
 .rss-identity-chip {
@@ -1584,6 +1616,11 @@
   .rss-seed-time,
   .rss-seed-state {
     display: none;
+  }
+
+  .rss-seed-mobile-actions {
+    display: flex;
+    margin-top: 10px;
   }
 
   .rss-seed-body--with-poster {

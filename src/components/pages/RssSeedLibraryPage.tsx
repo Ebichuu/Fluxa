@@ -474,7 +474,6 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const [testingSourceId, setTestingSourceId] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<RssSource | null>(null);
   const [detailItem, setDetailItem] = useState<RssSeedItem | null>(null);
-  const [failedPosterUrls, setFailedPosterUrls] = useState<Set<string>>(() => new Set());
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
   const [identityBackfillBusy, setIdentityBackfillBusy] = useState(false);
@@ -484,15 +483,6 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const matchPollRefs = useRef(new Map<string, AbortController>());
   const detailRequestRef = useRef<AbortController | null>(null);
   const pageSize = rssPageSize;
-
-  const markPosterUnavailable = (value: string) => {
-    setFailedPosterUrls((current) => {
-      if (!value || current.has(value)) return current;
-      const next = new Set(current);
-      next.add(value);
-      return next;
-    });
-  };
 
   const syncUrlState = (patch: Partial<RssLibraryUrlState>) => {
     writeRssLibraryUrlState({
@@ -538,16 +528,22 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     try {
       const payload = await getRssSeedItems(
         {
-          query: requestedState.query,
+          query: requestedState.query || (
+            requestedState.contextTitle && (requestedState.subscriptionId || requestedState.tmdbId)
+              ? requestedState.contextTitle
+              : ''
+          ),
           sourceId: requestedState.sourceId,
           window: requestedState.windowFilter,
           identityStatus: requestedState.identityStatus,
           followState: requestedState.followState,
           reviewState: requestedState.view === 'identify' ? 'follow_needs_review' : '',
           publishedDate: requestedState.publishedDate,
+          subscriptionId: requestedState.subscriptionId,
           tmdbId: requestedState.tmdbId,
           mediaType: requestedState.mediaType || undefined,
           seasonNumber: requestedState.seasonNumber ?? undefined,
+          episodeNumber: requestedState.episodeNumber ?? undefined,
           limit: pageSize,
           offset: requestedState.offset
         },
@@ -806,8 +802,8 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       .finally(() => setMatchBusy(''));
   };
 
-  const previewExactDownload = (group: RssMatchGroup) => {
-    setMatchBusy(`exact-preview:${group.id}`);
+  const previewExactDownload = (group: RssMatchGroup, busyKey = `exact-preview:${group.id}`) => {
+    setMatchBusy(busyKey);
     previewRssArtifactExactDownload(group.id)
       .then((preview) => {
         setExactPreviews((current) => ({ ...current, [group.id]: preview }));
@@ -829,6 +825,25 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
         message: reason instanceof Error ? reason.message : '精准下载预检失败'
       }))
       .finally(() => setMatchBusy(''));
+  };
+
+  const previewItemExactDownload = async (item: RssSeedItem) => {
+    const busyKey = `exact-resolve:${item.id}`;
+    setMatchBusy(busyKey);
+    setFeedback(null);
+    try {
+      const payload = await getRssArtifactGroups({ itemId: item.id, limit: 2, offset: 0 });
+      if (payload.total === 0) {
+        throw new Error('该资源的追更关联已变化，请刷新后重试');
+      }
+      if (payload.total !== 1 || payload.groups.length !== 1) {
+        throw new Error('该资源存在多个候选归属，不能自动选择下载目标');
+      }
+      previewExactDownload(payload.groups[0], busyKey);
+    } catch (reason) {
+      setMatchBusy('');
+      setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : '下载目标读取失败' });
+    }
   };
 
   const confirmExactDownload = () => {
@@ -889,7 +904,6 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     });
     return index;
   }, [matches]);
-
   const searchedSources = useMemo(() => {
     const scoped = sourceId ? sources.filter((source) => source.id === sourceId) : sources;
     return {
@@ -1243,20 +1257,37 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
               const scope = classifyRssResourceScope(item);
               const itemMatch = matchByItemId.get(item.id);
               const itemAction = itemMatch ? matchActions[itemMatch.id] : undefined;
-              const showPoster = Boolean(item.posterUrl && !failedPosterUrls.has(item.posterUrl));
+              const downloadBusy = matchBusy === `exact-resolve:${item.id}`;
+              const downloadDisabled = !item.hasDownload || item.followState !== 'linked' || Boolean(matchBusy);
+              const downloadTitle = !item.hasDownload
+                ? 'RSS 没有提供下载附件'
+                : item.followState !== 'linked'
+                  ? '尚未关联到追更，不能安全下载'
+                  : downloadBusy
+                    ? '正在执行下载预检'
+                    : '下载前先执行安全预检';
+              const downloadButton = (
+                <button
+                  aria-label={`${downloadTitle}：${item.mediaTitle || item.sourceTitle || item.title}`}
+                  className="ops-icon-button rss-seed-download"
+                  disabled={downloadDisabled}
+                  title={downloadTitle}
+                  type="button"
+                  onClick={() => void previewItemExactDownload(item)}
+                >
+                  <Download aria-hidden="true" size={14} />
+                </button>
+              );
               return (
               <article className="rss-seed-row" key={item.id}>
                 <div className="rss-seed-time"><span /> <RelativeTime value={item.publishedAt || item.lastSeenAt} /></div>
-                <div className={showPoster ? 'rss-seed-body rss-seed-body--with-poster' : 'rss-seed-body'}>
-                  {showPoster && (
-                    <PosterImage
-                      className="rss-seed-poster"
-                      fallbackVariant="none"
-                      src={item.posterUrl}
-                      title={item.mediaTitle || item.title}
-                      onUnavailable={() => markPosterUnavailable(item.posterUrl || '')}
-                    />
-                  )}
+                <div className="rss-seed-body rss-seed-body--with-poster">
+                  <PosterImage
+                    className="rss-seed-poster"
+                    fallbackClassName="rss-seed-poster--fallback"
+                    src={item.posterUrl}
+                    title={item.mediaTitle || item.sourceTitle || item.title}
+                  />
                   <div className="rss-seed-content">
                     <div className="rss-seed-card-head">
                       <span>{item.sourceName}</span>
@@ -1265,8 +1296,11 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                       <span className="rss-processing-chip">{seedProcessingStateLabel(item.followState, itemMatch, itemAction)}</span>
                     </div>
                     <h2>{item.title}</h2>
-                    {item.mediaTitle && item.mediaTitle.trim().toLocaleLowerCase() !== item.title.trim().toLocaleLowerCase() && (
-                      <p className="rss-media-title"><strong>{item.mediaTitle}</strong>{item.mediaYear && <span>{item.mediaYear}</span>}</p>
+                    {(item.mediaTitle || item.sourceTitle) && (item.mediaTitle || item.sourceTitle || '').trim().toLocaleLowerCase() !== item.title.trim().toLocaleLowerCase() && (
+                      <p className="rss-media-title">
+                        <strong>{item.mediaTitle || item.sourceTitle}</strong>
+                        {item.mediaTitle && item.mediaYear ? <span>{item.mediaYear}</span> : !item.mediaTitle && item.sourceTitle ? <span>RSS</span> : null}
+                      </p>
                     )}
                     <div className="rss-seed-desktop-meta">
                       <div className="rss-seed-meta">
@@ -1295,15 +1329,22 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                       </dl>
                       <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}><PanelRightOpen aria-hidden="true" size={13} />查看识别证据</button>
                     </details>
+                    <div className="rss-seed-mobile-actions">
+                      {downloadButton}
+                      <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}><PanelRightOpen aria-hidden="true" size={13} />详情</button>
+                    </div>
                   </div>
                 </div>
                 <div className="rss-seed-state">
                   <span className="state-chip">{seedProcessingStateLabel(item.followState, itemMatch, itemAction)}</span>
                   <span className={`rss-identity-chip rss-identity-chip--${item.identityStatus}`}>{identityLabel(item.identityStatus)}</span>
                   <small>{item.sourceDomain}</small>
-                  <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}>
-                    <PanelRightOpen aria-hidden="true" size={13} />详情
-                  </button>
+                  <div className="rss-seed-actions">
+                    {downloadButton}
+                    <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}>
+                      <PanelRightOpen aria-hidden="true" size={13} />详情
+                    </button>
+                  </div>
                 </div>
               </article>
               );
