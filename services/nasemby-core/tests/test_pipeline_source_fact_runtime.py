@@ -72,6 +72,52 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
             "2026-07-27T03:30:00Z",
         )
 
+    def test_waiting_torra_is_completed_when_qb_confirms_target_handoff(self):
+        facts = build_pipeline_source_facts(context(
+            torra={
+                "id": "torra-private-1",
+                "completed": False,
+                "is_running": False,
+                "enabled": True,
+            },
+            qbTasks=[{
+                "hash": "hash-a",
+                "status": "completed",
+                "state": "uploading",
+                "progress": 1,
+                "completionOn": 1785121200,
+            }],
+        ), observed_at=OBSERVED_AT)
+
+        torra = by_stage(facts, "torra")
+
+        self.assertEqual(torra["state"], "succeeded")
+        self.assertEqual(torra["reasonCode"], "TORRA_TARGET_HANDOFF_CONFIRMED")
+        self.assertEqual(torra["reasonText"], "下游结果已确认获取目标满足")
+        self.assertEqual(torra["eventAt"], "2026-07-27T03:00:00Z")
+
+    def test_waiting_torra_stays_waiting_without_successful_downstream_evidence(self):
+        facts = build_pipeline_source_facts(context(
+            torra={
+                "id": "torra-private-1",
+                "completed": False,
+                "is_running": False,
+                "enabled": True,
+            },
+            qbTasks=[{
+                "hash": "hash-a",
+                "status": "downloading",
+                "state": "downloading",
+                "progress": 0.5,
+                "dlspeed": 1024,
+            }],
+        ), observed_at=OBSERVED_AT)
+
+        torra = by_stage(facts, "torra")
+
+        self.assertEqual(torra["state"], "waiting")
+        self.assertEqual(torra["reasonCode"], "TORRA_TARGET_WAITING")
+
     def test_qb_summary_uses_file_units_and_does_not_complete_cloud115(self):
         facts = build_pipeline_source_facts(context(qbTasks=[
             {"hash": "hash-a", "status": "completed", "state": "uploading", "progress": 1, "completionOn": 1785121200},

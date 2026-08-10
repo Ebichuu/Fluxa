@@ -157,6 +157,37 @@ class ActivityImportantViewTests(unittest.TestCase):
         self.assertEqual(logs[0]["category"], "push")
         self.assertEqual(logs[0]["repeatCount"], 5)
 
+    def test_important_view_folds_repeated_symedia_file_submissions_only(self):
+        for _index in range(3):
+            write_activity(
+                "symedia", "secupload_handoff", "success",
+                "已提交秒传单文件归档：Show.S01E01.mkv",
+            )
+        write_activity(
+            "symedia", "secupload_handoff", "success",
+            "已提交秒传单文件归档：Other.S01E01.mkv",
+        )
+        write_activity(
+            "symedia", "secupload_handoff", "success",
+            "秒传单文件交接完成：Show.S01E01.mkv",
+        )
+
+        logs = self.client.get(
+            "/api/v2/activity/logs?view=important&category=symedia"
+        ).get_json()["logs"]
+
+        self.assertEqual(len(logs), 3)
+        repeated = next(
+            row for row in logs
+            if row["message"] == "已提交秒传单文件归档：Show.S01E01.mkv"
+        )
+        self.assertEqual(repeated["repeatCount"], 3)
+        self.assertEqual(
+            [row["message"] for row in logs if row.get("repeatCount") == 1],
+            ["已提交秒传单文件归档：Other.S01E01.mkv"],
+        )
+        self.assertNotIn("repeatCount", logs[0])
+
     def test_important_view_rejects_unknown_view_value(self):
         response = self.client.get("/api/v2/activity/logs?view=other")
 

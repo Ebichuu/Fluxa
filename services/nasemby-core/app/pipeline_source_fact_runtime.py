@@ -769,6 +769,24 @@ def build_pipeline_source_facts(context: dict, *, observed_at: str) -> list[dict
         _strm_fact(context, scope, window),
         _emby_fact(context, scope, window),
     ]
+    torra = facts[0]
+    downstream = [fact for fact in facts[1:] if fact.get("state") == "succeeded"]
+    if torra.get("state") == "waiting" and downstream:
+        event_times = [
+            _text(fact.get("eventAt"))
+            for fact in downstream
+            if _text(fact.get("eventAt"))
+        ]
+        torra.update({
+            "state": "succeeded",
+            "evidence": "verified",
+            "source": "Torra 目标 / 下游证据",
+            "reasonCode": "TORRA_TARGET_HANDOFF_CONFIRMED",
+            "reasonText": "下游结果已确认获取目标满足",
+            "resultRef": _text((context.get("torra") or {}).get("id")),
+        })
+        if event_times:
+            torra["eventAt"] = min(event_times, key=_parse)
     if tuple(fact["stage"] for fact in facts) != PIPELINE_STAGES:
         raise RuntimeError("pipeline source adapter stage 顺序无效")
     return facts

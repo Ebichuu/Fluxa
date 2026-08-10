@@ -108,23 +108,33 @@ def read_activities(limit: int = 200, category: str = "") -> list[dict[str, Any]
 def _important_fold_identity(row: dict[str, Any]):
     """仅当后台活动可折叠时返回折叠分组键，否则返回 None。
 
-    只折叠 request_id=background 且状态为 success/info/skip 的后台活动；
-    error 和人工请求 ID 永不折叠。
+    折叠 request_id=background 的后台活动，以及同一文件重复的 Symedia
+    单文件归档提交；error 和其他人工请求 ID 永不折叠。
     """
     if str(row.get("status") or "") not in IMPORTANT_FOLDABLE_STATUSES:
         return None
+    category = str(row.get("category") or "")
+    action = str(row.get("action") or "")
+    status = str(row.get("status") or "")
+    message = str(row.get("message") or "")
+    if (
+        category == "symedia"
+        and action == "secupload_handoff"
+        and message.startswith("已提交秒传单文件归档：")
+    ):
+        return category, action, status, message
     meta = row.get("meta")
     request_id = str(meta.get("request_id") or "") if isinstance(meta, dict) else ""
     if request_id != "background":
         return None
-    return (str(row.get("category") or ""), str(row.get("action") or ""), str(row.get("status") or ""))
+    return category, action, status
 
 
 def read_important_activities(limit: int = 200, category: str = "") -> list[dict[str, Any]]:
-    """重点视图：先按 category 过滤，倒序扫描折叠重复后台活动，最后应用 limit。
+    """重点视图：先按 category 过滤，倒序扫描折叠可合并活动，最后应用 limit。
 
-    同一 category/action/status 的后台活动合并为一条（保留最新一条的位置），
-    error 和人工请求 ID 永不折叠。
+    后台活动按 category/action/status 合并；Symedia 单文件归档提交还会按
+    完整消息区分文件。error 和其他人工请求 ID 永不折叠。
     """
     try:
         limit = max(1, min(int(limit or 200), 1000))
@@ -136,7 +146,7 @@ def read_important_activities(limit: int = 200, category: str = "") -> list[dict
     with _LOCK:
         lines = LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
     rows: list[dict[str, Any]] = []
-    folded: dict[tuple[str, str, str], dict[str, Any]] = {}
+    folded: dict[tuple[str, ...], dict[str, Any]] = {}
     for line in reversed(lines):
         if not line.strip():
             continue

@@ -284,7 +284,8 @@ function matchActionLabel(action: AutomationAction | undefined, matchStatus: Rss
   if (action.status === 'failed') return action.error?.message || '操作失败，请稍后重试';
   if (action.status === 'cancelled') return '操作已取消';
   if (action.type === 'rss-exact-download' || action.type === 'rss-resource-download') {
-    return action.status === 'succeeded' ? 'qB 已确认下载任务' : 'qB 正在确认下载任务';
+    if (action.status !== 'succeeded') return 'qB 正在确认下载任务';
+    return action.result?.alreadyPresent === true ? 'qB 已存在相同资源' : 'qB 已确认下载任务';
   }
   if (action.status !== 'succeeded') {
     return action.type === 'rewash-download' ? 'Torra 正在接收下载任务' : 'Torra 正在检查可用版本';
@@ -404,7 +405,8 @@ function seedProcessingStateLabel(
   if (action?.type === 'rss-resource-download') {
     if (action.status === 'failed') return 'qB 提交失败';
     if (action.status === 'cancelled') return '下载已取消';
-    return action.status === 'succeeded' ? 'qB 已接收' : '正在提交 qB';
+    if (action.status !== 'succeeded') return '正在提交 qB';
+    return action.result?.alreadyPresent === true ? 'qB 已存在相同资源' : 'qB 已接收';
   }
   if (resourceDownloadStatus === 'succeeded') return 'qB 已接收';
   if (['claimed', 'submitted', 'polling'].includes(resourceDownloadStatus)) return '正在提交 qB';

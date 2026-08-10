@@ -1772,6 +1772,32 @@ class RssSubscriptionMatchRuntime:
         )
         return _compact(text)
 
+    @classmethod
+    def _resource_release_key(cls, value):
+        text = re.sub(
+            r"(?i)(S0*\d{1,2})E0*\d{1,4}(?:[-~](?:S0*\d{1,2})?E?0*\d{1,4})?",
+            r"\1",
+            _text(value),
+        )
+        return cls._resource_title_key(text)
+
+    @classmethod
+    def _qb_resource_task_from_summary(cls, summary, item):
+        if not isinstance(summary, dict) or summary.get("connected") is not True:
+            return None
+        title_key = cls._resource_title_key(item.get("title"))
+        release_key = cls._resource_release_key(item.get("title"))
+        for task in summary.get("tasks") or []:
+            if not isinstance(task, dict):
+                continue
+            task_title_key = cls._resource_title_key(task.get("name"))
+            task_release_key = cls._resource_release_key(task.get("name"))
+            if title_key and title_key == task_title_key:
+                return task
+            if release_key and release_key == task_release_key:
+                return task
+        return None
+
     def _resource_subscription_candidates(self, item, torra_rows):
         item_type = _media_type(item.get("media_type") or item.get("mediaType"))
         item_tmdb = _tmdb_id(item)
@@ -1990,16 +2016,19 @@ class RssSubscriptionMatchRuntime:
             "season_number": _int(item.get("season_number")) if media_type == "tv" else None,
             "episode_number": _int(item.get("episode_start")) if media_type == "tv" else None,
         }
-        item_title_key = self._resource_title_key(item.get("title"))
-        for task in qb_summary.get("tasks") or []:
-            if not isinstance(task, dict):
-                continue
-            if item_title_key and item_title_key == self._resource_title_key(task.get("name")):
+        existing_resource_task = self._qb_resource_task_from_summary(qb_summary, item)
+        if existing_resource_task:
+            if _text(existing_resource_task.get("status")).lower() == "completed":
                 add_blocker("RSS_RESOURCE_ALREADY_IN_QB", "qB 已存在同一 RSS 资源任务")
-                break
-            if qb_task_matches(task, subscription, unit):
-                add_blocker("RSS_RESOURCE_QB_BUSY", "当前媒体范围已有 qB 下载任务")
-                break
+            else:
+                add_blocker("RSS_RESOURCE_QB_BUSY", "同一 RSS 资源正在 qB 中处理")
+        else:
+            for task in qb_summary.get("tasks") or []:
+                if not isinstance(task, dict):
+                    continue
+                if qb_task_matches(task, subscription, unit):
+                    add_blocker("RSS_RESOURCE_QB_BUSY", "当前媒体范围已有 qB 下载任务")
+                    break
 
         config, config_error = self._analysis_config()
         if config_error:
@@ -2507,6 +2536,16 @@ class RssSubscriptionMatchRuntime:
                 return task
         return None
 
+    def _qb_task_for_resource(self, qb, item_id):
+        item = self.rss_repository.get_item(item_id, public=False)
+        if not item:
+            return None
+        try:
+            summary = qb.summary()
+        except Exception:
+            return None
+        return self._qb_resource_task_from_summary(summary, item)
+
     def execute_artifact_exact_download(self, group_id, preview_token, idempotency_key):
         now = _as_utc(self.clock()) or datetime.now(timezone.utc)
         with self._exact_preview_lock:
@@ -2684,11 +2723,15 @@ class RssSubscriptionMatchRuntime:
                 return existing
             external_job = _text(existing.get("external_job_id"))
             audit_tag = external_job.removeprefix("qb-tag:") if external_job.startswith("qb-tag:") else ""
-            task = self._qb_task_for_tag(qb, audit_tag) if qb is not None and audit_tag else None
+            tagged_task = self._qb_task_for_tag(qb, audit_tag) if qb is not None and audit_tag else None
+            task = tagged_task or (
+                self._qb_task_for_resource(qb, item_id) if qb is not None else None
+            )
             if task:
                 return self.watch_repository.complete_action(existing["action_id"], "succeeded", {
                     "accepted": True,
                     "confirmed": True,
+                    "alreadyPresent": tagged_task is None,
                     "qbHash": _text(task.get("hash")),
                     "itemId": _text(item_id),
                 })
@@ -2795,18 +2838,21 @@ class RssSubscriptionMatchRuntime:
                 ["fluxa-rss-resource", audit_tag],
             )
         except Exception as exc:
-            task = self._qb_task_for_tag(qb, audit_tag)
+            tagged_task = self._qb_task_for_tag(qb, audit_tag)
+            task = tagged_task or self._qb_task_for_resource(qb, item_id)
             if not task:
                 raise RssExactDownloadError(
                     "RSS_RESOURCE_QB_SUBMIT_UNCONFIRMED",
                     "qB 提交结果暂未确认，请检查带 Fluxa 标签的任务",
                     502,
                 ) from exc
-        task = self._qb_task_for_tag(qb, audit_tag)
+        tagged_task = self._qb_task_for_tag(qb, audit_tag)
+        task = tagged_task or self._qb_task_for_resource(qb, item_id)
         if task:
             action = self.watch_repository.complete_action(action_id, "succeeded", {
                 "accepted": True,
                 "confirmed": True,
+                "alreadyPresent": tagged_task is None,
                 "qbHash": _text(task.get("hash")),
                 "itemId": _text(item_id),
             })
@@ -2824,14 +2870,24 @@ class RssSubscriptionMatchRuntime:
         external_job = _text(action.get("external_job_id"))
         audit_tag = external_job.removeprefix("qb-tag:") if external_job.startswith("qb-tag:") else ""
         qb = getattr(self.analysis, "qb", None) if self.analysis else None
-        task = self._qb_task_for_tag(qb, audit_tag) if qb is not None and audit_tag else None
         item_id = _text(request_summary.get("itemId"))
+        tagged_task = (
+            self._qb_task_for_tag(qb, audit_tag)
+            if qb is not None and audit_tag
+            else None
+        )
+        task = tagged_task or (
+            self._qb_task_for_resource(qb, item_id)
+            if qb is not None and item_id
+            else None
+        )
         if not task or not item_id:
             return None
         action_id = _text(action.get("action_id"))
         self.watch_repository.complete_action(action_id, "succeeded", {
             "accepted": True,
             "confirmed": True,
+            "alreadyPresent": tagged_task is None,
             "qbHash": _text(task.get("hash")),
             "itemId": item_id,
         })

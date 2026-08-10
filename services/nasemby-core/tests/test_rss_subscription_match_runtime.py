@@ -1639,7 +1639,15 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(stored_unit["best_match_id"], match["id"])
         self.assertEqual(stored_unit["best_candidate_score"], 30.0)
 
-    def _prepare_resource_download(self, *, media_type="tv", torra_rows=None):
+    def _prepare_resource_download(
+        self,
+        *,
+        media_type="tv",
+        torra_rows=None,
+        title="",
+        season=1,
+        episode=None,
+    ):
         torra, qb = self._enable_analysis(
             environment={
                 "MCC_PRIVATE_RSS_ENABLED": "true",
@@ -1670,13 +1678,17 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         }] if media_type == "tv" else []))
         payload = {
             "fingerprint": f"direct-{media_type}",
-            "title": "Test Show S01 2160p WEB-DL" if media_type == "tv" else "Test Movie 2026 2160p WEB-DL",
+            "title": title or (
+                "Test Show S01 2160p WEB-DL"
+                if media_type == "tv"
+                else "Test Movie 2026 2160p WEB-DL"
+            ),
             "description": "◎中文名：测试剧" if media_type == "tv" else "◎中文名：测试电影",
             "published_at": self.now[0].isoformat().replace("+00:00", "Z"),
             "media_type": media_type,
-            "season_number": 1 if media_type == "tv" else None,
-            "episode_start": None,
-            "episode_end": None,
+            "season_number": season if media_type == "tv" else None,
+            "episode_start": episode if media_type == "tv" else None,
+            "episode_end": episode if media_type == "tv" else None,
             "tmdb_id": "202",
             "identity_status": "identified",
             "identity_source": "rss",
@@ -1684,7 +1696,7 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
             "download_url": "https://tracker.example/download?passkey=private",
         }
         self.rss.upsert_items(self.source["id"], [payload])
-        item = self.rss.search_items(query="Test") ["items"][0]
+        item = self.rss.search_items(query=payload["title"].split()[0])["items"][0]
         return torra, qb, item
 
     def test_unlinked_season_pack_download_uses_unique_torra_category_path(self):
@@ -1854,6 +1866,99 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
             [row["code"] for row in preview["blockers"]],
         )
         self.assertEqual(qb.added, [])
+
+    def test_resource_download_blocks_completed_same_release_with_episode_only_in_rss_title(self):
+        torra_row = {
+            "id": "torra-202",
+            "name": "Mushoku Tensei Jobless Reincarnation",
+            "media_type": "tv",
+            "tmdb_id": "202",
+            "season_number": 3,
+            "media_category": "anime_jp",
+            "save_path": "/downloads/torra/00-日漫",
+            "downloader_id": "qb-main",
+            "is_running": False,
+            "is_mutating": False,
+        }
+        _torra, qb, item = self._prepare_resource_download(
+            torra_rows=[torra_row],
+            title=(
+                "Mushoku Tensei Jobless Reincarnation S03E07 2026 "
+                "1080p NF WEB-DL x264 AAC-ADWeb"
+            ),
+            season=3,
+            episode=7,
+        )
+        qb.tasks = [{
+            "hash": "existing-mushoku",
+            "name": (
+                "Mushoku.Tensei.Jobless.Reincarnation.S03.2026."
+                "1080p.NF.WEB-DL.x264.AAC-ADWeb"
+            ),
+            "status": "completed",
+        }]
+
+        preview, _fingerprint = self.runtime.preview_resource_download(item["id"])
+
+        self.assertFalse(preview["ready"])
+        self.assertIn(
+            "RSS_RESOURCE_ALREADY_IN_QB",
+            [row["code"] for row in preview["blockers"]],
+        )
+        self.assertEqual(qb.added, [])
+
+        qb.tasks[0]["name"] = (
+            "Mushoku.Tensei.Jobless.Reincarnation.S03.2026."
+            "2160p.CR.WEB-DL.H265.AAC-Other"
+        )
+        different_release, _fingerprint = self.runtime.preview_resource_download(item["id"])
+        self.assertTrue(different_release["ready"])
+
+    def test_resource_download_recovers_existing_untagged_qb_task(self):
+        torra_row = {
+            "id": "torra-202",
+            "name": "Mushoku Tensei Jobless Reincarnation",
+            "media_type": "tv",
+            "tmdb_id": "202",
+            "season_number": 3,
+            "media_category": "anime_jp",
+            "save_path": "/downloads/torra/00-日漫",
+            "downloader_id": "qb-main",
+            "is_running": False,
+            "is_mutating": False,
+        }
+        _torra, qb, item = self._prepare_resource_download(
+            torra_rows=[torra_row],
+            title=(
+                "Mushoku Tensei Jobless Reincarnation S03E07 2026 "
+                "1080p NF WEB-DL x264 AAC-ADWeb"
+            ),
+            season=3,
+            episode=7,
+        )
+        qb.confirm_added_task = False
+        preview, _fingerprint = self.runtime.preview_resource_download(item["id"])
+        submitted = self.runtime.execute_resource_download(
+            item["id"], preview["previewToken"], "resource-request-mushoku"
+        )
+        qb.tasks.append({
+            "hash": "existing-mushoku",
+            "name": (
+                "Mushoku.Tensei.Jobless.Reincarnation.S03.2026."
+                "1080p.NF.WEB-DL.x264.AAC-ADWeb"
+            ),
+            "status": "completed",
+            "tags": "AUD",
+        })
+
+        recovered = self.runtime.recover_pending_resource_download()
+        action = self.watch.get_action(submitted["action_id"])
+
+        self.assertEqual(recovered["status"], "succeeded")
+        self.assertEqual(action["status"], "succeeded")
+        self.assertTrue(action["response_summary"]["alreadyPresent"])
+        self.assertEqual(action["response_summary"]["qbHash"], "existing-mushoku")
+        self.assertEqual(len(qb.added), 1)
 
     def test_resource_download_rejects_download_url_drift(self):
         _torra, qb, item = self._prepare_resource_download()

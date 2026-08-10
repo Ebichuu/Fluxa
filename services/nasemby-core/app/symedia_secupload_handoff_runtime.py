@@ -537,10 +537,11 @@ class SymediaSecuploadHandoffService:
                     next_attempt_at=_iso(now + timedelta(seconds=self._retry_seconds())),
                     last_error="",
                 )
-                self.activity_writer(
-                    "symedia", "secupload_handoff", "success",
-                    f"已提交秒传单文件归档：{item['display_name']}",
-                )
+                if attempts == 0:
+                    self.activity_writer(
+                        "symedia", "secupload_handoff", "success",
+                        f"已提交秒传单文件归档：{item['display_name']}",
+                    )
                 submitted += 1
             except Exception as exc:
                 attempted_at = now.replace(microsecond=0)

@@ -158,6 +158,10 @@ class SymediaSecuploadHandoffRuntimeTests(unittest.TestCase):
         self.assertEqual(submitted["submitted"], 1)
         self.assertEqual(self.symedia.submissions, [(target_path, "transfer-variety")])
         self.assertEqual(self.repository.item("new-job")["job_status"], "submitted")
+        self.assertEqual(
+            [activity[3] for activity in self.activities],
+            ["已提交秒传单文件归档：Show.Name.S01E11.2026.1080p.WEB-DL.mkv"],
+        )
 
         self.symedia.history = [{"src": target_path, "status": True, "date": "2026-08-09 09:02:00"}]
         self.now[0] += timedelta(seconds=30)
@@ -319,6 +323,14 @@ class SymediaSecuploadHandoffRuntimeTests(unittest.TestCase):
         resubmitted = self.service.run_once()
         self.assertEqual(resubmitted["submitted"], 1)
         self.assertEqual(len(self.symedia.submissions), 2)
+        self.assertEqual(
+            [
+                activity[3]
+                for activity in self.activities
+                if activity[3].startswith("已提交秒传单文件归档")
+            ],
+            ["已提交秒传单文件归档：Retry.Name.S01E02.mkv"],
+        )
 
         self.now[0] += timedelta(seconds=30)
         self.symedia.history.insert(0, {
@@ -329,6 +341,10 @@ class SymediaSecuploadHandoffRuntimeTests(unittest.TestCase):
         confirmed = self.service.run_once()
         self.assertEqual(confirmed["confirmed"], 1)
         self.assertEqual(self.repository.item("retry-job")["job_status"], "completed")
+        self.assertEqual(
+            [activity[3] for activity in self.activities][-1],
+            "秒传单文件交接完成：Retry.Name.S01E02.mkv",
+        )
 
     def test_out_of_source_path_fails_closed(self):
         self.service.run_once()
