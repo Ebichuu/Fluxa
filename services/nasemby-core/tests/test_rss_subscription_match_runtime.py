@@ -1671,6 +1671,7 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         payload = {
             "fingerprint": f"direct-{media_type}",
             "title": "Test Show S01 2160p WEB-DL" if media_type == "tv" else "Test Movie 2026 2160p WEB-DL",
+            "description": "◎中文名：测试剧" if media_type == "tv" else "◎中文名：测试电影",
             "published_at": self.now[0].isoformat().replace("+00:00", "Z"),
             "media_type": media_type,
             "season_number": 1 if media_type == "tv" else None,
@@ -1766,6 +1767,30 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertFalse(preview["ready"])
         self.assertIn(
             "RSS_RESOURCE_CATEGORY_UNCONFIRMED",
+            [row["code"] for row in preview["blockers"]],
+        )
+        self.assertEqual(qb.added, [])
+
+    def test_unlinked_tv_without_subscription_blocks_same_season_qb_task(self):
+        _torra, qb, item = self._prepare_resource_download(torra_rows=[])
+        qb.tasks = [{
+            "name": "测试剧 S01E03 2160p WEB-DL",
+            "status": "queued",
+        }]
+
+        with patch(
+            "app.subscription_compat_runtime.discover_runtime.get_cached_tmdb_detail",
+            return_value={
+                "origin_country": ["CN"],
+                "genres": [{"id": 18}],
+                "original_language": "zh",
+            },
+        ):
+            preview, _fingerprint = self.runtime.preview_resource_download(item["id"])
+
+        self.assertFalse(preview["ready"])
+        self.assertIn(
+            "RSS_RESOURCE_QB_BUSY",
             [row["code"] for row in preview["blockers"]],
         )
         self.assertEqual(qb.added, [])

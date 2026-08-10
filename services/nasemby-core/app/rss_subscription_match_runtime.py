@@ -1833,6 +1833,7 @@ class RssSubscriptionMatchRuntime:
         item = self.rss_repository.get_item(item_id, public=False)
         if not item:
             raise RssExactDownloadError("RSS_ITEM_NOT_FOUND", "RSS 种子条目不存在", 404)
+        display_item = self.rss_repository.get_item(item_id) or {}
         blockers = []
 
         def add_blocker(code, message):
@@ -1981,8 +1982,9 @@ class RssSubscriptionMatchRuntime:
                 qb_summary = {}
 
         subscription = torra_row or {
-            "title": _text(item.get("title")),
-            "name": _text(item.get("source_title") or item.get("sourceTitle")),
+            "title": _text(display_item.get("mediaTitle")),
+            "name": _text(display_item.get("sourceTitle")),
+            "keyword": _text(item.get("title")),
         }
         unit = {
             "season_number": _int(item.get("season_number")) if media_type == "tv" else None,
