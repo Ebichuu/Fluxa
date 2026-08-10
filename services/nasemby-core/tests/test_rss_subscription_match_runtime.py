@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from app.private_rss_repository import PrivateRssRepository
 from app.quality_watch_repository import QualityWatchRepository
@@ -1637,6 +1638,216 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(stored_unit["baseline_score"], 10.0)
         self.assertEqual(stored_unit["best_match_id"], match["id"])
         self.assertEqual(stored_unit["best_candidate_score"], 30.0)
+
+    def _prepare_resource_download(self, *, media_type="tv", torra_rows=None):
+        torra, qb = self._enable_analysis(
+            environment={
+                "MCC_PRIVATE_RSS_ENABLED": "true",
+                "MCC_TORRA_QUALITY_WATCH_ENABLED": "true",
+                "MCC_TORRA_REWASH_DOWNLOAD_ENABLED": "true",
+                "TORRA_DOWNLOAD_ROOT": "/downloads/torra",
+                "TORRA_DOWNLOADER_ID": "qb-main",
+            },
+            config={
+                "torra_quality_watch_enabled": True,
+                "torra_quality_execution_mode": "manual",
+                "torra_quality_min_interval_minutes": 60,
+                "torra_quality_hourly_limit": 4,
+                "torra_quality_daily_limit": 30,
+            },
+        )
+        torra.rows = list(torra_rows if torra_rows is not None else ([{
+            "id": "torra-202",
+            "name": "Test Show",
+            "media_type": "tv",
+            "tmdb_id": "202",
+            "season_number": 1,
+            "media_category": "tv_western",
+            "save_path": "/downloads/torra/04-欧美剧",
+            "downloader_id": "qb-main",
+            "is_running": False,
+            "is_mutating": False,
+        }] if media_type == "tv" else []))
+        payload = {
+            "fingerprint": f"direct-{media_type}",
+            "title": "Test Show S01 2160p WEB-DL" if media_type == "tv" else "Test Movie 2026 2160p WEB-DL",
+            "published_at": self.now[0].isoformat().replace("+00:00", "Z"),
+            "media_type": media_type,
+            "season_number": 1 if media_type == "tv" else None,
+            "episode_start": None,
+            "episode_end": None,
+            "tmdb_id": "202",
+            "identity_status": "identified",
+            "identity_source": "rss",
+            "identity_confidence": "exact",
+            "download_url": "https://tracker.example/download?passkey=private",
+        }
+        self.rss.upsert_items(self.source["id"], [payload])
+        item = self.rss.search_items(query="Test") ["items"][0]
+        return torra, qb, item
+
+    def test_unlinked_season_pack_download_uses_unique_torra_category_path(self):
+        _torra, qb, item = self._prepare_resource_download()
+
+        preview, _fingerprint = self.runtime.preview_resource_download(item["id"])
+
+        self.assertTrue(preview["ready"])
+        self.assertTrue(preview["subscriptionMatched"])
+        self.assertEqual(preview["categoryKey"], "tv_western")
+        self.assertEqual(preview["categoryDirectory"], "04-欧美剧")
+        self.assertEqual(preview["scopeLabel"], "S01 季包")
+        self.assertNotIn("/downloads", str(preview))
+        self.assertNotIn("tracker.example", str(preview))
+        self.assertNotIn("private", str(preview))
+
+        action = self.runtime.execute_resource_download(
+            item["id"], preview["previewToken"], "resource-request-0001"
+        )
+
+        self.assertEqual(action["status"], "succeeded")
+        self.assertEqual(len(qb.added), 1)
+        self.assertEqual(qb.added[0]["savePath"], "/downloads/torra/04-欧美剧")
+        self.assertEqual(qb.added[0]["category"], "")
+        self.assertEqual(qb.added[0]["tags"][0], "fluxa-rss-resource")
+        refreshed = self.rss.get_item(item["id"])
+        self.assertEqual(refreshed["resourceDownloadActionId"], action["action_id"])
+        self.assertEqual(refreshed["resourceDownloadStatus"], "succeeded")
+        self.assertNotIn("/downloads", str(action))
+        self.assertNotIn("tracker.example", str(action))
+
+    def test_unlinked_movie_download_auto_routes_to_movie_directory(self):
+        _torra, qb, item = self._prepare_resource_download(media_type="movie")
+
+        preview, _fingerprint = self.runtime.preview_resource_download(item["id"])
+        action = self.runtime.execute_resource_download(
+            item["id"], preview["previewToken"], "movie-resource-request"
+        )
+
+        self.assertTrue(preview["ready"])
+        self.assertFalse(preview["subscriptionMatched"])
+        self.assertEqual(preview["categoryKey"], "movie")
+        self.assertEqual(preview["categoryDirectory"], "10-电影")
+        self.assertEqual(qb.added[0]["savePath"], "/downloads/torra/10-电影")
+        self.assertEqual(action["status"], "succeeded")
+
+    def test_unlinked_tv_without_subscription_uses_tmdb_category_evidence(self):
+        _torra, qb, item = self._prepare_resource_download(torra_rows=[])
+
+        with patch(
+            "app.subscription_compat_runtime.discover_runtime.get_cached_tmdb_detail",
+            return_value={
+                "origin_country": ["CN"],
+                "genres": [{"id": 18}],
+                "original_language": "zh",
+            },
+        ):
+            preview, _fingerprint = self.runtime.preview_resource_download(item["id"])
+            action = self.runtime.execute_resource_download(
+                item["id"], preview["previewToken"], "tv-resource-request"
+            )
+
+        self.assertTrue(preview["ready"])
+        self.assertFalse(preview["subscriptionMatched"])
+        self.assertEqual(preview["categoryKey"], "tv_cn")
+        self.assertEqual(preview["categoryDirectory"], "02-国产剧")
+        self.assertEqual(preview["routeSource"], "media_identity")
+        self.assertEqual(qb.added[0]["savePath"], "/downloads/torra/02-国产剧")
+        self.assertEqual(action["status"], "succeeded")
+
+    def test_unlinked_tv_without_category_evidence_stays_blocked(self):
+        _torra, qb, item = self._prepare_resource_download(torra_rows=[])
+
+        with patch(
+            "app.subscription_compat_runtime.discover_runtime.get_cached_tmdb_detail",
+            return_value={},
+        ):
+            preview, _fingerprint = self.runtime.preview_resource_download(item["id"])
+
+        self.assertFalse(preview["ready"])
+        self.assertIn(
+            "RSS_RESOURCE_CATEGORY_UNCONFIRMED",
+            [row["code"] for row in preview["blockers"]],
+        )
+        self.assertEqual(qb.added, [])
+
+    def test_resource_download_blocks_ambiguous_torra_subscription(self):
+        rows = [{
+            "id": f"torra-{suffix}",
+            "name": "Test Show",
+            "media_type": "tv",
+            "tmdb_id": "202",
+            "season_number": 1,
+            "media_category": "tv_western",
+            "save_path": "/downloads/torra/04-欧美剧",
+            "downloader_id": "qb-main",
+        } for suffix in ("a", "b")]
+        _torra, qb, item = self._prepare_resource_download(torra_rows=rows)
+
+        preview, _fingerprint = self.runtime.preview_resource_download(item["id"])
+
+        self.assertFalse(preview["ready"])
+        self.assertIn(
+            "RSS_RESOURCE_SUBSCRIPTION_CONFLICT",
+            [row["code"] for row in preview["blockers"]],
+        )
+        self.assertEqual(qb.added, [])
+
+    def test_resource_download_blocks_path_outside_eight_category_chain(self):
+        rows = [{
+            "id": "torra-202",
+            "name": "Test Show",
+            "media_type": "tv",
+            "tmdb_id": "202",
+            "season_number": 1,
+            "media_category": "tv_western",
+            "save_path": "/downloads/other/04-欧美剧",
+            "downloader_id": "qb-main",
+        }]
+        _torra, qb, item = self._prepare_resource_download(torra_rows=rows)
+
+        preview, _fingerprint = self.runtime.preview_resource_download(item["id"])
+
+        self.assertFalse(preview["ready"])
+        self.assertIn(
+            "RSS_RESOURCE_SAVE_PATH_MISMATCH",
+            [row["code"] for row in preview["blockers"]],
+        )
+        self.assertEqual(qb.added, [])
+
+    def test_resource_download_blocks_active_qb_task_for_same_season(self):
+        _torra, qb, item = self._prepare_resource_download()
+        qb.tasks = [{
+            "name": "Test Show S01E03 2160p WEB-DL",
+            "status": "queued",
+        }]
+
+        preview, _fingerprint = self.runtime.preview_resource_download(item["id"])
+
+        self.assertFalse(preview["ready"])
+        self.assertIn(
+            "RSS_RESOURCE_QB_BUSY",
+            [row["code"] for row in preview["blockers"]],
+        )
+        self.assertEqual(qb.added, [])
+
+    def test_resource_download_rejects_download_url_drift(self):
+        _torra, qb, item = self._prepare_resource_download()
+        preview, _fingerprint = self.runtime.preview_resource_download(item["id"])
+        raw = self.rss.get_item(item["id"], public=False)
+        self.rss.upsert_items(self.source["id"], [{
+            **raw,
+            "download_url": "https://tracker.example/download?passkey=replaced",
+        }])
+
+        with self.assertRaises(RssExactDownloadError) as raised:
+            self.runtime.execute_resource_download(
+                item["id"], preview["previewToken"], "resource-request-drift"
+            )
+
+        self.assertEqual(raised.exception.code, "RSS_RESOURCE_PREVIEW_STALE")
+        self.assertEqual(qb.added, [])
+        self.assertNotIn("tracker.example", raised.exception.message)
+        self.assertNotIn("replaced", raised.exception.message)
 
     def test_exact_download_preview_returns_ready_without_submitting(self):
         self._watch(

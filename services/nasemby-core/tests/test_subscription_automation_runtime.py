@@ -882,6 +882,92 @@ class SubscriptionAutomationRuntimeTests(unittest.TestCase):
             ("execute", "public-group", "public-preview-token", "manual-request-0001"),
         ])
 
+    def test_rss_resource_download_routes_reject_client_routing_and_redact_action(self):
+        calls = []
+        claimed = self.repository.claim_action(
+            "rss-resource-api-test",
+            "rss-item:public-item",
+            "qbittorrent",
+            "rss-resource-download",
+            unit_key="rss-item:public-item",
+            request_summary={"source": "manual-rss-resource", "itemId": "public-item"},
+        )["action"]
+        action = self.repository.complete_action(
+            claimed["action_id"],
+            "succeeded",
+            {
+                "accepted": True,
+                "savePath": "/downloads/private",
+                "downloadUrl": "https://tracker.example/download?passkey=private",
+                "itemId": "public-item",
+            },
+        )
+
+        def preview(item_id):
+            calls.append(("preview", item_id))
+            return ({
+                "status": "ready",
+                "ready": True,
+                "capabilityState": "ready",
+                "itemId": item_id,
+                "mediaType": "tv",
+                "scopeLabel": "S01 季包",
+                "categoryKey": "tv_western",
+                "categoryLabel": "欧美剧",
+                "categoryDirectory": "04-欧美剧",
+                "classificationReason": "沿用唯一 Torra 订阅的八分类",
+                "routeSource": "torra_subscription",
+                "subscriptionMatched": True,
+                "destinationConfigured": True,
+                "previewToken": "resource-preview-token",
+                "expiresAt": "2026-07-18T01:10:00Z",
+                "blockers": [],
+                "observedAt": "2026-07-18T01:00:00Z",
+            }, "fingerprint")
+
+        def execute(item_id, preview_token, idempotency_key):
+            calls.append(("execute", item_id, preview_token, idempotency_key))
+            return action
+
+        self.rss_runtime.preview_resource_download = preview
+        self.rss_runtime.execute_resource_download = execute
+        preview_response = self.client.post(
+            "/api/v2/rss-items/public-item/download-previews",
+            json={},
+        )
+        injected = self.client.post(
+            "/api/v2/rss-items/public-item/downloads",
+            json={
+                "confirm": True,
+                "previewToken": "resource-preview-token",
+                "idempotencyKey": "resource-request-0001",
+                "savePath": "/downloads/other",
+            },
+        )
+        accepted = self.client.post(
+            "/api/v2/rss-items/public-item/downloads",
+            json={
+                "confirm": True,
+                "previewToken": "resource-preview-token",
+                "idempotencyKey": "resource-request-0001",
+            },
+        )
+
+        self.assertEqual(preview_response.status_code, 200)
+        self.assertEqual(preview_response.get_json()["categoryDirectory"], "04-欧美剧")
+        self.assertEqual(injected.status_code, 422)
+        self.assertEqual(injected.get_json()["code"], "SUBSCRIPTION_AUTOMATION_FIELDS_INVALID")
+        self.assertEqual(accepted.status_code, 202)
+        self.assertEqual(accepted.get_json()["type"], "rss-resource-download")
+        public_text = accepted.get_data(as_text=True)
+        self.assertNotIn("/downloads/private", public_text)
+        self.assertNotIn("tracker.example", public_text)
+        self.assertNotIn("passkey", public_text)
+        self.assertEqual(calls, [
+            ("preview", "public-item"),
+            ("execute", "public-item", "resource-preview-token", "resource-request-0001"),
+        ])
+
     def test_rss_match_download_rejects_expired_observation_window(self):
         match, analysis_id = self._rss_match_with_analysis("expired-window")
         self.environment["MCC_TORRA_REWASH_DOWNLOAD_ENABLED"] = "true"

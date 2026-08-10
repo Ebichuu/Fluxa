@@ -629,6 +629,13 @@ class QualityWatchScheduler:
 
     def run_once(self):
         config = self._config()
+        if self.rss_runtime and hasattr(self.rss_runtime, "recover_pending_resource_download"):
+            recovered = self.rss_runtime.recover_pending_resource_download()
+            if recovered:
+                return {
+                    "status": "ok",
+                    "processed": [{"source": "private-rss-resource-download", **recovered}],
+                }
         if self.rss_runtime and hasattr(self.rss_runtime, "recover_pending_exact_download"):
             recovered = self.rss_runtime.recover_pending_exact_download()
             if recovered:

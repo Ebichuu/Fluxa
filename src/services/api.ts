@@ -20,6 +20,7 @@ import type {
   RssMatchGroupListResponse,
   RssMatchListResponse,
   RssMatchRunResponse,
+  RssResourceDownloadPreview,
   RssSeedItem,
   RssSeedListResponse,
   RssSource,
@@ -778,6 +779,29 @@ export function previewRssExactDownload(
   return postJson<RssExactDownloadPreview>(
     `/api/v2/rss-matches/${encodeURIComponent(matchId)}/exact-download-previews`,
     {},
+    options
+  );
+}
+
+export function previewRssResourceDownload(
+  itemId: string,
+  options?: RequestOptions
+): Promise<RssResourceDownloadPreview> {
+  return postJson<RssResourceDownloadPreview>(
+    `/api/v2/rss-items/${encodeURIComponent(itemId)}/download-previews`,
+    {},
+    options
+  );
+}
+
+export function startRssResourceDownload(
+  itemId: string,
+  input: { confirm: true; previewToken: string; idempotencyKey: string },
+  options?: RequestOptions
+): Promise<AutomationAction> {
+  return postJson<AutomationAction>(
+    `/api/v2/rss-items/${encodeURIComponent(itemId)}/downloads`,
+    input,
     options
   );
 }

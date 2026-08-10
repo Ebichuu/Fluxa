@@ -691,6 +691,12 @@
   height: 30px;
 }
 
+.rss-seed-download:not(:disabled) {
+  border-color: rgba(var(--theme-accent-rgb), 0.34);
+  background: rgba(var(--theme-accent-rgb), 0.11);
+  color: var(--theme-success);
+}
+
 .rss-seed-download:disabled {
   cursor: not-allowed;
   opacity: 0.38;

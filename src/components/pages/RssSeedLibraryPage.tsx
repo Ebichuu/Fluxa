@@ -30,15 +30,17 @@ import {
   getRssSources,
   previewRssArtifactExactDownload,
   previewRssMatchCleanup,
+  previewRssResourceDownload,
   runRssMatcher,
   saveRssSource,
   startRssArtifactExactDownload,
   startRssMatchAnalysis,
   startRssMatchDownload,
+  startRssResourceDownload,
   testRssSource
 } from '../../services/api';
 import { writeUrlQuery, type UrlHistoryMode } from '../../app/urlState';
-import type { AutomationAction, RssExactDownloadPreview, RssIdentityStatus, RssLibrarySummary, RssMatch, RssMatchCleanupPreview, RssMatchGroup, RssMatchGroupListResponse, RssSeedItem, RssSource, RssSourceInput } from '../../types/rssSeedLibrary';
+import type { AutomationAction, RssExactDownloadPreview, RssIdentityStatus, RssLibrarySummary, RssMatch, RssMatchCleanupPreview, RssMatchGroup, RssMatchGroupListResponse, RssResourceDownloadPreview, RssSeedItem, RssSource, RssSourceInput } from '../../types/rssSeedLibrary';
 import {
   classifyRssResourceScope,
   countRssResourceScopes,
@@ -281,8 +283,8 @@ function matchActionLabel(action: AutomationAction | undefined, matchStatus: Rss
   }
   if (action.status === 'failed') return action.error?.message || '操作失败，请稍后重试';
   if (action.status === 'cancelled') return '操作已取消';
-  if (action.type === 'rss-exact-download') {
-    return action.status === 'succeeded' ? 'qB 已确认精准下载任务' : 'qB 正在确认精准下载任务';
+  if (action.type === 'rss-exact-download' || action.type === 'rss-resource-download') {
+    return action.status === 'succeeded' ? 'qB 已确认下载任务' : 'qB 正在确认下载任务';
   }
   if (action.status !== 'succeeded') {
     return action.type === 'rewash-download' ? 'Torra 正在接收下载任务' : 'Torra 正在检查可用版本';
@@ -396,8 +398,16 @@ function candidateGroupScoreLabel(group: RssMatchGroup) {
 function seedProcessingStateLabel(
   followState: RssSeedItem['followState'] | undefined,
   match: RssMatch | undefined,
-  action: AutomationAction | undefined
+  action: AutomationAction | undefined,
+  resourceDownloadStatus = ''
 ) {
+  if (action?.type === 'rss-resource-download') {
+    if (action.status === 'failed') return 'qB 提交失败';
+    if (action.status === 'cancelled') return '下载已取消';
+    return action.status === 'succeeded' ? 'qB 已接收' : '正在提交 qB';
+  }
+  if (resourceDownloadStatus === 'succeeded') return 'qB 已接收';
+  if (['claimed', 'submitted', 'polling'].includes(resourceDownloadStatus)) return '正在提交 qB';
   const resourceState = rssSeedFollowStateLabel(followState, Boolean(match));
   if (resourceState) return resourceState;
   if (!match) return '未关联';
@@ -452,11 +462,13 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const [matchesOffset, setMatchesOffset] = useState(0);
   const [matchesLoading, setMatchesLoading] = useState(false);
   const [matchActions, setMatchActions] = useState<Record<string, AutomationAction>>({});
+  const [resourceDownloadActions, setResourceDownloadActions] = useState<Record<string, AutomationAction>>({});
   const [exactPreviews, setExactPreviews] = useState<Record<string, RssExactDownloadPreview>>({});
   const [matchPollTimedOut, setMatchPollTimedOut] = useState<Record<string, boolean>>({});
   const [matchBusy, setMatchBusy] = useState('');
   const [downloadTarget, setDownloadTarget] = useState<{ match: RssMatch; analysis: AutomationAction } | null>(null);
   const [exactDownloadTarget, setExactDownloadTarget] = useState<{ group: RssMatchGroup; preview: RssExactDownloadPreview } | null>(null);
+  const [resourceDownloadTarget, setResourceDownloadTarget] = useState<{ item: RssSeedItem; preview: RssResourceDownloadPreview } | null>(null);
   const [cleanupPreview, setCleanupPreview] = useState<RssMatchCleanupPreview | null>(null);
   const [cleanupBusy, setCleanupBusy] = useState(false);
   const [query, setQuery] = useState(initialUrlState.query);
@@ -488,6 +500,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const itemsRequestRef = useRef<AbortController | null>(null);
   const matchesRequestRef = useRef<AbortController | null>(null);
   const matchPollRefs = useRef(new Map<string, AbortController>());
+  const resourcePollRefs = useRef(new Map<string, AbortController>());
   const detailRequestRef = useRef<AbortController | null>(null);
   const pageSize = rssPageSize;
 
@@ -726,6 +739,8 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     matchesRequestRef.current?.abort();
     matchPollRefs.current.forEach((controller) => controller.abort());
     matchPollRefs.current.clear();
+    resourcePollRefs.current.forEach((controller) => controller.abort());
+    resourcePollRefs.current.clear();
     detailRequestRef.current?.abort();
   }, []);
 
@@ -802,6 +817,44 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     }
   };
 
+  const pollResourceDownloadAction = async (itemId: string, actionId: string) => {
+    resourcePollRefs.current.get(itemId)?.abort();
+    const controller = new AbortController();
+    resourcePollRefs.current.set(itemId, controller);
+    try {
+      for (let attempt = 0; attempt < matchActionPollAttempts; attempt += 1) {
+        const action = await getAutomationAction(actionId, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        setResourceDownloadActions((current) => ({ ...current, [itemId]: action }));
+        if (['succeeded', 'failed', 'cancelled'].includes(action.status)) {
+          await loadItems({ offset });
+          if (action.status === 'failed') {
+            setFeedback({ tone: 'error', message: action.error?.message || 'qB 资源提交失败' });
+          }
+          return;
+        }
+        await new Promise<void>((resolve) => {
+          const timer = window.setTimeout(resolve, matchActionPollIntervalMs);
+          controller.signal.addEventListener('abort', () => {
+            window.clearTimeout(timer);
+            resolve();
+          }, { once: true });
+        });
+      }
+      if (!controller.signal.aborted) {
+        await loadItems({ offset });
+        setFeedback({ tone: 'error', message: 'qB 状态确认已超时，资源列表已刷新；可在任务中心继续确认。' });
+      }
+    } catch (reason) {
+      if (!controller.signal.aborted) {
+        await loadItems({ offset });
+        setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : 'qB 资源提交状态读取失败' });
+      }
+    } finally {
+      if (resourcePollRefs.current.get(itemId) === controller) resourcePollRefs.current.delete(itemId);
+    }
+  };
+
   const analyzeMatch = (match: RssMatch) => {
     setMatchBusy(`analysis:${match.id}`);
     startRssMatchAnalysis(match.id, createIdempotencyKey())
@@ -839,6 +892,29 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   };
 
   const previewItemExactDownload = async (item: RssSeedItem) => {
+    if (item.followState !== 'linked') {
+      const busyKey = `resource-preview:${item.id}`;
+      setMatchBusy(busyKey);
+      setFeedback(null);
+      try {
+        const preview = await previewRssResourceDownload(item.id);
+        const primary = preview.blockers[0];
+        if (preview.ready && preview.previewToken) {
+          setResourceDownloadTarget({ item, preview });
+        }
+        setFeedback({
+          tone: preview.ready ? 'ok' : 'error',
+          message: primary?.message || (preview.ready
+            ? `已自动归入 ${preview.categoryDirectory || preview.categoryLabel}`
+            : '资源下载预检未通过')
+        });
+      } catch (reason) {
+        setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : '资源下载预检失败' });
+      } finally {
+        setMatchBusy('');
+      }
+      return;
+    }
     const busyKey = `exact-resolve:${item.id}`;
     setMatchBusy(busyKey);
     setFeedback(null);
@@ -880,6 +956,29 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       .catch((reason: unknown) => setFeedback({
         tone: 'error',
         message: reason instanceof Error ? reason.message : '精准下载提交失败'
+      }))
+      .finally(() => setMatchBusy(''));
+  };
+
+  const confirmResourceDownload = () => {
+    const previewToken = resourceDownloadTarget?.preview.previewToken;
+    if (!resourceDownloadTarget || !previewToken) return;
+    const { item } = resourceDownloadTarget;
+    setResourceDownloadTarget(null);
+    setMatchBusy(`resource-download:${item.id}`);
+    startRssResourceDownload(item.id, {
+      confirm: true,
+      previewToken,
+      idempotencyKey: createIdempotencyKey()
+    })
+      .then((action) => {
+        setResourceDownloadActions((current) => ({ ...current, [item.id]: action }));
+        setFeedback({ tone: 'ok', message: '已按自动分类提交 qB，正在确认下载任务。' });
+        void pollResourceDownloadAction(item.id, action.id);
+      })
+      .catch((reason: unknown) => setFeedback({
+        tone: 'error',
+        message: reason instanceof Error ? reason.message : 'qB 资源提交失败'
       }))
       .finally(() => setMatchBusy(''));
   };
@@ -1274,16 +1373,29 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
             {timeline.map((item) => {
               const scope = classifyRssResourceScope(item);
               const itemMatch = matchByItemId.get(item.id);
-              const itemAction = itemMatch ? matchActions[itemMatch.id] : undefined;
-              const downloadBusy = matchBusy === `exact-resolve:${item.id}`;
-              const downloadDisabled = !item.hasDownload || item.followState !== 'linked' || Boolean(matchBusy);
+              const itemAction = resourceDownloadActions[item.id] || (itemMatch ? matchActions[itemMatch.id] : undefined);
+              const downloadBusy = [`exact-resolve:${item.id}`, `resource-preview:${item.id}`, `resource-download:${item.id}`].includes(matchBusy);
+              const resourceDownloadActive = ['claimed', 'submitted', 'polling', 'succeeded'].includes(
+                itemAction?.type === 'rss-resource-download'
+                  ? itemAction.status
+                  : item.resourceDownloadStatus || ''
+              );
+              const downloadDisabled = !item.hasDownload
+                || item.identityStatus !== 'identified'
+                || !['movie', 'tv'].includes(item.mediaType)
+                || resourceDownloadActive
+                || Boolean(matchBusy);
               const downloadTitle = !item.hasDownload
                 ? 'RSS 没有提供下载附件'
-                : item.followState !== 'linked'
-                  ? '尚未关联到追更，不能安全下载'
+                : item.identityStatus !== 'identified' || !['movie', 'tv'].includes(item.mediaType)
+                  ? '媒体身份未确认，暂不能自动分类'
+                  : resourceDownloadActive
+                    ? '该资源已提交 qB'
                   : downloadBusy
                     ? '正在执行下载预检'
-                    : '下载前先执行安全预检';
+                    : item.followState === 'linked'
+                      ? '下载前先执行安全预检'
+                      : '自动分类并提交 qB';
               const downloadButton = (
                 <button
                   aria-label={`${downloadTitle}：${item.mediaTitle || item.sourceTitle || item.title}`}
@@ -1311,7 +1423,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                       <span>{item.sourceName}</span>
                       <RelativeTime value={item.publishedAt || item.lastSeenAt} />
                       <span className={`rss-identity-chip rss-identity-chip--${item.identityStatus}`}>{identityLabel(item.identityStatus)}</span>
-                      <span className="rss-processing-chip">{seedProcessingStateLabel(item.followState, itemMatch, itemAction)}</span>
+                      <span className="rss-processing-chip">{seedProcessingStateLabel(item.followState, itemMatch, itemAction, item.resourceDownloadStatus)}</span>
                     </div>
                     <h2>{item.title}</h2>
                     {(item.mediaTitle || item.sourceTitle) && (item.mediaTitle || item.sourceTitle || '').trim().toLocaleLowerCase() !== item.title.trim().toLocaleLowerCase() && (
@@ -1342,7 +1454,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                         <div><dt>匹配原因</dt><dd>{rssMatchMethodLabel(item.matchMethod, item.matchConfidence)}</dd></div>
                         <div><dt>官种</dt><dd>无法判断</dd></div>
                         <div><dt>下载 / 入库 / 重复</dt><dd>尚未确认</dd></div>
-                        <div><dt>当前处理状态</dt><dd>{seedProcessingStateLabel(item.followState, itemMatch, itemAction)}</dd></div>
+                        <div><dt>当前处理状态</dt><dd>{seedProcessingStateLabel(item.followState, itemMatch, itemAction, item.resourceDownloadStatus)}</dd></div>
                         <div><dt>优先检查理由</dt><dd>{seedPriorityReason(item, scope)}</dd></div>
                       </dl>
                       <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}><PanelRightOpen aria-hidden="true" size={13} />查看识别证据</button>
@@ -1354,7 +1466,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                   </div>
                 </div>
                 <div className="rss-seed-state">
-                  <span className="state-chip">{seedProcessingStateLabel(item.followState, itemMatch, itemAction)}</span>
+                  <span className="state-chip">{seedProcessingStateLabel(item.followState, itemMatch, itemAction, item.resourceDownloadStatus)}</span>
                   <span className={`rss-identity-chip rss-identity-chip--${item.identityStatus}`}>{identityLabel(item.identityStatus)}</span>
                   <small>{item.sourceDomain}</small>
                   <div className="rss-seed-actions">
@@ -1685,6 +1797,36 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
 
       <ConfirmDialog
         busy={Boolean(matchBusy)}
+        labelledBy="rss-resource-download-title"
+        describedBy="rss-resource-download-description"
+        open={Boolean(resourceDownloadTarget)}
+        onClose={() => setResourceDownloadTarget(null)}
+      >
+        {resourceDownloadTarget && (
+          <>
+            <span className="ops-confirm-dialog__signal">自动分类下载</span>
+            <h2 id="rss-resource-download-title">按分类提交这个 RSS 资源到 qB？</h2>
+            <p id="rss-resource-download-description">
+              Fluxa 会把资源放入 Torra 的分类下载目录。下载完成后由现有 mover 和秒传插件继续处理，资源原始记录不会被删除。
+            </p>
+            <div className="ops-confirm-dialog__meta">
+              <span>作品</span><strong>{resourceDownloadTarget.item.mediaTitle || resourceDownloadTarget.item.sourceTitle || resourceDownloadTarget.item.title}</strong>
+              <span>范围</span><strong>{resourceDownloadTarget.preview.scopeLabel || '已确认资源范围'}</strong>
+              <span>自动分类</span><strong>{resourceDownloadTarget.preview.categoryDirectory || resourceDownloadTarget.preview.categoryLabel || '待确认'}</strong>
+              <span>分类依据</span><strong>{resourceDownloadTarget.preview.classificationReason || '已核验媒体身份'}</strong>
+            </div>
+            <div className="ops-confirm-dialog__actions">
+              <button className="ops-action-button" type="button" onClick={() => setResourceDownloadTarget(null)}>取消</button>
+              <button className="ops-action-button ops-action-button--primary" data-dialog-initial-focus type="button" onClick={confirmResourceDownload}>
+                <Download size={13} />确认提交 qB
+              </button>
+            </div>
+          </>
+        )}
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        busy={Boolean(matchBusy)}
         labelledBy="rss-exact-download-title"
         describedBy="rss-exact-download-description"
         open={Boolean(exactDownloadTarget)}
@@ -1763,7 +1905,12 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
               <span>匹配原因</span><strong>{rssMatchMethodLabel(detailItem.matchMethod, detailItem.matchConfidence)}</strong>
               <span>官种</span><strong>无法判断</strong>
               <span>下载 / 入库 / 重复</span><strong>尚未确认</strong>
-              <span>当前处理状态</span><strong>{seedProcessingStateLabel(detailItem.followState, matchByItemId.get(detailItem.id), matchByItemId.get(detailItem.id) ? matchActions[matchByItemId.get(detailItem.id)!.id] : undefined)}</strong>
+              <span>当前处理状态</span><strong>{seedProcessingStateLabel(
+                detailItem.followState,
+                matchByItemId.get(detailItem.id),
+                resourceDownloadActions[detailItem.id] || (matchByItemId.get(detailItem.id) ? matchActions[matchByItemId.get(detailItem.id)!.id] : undefined),
+                detailItem.resourceDownloadStatus
+              )}</strong>
             </div>
             <section className="rss-detail-description" aria-labelledby="rss-detail-description-title">
               <h3 id="rss-detail-description-title">RSS 简介</h3>

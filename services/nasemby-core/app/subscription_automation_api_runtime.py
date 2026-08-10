@@ -143,6 +143,55 @@ def register_subscription_automation(app, service):
     def rss_match_rewash_analysis(match_id):
         return execute(lambda: _accepted_response(service.create_rss_analysis(match_id, request.get_json(silent=True))))
 
+    @app.post("/api/v2/rss-items/<item_id>/download-previews")
+    def rss_item_download_preview(item_id):
+        def preview():
+            if not service.rss_runtime:
+                raise AutomationApiError("RSS_MATCH_RUNTIME_UNAVAILABLE", "RSS 匹配运行时不可用", 503)
+            body = request.get_json(silent=True)
+            if not isinstance(body, dict):
+                raise AutomationApiError(
+                    "SUBSCRIPTION_AUTOMATION_FIELDS_INVALID",
+                    "请求必须是 JSON 空对象",
+                    422,
+                )
+            service._validate_fields(body, set())
+            result, _fingerprint = service.rss_runtime.preview_resource_download(item_id)
+            return jsonify(result)
+
+        return execute(preview)
+
+    @app.post("/api/v2/rss-items/<item_id>/downloads")
+    def rss_item_download(item_id):
+        def create():
+            service._require_write()
+            body = request.get_json(silent=True)
+            body = body if isinstance(body, dict) else {}
+            service._validate_fields(body, {"confirm", "previewToken", "idempotencyKey"})
+            if body.get("confirm") is not True:
+                raise AutomationApiError(
+                    "RSS_RESOURCE_CONFIRMATION_REQUIRED",
+                    "资源下载需要明确确认",
+                    422,
+                )
+            if not str(body.get("previewToken") or "").strip():
+                raise AutomationApiError(
+                    "RSS_RESOURCE_PREVIEW_REQUIRED",
+                    "资源下载需要有效预览",
+                    422,
+                )
+            service._validate_idempotency(body)
+            if not service.rss_runtime:
+                raise AutomationApiError("RSS_MATCH_RUNTIME_UNAVAILABLE", "RSS 匹配运行时不可用", 503)
+            action = service.rss_runtime.execute_resource_download(
+                item_id,
+                body.get("previewToken"),
+                body.get("idempotencyKey"),
+            )
+            return _accepted_response(action)
+
+        return execute(create)
+
     @app.post("/api/v2/rss-matches/<match_id>/exact-download-previews")
     def rss_match_exact_download_preview(match_id):
         def preview():

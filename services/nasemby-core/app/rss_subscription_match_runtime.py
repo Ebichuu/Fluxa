@@ -37,8 +37,20 @@ QB_EPISODE_PATTERN = re.compile(r"S0*(\d{1,2})E0*(\d{1,4})(?:[-~]E?0*(\d{1,4}))?
 ANALYSIS_ACTION_TYPE = "rewash-analysis"
 DOWNLOAD_ACTION_TYPE = "rewash-download"
 SHADOW_EVALUATION_ACTION_TYPE = "rss-candidate-evaluation"
+RESOURCE_DOWNLOAD_ACTION_TYPE = "rss-resource-download"
 MANUAL_SUBSCRIPTION_SOURCE = "manual-subscription"
 QB_TARGET_OCCUPYING_STATES = {"downloading", "stalled", "queued", "paused"}
+TORRA_DOWNLOAD_ROOT_DEFAULT = "/vol02/1000-4-32d3f6a0/torra"
+TORRA_MEDIA_CATEGORIES = {
+    "anime_jp": {"label": "日漫", "directory": "00-日漫"},
+    "anime_cn": {"label": "国漫", "directory": "01-国漫"},
+    "tv_cn": {"label": "国产剧", "directory": "02-国产剧"},
+    "tv_asia": {"label": "日韩剧", "directory": "03-日韩剧"},
+    "tv_western": {"label": "欧美剧", "directory": "04-欧美剧"},
+    "tv_hk_tw": {"label": "港台剧", "directory": "05-港台剧"},
+    "variety": {"label": "综艺", "directory": "06-综艺"},
+    "movie": {"label": "电影", "directory": "10-电影"},
+}
 PERMANENT_RECLAIM_CONTEXT_CODES = {
     "window_expired": "RSS_REWASH_WINDOW_EXPIRED",
     "watch_unit_missing": "RSS_REWASH_WATCH_UNIT_MISSING",
@@ -85,6 +97,19 @@ def _tmdb_id(value):
     mapping = value.get("standard_media") or value.get("standard_mapping")
     if isinstance(mapping, dict):
         return _tmdb_id(mapping)
+    return ""
+
+
+def _imdb_id(value):
+    if not isinstance(value, dict):
+        return ""
+    for key in ("imdb_id", "imdbId", "imdbid"):
+        candidate = _text(value.get(key)).lower()
+        if candidate:
+            return candidate
+    mapping = value.get("standard_media") or value.get("standard_mapping")
+    if isinstance(mapping, dict):
+        return _imdb_id(mapping)
     return ""
 
 
@@ -198,6 +223,8 @@ def qb_task_matches(task, subscription, unit):
         return True
     season = _int(unit.get("season_number"))
     episode = _int(unit.get("episode_number"))
+    if episode <= 0:
+        return any(_int(match.group(1)) == season for match in matches)
     return any(
         _int(match.group(1)) == season
         and _int(match.group(2)) <= episode <= _int(match.group(3) or match.group(2))
@@ -278,6 +305,7 @@ class RssSubscriptionMatchRuntime:
         self.analysis = analysis
         self._exact_preview_lock = threading.RLock()
         self._exact_previews = {}
+        self._resource_previews = {}
 
     def _local_subscriptions(self):
         payload = self.subscription_loader()
@@ -1684,6 +1712,380 @@ class RssSubscriptionMatchRuntime:
             match["id"] for match in evaluated
         ])
 
+    @staticmethod
+    def _resource_category(value):
+        normalized = _text(value).replace("\\", "/").rstrip("/").lower()
+        leaf = normalized.rsplit("/", 1)[-1]
+        aliases = {
+            "日番": "anime_jp",
+            "日漫": "anime_jp",
+            "国番": "anime_cn",
+            "国漫": "anime_cn",
+            "国产动画": "anime_cn",
+            "国产剧": "tv_cn",
+            "日韩剧": "tv_asia",
+            "南亚剧": "tv_asia",
+            "欧美剧": "tv_western",
+            "欧美动画": "tv_western",
+            "港台剧": "tv_hk_tw",
+            "综艺": "variety",
+            "电影": "movie",
+        }
+        for key, category in TORRA_MEDIA_CATEGORIES.items():
+            candidates = {
+                key.lower(),
+                category["label"].lower(),
+                category["directory"].lower(),
+            }
+            if normalized in candidates or leaf in candidates:
+                return {"key": key, **category}
+        mapped = aliases.get(normalized) or aliases.get(leaf)
+        return {"key": mapped, **TORRA_MEDIA_CATEGORIES[mapped]} if mapped else None
+
+    @staticmethod
+    def _resource_scope(item):
+        media_type = _media_type(item.get("media_type") or item.get("mediaType"))
+        if media_type == "movie":
+            return "整部电影", True
+        season = _int(item.get("season_number", item.get("seasonNumber")))
+        episode_range = _positive_range(
+            item.get("episode_start", item.get("episodeStart")),
+            item.get("episode_end", item.get("episodeEnd")),
+        )
+        if media_type != "tv" or season <= 0:
+            return "范围待确认", False
+        if not episode_range:
+            return f"S{season:02d} 季包", True
+        start, end = episode_range
+        return (
+            f"S{season:02d}E{start:02d}"
+            if start == end
+            else f"S{season:02d}E{start:02d}–E{end:02d}"
+        ), True
+
+    @staticmethod
+    def _resource_title_key(value):
+        text = re.sub(
+            r"(?i)(?:\.(?:torrent|mkv|mp4|m4v|ts|m2ts|avi|wmv|mov))+$",
+            "",
+            _text(value),
+        )
+        return _compact(text)
+
+    def _resource_subscription_candidates(self, item, torra_rows):
+        item_type = _media_type(item.get("media_type") or item.get("mediaType"))
+        item_tmdb = _tmdb_id(item)
+        item_imdb = _imdb_id(item)
+        item_season = _int(item.get("season_number", item.get("seasonNumber")))
+        candidates = []
+        for row in torra_rows if isinstance(torra_rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            row_type = _media_type(row.get("media_type") or row.get("mediaType") or row.get("type"))
+            if row_type and row_type != item_type:
+                continue
+            row_tmdb = _tmdb_id(row)
+            row_imdb = _imdb_id(row)
+            if item_tmdb:
+                if not row_tmdb or row_tmdb != item_tmdb:
+                    continue
+            elif item_imdb:
+                if not row_imdb or row_imdb != item_imdb:
+                    continue
+            else:
+                continue
+            row_season = self._subscription_season(row)
+            if (
+                item_type == "tv"
+                and item_season > 0
+                and row_season is not None
+                and row_season > 0
+                and row_season != item_season
+            ):
+                continue
+            candidates.append(row)
+        return candidates
+
+    def _resource_downloader_id(self, torra, row, blockers):
+        environment = self.analysis.environment or {}
+        configured = _text(environment.get("TORRA_DOWNLOADER_ID"))
+        if not configured and torra is not None and hasattr(torra, "resolve_downloader_id"):
+            try:
+                configured = _text(torra.resolve_downloader_id(""))
+            except Exception:
+                configured = ""
+        row_downloader = _text(
+            (row or {}).get("downloader_id") or (row or {}).get("downloaderId")
+        )
+        if not configured:
+            blockers.append({
+                "code": "RSS_RESOURCE_DOWNLOADER_UNCONFIRMED",
+                "message": "Fluxa 当前 qB 与 Torra 下载器映射暂未确认",
+            })
+        elif row_downloader and row_downloader != configured:
+            blockers.append({
+                "code": "RSS_RESOURCE_DOWNLOADER_MISMATCH",
+                "message": "资源关联订阅没有使用 Fluxa 当前连接的 qB 下载器",
+            })
+        return configured
+
+    def _build_resource_download_preview(self, item_id):
+        item = self.rss_repository.get_item(item_id, public=False)
+        if not item:
+            raise RssExactDownloadError("RSS_ITEM_NOT_FOUND", "RSS 种子条目不存在", 404)
+        blockers = []
+
+        def add_blocker(code, message):
+            if not any(row["code"] == code for row in blockers):
+                blockers.append({"code": str(code), "message": str(message)})
+
+        media_type = _media_type(item.get("media_type") or item.get("mediaType"))
+        identity_status = _text(item.get("identity_status") or item.get("identityStatus"))
+        scope_label, scope_confirmed = self._resource_scope(item)
+        if identity_status != "identified":
+            add_blocker("RSS_RESOURCE_IDENTITY_UNCONFIRMED", "资源媒体身份尚未确认")
+        if media_type not in {"movie", "tv"}:
+            add_blocker("RSS_RESOURCE_MEDIA_TYPE_UNCONFIRMED", "资源媒体类型尚未确认")
+        if media_type == "tv" and not scope_confirmed:
+            add_blocker("RSS_RESOURCE_SCOPE_UNCONFIRMED", "剧集季号或资源范围尚未确认")
+        if not _text(item.get("download_url")):
+            add_blocker("RSS_RESOURCE_UNAVAILABLE", "RSS 来源没有提供可用下载资源")
+        if not _tmdb_id(item) and not _imdb_id(item):
+            add_blocker("RSS_RESOURCE_IDENTITY_UNCONFIRMED", "资源缺少可核验的 TMDB 或 IMDb 身份")
+
+        torra = getattr(self.analysis, "torra", None) if self.analysis else None
+        qb = getattr(self.analysis, "qb", None) if self.analysis else None
+        torra_rows = []
+        if torra is None:
+            add_blocker("RSS_RESOURCE_TORRA_UNAVAILABLE", "Torra 当前不可读")
+        else:
+            try:
+                if hasattr(torra, "is_configured") and not torra.is_configured():
+                    raise RuntimeError("torra unavailable")
+                torra_rows = torra.list_subscriptions()
+            except Exception:
+                add_blocker("RSS_RESOURCE_TORRA_UNAVAILABLE", "Torra 订阅当前不可读")
+                torra_rows = []
+
+        candidates = self._resource_subscription_candidates(item, torra_rows)
+        if len(candidates) > 1:
+            add_blocker(
+                "RSS_RESOURCE_SUBSCRIPTION_CONFLICT",
+                "同一媒体范围存在多个 Torra 订阅，不能自动选择下载归属",
+            )
+        torra_row = candidates[0] if len(candidates) == 1 else None
+        if torra_row and (
+            torra_row.get("is_running") is True or torra_row.get("is_mutating") is True
+        ):
+            add_blocker("RSS_RESOURCE_TORRA_BUSY", "Torra 当前正在处理该订阅")
+
+        category = None
+        category_reason = ""
+        route_source = ""
+        save_path = ""
+        qb_category = ""
+        environment = self.analysis.environment if self.analysis else {}
+        environment = environment or {}
+        root = _text(environment.get("TORRA_DOWNLOAD_ROOT")) or TORRA_DOWNLOAD_ROOT_DEFAULT
+        root = root.replace("\\", "/").rstrip("/")
+        if not root.startswith("/") or "/../" in f"{root}/" or root.endswith("/.."):
+            add_blocker("RSS_RESOURCE_DOWNLOAD_ROOT_INVALID", "Torra 下载根目录配置无效")
+            root = ""
+
+        if torra_row:
+            path_category = self._resource_category(
+                torra_row.get("save_path")
+                or torra_row.get("savePath")
+                or torra_row.get("download_path")
+            )
+            field_categories = [
+                self._resource_category(torra_row.get(key))
+                for key in (
+                    "resolved_category", "media_category", "category",
+                    "qb_category", "download_category",
+                )
+            ]
+            field_categories = [value for value in field_categories if value]
+            category_keys = {
+                value["key"] for value in ([path_category] if path_category else []) + field_categories
+            }
+            if len(category_keys) > 1:
+                add_blocker(
+                    "RSS_RESOURCE_CATEGORY_CONFLICT",
+                    "Torra 订阅分类与保存目录不一致",
+                )
+            elif category_keys:
+                category = next(
+                    value for value in ([path_category] if path_category else []) + field_categories
+                    if value["key"] in category_keys
+                )
+                category_reason = "沿用唯一 Torra 订阅的八分类"
+                route_source = "torra_subscription"
+            qb_category = _text(
+                torra_row.get("qb_category") or torra_row.get("download_category")
+            )
+            save_path = _text(
+                torra_row.get("save_path")
+                or torra_row.get("savePath")
+                or torra_row.get("download_path")
+            ).replace("\\", "/").rstrip("/")
+
+        if category is None and media_type in {"movie", "tv"} and identity_status == "identified":
+            try:
+                from app.subscription_compat_runtime import _resolve_category
+
+                resolved, reason = _resolve_category({
+                    "title": _text(item.get("title")),
+                    "media_type": media_type,
+                    "tmdb_id": _tmdb_id(item),
+                    "target_season": _int(item.get("season_number")) or None,
+                })
+            except Exception:
+                resolved, reason = None, "媒体分类证据当前不可读"
+            category = self._resource_category((resolved or {}).get("key")) if resolved else None
+            if category:
+                category_reason = _text(reason) or "依据媒体身份自动分类"
+                route_source = "media_identity"
+
+        if category is None:
+            add_blocker(
+                "RSS_RESOURCE_CATEGORY_UNCONFIRMED",
+                "无法可靠判断八分类，未向 qB 提交",
+            )
+        elif media_type == "movie" and category["key"] != "movie":
+            add_blocker("RSS_RESOURCE_CATEGORY_CONFLICT", "电影资源只能进入 10-电影")
+        elif media_type == "tv" and category["key"] == "movie":
+            add_blocker("RSS_RESOURCE_CATEGORY_CONFLICT", "电视剧资源不能进入电影目录")
+
+        if category and root:
+            expected_path = f"{root}/{category['directory']}"
+            if save_path and save_path != expected_path:
+                add_blocker(
+                    "RSS_RESOURCE_SAVE_PATH_MISMATCH",
+                    "Torra 订阅保存目录没有落在当前八分类接力路径",
+                )
+            else:
+                save_path = expected_path
+
+        downloader_id = self._resource_downloader_id(torra, torra_row, blockers)
+        qb_summary = {}
+        if qb is None:
+            add_blocker("RSS_RESOURCE_QB_UNAVAILABLE", "qB 当前不可读")
+        else:
+            try:
+                qb_summary = qb.summary()
+            except Exception:
+                qb_summary = {}
+            if not isinstance(qb_summary, dict) or qb_summary.get("connected") is not True:
+                add_blocker("RSS_RESOURCE_QB_UNAVAILABLE", "qB 当前不可读")
+                qb_summary = {}
+
+        subscription = torra_row or {
+            "title": _text(item.get("title")),
+            "name": _text(item.get("source_title") or item.get("sourceTitle")),
+        }
+        unit = {
+            "season_number": _int(item.get("season_number")) if media_type == "tv" else None,
+            "episode_number": _int(item.get("episode_start")) if media_type == "tv" else None,
+        }
+        item_title_key = self._resource_title_key(item.get("title"))
+        for task in qb_summary.get("tasks") or []:
+            if not isinstance(task, dict):
+                continue
+            if item_title_key and item_title_key == self._resource_title_key(task.get("name")):
+                add_blocker("RSS_RESOURCE_ALREADY_IN_QB", "qB 已存在同一 RSS 资源任务")
+                break
+            if qb_task_matches(task, subscription, unit):
+                add_blocker("RSS_RESOURCE_QB_BUSY", "当前媒体范围已有 qB 下载任务")
+                break
+
+        config, config_error = self._analysis_config()
+        if config_error:
+            add_blocker("RSS_RESOURCE_EXECUTION_DISABLED", "RSS 资源下载执行当前未启用")
+            config = {}
+        if _text(config.get("torra_quality_execution_mode")).lower() != "manual":
+            add_blocker("RSS_RESOURCE_EXECUTION_DISABLED", "RSS 资源下载需要启用人工执行模式")
+        if not _truthy(environment.get("MCC_TORRA_REWASH_DOWNLOAD_ENABLED")):
+            add_blocker("RSS_RESOURCE_DOWNLOAD_GATE_DISABLED", "RSS 资源下载硬门禁未开启")
+
+        routing = {}
+        if not blockers and category and save_path and downloader_id:
+            remote_id = _text((torra_row or {}).get("id"))
+            routing = {
+                "subscriptionKey": f"torra:{remote_id}" if remote_id else f"rss-item:{item['id']}",
+                "itemId": _text(item.get("id")),
+                "downloadUrl": _text(item.get("download_url")),
+                "downloadUrlDigest": _secret_digest(item.get("download_url")),
+                "savePath": save_path,
+                "downloaderId": downloader_id,
+                "category": qb_category,
+                "categoryKey": category["key"],
+                "categoryDirectory": category["directory"],
+                "routeSource": route_source,
+                "itemFingerprint": _text(item.get("fingerprint")),
+            }
+        fingerprint = stable_payload_hash({
+            "itemId": item.get("id"),
+            "itemFingerprint": item.get("fingerprint"),
+            "identityStatus": identity_status,
+            "mediaType": media_type,
+            "tmdbId": _tmdb_id(item),
+            "imdbId": _imdb_id(item),
+            "seasonNumber": item.get("season_number"),
+            "episodeStart": item.get("episode_start"),
+            "episodeEnd": item.get("episode_end"),
+            "downloadUrlDigest": _secret_digest(item.get("download_url")),
+            "routing": {
+                key: routing.get(key)
+                for key in (
+                    "subscriptionKey", "savePath", "downloaderId", "category",
+                    "categoryKey", "categoryDirectory", "routeSource",
+                )
+            },
+        })
+        observed_at = _as_utc(self.clock()) or datetime.now(timezone.utc)
+        public = {
+            "status": "ready" if not blockers and routing else "blocked",
+            "ready": bool(not blockers and routing),
+            "capabilityState": "ready" if not blockers and routing else "blocked",
+            "itemId": _text(item.get("id")),
+            "mediaType": media_type,
+            "scopeLabel": scope_label,
+            "categoryKey": category["key"] if category else "",
+            "categoryLabel": category["label"] if category else "",
+            "categoryDirectory": category["directory"] if category else "",
+            "classificationReason": category_reason,
+            "routeSource": route_source,
+            "subscriptionMatched": bool(torra_row),
+            "destinationConfigured": bool(routing),
+            "blockers": blockers,
+            "observedAt": observed_at.isoformat().replace("+00:00", "Z"),
+        }
+        return public, routing, fingerprint
+
+    def preview_resource_download(self, item_id, *, persist=True):
+        public, _routing, fingerprint = self._build_resource_download_preview(item_id)
+        if not public["ready"] or not persist:
+            return {**public, "previewToken": "", "expiresAt": ""}, fingerprint
+        now = _as_utc(self.clock()) or datetime.now(timezone.utc)
+        expires_at = now + timedelta(minutes=10)
+        token = secrets.token_urlsafe(32)
+        with self._exact_preview_lock:
+            self._resource_previews = {
+                key: value for key, value in self._resource_previews.items()
+                if value["expiresAt"] > now
+            }
+            self._resource_previews[token] = {
+                "itemId": _text(item_id),
+                "fingerprint": fingerprint,
+                "expiresAt": expires_at,
+            }
+        return {
+            **public,
+            "previewToken": token,
+            "expiresAt": expires_at.isoformat().replace("+00:00", "Z"),
+        }, fingerprint
+
     def _preview_exact_match(self, match_id):
         match = self.rss_repository.get_match(match_id)
         if not match:
@@ -2241,6 +2643,201 @@ class RssSubscriptionMatchRuntime:
                 "groupId": _text(group_id),
             })
         return action
+
+    def execute_resource_download(self, item_id, preview_token, idempotency_key):
+        now = _as_utc(self.clock()) or datetime.now(timezone.utc)
+        with self._exact_preview_lock:
+            receipt = self._resource_previews.get(_text(preview_token))
+        if not receipt or receipt["itemId"] != _text(item_id) or receipt["expiresAt"] <= now:
+            raise RssExactDownloadError(
+                "RSS_RESOURCE_PREVIEW_EXPIRED",
+                "资源下载预览已过期，请重新预览",
+                409,
+            )
+        request_key = _text(idempotency_key)
+        if not 12 <= len(request_key) <= 128:
+            raise RssExactDownloadError(
+                "RSS_RESOURCE_IDEMPOTENCY_INVALID",
+                "幂等键长度必须为 12 到 128 个字符",
+                422,
+            )
+        fingerprint = receipt["fingerprint"]
+        stored_idempotency = "rss-resource:" + stable_payload_hash({
+            "fingerprint": fingerprint,
+        })[:48]
+        existing = self.watch_repository.get_action_by_idempotency(stored_idempotency)
+        qb = getattr(self.analysis, "qb", None) if self.analysis else None
+        if existing:
+            request_summary = existing.get("request_summary") or {}
+            if (
+                _text(request_summary.get("itemId")) != _text(item_id)
+                or _text(request_summary.get("previewFingerprint")) != fingerprint
+            ):
+                raise RssExactDownloadError(
+                    "RSS_RESOURCE_IDEMPOTENCY_CONFLICT",
+                    "资源下载收据与当前资源不一致",
+                    409,
+                )
+            if existing.get("status") in {"succeeded", "failed", "cancelled"}:
+                return existing
+            external_job = _text(existing.get("external_job_id"))
+            audit_tag = external_job.removeprefix("qb-tag:") if external_job.startswith("qb-tag:") else ""
+            task = self._qb_task_for_tag(qb, audit_tag) if qb is not None and audit_tag else None
+            if task:
+                return self.watch_repository.complete_action(existing["action_id"], "succeeded", {
+                    "accepted": True,
+                    "confirmed": True,
+                    "qbHash": _text(task.get("hash")),
+                    "itemId": _text(item_id),
+                })
+
+        current, routing, current_fingerprint = self._build_resource_download_preview(item_id)
+        if not current["ready"] or current_fingerprint != fingerprint:
+            raise RssExactDownloadError(
+                "RSS_RESOURCE_PREVIEW_STALE",
+                "资源身份、分类或 qB 状态已经变化，请重新预览",
+                409,
+            )
+        environment = self.analysis.environment or {}
+        if not _truthy(environment.get("MCC_TORRA_REWASH_DOWNLOAD_ENABLED")):
+            raise RssExactDownloadError(
+                "RSS_RESOURCE_DOWNLOAD_GATE_DISABLED",
+                "RSS 资源下载硬门禁未开启",
+                503,
+            )
+        if qb is None or not hasattr(qb, "add_torrent"):
+            raise RssExactDownloadError(
+                "RSS_RESOURCE_QB_WRITE_UNAVAILABLE",
+                "qB 资源提交能力不可用",
+                503,
+            )
+        config, config_error = self._analysis_config()
+        if config_error or _text(config.get("torra_quality_execution_mode")).lower() != "manual":
+            raise RssExactDownloadError(
+                "RSS_RESOURCE_EXECUTION_DISABLED",
+                "RSS 资源下载需要启用人工执行模式",
+                503,
+            )
+        claim = self.watch_repository.claim_action(
+            stored_idempotency,
+            routing["subscriptionKey"],
+            "qbittorrent",
+            RESOURCE_DOWNLOAD_ACTION_TYPE,
+            unit_key=f"rss-item:{_text(item_id)}",
+            request_summary={
+                "source": "manual-rss-resource",
+                "itemId": _text(item_id),
+                "previewFingerprint": fingerprint,
+                "categoryKey": routing["categoryKey"],
+                "categoryDirectory": routing["categoryDirectory"],
+                "routeSource": routing["routeSource"],
+                "requestKeyHash": stable_payload_hash({"requestKey": request_key})[:16],
+            },
+            rate_limits={
+                "hourly": int(config.get("torra_quality_hourly_limit") or 4),
+                "daily": int(config.get("torra_quality_daily_limit") or 30),
+            },
+            require_idle=True,
+            require_provider_idle=True,
+        )
+        disposition = claim.get("disposition")
+        action = claim.get("action")
+        if disposition == "conflict":
+            raise RssExactDownloadError(
+                "RSS_RESOURCE_IDEMPOTENCY_CONFLICT",
+                "幂等键已用于其他资源下载",
+                409,
+            )
+        if disposition in {"global_busy", "rate_limited"}:
+            code = (
+                "RSS_RESOURCE_GLOBAL_BUSY"
+                if disposition == "global_busy"
+                else "RSS_RESOURCE_RATE_LIMITED"
+            )
+            raise RssExactDownloadError(code, "当前已有 qB 提交动作或已达到安全限额", 409)
+        if not action:
+            raise RssExactDownloadError(
+                "RSS_RESOURCE_ACTION_UNAVAILABLE",
+                "资源下载动作无法建立",
+                500,
+            )
+        action_id = _text(action.get("action_id"))
+        external_job = _text(action.get("external_job_id"))
+        audit_tag = external_job.removeprefix("qb-tag:") if external_job.startswith("qb-tag:") else ""
+        if disposition in {"replay", "in_progress", "resume"} and audit_tag:
+            task = self._qb_task_for_tag(qb, audit_tag)
+            if task and action.get("status") not in {"succeeded", "failed", "cancelled"}:
+                return self.watch_repository.complete_action(action_id, "succeeded", {
+                    "accepted": True,
+                    "confirmed": True,
+                    "qbHash": _text(task.get("hash")),
+                    "itemId": _text(item_id),
+                })
+            if disposition in {"replay", "in_progress"}:
+                return action
+        if disposition == "replay":
+            return action
+        if not audit_tag:
+            audit_tag = f"fluxa-resource-{action_id[:8]}"
+            action = self.watch_repository.save_external_job(
+                action_id,
+                f"qb-tag:{audit_tag}",
+                status="submitted",
+                lease_seconds=60,
+            )
+        try:
+            qb.add_torrent(
+                routing["downloadUrl"],
+                routing["savePath"],
+                routing["category"],
+                ["fluxa-rss-resource", audit_tag],
+            )
+        except Exception as exc:
+            task = self._qb_task_for_tag(qb, audit_tag)
+            if not task:
+                raise RssExactDownloadError(
+                    "RSS_RESOURCE_QB_SUBMIT_UNCONFIRMED",
+                    "qB 提交结果暂未确认，请检查带 Fluxa 标签的任务",
+                    502,
+                ) from exc
+        task = self._qb_task_for_tag(qb, audit_tag)
+        if task:
+            action = self.watch_repository.complete_action(action_id, "succeeded", {
+                "accepted": True,
+                "confirmed": True,
+                "qbHash": _text(task.get("hash")),
+                "itemId": _text(item_id),
+            })
+        return action
+
+    def recover_pending_resource_download(self):
+        action = self.watch_repository.find_inflight_action(
+            "qbittorrent", RESOURCE_DOWNLOAD_ACTION_TYPE
+        )
+        if not action:
+            return None
+        request_summary = action.get("request_summary") or {}
+        if request_summary.get("source") != "manual-rss-resource":
+            return None
+        external_job = _text(action.get("external_job_id"))
+        audit_tag = external_job.removeprefix("qb-tag:") if external_job.startswith("qb-tag:") else ""
+        qb = getattr(self.analysis, "qb", None) if self.analysis else None
+        task = self._qb_task_for_tag(qb, audit_tag) if qb is not None and audit_tag else None
+        item_id = _text(request_summary.get("itemId"))
+        if not task or not item_id:
+            return None
+        action_id = _text(action.get("action_id"))
+        self.watch_repository.complete_action(action_id, "succeeded", {
+            "accepted": True,
+            "confirmed": True,
+            "qbHash": _text(task.get("hash")),
+            "itemId": item_id,
+        })
+        return {
+            "status": "succeeded",
+            "actionId": action_id,
+            "itemId": item_id,
+        }
 
     def recover_pending_exact_download(self):
         action = self.watch_repository.find_inflight_action(

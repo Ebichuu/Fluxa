@@ -78,6 +78,8 @@ export interface RssSeedItem {
   hasDownload: boolean;
   lastSeenAt: string;
   followState?: 'linked' | 'unlinked';
+  resourceDownloadActionId?: string;
+  resourceDownloadStatus?: string;
 }
 
 export type RssIdentityStatus = '' | RssSeedItem['identityStatus'];
@@ -366,6 +368,29 @@ export interface RssExactDownloadPreview {
   coveredEpisodeEnd?: number | null;
   downloadCategory?: string;
   downloadCategoryConfigured?: boolean;
+  destinationConfigured?: boolean;
+  previewToken?: string;
+  expiresAt?: string;
+  blockers: Array<{
+    code: string;
+    message: string;
+  }>;
+  observedAt: string;
+}
+
+export interface RssResourceDownloadPreview {
+  status: 'blocked' | 'ready' | string;
+  ready: boolean;
+  capabilityState: 'blocked' | 'ready' | string;
+  itemId: string;
+  mediaType?: 'movie' | 'tv' | string;
+  scopeLabel?: string;
+  categoryKey?: string;
+  categoryLabel?: string;
+  categoryDirectory?: string;
+  classificationReason?: string;
+  routeSource?: 'torra_subscription' | 'media_identity' | string;
+  subscriptionMatched?: boolean;
   destinationConfigured?: boolean;
   previewToken?: string;
   expiresAt?: string;

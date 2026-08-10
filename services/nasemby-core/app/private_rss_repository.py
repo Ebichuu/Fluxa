@@ -598,6 +598,34 @@ class PrivateRssRepository:
             item["followState"] = row["follow_state"]
         return item
 
+    @staticmethod
+    def _resource_download_actions(connection, item_ids):
+        item_ids = [str(value or "").strip() for value in item_ids if str(value or "").strip()]
+        if not item_ids:
+            return {}
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='provider_actions'"
+        ).fetchone()
+        if not table:
+            return {}
+        unit_keys = [f"rss-item:{item_id}" for item_id in item_ids]
+        placeholders = ",".join("?" for _value in unit_keys)
+        rows = connection.execute(
+            "SELECT unit_key, action_id, status FROM provider_actions "
+            f"WHERE action_type='rss-resource-download' AND unit_key IN ({placeholders}) "
+            "ORDER BY created_at DESC, action_id DESC",
+            unit_keys,
+        ).fetchall()
+        actions = {}
+        for row in rows:
+            item_id = str(row["unit_key"] or "").removeprefix("rss-item:")
+            if item_id and item_id not in actions:
+                actions[item_id] = {
+                    "resourceDownloadActionId": str(row["action_id"] or ""),
+                    "resourceDownloadStatus": str(row["status"] or ""),
+                }
+        return actions
+
     def _public_items(self, connection, rows):
         source_rows = list(rows)
         items = [self._public_item(row) for row in source_rows]
@@ -608,6 +636,12 @@ class PrivateRssRepository:
         )
         for item in items:
             item.update(metadata.get(str(item.get("id") or ""), {}))
+        download_actions = self._resource_download_actions(
+            connection,
+            [item.get("id") for item in items],
+        )
+        for item in items:
+            item.update(download_actions.get(str(item.get("id") or ""), {}))
         return items
 
     def list_sources(self):
