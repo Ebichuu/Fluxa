@@ -74,7 +74,7 @@ export function readNavigation(location: Location = window.location): Navigation
     query.has('chainId') || query.has('targetKey') || query.has('subscriptionId') || query.has('tmdbId') || query.has('title')
     || query.has('outcomeState') || query.has('userState') || query.has('completedDate') || query.has('advanced') || query.has('identityState')
     || query.has('systemIssue') || query.has('archivedDate') || query.get('qbActive') === '1'
-    || query.has('view') || query.has('episodeNumber') || query.has('matchId') || query.has('publishedDate')
+    || query.has('view') || query.has('episodeNumber') || query.has('matchId') || query.has('publishedDate') || query.has('window')
   ) ? {
     mediaType: query.get('mediaType') === 'movie' ? 'movie' : query.get('mediaType') === 'tv' ? 'tv' : undefined,
     resourceView: ['new', 'identify', 'scoring', 'upgrades', 'cleanup'].includes(query.get('view') || '')
@@ -89,6 +89,9 @@ export function readNavigation(location: Location = window.location): Navigation
     episodeNumber: Number.isFinite(episode) && episode > 0 ? episode : undefined,
     rssMatchId: optionalString(query.get('matchId')),
     publishedDate: optionalString(query.get('publishedDate')),
+    rssWindow: ['all', '1h', '24h', '7d'].includes(query.get('window') || '')
+      ? query.get('window') as TaskNavigationTarget['rssWindow']
+      : undefined,
     outcomeState: outcomeStates[0],
     outcomeStates,
     userState: ['action_required', 'in_progress', 'completed', 'no_action'].includes(query.get('userState') || '')
@@ -127,6 +130,7 @@ export function pathForNavigation(page: PageId, target?: TaskNavigationTarget | 
     if (target.seasonNumber != null) query.set('seasonNumber', String(target.seasonNumber));
     if (target.episodeNumber != null) query.set('episodeNumber', String(target.episodeNumber));
     if (target.rssMatchId) query.set('matchId', target.rssMatchId);
+    if (target.rssWindow) query.set('window', target.rssWindow);
     if (target.publishedDate) {
       query.set('publishedDate', target.publishedDate);
       query.set('window', 'all');

@@ -3443,6 +3443,21 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
 
               {detailId === item.id && (
                 <div className="sub-detail">
+                  {item.reconciliationState === 'remote_missing' && (
+                    <section className="sub-detail__section sub-detail__resolution-guide" aria-label="Torra 远端订阅缺失处理说明">
+                      <div>
+                        <strong>处理 Torra 远端订阅缺失</strong>
+                        <p>Fluxa 保留了追更意图，但原关联的 Torra 订阅已经不存在；这不代表已有媒体或入库结果丢失。</p>
+                      </div>
+                      <ol>
+                        <li><b>仍需追更</b><span>先在 Torra 重新建立同一作品和季的订阅，再刷新追更状态重新对账。</span></li>
+                        <li><b>不再追更</b><span>确认没有替代订阅后再处理本地追更；Fluxa 不会自动删除记录或已有媒体。</span></li>
+                      </ol>
+                      <button className="tool-link" disabled={subsLoading} type="button" onClick={refreshSubs}>
+                        <RefreshCcw aria-hidden="true" size={13} />刷新追更状态
+                      </button>
+                    </section>
+                  )}
                   {detailLoading && <small className="sub-detail__hint">详情加载中…</small>}
                   {!detailLoading && (!detail || !detail.success) && (
                     <small className="sub-detail__hint">详情加载失败，稍后再试。</small>

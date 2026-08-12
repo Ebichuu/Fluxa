@@ -20,6 +20,7 @@ export interface TaskNavigationTarget {
   episodeNumber?: number | null;
   rssMatchId?: string;
   publishedDate?: string;
+  rssWindow?: 'all' | '1h' | '24h' | '7d';
   outcomeState?: PipelineOutcomeState;
   outcomeStates?: PipelineOutcomeState[];
   userState?: 'action_required' | 'in_progress' | 'completed' | 'no_action';

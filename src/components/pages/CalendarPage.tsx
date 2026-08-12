@@ -901,7 +901,8 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                       tmdbId: entry.tmdbId,
                       title: entry.title,
                       seasonNumber: entrySeasonNumber(entry),
-                      episodeNumber: entry.episodeNumber
+                      episodeNumber: entry.episodeNumber,
+                      rssWindow: 'all'
                     })}
                   >
                     <FileSearch aria-hidden="true" size={14} />
