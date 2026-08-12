@@ -88,6 +88,22 @@ type RssResourceContext = Pick<RssLibraryUrlState,
   'publishedDate' | 'subscriptionId' | 'tmdbId' | 'mediaType' | 'contextTitle' | 'seasonNumber' | 'episodeNumber' | 'matchId'
 >;
 
+function RssSourceBadge({ sourceName, sourceDomain }: Pick<RssSeedItem, 'sourceName' | 'sourceDomain'>) {
+  const name = sourceName.trim() || sourceDomain.trim() || '未知站点';
+  const domain = sourceDomain.trim();
+  const detail = domain && domain.toLocaleLowerCase() !== name.toLocaleLowerCase() ? domain : '';
+  const label = detail ? `资源站点：${name}（${detail}）` : `资源站点：${name}`;
+  return (
+    <span aria-label={label} className="rss-source-badge" title={label}>
+      <span aria-hidden="true" className="rss-source-badge__signal" />
+      <span className="rss-source-badge__text">
+        <strong>{name}</strong>
+        {detail && <small>{detail}</small>}
+      </span>
+    </span>
+  );
+}
+
 const emptyResourceContext: RssResourceContext = {
   publishedDate: '',
   subscriptionId: '',
@@ -1446,7 +1462,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                   />
                   <div className="rss-seed-content">
                     <div className="rss-seed-card-head">
-                      <span>{item.sourceName}</span>
+                      <RssSourceBadge sourceDomain={item.sourceDomain} sourceName={item.sourceName} />
                       <RelativeTime value={item.publishedAt || item.lastSeenAt} />
                       <span className={`rss-identity-chip rss-identity-chip--${item.identityStatus}`}>{identityLabel(item.identityStatus)}</span>
                       <span className="rss-processing-chip">{seedProcessingStateLabel(item.followState, itemMatch, itemAction, item.resourceDownloadStatus)}</span>
@@ -1495,7 +1511,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                 <div className="rss-seed-state">
                   <span className="state-chip">{seedProcessingStateLabel(item.followState, itemMatch, itemAction, item.resourceDownloadStatus)}</span>
                   <span className={`rss-identity-chip rss-identity-chip--${item.identityStatus}`}>{identityLabel(item.identityStatus)}</span>
-                  <small>{item.sourceDomain}</small>
+                  <RssSourceBadge sourceDomain={item.sourceDomain} sourceName={item.sourceName} />
                   <div className="rss-seed-actions">
                     {downloadButton}
                     <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}>

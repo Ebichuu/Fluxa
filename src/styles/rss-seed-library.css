@@ -509,7 +509,7 @@
 
 .rss-seed-row {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr) 112px;
+  grid-template-columns: 88px minmax(0, 1fr) 136px;
   gap: 14px;
   min-height: 104px;
   align-items: center;
@@ -672,6 +672,57 @@
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.rss-source-badge {
+  display: inline-grid;
+  max-width: 100%;
+  min-height: 34px;
+  grid-template-columns: 7px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(var(--theme-accent-rgb), 0.3);
+  border-radius: 8px;
+  padding: 5px 8px;
+  background: rgba(var(--theme-accent-rgb), 0.09);
+  color: var(--theme-text-strong);
+  text-align: left;
+}
+
+.rss-source-badge__signal {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--theme-success);
+  box-shadow: 0 0 0 3px rgba(var(--theme-accent-rgb), 0.13);
+}
+
+.rss-source-badge__text {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.rss-source-badge__text strong,
+.rss-source-badge__text small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rss-source-badge__text strong {
+  color: var(--theme-text-strong);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.rss-source-badge__text small,
+.rss-seed-state .rss-source-badge__text small {
+  max-width: none;
+  color: var(--theme-muted);
+  font-size: 10px;
+  line-height: 1.2;
 }
 
 .rss-seed-actions,
@@ -1659,13 +1710,18 @@
     gap: 6px 10px;
   }
 
-  .rss-seed-card-head > span:first-child,
   .rss-seed-card-head time {
     overflow: hidden;
     color: var(--ops-muted);
     font-size: 12px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .rss-seed-card-head .rss-source-badge {
+    justify-self: start;
+    min-height: 30px;
+    padding-block: 4px;
   }
 
   .rss-seed-card-head time {
