@@ -88,19 +88,10 @@ type RssResourceContext = Pick<RssLibraryUrlState,
   'publishedDate' | 'subscriptionId' | 'tmdbId' | 'mediaType' | 'contextTitle' | 'seasonNumber' | 'episodeNumber' | 'matchId'
 >;
 
-function RssSourceBadge({ sourceName, sourceDomain }: Pick<RssSeedItem, 'sourceName' | 'sourceDomain'>) {
-  const name = sourceName.trim() || sourceDomain.trim() || '未知站点';
-  const domain = sourceDomain.trim();
-  const detail = domain && domain.toLocaleLowerCase() !== name.toLocaleLowerCase() ? domain : '';
-  const label = detail ? `资源站点：${name}（${detail}）` : `资源站点：${name}`;
+function RssSourceBadge({ sourceName }: Pick<RssSeedItem, 'sourceName'>) {
+  const name = sourceName.trim() || '未知站点';
   return (
-    <span aria-label={label} className="rss-source-badge" title={label}>
-      <span aria-hidden="true" className="rss-source-badge__signal" />
-      <span className="rss-source-badge__text">
-        <strong>{name}</strong>
-        {detail && <small>{detail}</small>}
-      </span>
-    </span>
+    <span className="rss-source-badge" title={`资源站点：${name}`}>{name}</span>
   );
 }
 
@@ -1302,7 +1293,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
 
       <section className="rss-ledger-strip" aria-label="资源中心状态">
         <div><span>本地种子</span><strong>{summary.items}</strong></div>
-        <div><span>RSS 来源</span><strong className="rss-source-count">已启用 {summary.activeSources}/{summary.sources} · <em className={summary.errorSources ? 'rss-value--warn' : ''}>健康 {Math.max(0, summary.sources - summary.errorSources)}/{summary.sources}</em></strong></div>
+        <div><span>RSS 来源</span><strong className="rss-source-count"><span>启用 {summary.activeSources}/{summary.sources}</span><em className={summary.errorSources ? 'rss-value--warn' : ''}>健康 {Math.max(0, summary.sources - summary.errorSources)}/{summary.sources}</em></strong></div>
         <div><span>异常来源</span><strong className={summary.errorSources ? 'rss-value--warn' : ''}>{summary.errorSources}</strong></div>
         <div><span>最近收集</span><strong>{summary.lastSuccessAt ? <RelativeTime value={summary.lastSuccessAt} /> : '尚未收集'}</strong></div>
       </section>
@@ -1431,23 +1422,37 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                   ? '媒体身份未确认，暂不能自动分类'
                   : resourceDownloadActive
                     ? '该资源已提交 qB'
-                  : downloadBusy
-                    ? '正在执行下载预检'
-                    : isSeasonPackForEpisode
-                      ? '下载整季包（会包含本季其他集）'
-                    : item.followState === 'linked'
-                      ? '下载前先执行安全预检'
-                      : '自动分类并提交 qB';
-              const downloadButton = (
+                    : downloadBusy
+                      ? '正在执行下载预检'
+                      : matchBusy
+                        ? '请等待当前资源操作完成'
+                        : isSeasonPackForEpisode
+                          ? '下载整季包（会包含本季其他集）'
+                          : item.followState === 'linked'
+                            ? '下载前先执行安全预检'
+                            : '自动分类并提交 qB';
+              const downloadActionLabel = !item.hasDownload
+                ? '无附件'
+                : item.identityStatus !== 'identified' || !['movie', 'tv'].includes(item.mediaType)
+                  ? '需先识别'
+                  : resourceDownloadActive
+                    ? '已提交'
+                    : downloadBusy
+                      ? '预检中'
+                      : matchBusy
+                        ? '请稍候'
+                        : '下载';
+              const downloadButton = (mobile = false) => (
                 <button
                   aria-label={`${downloadTitle}：${item.mediaTitle || item.sourceTitle || item.title}`}
-                  className={isSeasonPackForEpisode ? 'ops-icon-button rss-seed-download rss-seed-download--season-pack' : 'ops-icon-button rss-seed-download'}
+                  className={`${isSeasonPackForEpisode ? 'ops-icon-button rss-seed-download rss-seed-download--season-pack' : 'ops-icon-button rss-seed-download'}${mobile ? ' rss-seed-download--mobile' : ''}`}
                   disabled={downloadDisabled}
                   title={downloadTitle}
                   type="button"
                   onClick={() => void previewItemExactDownload(item)}
                 >
                   <Download aria-hidden="true" size={14} />
+                  {mobile && <span>{downloadActionLabel}</span>}
                 </button>
               );
               return (
@@ -1462,10 +1467,9 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                   />
                   <div className="rss-seed-content">
                     <div className="rss-seed-card-head">
-                      <RssSourceBadge sourceDomain={item.sourceDomain} sourceName={item.sourceName} />
                       <RelativeTime value={item.publishedAt || item.lastSeenAt} />
-                      <span className={`rss-identity-chip rss-identity-chip--${item.identityStatus}`}>{identityLabel(item.identityStatus)}</span>
                       <span className="rss-processing-chip">{seedProcessingStateLabel(item.followState, itemMatch, itemAction, item.resourceDownloadStatus)}</span>
+                      <span className={`rss-identity-chip rss-identity-chip--${item.identityStatus}`}>{identityLabel(item.identityStatus)}</span>
                     </div>
                     <h2>{item.title}</h2>
                     {(item.mediaTitle || item.sourceTitle) && (item.mediaTitle || item.sourceTitle || '').trim().toLocaleLowerCase() !== item.title.trim().toLocaleLowerCase() && (
@@ -1482,6 +1486,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                         <span>{sizeLabel(item.sizeBytes)}</span>
                       </div>
                       <div className="rss-version-line">
+                        <RssSourceBadge sourceName={item.sourceName} />
                         {item.versionSummary
                           ? item.versionSummary.split(' · ').map((value) => <span key={value}>{value}</span>)
                           : <span className="rss-version-muted">等待版本信息</span>}
@@ -1503,7 +1508,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                       <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}><PanelRightOpen aria-hidden="true" size={13} />查看识别证据</button>
                     </details>
                     <div className="rss-seed-mobile-actions">
-                      {downloadButton}
+                      {downloadButton(true)}
                       <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}><PanelRightOpen aria-hidden="true" size={13} />详情</button>
                     </div>
                   </div>
@@ -1511,9 +1516,8 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                 <div className="rss-seed-state">
                   <span className="state-chip">{seedProcessingStateLabel(item.followState, itemMatch, itemAction, item.resourceDownloadStatus)}</span>
                   <span className={`rss-identity-chip rss-identity-chip--${item.identityStatus}`}>{identityLabel(item.identityStatus)}</span>
-                  <RssSourceBadge sourceDomain={item.sourceDomain} sourceName={item.sourceName} />
                   <div className="rss-seed-actions">
-                    {downloadButton}
+                    {downloadButton()}
                     <button className="rss-seed-open" type="button" onClick={() => void openItemDetail(item)}>
                       <PanelRightOpen aria-hidden="true" size={13} />详情
                     </button>
