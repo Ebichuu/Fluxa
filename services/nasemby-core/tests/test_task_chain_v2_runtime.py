@@ -55,6 +55,128 @@ class FakeTaskChain:
 
 
 class TaskChainV2RuntimeTests(unittest.TestCase):
+    def test_manual_resolution_hides_exact_warning_preserves_evidence_and_is_reversible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            chain = FakeTaskChain().get_chain()
+            chain["items"][0]["pipelineFacts"] = [pipeline_fact(
+                "symedia",
+                "failed",
+                reason_code="SYMEDIA_MEDIA_NOT_FOUND",
+                reason_text="Symedia 未查询到对应媒体信息",
+            )]
+            fake = FakeTaskChain()
+            fake.get_chain = lambda: chain
+            app = Flask(f"{__name__}-manual-resolution")
+            app.extensions["mcc_task_chain_service"] = fake
+            repository = ResourceTaskRepository(
+                Path(directory) / "media.sqlite3",
+                clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+            )
+            register_task_chain_v2(
+                app,
+                repository=repository,
+                clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+            )
+            client = app.test_client()
+
+            before = client.get("/api/v2/tasks/chains?outcomeState=action_required").get_json()
+            self.assertEqual(before["page"]["total"], 1)
+            chain_id_value = before["items"][0]["chainId"]
+
+            resolved = client.post(
+                f"/api/v2/tasks/chains/{chain_id_value}/manual-resolution",
+                json={"confirm": True, "snapshotVersion": before["version"]},
+            )
+            self.assertEqual(resolved.status_code, 200)
+            self.assertTrue(resolved.get_json()["changed"])
+
+            action_required = client.get(
+                "/api/v2/tasks/chains?outcomeState=action_required"
+            ).get_json()
+            no_action = client.get(
+                "/api/v2/tasks/chains?outcomeState=protected"
+            ).get_json()
+            self.assertEqual(action_required["page"]["total"], 0)
+            self.assertEqual(action_required["problemGroups"], [])
+            self.assertEqual(action_required["problemGroupSummary"]["actionRequiredResources"], 0)
+            self.assertEqual(no_action["page"]["total"], 1)
+            item = no_action["items"][0]
+            self.assertEqual(item["outcomeState"], "protected")
+            self.assertEqual(item["pipelineOutcome"]["reasonCode"], "TASK_WARNING_MANUALLY_RESOLVED")
+            self.assertTrue(item["manualResolution"]["resolved"])
+            self.assertEqual(item["manualResolution"]["originalReasonCode"], "SYMEDIA_MEDIA_NOT_FOUND")
+
+            detail = client.get(f"/api/v2/tasks/chains/{chain_id_value}").get_json()["item"]
+            symedia_fact = next(fact for fact in detail["pipelineFacts"] if fact["stage"] == "symedia")
+            self.assertEqual(symedia_fact["state"], "failed")
+            self.assertEqual(symedia_fact["reasonCode"], "SYMEDIA_MEDIA_NOT_FOUND")
+
+            restored = client.delete(
+                f"/api/v2/tasks/chains/{chain_id_value}/manual-resolution",
+                json={"confirm": True, "snapshotVersion": no_action["version"]},
+            )
+            self.assertEqual(restored.status_code, 200)
+            self.assertTrue(restored.get_json()["changed"])
+            after_restore = client.get(
+                "/api/v2/tasks/chains?outcomeState=action_required"
+            ).get_json()
+            self.assertEqual(after_restore["page"]["total"], 1)
+            self.assertNotIn("manualResolution", after_restore["items"][0])
+
+    def test_manual_resolution_requires_confirmation_current_version_and_exact_issue(self):
+        with tempfile.TemporaryDirectory() as directory:
+            chain = FakeTaskChain().get_chain()
+            chain["items"][0]["pipelineFacts"] = [pipeline_fact(
+                "symedia",
+                "failed",
+                reason_code="SYMEDIA_MEDIA_NOT_FOUND",
+                reason_text="Symedia 未查询到对应媒体信息",
+            )]
+            fake = FakeTaskChain()
+            fake.get_chain = lambda: chain
+            app = Flask(f"{__name__}-manual-resolution-guards")
+            app.extensions["mcc_task_chain_service"] = fake
+            repository = ResourceTaskRepository(
+                Path(directory) / "media.sqlite3",
+                clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+            )
+            register_task_chain_v2(
+                app,
+                repository=repository,
+                clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+            )
+            client = app.test_client()
+            before = client.get("/api/v2/tasks/chains?outcomeState=action_required").get_json()
+            chain_id_value = before["items"][0]["chainId"]
+
+            missing_confirmation = client.post(
+                f"/api/v2/tasks/chains/{chain_id_value}/manual-resolution",
+                json={"snapshotVersion": before["version"]},
+            )
+            stale = client.post(
+                f"/api/v2/tasks/chains/{chain_id_value}/manual-resolution",
+                json={"confirm": True, "snapshotVersion": "stale-version"},
+            )
+            self.assertEqual(missing_confirmation.status_code, 400)
+            self.assertEqual(stale.status_code, 409)
+            self.assertEqual(stale.get_json()["code"], "TASK_MANUAL_RESOLUTION_STALE")
+
+            resolved = client.post(
+                f"/api/v2/tasks/chains/{chain_id_value}/manual-resolution",
+                json={"confirm": True, "snapshotVersion": before["version"]},
+            )
+            self.assertEqual(resolved.status_code, 200)
+
+            chain["items"][0]["pipelineFacts"][0].update({
+                "eventAt": "2026-07-22T03:02:00Z",
+                "sourceRef": "symedia-new-failure-ref",
+            })
+            new_issue = client.get(
+                "/api/v2/tasks/chains?outcomeState=action_required&refresh=1"
+            ).get_json()
+            self.assertEqual(new_issue["page"]["total"], 1)
+            self.assertNotIn("manualResolution", new_issue["items"][0])
+
     def test_public_protected_symedia_reason_uses_version_rule_copy(self):
         fact = present_pipeline_fact(pipeline_fact(
             "symedia",

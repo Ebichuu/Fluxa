@@ -571,6 +571,14 @@
   flex: 0 0 auto;
 }
 
+.ops-problem-group__member-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
 .ops-task-more {
   display: flex;
   align-items: center;
@@ -917,6 +925,12 @@
 .ops-task-guidance--protected {
   border-color: rgba(36, 66, 255, 0.18);
   background: rgba(36, 66, 255, 0.05);
+}
+
+.ops-task-guidance--manual-resolution {
+  border-color: rgba(91, 181, 154, 0.24);
+  background: rgba(91, 181, 154, 0.06);
+  color: #72c9ae;
 }
 
 .ops-task-chain {
@@ -1401,10 +1415,17 @@
 
   .ops-problem-group__member {
     align-items: stretch;
+    flex-direction: column;
     padding: 10px 12px 10px 51px;
   }
 
+  .ops-problem-group__member-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
   .ops-problem-group__member .ops-action-button {
+    flex: 1 1 auto;
     min-height: 38px;
   }
 

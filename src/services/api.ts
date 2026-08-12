@@ -3,7 +3,7 @@ import type { EmbyOverview, EmbyRefreshResult, EmbyRefreshStatus } from '../type
 import type { QbittorrentAction, QbittorrentActionPreview, QbittorrentActionResult, QbittorrentSummary } from '../types/qbittorrent';
 import type { SymediaSummary } from '../types/symedia';
 import type { TorraSummary } from '../types/torra';
-import type { TaskChainDetailResponse, TaskChainHealthState, TaskChainQuery, TaskChainResponse, TaskChainSummaryResponse } from '../types/taskChain';
+import type { TaskChainDetailResponse, TaskChainHealthState, TaskChainQuery, TaskChainResponse, TaskChainSummaryResponse, TaskManualResolutionResponse } from '../types/taskChain';
 import type { IntegrationSummary } from '../types/integrations';
 import type { ActivityLogResponse, SystemMetricsResponse } from '../types/operations';
 import type { HomeSummaryResponse } from '../types/homeSummary';
@@ -315,6 +315,30 @@ export function getTaskChainV2(query: TaskChainQuery | TaskChainHealthState = {}
 
 export function getTaskChainDetailV2(chainId: string, options?: RequestOptions): Promise<TaskChainDetailResponse> {
   return readConditionalJson<TaskChainDetailResponse>(`/api/v2/tasks/chains/${encodeURIComponent(chainId)}`, options);
+}
+
+export function resolveTaskWarning(chainId: string, snapshotVersion: string): Promise<TaskManualResolutionResponse> {
+  return requestJson<TaskManualResolutionResponse>(
+    `/api/v2/tasks/chains/${encodeURIComponent(chainId)}/manual-resolution`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: true, snapshotVersion })
+    },
+    { timeoutMs: 45_000 }
+  );
+}
+
+export function restoreTaskWarning(chainId: string, snapshotVersion: string): Promise<TaskManualResolutionResponse> {
+  return requestJson<TaskManualResolutionResponse>(
+    `/api/v2/tasks/chains/${encodeURIComponent(chainId)}/manual-resolution`,
+    {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: true, snapshotVersion })
+    },
+    { timeoutMs: 45_000 }
+  );
 }
 
 export function getSystemMetrics(options?: RequestOptions): Promise<SystemMetricsResponse> {

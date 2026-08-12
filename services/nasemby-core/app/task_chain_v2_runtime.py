@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from flask import Flask, Response, jsonify, request
 
+from app.activity_log import write_activity
 from app.http_runtime import current_request_id
 from app.pipeline_fact_runtime import (
     merge_pipeline_facts,
@@ -320,6 +321,14 @@ class ArchiveSourceUnavailable(RuntimeError):
     pass
 
 
+class TaskManualResolutionError(RuntimeError):
+    def __init__(self, code, message, status):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status = status
+
+
 def _archive_date_key(value) -> str:
     parsed = _parse_datetime(value)
     return parsed.astimezone(BEIJING_TZ).strftime("%Y-%m-%d") if parsed else ""
@@ -562,6 +571,150 @@ def _refresh_pipeline_projections(payload: dict, now_value: datetime) -> dict:
     return payload
 
 
+MANUAL_RESOLUTION_REASON_CODE = "TASK_WARNING_MANUALLY_RESOLVED"
+MANUAL_RESOLUTION_REASON_TEXT = "已在外部手动处理；原始告警证据仍保留"
+
+
+def _manual_issue_fingerprint(item: dict) -> str:
+    outcome = item.get("pipelineOutcome") if isinstance(item.get("pipelineOutcome"), dict) else {}
+    stage = str(outcome.get("stage") or "")
+    reason_code = str(outcome.get("reasonCode") or "")
+    occurrence_rows = []
+    for fact in item.get("pipelineFacts") or []:
+        if not isinstance(fact, dict) or str(fact.get("state") or "") != "failed":
+            continue
+        if stage and str(fact.get("stage") or "") != stage:
+            continue
+        if reason_code and str(fact.get("reasonCode") or "") != reason_code:
+            continue
+        occurrence_rows.append({
+            "stage": fact.get("stage"),
+            "reasonCode": fact.get("reasonCode"),
+            "eventAt": fact.get("eventAt"),
+            "sourceRef": fact.get("sourceRef"),
+            "resultRef": fact.get("resultRef"),
+            "unitKey": fact.get("unitKey"),
+            "units": [{
+                "reasonCode": unit.get("reasonCode"),
+                "eventAt": unit.get("eventAt"),
+                "sourceRef": unit.get("sourceRef"),
+                "resultRef": unit.get("resultRef"),
+                "unitKey": unit.get("unitKey"),
+            } for unit in fact.get("units") or [] if isinstance(unit, dict)],
+        })
+    stable = {
+        "chainId": item.get("chainId"),
+        "targetKey": item.get("targetKey"),
+        "stage": stage,
+        "reasonCode": reason_code,
+        "occurrences": occurrence_rows,
+        "artifactKeys": sorted(str(value) for value in item.get("artifactKeys") or []),
+        "sourceIds": item.get("sourceIds") or {},
+    }
+    content = json.dumps(stable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _resolution_record(row: dict, item: dict, fingerprint: str) -> dict:
+    outcome = dict(item.get("pipelineOutcome") or {})
+    return {
+        "resolved": True,
+        "resolvedAt": str(row.get("resolved_at") or ""),
+        "originalStage": str(row.get("original_stage") or outcome.get("stage") or ""),
+        "originalReasonCode": str(row.get("original_reason_code") or outcome.get("reasonCode") or ""),
+        "originalReasonText": str(row.get("original_reason_text") or outcome.get("reasonText") or ""),
+        "issueFingerprint": fingerprint,
+        "targetKey": str(row.get("target_key") or item.get("targetKey") or item.get("chainId") or ""),
+        "originalProjection": {
+            key: item.get(key)
+            for key in (
+                "pipelineOutcome", "outcomeState", "playableAt", "userState", "resultText",
+                "completedAt", "primaryAction", "reasonCode", "reasonText", "userReasonText",
+            )
+            if key in item
+        },
+    }
+
+
+def _apply_manual_resolution(item: dict, row: dict, fingerprint: str, services: dict) -> dict:
+    resolution = _resolution_record(row, item, fingerprint)
+    original = item.get("pipelineOutcome") if isinstance(item.get("pipelineOutcome"), dict) else {}
+    result = _apply_user_projection({
+        **item,
+        "pipelineOutcome": {
+            "state": "protected",
+            "stage": str(original.get("stage") or ""),
+            "reasonCode": MANUAL_RESOLUTION_REASON_CODE,
+            "reasonText": MANUAL_RESOLUTION_REASON_TEXT,
+            "observedAt": resolution["resolvedAt"],
+            "playableAt": "",
+        },
+        "reasonCode": MANUAL_RESOLUTION_REASON_CODE,
+        "reasonText": MANUAL_RESOLUTION_REASON_TEXT,
+        "userReasonText": MANUAL_RESOLUTION_REASON_TEXT,
+    }, services)
+    result["manualResolution"] = resolution
+    return result
+
+
+def _restore_manual_resolution(item: dict, services: dict) -> dict:
+    resolution = item.get("manualResolution") if isinstance(item.get("manualResolution"), dict) else {}
+    original = resolution.get("originalProjection") if isinstance(resolution.get("originalProjection"), dict) else {}
+    restored = {**item, **original}
+    restored.pop("manualResolution", None)
+    if isinstance(restored.get("pipelineOutcome"), dict):
+        restored = _apply_user_projection(restored, services)
+    return restored
+
+
+def _refresh_manual_projection_summaries(payload: dict) -> dict:
+    items = [item for item in payload.get("items") or [] if isinstance(item, dict)]
+    items.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+    items.sort(key=lambda item: (
+        USER_STATE_PRIORITY.get(str(item.get("userState") or ""), len(USER_STATE_PRIORITY)),
+        HEALTH_PRIORITY.get(str(item.get("healthState") or ""), len(HEALTH_PRIORITY)),
+        EXECUTION_PRIORITY.get(str(item.get("executionState") or ""), len(EXECUTION_PRIORITY)),
+    ))
+    payload["items"] = items
+    payload["counts"] = _counts(items)
+    payload["userCounts"] = {
+        state: sum(item.get("userState") == state for item in items)
+        for state in USER_STATES
+    }
+    payload["outcomeCounts"] = derive_outcome_counts(items)
+    payload["problemGroupSummary"] = derive_problem_groups(items)["summary"]
+    return payload
+
+
+def _apply_manual_resolutions(payload: dict, repository) -> dict:
+    reader = getattr(repository, "list_manual_resolutions", None)
+    if not callable(reader):
+        return payload
+    rows = reader()
+    by_issue = {
+        (str(row.get("target_key") or ""), str(row.get("issue_fingerprint") or "")): row
+        for row in rows
+        if isinstance(row, dict)
+    }
+    if not by_issue:
+        return payload
+    services = payload.get("services") or {}
+    projected = []
+    for item in payload.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        outcome = item.get("pipelineOutcome") if isinstance(item.get("pipelineOutcome"), dict) else {}
+        if str(outcome.get("state") or "") != "action_required":
+            projected.append(item)
+            continue
+        fingerprint = _manual_issue_fingerprint(item)
+        target_value = str(item.get("targetKey") or item.get("chainId") or "")
+        row = by_issue.get((target_value, fingerprint))
+        projected.append(_apply_manual_resolution(item, row, fingerprint, services) if row else item)
+    payload["items"] = projected
+    return _refresh_manual_projection_summaries(payload)
+
+
 def _merge_group(items: list[dict], observed_at: str, fresh_until: str, now_value: datetime) -> dict:
     primary = dict(_primary_item(items))
     source_ids = _source_ids(items)
@@ -771,6 +924,7 @@ def _summary_item(item: dict) -> dict:
         "identityState", "executionState", "outcomeState", "playableAt",
         "userState", "resultText", "completedAt", "primaryAction",
         "pipelineOutcome", "mediaResult", "residualIssues", "confirmedStageCount",
+        "manualResolution",
         "relatedRecords", "activeDownloadTasks", "completedDownloadTasks", "concurrentDownloadCount",
     )
     result = {field: item.get(field) for field in fields if field in item}
@@ -896,6 +1050,11 @@ def _version(payload: dict) -> str:
             "resultText": item.get("resultText"),
             "completedAt": item.get("completedAt"),
             "primaryAction": item.get("primaryAction") or {},
+            "manualResolution": {
+                "resolvedAt": (item.get("manualResolution") or {}).get("resolvedAt"),
+                "originalStage": (item.get("manualResolution") or {}).get("originalStage"),
+                "originalReasonCode": (item.get("manualResolution") or {}).get("originalReasonCode"),
+            } if isinstance(item.get("manualResolution"), dict) else None,
             "reasonCode": item.get("reasonCode"),
             "artifactKeys": item.get("artifactKeys") or [],
             "activeDownloadTasks": item.get("activeDownloadTasks") or 0,
@@ -977,6 +1136,8 @@ class TaskChainV2Service:
                     self.quality_watch_bridge.process_snapshot(payload)
                 except Exception:
                     pass
+            if self.repository:
+                _apply_manual_resolutions(payload, self.repository)
             payload["version"] = _version(payload)
             self._cache = payload
             self._cache_at = time.monotonic()
@@ -1164,6 +1325,133 @@ class TaskChainV2Service:
             "item": present_task_item(item) if item else None,
         }
 
+    def resolve_warning(self, chain_id_value: str, snapshot_version: str):
+        writer = getattr(self.repository, "record_manual_resolution", None) if self.repository else None
+        if not callable(writer):
+            raise TaskManualResolutionError(
+                "TASK_MANUAL_RESOLUTION_UNAVAILABLE",
+                "任务人工处理记录暂不可用",
+                503,
+            )
+        with self._lock:
+            # The version came from the task list the user is acting on. Reuse that
+            # cached snapshot when possible so this manual acknowledgement cannot
+            # time out while all external services are refreshed again.
+            payload = self.full_snapshot(force=False)
+            if snapshot_version != str(payload.get("version") or ""):
+                raise TaskManualResolutionError(
+                    "TASK_MANUAL_RESOLUTION_STALE",
+                    "任务状态刚刚发生变化，请刷新后重新确认",
+                    409,
+                )
+            canonical = self.repository.resolve_chain_id(chain_id_value)
+            item = next((
+                candidate for candidate in payload.get("items") or []
+                if candidate.get("chainId") == canonical
+            ), None)
+            if item is None:
+                raise TaskManualResolutionError("TASK_CHAIN_NOT_FOUND", "任务链不存在", 404)
+            if isinstance(item.get("manualResolution"), dict):
+                return {
+                    "ok": True,
+                    "changed": False,
+                    "version": str(payload.get("version") or ""),
+                    "manualResolution": present_task_item(item).get("manualResolution"),
+                }
+            outcome = item.get("pipelineOutcome") if isinstance(item.get("pipelineOutcome"), dict) else {}
+            if str(outcome.get("state") or "") != "action_required":
+                raise TaskManualResolutionError(
+                    "TASK_MANUAL_RESOLUTION_NOT_REQUIRED",
+                    "当前任务没有需要人工消除的告警",
+                    409,
+                )
+            fingerprint = _manual_issue_fingerprint(item)
+            row = writer(item, fingerprint)
+            services = payload.get("services") or {}
+            resolved_item = _apply_manual_resolution(item, row, fingerprint, services)
+            payload["items"] = [
+                resolved_item if candidate.get("chainId") == canonical else candidate
+                for candidate in payload.get("items") or []
+            ]
+            _refresh_manual_projection_summaries(payload)
+            payload["version"] = _version(payload)
+            self._cache = payload
+            self._cache_at = time.monotonic()
+            write_activity(
+                "task",
+                "manual_resolution_added",
+                "success",
+                f"已手动标记处理：{str(item.get('title') or '未命名媒体')}",
+                chain_id=canonical,
+                target_key=item.get("targetKey"),
+                stage=outcome.get("stage"),
+                reason_code=outcome.get("reasonCode"),
+                request_id=current_request_id(),
+            )
+            return {
+                "ok": True,
+                "changed": True,
+                "version": str(payload.get("version") or ""),
+                "manualResolution": present_task_item(resolved_item).get("manualResolution"),
+            }
+
+    def restore_warning(self, chain_id_value: str, snapshot_version: str):
+        clearer = getattr(self.repository, "clear_manual_resolution", None) if self.repository else None
+        if not callable(clearer):
+            raise TaskManualResolutionError(
+                "TASK_MANUAL_RESOLUTION_UNAVAILABLE",
+                "任务人工处理记录暂不可用",
+                503,
+            )
+        with self._lock:
+            payload = self.full_snapshot(force=False)
+            if snapshot_version != str(payload.get("version") or ""):
+                raise TaskManualResolutionError(
+                    "TASK_MANUAL_RESOLUTION_STALE",
+                    "任务状态刚刚发生变化，请刷新后重新确认",
+                    409,
+                )
+            canonical = self.repository.resolve_chain_id(chain_id_value)
+            item = next((
+                candidate for candidate in payload.get("items") or []
+                if candidate.get("chainId") == canonical
+            ), None)
+            if item is None:
+                raise TaskManualResolutionError("TASK_CHAIN_NOT_FOUND", "任务链不存在", 404)
+            resolution = item.get("manualResolution") if isinstance(item.get("manualResolution"), dict) else None
+            if resolution is None:
+                return {
+                    "ok": True,
+                    "changed": False,
+                    "version": str(payload.get("version") or ""),
+                    "manualResolution": None,
+                }
+            clearer(resolution.get("targetKey"), resolution.get("issueFingerprint"))
+            restored_item = _restore_manual_resolution(item, payload.get("services") or {})
+            payload["items"] = [
+                restored_item if candidate.get("chainId") == canonical else candidate
+                for candidate in payload.get("items") or []
+            ]
+            _refresh_manual_projection_summaries(payload)
+            payload["version"] = _version(payload)
+            self._cache = payload
+            self._cache_at = time.monotonic()
+            write_activity(
+                "task",
+                "manual_resolution_restored",
+                "success",
+                f"已恢复任务告警：{str(item.get('title') or '未命名媒体')}",
+                chain_id=canonical,
+                target_key=item.get("targetKey"),
+                request_id=current_request_id(),
+            )
+            return {
+                "ok": True,
+                "changed": True,
+                "version": str(payload.get("version") or ""),
+                "manualResolution": None,
+            }
+
     def migration_preview(self):
         if not self.repository:
             raise RuntimeError("任务台账尚未启用")
@@ -1312,6 +1600,36 @@ def register_task_chain_v2(app: Flask, repository=None, clock=None):
             return _conditional(payload, f"detail:{chain_id_value}")
         except Exception:
             return _error("TASK_CHAIN_V2_READ_FAILED", "任务链读取失败", 502)
+
+    @app.post("/api/v2/tasks/chains/<path:chain_id_value>/manual-resolution")
+    def task_chain_manual_resolution_v2(chain_id_value):
+        body = request.get_json(silent=True) or {}
+        if body.get("confirm") is not True:
+            return _error("TASK_MANUAL_RESOLUTION_CONFIRM_REQUIRED", "请先确认已在外部完成处理", 400)
+        snapshot_version = str(body.get("snapshotVersion") or "").strip()
+        if not snapshot_version:
+            return _error("TASK_MANUAL_RESOLUTION_VERSION_REQUIRED", "缺少任务状态版本，请刷新后重试", 400)
+        try:
+            return jsonify(service.resolve_warning(chain_id_value, snapshot_version))
+        except TaskManualResolutionError as exc:
+            return _error(exc.code, exc.message, exc.status)
+        except Exception:
+            return _error("TASK_MANUAL_RESOLUTION_FAILED", "任务人工处理记录失败", 502)
+
+    @app.delete("/api/v2/tasks/chains/<path:chain_id_value>/manual-resolution")
+    def task_chain_manual_resolution_restore_v2(chain_id_value):
+        body = request.get_json(silent=True) or {}
+        if body.get("confirm") is not True:
+            return _error("TASK_MANUAL_RESOLUTION_CONFIRM_REQUIRED", "请先确认恢复该任务告警", 400)
+        snapshot_version = str(body.get("snapshotVersion") or "").strip()
+        if not snapshot_version:
+            return _error("TASK_MANUAL_RESOLUTION_VERSION_REQUIRED", "缺少任务状态版本，请刷新后重试", 400)
+        try:
+            return jsonify(service.restore_warning(chain_id_value, snapshot_version))
+        except TaskManualResolutionError as exc:
+            return _error(exc.code, exc.message, exc.status)
+        except Exception:
+            return _error("TASK_MANUAL_RESOLUTION_RESTORE_FAILED", "任务告警恢复失败", 502)
 
     @app.get("/api/v2/tasks/ledger/migrations/preview")
     def task_ledger_migration_preview_v2():

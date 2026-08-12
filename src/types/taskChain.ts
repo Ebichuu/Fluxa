@@ -75,6 +75,21 @@ export interface ResidualIssue {
   resourceCount: number;
 }
 
+export interface TaskManualResolution {
+  resolved: true;
+  resolvedAt: string;
+  originalStage: PipelineStage | string;
+  originalReasonCode: string;
+  originalReasonText: string;
+}
+
+export interface TaskManualResolutionResponse {
+  ok: boolean;
+  changed: boolean;
+  version: string;
+  manualResolution: TaskManualResolution | null;
+}
+
 export interface TorraSecuploadRun {
   runId: string;
   taskKey: string;
@@ -287,6 +302,7 @@ export interface TaskChainItem {
   pipelineOutcome?: PipelineOutcome;
   mediaResult?: MediaResult;
   residualIssues?: ResidualIssue[];
+  manualResolution?: TaskManualResolution | null;
   rssSourceMatch?: {
     matchId: string;
   };

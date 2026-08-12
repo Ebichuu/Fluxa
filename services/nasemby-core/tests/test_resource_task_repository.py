@@ -241,6 +241,27 @@ def database_rows(path, statement, parameters=()):
 
 
 class ResourceTaskRepositoryTests(unittest.TestCase):
+    def test_manual_resolution_is_scoped_to_exact_issue_and_can_be_cleared(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = ResourceTaskRepository(Path(directory) / "media.sqlite3", clock=lambda: NOW)
+            item = snapshot()["items"][0]
+
+            first = repository.record_manual_resolution(item, "issue-a")
+            repository.record_manual_resolution(item, "issue-b")
+
+            self.assertEqual(first["target_key"], item["targetKey"])
+            self.assertEqual(first["original_reason_code"], "")
+            self.assertEqual(
+                {row["issue_fingerprint"] for row in repository.list_manual_resolutions()},
+                {"issue-a", "issue-b"},
+            )
+            self.assertTrue(repository.clear_manual_resolution(item["targetKey"], "issue-a"))
+            self.assertFalse(repository.clear_manual_resolution(item["targetKey"], "issue-a"))
+            self.assertEqual(
+                [row["issue_fingerprint"] for row in repository.list_manual_resolutions()],
+                ["issue-b"],
+            )
+
     def test_symedia_archive_reads_successful_file_units_from_mixed_batch(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = ResourceTaskRepository(Path(directory) / "media.sqlite3", clock=lambda: NOW)

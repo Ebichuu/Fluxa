@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertTriangle, Braces, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, Clock3, Copy, Download, ExternalLink, Filter, Pause, Play, RefreshCcw, Rss, Server, ShieldCheck, X } from 'lucide-react';
-import { getActivityLogs, getTaskChainDetailV2, getTaskChainV2, getTaskSummaryV2, previewQbittorrentAction, runQbittorrentAction } from '../../services/api';
+import { getActivityLogs, getTaskChainDetailV2, getTaskChainV2, getTaskSummaryV2, previewQbittorrentAction, resolveTaskWarning, restoreTaskWarning, runQbittorrentAction } from '../../services/api';
 import type { QbittorrentAction, QbittorrentActionPreview } from '../../types/qbittorrent';
-import type { PipelineFact, PipelineOutcomeState, TaskChainHealthState, TaskChainItem, TaskChainListItem, TaskChainResponse, TaskChainStage, TaskProblemGroup } from '../../types/taskChain';
+import type { PipelineFact, PipelineOutcomeState, TaskChainHealthState, TaskChainItem, TaskChainListItem, TaskChainResponse, TaskChainStage, TaskProblemGroup, TaskProblemGroupMember } from '../../types/taskChain';
 import type { ActivityLogItem } from '../../types/operations';
 import { usePolling } from '../../hooks/usePolling';
 import { currentHistoryEntryIs, writeUrlQuery } from '../../app/urlState';
@@ -33,6 +33,7 @@ const activityCategoryLabels: Record<string, string> = {
   push: 'Torra 推送',
   qbittorrent: 'qBittorrent',
   operation: '操作',
+  task: '任务',
   system: '系统'
 };
 
@@ -41,8 +42,18 @@ const activityActionLabels: Record<string, string> = {
   torra_sync_import: '导入订阅',
   torra_sync_run: '状态同步',
   torra_push_v2: '订阅推送',
-  private_rss_request: '资源中心操作'
+  private_rss_request: '资源中心操作',
+  manual_resolution_added: '手动标记已处理',
+  manual_resolution_restored: '恢复任务告警'
 };
+
+interface PendingManualResolution {
+  mode: 'resolve' | 'restore';
+  chainId: string;
+  title: string;
+  targetLabel: string;
+  originalReasonText: string;
+}
 
 const stageStatusLabel: Record<string, string> = {
   done: '已完成',
@@ -315,6 +326,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   const [technicalChainId, setTechnicalChainId] = useState('');
   const [detailLoading, setDetailLoading] = useState('');
   const [pendingAction, setPendingAction] = useState<{ item: TaskChainItem; action: QbittorrentAction; preview: QbittorrentActionPreview } | null>(null);
+  const [pendingManualResolution, setPendingManualResolution] = useState<PendingManualResolution | null>(null);
   const [actionPreviewBusy, setActionPreviewBusy] = useState('');
   const [actionBusy, setActionBusy] = useState('');
   const [actionFeedback, setActionFeedback] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
@@ -824,6 +836,65 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     toggleDetail(item);
   };
 
+  const prepareManualResolution = (
+    item: TaskProblemGroupMember | TaskChainListItem,
+    mode: PendingManualResolution['mode']
+  ) => {
+    const chainId = item.chainId || '';
+    if (!chainId) return;
+    const targetText = item.mediaType === 'movie'
+      ? '整部电影'
+      : item.episodeNumber && item.episodeNumber > 0
+        ? `S${String(item.seasonNumber).padStart(2, '0')}E${String(item.episodeNumber).padStart(2, '0')}`
+        : item.seasonNumber > 0
+          ? `第 ${item.seasonNumber} 季`
+          : '当前媒体目标';
+    const manualResolution = 'manualResolution' in item ? item.manualResolution : undefined;
+    setPendingManualResolution({
+      mode,
+      chainId,
+      title: item.title,
+      targetLabel: targetText,
+      originalReasonText: manualResolution?.originalReasonText
+        || item.resultText
+        || item.userReasonText
+        || item.reasonText
+        || '当前任务需要处理'
+    });
+  };
+
+  const confirmManualResolution = async () => {
+    if (!pendingManualResolution || !chain?.version) return;
+    const pending = pendingManualResolution;
+    setActionBusy(`manual-resolution:${pending.chainId}`);
+    setActionFeedback({
+      tone: 'success',
+      message: pending.mode === 'resolve' ? '正在保存人工处理记录…' : '正在恢复任务告警…'
+    });
+    try {
+      const result = pending.mode === 'resolve'
+        ? await resolveTaskWarning(pending.chainId, chain.version)
+        : await restoreTaskWarning(pending.chainId, chain.version);
+      setPendingManualResolution(null);
+      setExpandedProblemGroupId('');
+      setActionFeedback({
+        tone: 'success',
+        message: pending.mode === 'resolve'
+          ? result.changed ? `已将「${pending.title}」标记为手动处理` : `「${pending.title}」已经标记为手动处理`
+          : result.changed ? `已恢复「${pending.title}」的任务告警` : `「${pending.title}」当前没有人工处理记录`
+      });
+      await loadChain(new AbortController().signal, 0, false, false, true);
+    } catch (reason) {
+      setActionFeedback({
+        tone: 'error',
+        message: reason instanceof Error ? reason.message : '任务人工处理状态更新失败'
+      });
+      refreshChain();
+    } finally {
+      setActionBusy('');
+    }
+  };
+
   return (
     <main className="work-page ops-page ops-page--tasks">
       <section className="ops-hero ops-hero--tasks ops-hero--compact">
@@ -1055,18 +1126,28 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                             <strong>{member.mediaType === 'movie' ? '整部电影' : member.episodeNumber > 0 ? `S${String(member.seasonNumber).padStart(2, '0')}E${String(member.episodeNumber).padStart(2, '0')}` : problemGroupTarget(group)}</strong>
                             <small>{member.resultText || member.userReasonText || member.reasonText || group.reasonText}</small>
                           </span>
-                          <button
-                            className="ops-action-button"
-                            type="button"
-                            onClick={() => onNavigate('tasks', {
-                              chainId: member.chainId,
-                              targetKey: member.targetKey,
-                              title: member.title,
-                              outcomeState: 'action_required'
-                            })}
-                          >
-                            查看任务<ChevronRight aria-hidden="true" size={14} />
-                          </button>
+                          <div className="ops-problem-group__member-actions">
+                            <button
+                              className="ops-action-button ops-action-button--primary"
+                              disabled={Boolean(actionBusy)}
+                              type="button"
+                              onClick={() => prepareManualResolution(member, 'resolve')}
+                            >
+                              <CheckCircle2 aria-hidden="true" size={14} />标记已处理
+                            </button>
+                            <button
+                              className="ops-action-button"
+                              type="button"
+                              onClick={() => onNavigate('tasks', {
+                                chainId: member.chainId,
+                                targetKey: member.targetKey,
+                                title: member.title,
+                                outcomeState: 'action_required'
+                              })}
+                            >
+                              查看任务<ChevronRight aria-hidden="true" size={14} />
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -1087,8 +1168,8 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
             const outcomeState = resolvedOutcomeState(item);
             const mediaResult = confirmedMediaResult(item);
             const residualCount = residualIssueCount(item);
-            const separatedResidual = Boolean(mediaResult && residualCount > 0);
-            const showMediaResult = Boolean(mediaResult && (outcomeState !== 'action_required' || separatedResidual));
+            const separatedResidual = Boolean(!item.manualResolution && mediaResult && residualCount > 0);
+            const showMediaResult = Boolean(!item.manualResolution && mediaResult && (outcomeState !== 'action_required' || separatedResidual));
             const residualIssue = item.residualIssues?.[0];
             const stages = detail ? pipelineStageItems(detail) : [];
             const primaryAction = item.primaryAction;
@@ -1108,7 +1189,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
               <div className="ops-task-card__head">
                 <div className="ops-task-card__status">
                   <span className={`ops-task-state ${showMediaResult ? 'ops-task-state--media-result' : `ops-task-state--${outcomeState.replace(/_/g, '-')}`}`}>
-                    {showMediaResult ? mediaResult?.resultText : outcomeStateLabel(outcomeState)}
+                    {item.manualResolution ? '已手动处理' : showMediaResult ? mediaResult?.resultText : outcomeStateLabel(outcomeState)}
                   </span>
                 </div>
                 <div>
@@ -1130,7 +1211,15 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                 <strong>已确认 {item.confirmedStageCount ?? 0}/6</strong>
               </div>
 
-              {residualCount > 0 && (
+              {item.manualResolution && (
+                <div className="ops-task-guidance ops-task-guidance--manual-resolution" role="status">
+                  <CheckCircle2 aria-hidden="true" size={16} />
+                  <div><strong>人工处理</strong><span>已在外部完成处理，Fluxa 不再把这次记录计为待处理告警。</span></div>
+                  <div><strong>原始证据</strong><span>{item.manualResolution.originalReasonText || '原始失败阶段和原因仍保留在详情中。'}</span></div>
+                </div>
+              )}
+
+              {!item.manualResolution && residualCount > 0 && (
                 <div className="ops-task-guidance ops-task-guidance--residual" role="status">
                   <AlertTriangle aria-hidden="true" size={16} />
                   <div><strong>遗留问题</strong><span>{residualIssue?.reasonText || residualIssueLabel(item)}</span></div>
@@ -1236,6 +1325,26 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                       })}
                     >
                       <Rss aria-hidden="true" size={14} />查看来源候选
+                    </button>
+                  )}
+                  {outcomeState === 'action_required' && (
+                    <button
+                      className="ops-action-button ops-action-button--primary"
+                      disabled={Boolean(actionBusy)}
+                      type="button"
+                      onClick={() => prepareManualResolution(item, 'resolve')}
+                    >
+                      <CheckCircle2 aria-hidden="true" size={14} />标记已处理
+                    </button>
+                  )}
+                  {item.manualResolution && (
+                    <button
+                      className="ops-action-button"
+                      disabled={Boolean(actionBusy)}
+                      type="button"
+                      onClick={() => prepareManualResolution(item, 'restore')}
+                    >
+                      <RefreshCcw aria-hidden="true" size={14} />恢复告警
                     </button>
                   )}
                   <button
@@ -1419,6 +1528,43 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
               <button className="ops-action-button ops-action-button--primary" data-dialog-initial-focus disabled={Boolean(actionBusy)} type="button" onClick={confirmQbAction}>
                 {pendingAction.action === 'pause' ? <Pause size={14} /> : <Play size={14} />}
                 {actionBusy ? '正在提交' : `确认${pendingAction.action === 'pause' ? '暂停' : '恢复'}`}
+              </button>
+            </div>
+          </>
+        )}
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        busy={Boolean(actionBusy)}
+        describedBy="manual-resolution-description"
+        labelledBy="manual-resolution-title"
+        open={Boolean(pendingManualResolution)}
+        onClose={() => setPendingManualResolution(null)}
+      >
+        {pendingManualResolution && (
+          <>
+            <span className="ops-confirm-dialog__signal">任务告警 · {pendingManualResolution.mode === 'resolve' ? '人工处理' : '恢复'}</span>
+            <h2 id="manual-resolution-title">
+              {pendingManualResolution.mode === 'resolve'
+                ? `确认「${pendingManualResolution.title}」已处理？`
+                : `恢复「${pendingManualResolution.title}」的告警？`}
+            </h2>
+            <p id="manual-resolution-description">
+              {pendingManualResolution.mode === 'resolve'
+                ? 'Fluxa 只会消除当前这次待处理告警，并保留原始失败证据；不会修改 115、Symedia、STRM 或 Emby。以后出现新的失败证据时会重新告警。'
+                : '恢复后，这条记录会重新进入“需要处理”，原始失败证据保持不变。'}
+            </p>
+            <div className="ops-confirm-dialog__meta">
+              <span>媒体</span><strong>{pendingManualResolution.title}</strong>
+              <span>目标</span><strong>{pendingManualResolution.targetLabel}</strong>
+              <span>原始原因</span><strong>{pendingManualResolution.originalReasonText}</strong>
+              <span>外部系统</span><strong>不做任何修改</strong>
+            </div>
+            <div className="ops-confirm-dialog__actions">
+              <button className="ops-action-button" disabled={Boolean(actionBusy)} type="button" onClick={() => setPendingManualResolution(null)}>取消</button>
+              <button className="ops-action-button ops-action-button--primary" data-dialog-initial-focus disabled={Boolean(actionBusy)} type="button" onClick={confirmManualResolution}>
+                {pendingManualResolution.mode === 'resolve' ? <CheckCircle2 size={14} /> : <RefreshCcw size={14} />}
+                {actionBusy ? '正在保存' : pendingManualResolution.mode === 'resolve' ? '确认已处理' : '确认恢复告警'}
               </button>
             </div>
           </>

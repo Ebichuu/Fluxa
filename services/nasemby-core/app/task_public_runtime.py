@@ -333,6 +333,22 @@ def present_residual_issues(value) -> list[dict]:
     return result
 
 
+def present_manual_resolution(value) -> dict | None:
+    resolution = value if isinstance(value, dict) else None
+    if resolution is None:
+        return None
+    return {
+        "resolved": True,
+        "resolvedAt": str(resolution.get("resolvedAt") or ""),
+        "originalStage": str(resolution.get("originalStage") or ""),
+        "originalReasonCode": str(resolution.get("originalReasonCode") or ""),
+        "originalReasonText": safe_public_text(
+            resolution.get("originalReasonText"),
+            "原始告警证据仍保留",
+        ),
+    }
+
+
 ITEM_FIELDS = (
     "title", "mediaType", "tmdbId", "seasonNumber", "episodeNumber", "origin", "origins",
     "channel", "state", "confidence", "progress", "currentStep", "embyIndexed",
@@ -393,6 +409,9 @@ def present_task_item(value) -> dict:
         "residualIssues": present_residual_issues(item.get("residualIssues")),
         "primaryAction": _present_primary_action(item.get("primaryAction")),
     })
+    manual_resolution = present_manual_resolution(item.get("manualResolution"))
+    if manual_resolution is not None:
+        result["manualResolution"] = manual_resolution
     rss_source_match = item.get("rssSourceMatch") if isinstance(item.get("rssSourceMatch"), dict) else {}
     match_id = str(rss_source_match.get("matchId") or "").strip()
     if re.fullmatch(r"[A-Za-z0-9:_-]{1,80}", match_id):

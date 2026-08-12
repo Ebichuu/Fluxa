@@ -286,6 +286,18 @@ class ResourceTaskRepository:
                 "CREATE INDEX IF NOT EXISTS idx_resource_chain_aliases_canonical "
                 "ON resource_chain_aliases(canonical_chain_id)"
             )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS resource_manual_resolutions ("
+                "target_key TEXT NOT NULL, issue_fingerprint TEXT NOT NULL, "
+                "chain_id TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', "
+                "original_stage TEXT NOT NULL DEFAULT '', original_reason_code TEXT NOT NULL DEFAULT '', "
+                "original_reason_text TEXT NOT NULL DEFAULT '', resolved_at TEXT NOT NULL, "
+                "PRIMARY KEY(target_key, issue_fingerprint))"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_resource_manual_resolutions_chain "
+                "ON resource_manual_resolutions(chain_id, resolved_at DESC)"
+            )
 
     def _event_key(self, chain_id, artifact_key_value, stage):
         payload = stage.get("_eventPayload") or {}
@@ -1177,6 +1189,63 @@ class ResourceTaskRepository:
         with closing(self.runtime.connect()) as connection:
             row = connection.execute("SELECT * FROM resource_chains WHERE chain_id=?", (str(chain_id),)).fetchone()
         return _row(row)
+
+    def record_manual_resolution(self, item, issue_fingerprint):
+        target_value = _text(item.get("targetKey") or item.get("chainId"), 240)
+        fingerprint = _safe_code(issue_fingerprint, "")
+        if not target_value or not fingerprint:
+            raise ValueError("人工处理记录缺少任务目标或问题指纹")
+        outcome = item.get("pipelineOutcome") if isinstance(item.get("pipelineOutcome"), dict) else {}
+        now_text = _iso(self.clock())
+        values = (
+            target_value,
+            fingerprint,
+            _text(item.get("chainId"), 120),
+            _text(item.get("title"), 240),
+            _safe_code(outcome.get("stage"), ""),
+            _safe_code(outcome.get("reasonCode"), ""),
+            _text(outcome.get("reasonText"), 500),
+            now_text,
+        )
+        with self.runtime.transaction(immediate=True) as connection:
+            connection.execute(
+                "INSERT INTO resource_manual_resolutions ("
+                "target_key, issue_fingerprint, chain_id, title, original_stage, "
+                "original_reason_code, original_reason_text, resolved_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(target_key, issue_fingerprint) DO UPDATE SET "
+                "chain_id=excluded.chain_id, title=excluded.title, "
+                "original_stage=excluded.original_stage, "
+                "original_reason_code=excluded.original_reason_code, "
+                "original_reason_text=excluded.original_reason_text",
+                values,
+            )
+            row = connection.execute(
+                "SELECT * FROM resource_manual_resolutions "
+                "WHERE target_key=? AND issue_fingerprint=?",
+                (target_value, fingerprint),
+            ).fetchone()
+        return _row(row)
+
+    def list_manual_resolutions(self):
+        with closing(self.runtime.connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM resource_manual_resolutions ORDER BY resolved_at DESC"
+            ).fetchall()
+        return [_row(row) for row in rows]
+
+    def clear_manual_resolution(self, target_key, issue_fingerprint):
+        target_value = _text(target_key, 240)
+        fingerprint = _safe_code(issue_fingerprint, "")
+        if not target_value or not fingerprint:
+            return False
+        with self.runtime.transaction(immediate=True) as connection:
+            cursor = connection.execute(
+                "DELETE FROM resource_manual_resolutions "
+                "WHERE target_key=? AND issue_fingerprint=?",
+                (target_value, fingerprint),
+            )
+        return bool(cursor.rowcount)
 
     def list_symedia_archive_events(self, archived_date):
         try:
