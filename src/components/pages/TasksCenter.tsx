@@ -949,35 +949,61 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
         <section aria-label="系统问题" className={target?.systemIssue ? 'ops-system-issues ops-system-issues--focused' : 'ops-system-issues'}>
           {systemIssues.map((issue) => {
             const stateLabel = issue.state === 'recovering' ? '正在自动恢复' : issue.state === 'action_required' ? '需要处理' : issue.state === 'normal' ? '正常' : '状态未知';
+            const IssueStateIcon = issue.state === 'recovering' ? RefreshCcw : issue.state === 'action_required' ? AlertTriangle : ShieldCheck;
             return (
               <article className={`ops-system-issue ops-system-issue--${issue.state}`} key={issue.id}>
                 <header>
-                  <strong>Torra 秒传 · {stateLabel}</strong>
-                  {(issue.failedTotal ?? 0) > 0 && <span>本批失败 {issue.failedTotal}</span>}
+                  <span className="ops-system-issue__identity">
+                    <span className="ops-system-issue__signal" aria-hidden="true"><IssueStateIcon size={16} /></span>
+                    <span><small>自动化状态</small><strong>Torra 秒传</strong></span>
+                  </span>
+                  <span className={`ops-system-issue__state ops-system-issue__state--${issue.state}`}>
+                    {stateLabel}
+                  </span>
                 </header>
-                {issue.categories.map((category) => (
-                  <div className="ops-system-issue__category" key={category.id}>
-                    <strong>{category.label}{issue.state === 'recovering' ? ' 正在自动恢复' : ''}</strong>
-                    {category.latest.failed != null && <span>本批失败 {category.latest.failed}</span>}
-                    {category.recentFailedCounts.length > 0 && <span>近三批失败数：{category.recentFailedCounts.join(' → ')}</span>}
-                    {issue.nextRunAt && issue.state === 'recovering' && <span>下次自动重试：<RelativeTime value={issue.nextRunAt} /></span>}
-                    {category.retryPolicyText && <span>{category.retryPolicyText}</span>}
-                    {(issue.files ?? []).some((file) => file.categoryId === category.id) && (
-                      <ul className="ops-system-issue__files" aria-label={`${category.label}失败文件`}>
-                        {(issue.files ?? []).filter((file) => file.categoryId === category.id).map((file) => (
-                          <li key={file.ref}>
-                            <strong title={file.displayName}>{file.displayName}</strong>
-                            <span>{file.errorLabel}{file.retryCount == null ? ' · 重试次数暂未确认' : ` · 已重试 ${file.retryCount} 次`}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                ))}
-                {issue.primaryAction && issue.state !== 'normal' && (
-                  <span className="ops-system-issue__action">{issue.primaryAction.label}</span>
-                )}
-                {issue.evidenceLimitText && <small>{issue.evidenceLimitText}</small>}
+                <div className="ops-system-issue__summary">
+                  <span><small>本批失败</small><strong>{issue.failedTotal ?? '—'}<em>个</em></strong></span>
+                  <span><small>{issue.state === 'recovering' ? '下次自动重试' : '当前状态'}</small><strong>{issue.nextRunAt && issue.state === 'recovering' ? <RelativeTime value={issue.nextRunAt} /> : stateLabel}</strong></span>
+                </div>
+                <div className="ops-system-issue__categories">
+                  {issue.categories.map((category) => (
+                    <div className="ops-system-issue__category" key={category.id}>
+                      <header>
+                        <strong>{category.label}</strong>
+                        {category.latest.failed != null && <span>{category.latest.failed}<small> 个失败</small></span>}
+                      </header>
+                      {category.recentFailedCounts.length > 0 && (
+                        <div className="ops-system-issue__trend">
+                          <small>近三批</small>
+                          <span aria-label={`近三批失败数 ${category.recentFailedCounts.join('、')}`}>
+                            {category.recentFailedCounts.map((count, index) => (
+                              <span key={`${category.id}-${index}`}>
+                                {index > 0 && <em aria-hidden="true">→</em>}<strong>{count}</strong>
+                              </span>
+                            ))}
+                          </span>
+                        </div>
+                      )}
+                      {category.retryPolicyText && <p><Clock3 aria-hidden="true" size={13} />{category.retryPolicyText}</p>}
+                      {(issue.files ?? []).some((file) => file.categoryId === category.id) && (
+                        <ul className="ops-system-issue__files" aria-label={`${category.label}失败文件`}>
+                          {(issue.files ?? []).filter((file) => file.categoryId === category.id).map((file) => (
+                            <li key={file.ref}>
+                              <strong title={file.displayName}>{file.displayName}</strong>
+                              <span>{file.errorLabel}{file.retryCount == null ? ' · 重试次数暂未确认' : ` · 已重试 ${file.retryCount} 次`}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <footer>
+                  {issue.primaryAction && issue.state !== 'normal' && (
+                    <span className="ops-system-issue__action"><Clock3 aria-hidden="true" size={13} />{issue.primaryAction.label}</span>
+                  )}
+                  {issue.evidenceLimitText && <small>{issue.evidenceLimitText}</small>}
+                </footer>
               </article>
             );
           })}
