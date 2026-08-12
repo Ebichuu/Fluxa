@@ -2643,15 +2643,24 @@
   .ops-page--subscriptions .ops-discover-policy--compact {
     width: auto;
     justify-self: stretch;
+    flex-wrap: wrap;
     gap: 8px;
     padding: 8px 9px;
   }
 
   .ops-page--subscriptions .ops-discover-policy--compact small {
-    overflow: hidden;
-    padding-left: 8px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    flex: 1 0 100%;
+    align-items: flex-start;
+    margin-top: 0;
+    padding: 7px 0 0;
+    border-top: 1px solid var(--border-subtle);
+    border-left: 0;
+    white-space: normal;
+  }
+
+  .ops-page--subscriptions .ops-discover-policy--compact small svg {
+    flex: 0 0 auto;
+    margin-top: 1px;
   }
 
   .ops-subscription-console {

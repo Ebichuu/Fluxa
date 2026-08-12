@@ -972,7 +972,10 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     setSubsError('');
     try {
       if (!subscriptionsOnly) {
-        const payload = await getSubscriptionItems(true, { signal: controller.signal });
+        // The discover page only needs subscription identities and the three most
+        // recently updated rows. Calculating live progress for the entire ledger
+        // makes ordinary browsing wait on hundreds of downstream media checks.
+        const payload = await getSubscriptionItems(false, { signal: controller.signal });
         if (controller.signal.aborted) return;
         setSubs(payload.subscriptions?.items ?? []);
         setBlockedTitles(payload.blockedTitles ?? []);
