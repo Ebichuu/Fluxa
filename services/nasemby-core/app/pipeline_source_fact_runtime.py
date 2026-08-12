@@ -771,7 +771,7 @@ def build_pipeline_source_facts(context: dict, *, observed_at: str) -> list[dict
     ]
     torra = facts[0]
     downstream = [fact for fact in facts[1:] if fact.get("state") == "succeeded"]
-    if torra.get("state") == "waiting" and downstream:
+    if torra.get("state") in {"waiting", "active"} and downstream:
         event_times = [
             _text(fact.get("eventAt"))
             for fact in downstream
