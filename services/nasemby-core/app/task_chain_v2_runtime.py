@@ -502,10 +502,18 @@ def _primary_action(item: dict, services: dict, outcome: dict) -> dict:
         return {"kind": "resume_download", "label": "恢复下载", "available": True, "reason": "qB 任务当前可恢复"}
 
     stage_name = str(outcome.get("stage") or "")
+    reason_code = str(outcome.get("reasonCode") or "")
     if stage_name == "qb" and str(((services.get("qb") or {}).get("webUrl") or "")):
         return {"kind": "open_qb", "label": "打开 qB 检查", "available": True, "reason": "需要在下载器中确认文件或任务状态"}
     if stage_name in {"torra", "cloud115"} and str(((services.get("torra") or {}).get("webUrl") or "")):
         return {"kind": "open_torra", "label": "打开 Torra 检查", "available": True, "reason": "需要核对 Torra 获取或秒传状态"}
+    if stage_name == "symedia" and reason_code == "SYMEDIA_FILE_IDENTITY_UNRESOLVED":
+        return {
+            "kind": "view_details",
+            "label": "查看 Symedia 识别原因",
+            "available": True,
+            "reason": "Fluxa 已确认媒体身份，请在 Symedia 检查待整理文件名和季集",
+        }
     if stage_name in {"symedia", "strm", "emby"}:
         return {"kind": "view_details", "label": "查看入库失败原因", "available": True, "reason": "Fluxa 已保留安全诊断信息"}
     return {"kind": "view_details", "label": "查看处理方法", "available": True, "reason": "当前没有可直接安全执行的自动动作"}

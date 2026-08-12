@@ -213,6 +213,24 @@ class TaskExceptionRuntimeTests(unittest.TestCase):
         self.assertNotIn("/storage/", result["userReasonText"])
         self.assertIn("/storage/cloud/", result["technicalReasonText"])
 
+    def test_known_fluxa_identity_explains_symedia_file_recognition_boundary(self):
+        result = classify_stage(
+            stage(
+                "blocked",
+                key="library",
+                source="Symedia",
+                reasonCode="SYMEDIA_FILE_IDENTITY_UNRESOLVED",
+                reasonText="/storage/cloud/Show.S01E03.mkv 未查询到媒体信息",
+            ),
+            now=NOW,
+        )
+
+        self.assertEqual(
+            result["userReasonText"],
+            "Fluxa 已识别媒体身份，但 Symedia 未识别待整理文件",
+        )
+        self.assertIn("/storage/cloud/", result["technicalReasonText"])
+
     def test_artifact_identity_conflict_requires_attention(self):
         result = classify_task({
             "state": "blocked",

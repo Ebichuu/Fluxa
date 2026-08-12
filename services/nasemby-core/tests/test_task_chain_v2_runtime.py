@@ -1174,6 +1174,35 @@ class TaskChainV2RuntimeTests(unittest.TestCase):
         self.assertNotIn("S01E01", serialized)
         self.assertNotIn("聪明镇S01E10.mkv", serialized)
 
+    def test_known_identity_symedia_failure_has_precise_public_reason_and_action(self):
+        chain = FakeTaskChain().get_chain()
+        chain["items"][0]["pipelineFacts"] = [pipeline_fact(
+            "symedia",
+            "failed",
+            reason_code="SYMEDIA_FILE_IDENTITY_UNRESOLVED",
+            reason_text="/storage/cloud/Show.S02E03.mkv 未查询到媒体信息",
+        )]
+
+        item = adapt_task_chain(
+            chain,
+            now=datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+        )["items"][0]
+
+        self.assertEqual(
+            item["pipelineOutcome"]["reasonText"],
+            "/storage/cloud/Show.S02E03.mkv 未查询到媒体信息",
+        )
+        self.assertEqual(item["primaryAction"]["label"], "查看 Symedia 识别原因")
+
+        public = present_pipeline_fact(next(
+            fact for fact in item["pipelineFacts"] if fact["stage"] == "symedia"
+        ))
+        self.assertEqual(
+            public["reasonText"],
+            "Fluxa 已识别媒体身份，但 Symedia 未识别待整理文件",
+        )
+        self.assertNotIn("/storage/", public["reasonText"])
+
     def test_summary_and_conditional_list_share_cached_snapshot(self):
         app = Flask(__name__)
         fake = FakeTaskChain()

@@ -105,6 +105,8 @@ def _public_task_reason(stage, reason_code, value, fallback="") -> str:
     text = str(value or "").strip()
     code = str(reason_code or "").strip().upper()
     stage_name = str(stage or "").strip().lower()
+    if code == "SYMEDIA_FILE_IDENTITY_UNRESOLVED":
+        return "Fluxa 已识别媒体身份，但 Symedia 未识别待整理文件"
     if stage_name in {"symedia", "library"} and code in {
         "QUALITY_SCORE_LOWER",
         "QUALITY_WEIGHT_NOT_HIGHER",

@@ -130,6 +130,8 @@ def _user_reason_text(stage: dict, state: str, value: str) -> str:
 
     if state == "protected":
         return "版本被正常保护，未覆盖已有资源" if TECHNICAL_REASON_PATTERN.search(text) else text
+    if reason_code == "SYMEDIA_FILE_IDENTITY_UNRESOLVED":
+        return "Fluxa 已识别媒体身份，但 Symedia 未识别待整理文件"
     if state in {"action_required", "evidence_insufficient"} and (
         key in {"library", "symedia"} or "symedia" in source or "SYMEDIA" in reason_code
     ):

@@ -490,6 +490,37 @@ class PipelineSourceFactRuntimeTests(unittest.TestCase):
         self.assertEqual(failed_fact["state"], "failed")
         self.assertEqual(failed_outcome["state"], "action_required")
 
+    def test_known_fluxa_identity_distinguishes_symedia_file_recognition_failure(self):
+        facts = build_pipeline_source_facts(context(symediaRows=[{
+            "id": "recognition-failed",
+            "status": False,
+            "errmsg": "/storage/cloud/Show.S01E03.mkv 未查询到媒体信息",
+        }]), observed_at=OBSERVED_AT)
+
+        symedia = by_stage(facts, "symedia")
+
+        self.assertEqual(symedia["state"], "failed")
+        self.assertEqual(symedia["reasonCode"], "SYMEDIA_FILE_IDENTITY_UNRESOLVED")
+        self.assertEqual(
+            symedia["units"][0]["reasonCode"],
+            "SYMEDIA_FILE_IDENTITY_UNRESOLVED",
+        )
+        self.assertIn("未查询到媒体信息", symedia["reasonText"])
+
+    def test_missing_fluxa_identity_keeps_generic_symedia_failure(self):
+        facts = build_pipeline_source_facts(context(
+            tmdbId="",
+            symediaRows=[{
+                "id": "recognition-failed",
+                "status": False,
+                "errmsg": "Symedia 未查询到对应媒体信息",
+            }],
+        ), observed_at=OBSERVED_AT)
+
+        symedia = by_stage(facts, "symedia")
+
+        self.assertEqual(symedia["reasonCode"], "SYMEDIA_LIBRARY_FAILED")
+
     def test_symedia_mixed_protection_and_real_failure_requires_action(self):
         facts = build_pipeline_source_facts(context(symediaRows=[
             {

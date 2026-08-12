@@ -9,6 +9,10 @@ from app.symedia_evidence_runtime import normalize_symedia_status, symedia_prote
 
 
 BEIJING_TZ = timezone(timedelta(hours=8))
+SYMEDIA_FILE_IDENTITY_UNRESOLVED = "SYMEDIA_FILE_IDENTITY_UNRESOLVED"
+SYMEDIA_IDENTITY_FAILURE_MARKERS = (
+    "未找到", "未查询到", "媒体信息", "媒体识别", "识别失败", "TMDB",
+)
 
 
 def _utc(value: datetime) -> datetime:
@@ -451,7 +455,7 @@ def _cloud115_fact(context, window):
     )
 
 
-def _symedia_unit(row, index, window):
+def _symedia_unit(row, index, window, *, media_identity_linked=False):
     date = _text(row.get("date"))
     source_path = _text(row.get("src"))
     reference = _text(row.get("id")) or (f"{date}:{source_path}" if date or source_path else f"row-{index}")
@@ -464,6 +468,14 @@ def _symedia_unit(row, index, window):
         evidence = "verified"
         code = rule or _text(row.get("reasonCode")) or "SYMEDIA_LIBRARY_FAILED"
         text = _text(row.get("errmsg")) or ("Symedia 正常保护" if rule else "Symedia 整理失败")
+        if (
+            not rule
+            and media_identity_linked
+            and any(marker.lower() in text.lower() for marker in SYMEDIA_IDENTITY_FAILURE_MARKERS)
+        ):
+            # Fluxa 的目标身份与 Symedia 对待整理文件的识别是两层独立事实。
+            # 保留原始错误作为技术证据，只用专用原因码修正用户侧解释。
+            code = SYMEDIA_FILE_IDENTITY_UNRESOLVED
     else:
         state, evidence, code, text = "unknown", "missing", "SYMEDIA_STATUS_UNKNOWN", "Symedia 结果无法确认"
     result = {
@@ -513,7 +525,19 @@ def _symedia_fact(context, window):
             "symedia", "file", window, "SYMEDIA_EVIDENCE_MISSING",
             reason_text="尚无 Symedia 整理记录",
         )
-    units = [_symedia_unit(row, index, window) for index, row in enumerate(rows)]
+    media_identity_linked = bool(
+        _text(context.get("tmdbId"))
+        and _text(context.get("mediaType")) in {"movie", "tv"}
+    )
+    units = [
+        _symedia_unit(
+            row,
+            index,
+            window,
+            media_identity_linked=media_identity_linked,
+        )
+        for index, row in enumerate(rows)
+    ]
     state = _summary_state(units, ("failed", "succeeded", "protected", "unknown"))
     default_code = {
         "failed": "SYMEDIA_LIBRARY_FAILED",
@@ -526,7 +550,7 @@ def _symedia_fact(context, window):
         for unit in units
         if unit.get("state") == state and _text(unit.get("reasonCode"))
     }
-    code = next(iter(selected_codes)) if state == "protected" and len(selected_codes) == 1 else default_code
+    code = next(iter(selected_codes)) if len(selected_codes) == 1 else default_code
     return _fact(
         "symedia",
         state,
