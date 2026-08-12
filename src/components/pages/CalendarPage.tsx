@@ -58,6 +58,8 @@ type CalendarUrlPatch = Partial<Omit<CalendarUrlState, 'date'>> & { date?: strin
 
 const calendarDateHistoryKind = 'calendar:date';
 const calendarRequestOptions = (signal: AbortSignal) => ({ signal, timeoutMs: 45_000 });
+const calendarRefreshPollLimit = 30;
+const calendarRefreshPollIntervalMs = 3_000;
 
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
 
@@ -375,11 +377,13 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
         ) {
           requestDateDetail(pending.date, pending.mediaType, pending.includeUnlinked);
         }
-        if (nextCacheStatus !== 'fresh' && pollCount < 8) {
+        if (nextCacheStatus !== 'fresh' && pollCount < calendarRefreshPollLimit) {
           pollCount += 1;
           const enqueue = pollCount === 1 ? refreshScopes().catch(() => undefined) : Promise.resolve();
           enqueue.finally(() => {
-            if (!controller.signal.aborted) pollTimer = window.setTimeout(applySummary, 1500);
+            if (!controller.signal.aborted) {
+              pollTimer = window.setTimeout(applySummary, calendarRefreshPollIntervalMs);
+            }
           });
         }
       })

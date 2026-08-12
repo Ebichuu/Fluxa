@@ -452,6 +452,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const [total, setTotal] = useState(0);
   const [matchGroups, setMatchGroups] = useState<RssMatchGroup[]>([]);
   const [matchesTotal, setMatchesTotal] = useState(0);
+  const [decisionTotal, setDecisionTotal] = useState(0);
   const [reviewTotal, setReviewTotal] = useState(0);
   const [matchGroupCounts, setMatchGroupCounts] = useState<NonNullable<RssMatchGroupListResponse['counts']>>({
     total: 0,
@@ -596,26 +597,29 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     matchesRequestRef.current = controller;
     setMatchesLoading(true);
     try {
-      const hasScopedContext = Boolean(
-        resourceContext.subscriptionId || resourceContext.mediaType || resourceContext.seasonNumber
-        || resourceContext.episodeNumber || resourceContext.matchId
-      );
+      const hasScopedMatchContext = Boolean(resourceContext.subscriptionId || resourceContext.matchId);
+      const scopedMediaType = hasScopedMatchContext ? resourceContext.mediaType || undefined : undefined;
+      const scopedSeasonNumber = hasScopedMatchContext ? resourceContext.seasonNumber ?? undefined : undefined;
+      const scopedEpisodeNumber = hasScopedMatchContext ? resourceContext.episodeNumber ?? undefined : undefined;
       const groupLoader = view === 'cleanup' ? getRssMatchGroups : getRssArtifactGroups;
-      const [payload, globalPayload] = await Promise.all([
+      const [payload, globalPayload, decisionPayload] = await Promise.all([
         groupLoader({
           groupState: view === 'upgrades' ? 'upgrade_available' : undefined,
           groupScope: view === 'cleanup' ? 'decision' : 'scoreable',
           subscriptionId: resourceContext.subscriptionId || undefined,
-          mediaType: resourceContext.mediaType || undefined,
-          seasonNumber: resourceContext.seasonNumber ?? undefined,
-          episodeNumber: resourceContext.episodeNumber ?? undefined,
+          mediaType: scopedMediaType,
+          seasonNumber: scopedSeasonNumber,
+          episodeNumber: scopedEpisodeNumber,
           matchId: resourceContext.matchId || undefined,
           limit: 10,
           offset: nextOffset
         }, { signal: controller.signal }),
-        hasScopedContext || view === 'cleanup'
+        hasScopedMatchContext || view === 'cleanup'
           ? getRssArtifactGroups({ limit: 1, offset: 0 }, { signal: controller.signal })
-          : Promise.resolve(null)
+          : Promise.resolve(null),
+        view === 'cleanup'
+          ? Promise.resolve(null)
+          : getRssMatchGroups({ groupScope: 'decision', limit: 1, offset: 0 }, { signal: controller.signal })
       ]);
       if (controller.signal.aborted) return {};
       if (!Array.isArray(payload.groups)) {
@@ -624,7 +628,8 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       setMatchGroups(payload.groups);
       setExactPreviews({});
       setMatchesTotal(payload.total);
-      const counts = view === 'cleanup' ? payload.counts : globalPayload?.counts ?? payload.counts;
+      setDecisionTotal(view === 'cleanup' ? payload.total : decisionPayload?.total ?? 0);
+      const counts = globalPayload?.counts ?? payload.counts;
       if (counts) setMatchGroupCounts(counts);
       setMatchesOffset(payload.offset);
       const groupedMatches = view === 'cleanup' ? [] : Array.from(new Map(
@@ -1191,7 +1196,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     { id: 'identify', label: '追更待识别', count: reviewTotal },
     { id: 'scoring', label: '候选评分', count: matchGroupCounts.scoreableTotal ?? matchGroupCounts.total },
     { id: 'upgrades', label: '追更洗版', count: matchGroupCounts.upgradeAvailable },
-    { id: 'cleanup', label: '需要决定', count: (matchGroupCounts.needsCleanup ?? 0) + (matchGroupCounts.blocked ?? 0) }
+    { id: 'cleanup', label: '需要决定', count: decisionTotal }
   ];
   const currentRangeText = windowFilter
     ? `当前范围 ${total} 条 · 最近 ${windowFilter === '1h' ? '1 小时' : windowFilter === '24h' ? '24 小时' : '7 天'}`
