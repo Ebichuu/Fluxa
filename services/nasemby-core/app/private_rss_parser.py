@@ -178,7 +178,10 @@ def extract_release_scope(title, categories=None):
             episode_start = int(episode_match.group(1))
             episode_end = int(episode_match.group(2) or episode_match.group(1))
     category_type = _category_media_type(categories or [])
-    media_type = "tv" if episode_start is not None or season is not None else category_type or "movie"
+    # An absent category is not evidence that a release is a movie. Keeping the
+    # type unknown prevents sports, concerts and other tracker content from
+    # entering the movie download classification by default.
+    media_type = "tv" if episode_start is not None or season is not None else category_type
     return media_type, season, episode_start, episode_end
 
 

@@ -126,6 +126,21 @@ class FakeReconciliationService:
         }
 
 
+class FakeRssRepository:
+    def __init__(self, counts):
+        self.counts = counts
+        self.targets = []
+
+    def resource_counts_for_targets(self, targets):
+        self.targets = targets
+        return {target["targetId"]: dict(self.counts) for target in targets}
+
+
+class FakeRssService:
+    def __init__(self, repository):
+        self.repository = repository
+
+
 def calendar_loader(year, month, media_type):
     return {
         "success": True,
@@ -196,6 +211,35 @@ class CalendarTimelineRuntimeTests(unittest.TestCase):
         self.assertEqual(calendar["stats"]["playable"], 0)
         self.assertEqual(calendar["statisticsMeta"]["playable"]["confirmation"], "unknown")
         self.assertEqual(calendar["statisticsMeta"]["entries"]["confirmation"], "confirmed")
+
+    def test_calendar_exposes_rss_candidates_without_faking_a_task_chain(self):
+        application = Flask(f"{__name__}-rss-candidates")
+        application.extensions["mcc_task_chain_v2_service"] = FakeTaskService(items=[])
+        rss_repository = FakeRssRepository({
+            "total": 4,
+            "exactEpisode": 1,
+            "multiEpisode": 0,
+            "seasonPack": 3,
+            "scopePending": 0,
+        })
+        application.extensions["mcc_private_rss"] = FakeRssService(rss_repository)
+        register_calendar_timeline(
+            application,
+            calendar_loader=calendar_loader,
+            clock=lambda: datetime(2026, 7, 22, 1, 31, tzinfo=timezone.utc),
+        )
+
+        entry = application.test_client().get(
+            "/api/v2/calendar?year=2026&month=7&type=tv"
+        ).get_json()["calendar"]["entries"][0]
+
+        self.assertEqual(entry["rssResourceCount"], 4)
+        self.assertEqual(entry["rssExactEpisodeCount"], 1)
+        self.assertEqual(entry["rssSeasonPackCount"], 3)
+        self.assertEqual(entry["chainId"], "")
+        self.assertEqual(entry["reasonCode"], "RSS_CANDIDATES_AVAILABLE")
+        self.assertIn("4 个 RSS 候选", entry["reasonText"])
+        self.assertEqual(rss_repository.targets[0]["tmdbId"], "101")
 
     def test_calendar_validates_query_and_supports_etag(self):
         invalid = self.client.get("/api/v2/calendar?month=13")

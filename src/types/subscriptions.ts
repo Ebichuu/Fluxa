@@ -47,6 +47,11 @@ export interface SubscriptionCalendarEntry {
   outcomeState?: PipelineOutcomeState;
   pipelineOutcome?: PipelineOutcome;
   torraFact?: PipelineFact | null;
+  rssResourceCount?: number;
+  rssExactEpisodeCount?: number;
+  rssMultiEpisodeCount?: number;
+  rssSeasonPackCount?: number;
+  rssScopePendingCount?: number;
   linkState?: 'linked' | 'manual' | 'unlinked';
   subscriptionOrigin?: 'manual' | 'auto' | 'torra' | 'unknown' | string;
   torraLinked?: boolean;

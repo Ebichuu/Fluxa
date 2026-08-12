@@ -59,7 +59,7 @@ import type { AppNavigate } from '../layout/AppTopNav';
 type WindowFilter = '' | '1h' | '24h' | '7d';
 type ResourceView = 'new' | 'identify' | 'scoring' | 'upgrades' | 'cleanup';
 type FollowStateFilter = '' | 'linked' | 'unlinked';
-type MediaTypeFilter = '' | 'movie' | 'tv';
+type MediaTypeFilter = '' | 'movie' | 'tv' | 'unknown';
 const RSS_INTERVAL_PRESETS = [1, 3, 5] as const;
 const rssPageSize = 50;
 const matchActionPollIntervalMs = 1500;
@@ -133,7 +133,9 @@ function readRssLibraryUrlState(location: Location = window.location): RssLibrar
     subscriptionId: params.get('subscriptionId')?.trim() || '',
     tmdbId: /^\d{1,24}$/.test(params.get('tmdbId') ?? '') ? params.get('tmdbId') ?? '' : '',
     mediaType: mediaTypeValue === 'movie' || mediaTypeValue === 'tv' ? mediaTypeValue : '',
-    resourceType: resourceTypeValue === 'movie' || resourceTypeValue === 'tv' ? resourceTypeValue : '',
+    resourceType: ['movie', 'tv', 'unknown'].includes(resourceTypeValue ?? '')
+      ? resourceTypeValue as MediaTypeFilter
+      : '',
     contextTitle: params.get('title')?.trim().slice(0, 240) || '',
     seasonNumber: Number.isInteger(parsedSeason) && parsedSeason > 0 ? parsedSeason : null,
     episodeNumber: Number.isInteger(parsedEpisode) && parsedEpisode > 0 ? parsedEpisode : null,
@@ -602,7 +604,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       const [payload, globalPayload] = await Promise.all([
         groupLoader({
           groupState: view === 'upgrades' ? 'upgrade_available' : undefined,
-          groupScope: view === 'cleanup' ? 'cleanup' : 'scoreable',
+          groupScope: view === 'cleanup' ? 'decision' : 'scoreable',
           subscriptionId: resourceContext.subscriptionId || undefined,
           mediaType: resourceContext.mediaType || undefined,
           seasonNumber: resourceContext.seasonNumber ?? undefined,
@@ -622,7 +624,8 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       setMatchGroups(payload.groups);
       setExactPreviews({});
       setMatchesTotal(payload.total);
-      if (globalPayload?.counts ?? payload.counts) setMatchGroupCounts((globalPayload?.counts ?? payload.counts)!);
+      const counts = view === 'cleanup' ? payload.counts : globalPayload?.counts ?? payload.counts;
+      if (counts) setMatchGroupCounts(counts);
       setMatchesOffset(payload.offset);
       const groupedMatches = view === 'cleanup' ? [] : Array.from(new Map(
         payload.groups.flatMap((group) => group.candidates).map((match) => [match.id, match])
@@ -1004,7 +1007,19 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       .finally(() => setMatchBusy(''));
   };
 
-  const timeline = items;
+  const timeline = useMemo(() => {
+    if (resourceContext.episodeNumber == null) return items;
+    const scopePriority = {
+      explicit_episode: 0,
+      explicit_multi_episode: 1,
+      season_pack: 2,
+      scope_pending: 3
+    } as const;
+    return items
+      .map((item, index) => ({ item, index, scope: classifyRssResourceScope(item) }))
+      .sort((left, right) => scopePriority[left.scope] - scopePriority[right.scope] || left.index - right.index)
+      .map(({ item }) => item);
+  }, [items, resourceContext.episodeNumber]);
   const itemScopeCounts = useMemo(
     () => countRssResourceScopes(items.map((item) => classifyRssResourceScope(item))),
     [items]
@@ -1176,7 +1191,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     { id: 'identify', label: '追更待识别', count: reviewTotal },
     { id: 'scoring', label: '候选评分', count: matchGroupCounts.scoreableTotal ?? matchGroupCounts.total },
     { id: 'upgrades', label: '追更洗版', count: matchGroupCounts.upgradeAvailable },
-    { id: 'cleanup', label: '待整理', count: matchGroupCounts.needsCleanup ?? 0 }
+    { id: 'cleanup', label: '需要决定', count: (matchGroupCounts.needsCleanup ?? 0) + (matchGroupCounts.blocked ?? 0) }
   ];
   const currentRangeText = windowFilter
     ? `当前范围 ${total} 条 · 最近 ${windowFilter === '1h' ? '1 小时' : windowFilter === '24h' ? '24 小时' : '7 天'}`
@@ -1184,12 +1199,12 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const matchPanelTitle = resourceView === 'upgrades'
     ? '追更洗版候选'
     : resourceView === 'cleanup'
-      ? '待整理候选'
+      ? '需要人工决定的候选'
       : 'Torra 规则候选决策';
   const matchPanelSummary = resourceView === 'upgrades'
     ? matchesTotal ? `${matchesTotal} 个覆盖范围全部胜出的唯一产物` : '当前没有可洗版的更高分候选'
     : resourceView === 'cleanup'
-      ? matchesTotal ? `${matchesTotal} 个候选组失去可靠订阅归属` : '当前没有待整理候选'
+      ? matchesTotal ? `${matchesTotal} 个候选组需要确认身份、规则或订阅归属` : '当前没有需要人工决定的候选'
       : matchesTotal ? `最近 ${matchesTotal} 个唯一产物 · 只读评估，不会自动下载` : '新资源会自动匹配并评分，不会自动下载';
   const upgradeEmpty = (matchGroupCounts.waitingBaseline ?? 0) > 0
     ? {
@@ -1342,6 +1357,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                 <option value="">全部类型</option>
                 <option value="tv">电视剧</option>
                 <option value="movie">电影</option>
+                <option value="unknown">其他 / 待确认</option>
               </select>
               <select aria-label="按 RSS 来源筛选" value={sourceId} onChange={(event) => { const next = event.target.value; setSourceId(next); setOffset(0); syncUrlState({ sourceId: next, offset: 0 }); }}>
                 <option value="">全部来源</option>
@@ -1374,6 +1390,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
             )}
             {timeline.map((item) => {
               const scope = classifyRssResourceScope(item);
+              const isSeasonPackForEpisode = resourceContext.episodeNumber != null && scope === 'season_pack';
               const itemMatch = matchByItemId.get(item.id);
               const itemAction = resourceDownloadActions[item.id] || (itemMatch ? matchActions[itemMatch.id] : undefined);
               const downloadBusy = [`exact-resolve:${item.id}`, `resource-preview:${item.id}`, `resource-download:${item.id}`].includes(matchBusy);
@@ -1395,13 +1412,15 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                     ? '该资源已提交 qB'
                   : downloadBusy
                     ? '正在执行下载预检'
+                    : isSeasonPackForEpisode
+                      ? '下载整季包（会包含本季其他集）'
                     : item.followState === 'linked'
                       ? '下载前先执行安全预检'
                       : '自动分类并提交 qB';
               const downloadButton = (
                 <button
                   aria-label={`${downloadTitle}：${item.mediaTitle || item.sourceTitle || item.title}`}
-                  className="ops-icon-button rss-seed-download"
+                  className={isSeasonPackForEpisode ? 'ops-icon-button rss-seed-download rss-seed-download--season-pack' : 'ops-icon-button rss-seed-download'}
                   disabled={downloadDisabled}
                   title={downloadTitle}
                   type="button"
@@ -1438,6 +1457,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                       <div className="rss-seed-meta">
                         <span>{episodeLabel(item)}</span>
                         <span>{rssResourceScopeLabel(scope)}</span>
+                        {isSeasonPackForEpisode && <span className="rss-scope-warning">整季包，不是单集</span>}
                         <span>{sizeLabel(item.sizeBytes)}</span>
                       </div>
                       <div className="rss-version-line">
@@ -1515,7 +1535,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
               <button className="ops-link" disabled={matchesLoading} type="button" onClick={() => void loadMatches(matchesOffset)}><RefreshCcw size={13} />刷新</button>
             </header>
             {matchesLoading && <small className="sub-detail__hint">正在查看是否有种子匹配到追更作品…</small>}
-            {!matchesLoading && matchGroups.length === 0 && <div className="rss-match-empty"><CheckCircle2 size={15} /><span><strong>{resourceView === 'upgrades' ? upgradeEmpty.title : resourceView === 'cleanup' ? '当前没有待整理候选' : summary.enabled && summary.errorSources === 0 ? 'RSS 正常收集，但暂未匹配到追更作品' : '暂未匹配到追更作品'}</strong><small>{resourceView === 'upgrades' ? upgradeEmpty.detail : resourceView === 'cleanup' ? '候选评分主列表只保留具备当前订阅归属的候选组。' : summary.enabled ? '可用来源会继续自动检查；现在无需处理。' : '开启收集后，新资源会自动尝试匹配。'}</small>{resourceView === 'upgrades' && upgradeEmpty.action === 'baseline' && <button className="ops-link" type="button" onClick={() => onNavigate('subscription-settings')}><ShieldCheck size={13} />预览历史基线</button>}</span></div>}
+            {!matchesLoading && matchGroups.length === 0 && <div className="rss-match-empty"><CheckCircle2 size={15} /><span><strong>{resourceView === 'upgrades' ? upgradeEmpty.title : resourceView === 'cleanup' ? '当前没有需要人工决定的候选' : summary.enabled && summary.errorSources === 0 ? 'RSS 正常收集，但暂未匹配到追更作品' : '暂未匹配到追更作品'}</strong><small>{resourceView === 'upgrades' ? upgradeEmpty.detail : resourceView === 'cleanup' ? '身份、规则或订阅归属存在阻断时，会安全地列在这里。' : summary.enabled ? '可用来源会继续自动检查；现在无需处理。' : '开启收集后，新资源会自动尝试匹配。'}</small>{resourceView === 'upgrades' && upgradeEmpty.action === 'baseline' && <button className="ops-link" type="button" onClick={() => onNavigate('subscription-settings')}><ShieldCheck size={13} />预览历史基线</button>}</span></div>}
             <div className="rss-match-list">
               {matchGroups.map((group) => {
                 const match = group.representativeMatch
@@ -1545,7 +1565,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                       <strong>{group.title || match.itemTitle || seed?.title || '已匹配到一条追更内容'} · {group.episodeLabel}</strong>
                       <small>{candidateGroupScoreLabel(group)}</small>
                       <span className="rss-match-status">{shadowEvaluationLabel(match)}</span>
-                      {resourceView === 'cleanup' && (
+                      {resourceView === 'cleanup' && group.state === 'needs_cleanup' && (
                         <div className="rss-ownership-summary" aria-label="候选归属">
                           {(group.ownerships ?? []).map((ownership) => (
                             <span className={`rss-ownership-chip rss-ownership-chip--${ownership.state}`} key={`${ownership.matchId}:${ownership.state}`}>
@@ -1562,6 +1582,13 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                           {(group.ownerships ?? []).length === 0 && (
                             <span className="rss-ownership-chip rss-ownership-chip--invalid">失效归属 · 订阅不存在</span>
                           )}
+                        </div>
+                      )}
+                      {resourceView === 'cleanup' && group.state === 'blocked' && (
+                        <div className="rss-ownership-summary" aria-label="候选阻断原因">
+                          <span className="rss-ownership-chip rss-ownership-chip--conflict">
+                            暂不可处理 · {shadowEvaluationLabel(match)}
+                          </span>
                         </div>
                       )}
                       {resourceView !== 'cleanup' && canPreviewExact && (
@@ -1609,7 +1636,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                         </div>
                       </details>
                     </div>
-                    {resourceView === 'cleanup' ? (
+                    {resourceView === 'cleanup' && group.state === 'needs_cleanup' ? (
                       <button
                         className="ops-action-button ops-action-button--primary"
                         disabled={cleanupBusy}
@@ -1617,6 +1644,10 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                         onClick={() => void previewCleanupGroup(group)}
                       >
                         <Trash2 size={13} />{cleanupBusy ? '正在核验' : '预览归档'}
+                      </button>
+                    ) : resourceView === 'cleanup' ? (
+                      <button className="ops-action-button" type="button" onClick={() => changeResourceView('scoring')}>
+                        查看评分条件
                       </button>
                     ) : pollTimedOut && action ? (
                       <button className="ops-action-button ops-action-button--primary" type="button" onClick={() => {
@@ -1810,10 +1841,16 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
             <h2 id="rss-resource-download-title">按分类提交这个 RSS 资源到 qB？</h2>
             <p id="rss-resource-download-description">
               Fluxa 会把资源放入 Torra 的分类下载目录。下载完成后由现有 mover 和秒传插件继续处理，资源原始记录不会被删除。
+              {resourceContext.episodeNumber != null && classifyRssResourceScope(resourceDownloadTarget.item) === 'season_pack'
+                ? ' 这是整季包，会同时下载本季其他集。'
+                : ''}
             </p>
             <div className="ops-confirm-dialog__meta">
               <span>作品</span><strong>{resourceDownloadTarget.item.mediaTitle || resourceDownloadTarget.item.sourceTitle || resourceDownloadTarget.item.title}</strong>
               <span>范围</span><strong>{resourceDownloadTarget.preview.scopeLabel || '已确认资源范围'}</strong>
+              {resourceContext.episodeNumber != null && classifyRssResourceScope(resourceDownloadTarget.item) === 'season_pack' && (
+                <><span>单集提醒</span><strong className="rss-confirm-warning">整季包，会包含本季其他集</strong></>
+              )}
               <span>自动分类</span><strong>{resourceDownloadTarget.preview.categoryDirectory || resourceDownloadTarget.preview.categoryLabel || '待确认'}</strong>
               <span>分类依据</span><strong>{resourceDownloadTarget.preview.classificationReason || '已核验媒体身份'}</strong>
             </div>

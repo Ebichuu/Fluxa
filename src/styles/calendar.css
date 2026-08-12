@@ -843,6 +843,18 @@
   line-height: 1.55;
 }
 
+.calendar-detail-item__resources {
+  width: fit-content;
+  margin: 0;
+  border: 1px solid rgba(var(--theme-accent-rgb), 0.22);
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: rgba(var(--theme-accent-rgb), 0.07);
+  color: var(--ops-ink-strong);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .app-shell:not(.app-shell--hall)[data-theme='light'] :is(.calendar-search, .calendar-status-filters button, .calendar-detail-item, .calendar-detail__close) {
   border-color: rgba(23, 32, 48, 0.12);
   background: rgba(255, 255, 255, 0.58);

@@ -655,7 +655,7 @@ export function getRssSeedItems(input: {
   mediaType?: 'movie' | 'tv';
   seasonNumber?: number;
   episodeNumber?: number;
-  resourceType?: 'movie' | 'tv';
+  resourceType?: 'movie' | 'tv' | 'unknown';
   year?: string;
   limit?: number;
   offset?: number;
@@ -703,7 +703,7 @@ export function getRssMatches(input: { status?: string; limit?: number; offset?:
 export function getRssMatchGroups(input: {
   status?: string;
   groupState?: RssMatchGroup['state'];
-  groupScope?: 'scoreable' | 'cleanup';
+  groupScope?: 'scoreable' | 'cleanup' | 'decision';
   subscriptionId?: string;
   mediaType?: 'movie' | 'tv';
   seasonNumber?: number;
@@ -729,7 +729,7 @@ export function getRssMatchGroups(input: {
 export function getRssArtifactGroups(input: {
   status?: string;
   groupState?: RssMatchGroup['state'];
-  groupScope?: 'scoreable' | 'cleanup';
+  groupScope?: 'scoreable' | 'cleanup' | 'decision';
   subscriptionId?: string;
   mediaType?: 'movie' | 'tv';
   seasonNumber?: number;

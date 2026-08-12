@@ -318,6 +318,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   const [filterReady, setFilterReady] = useState(Boolean(qbActiveView || focusActive || initialOutcome || target?.advanced || target?.archivedDate));
   const [chain, setChain] = useState<TaskChainResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
   const [pageLimit, setPageLimit] = useState(20);
   const [details, setDetails] = useState<Record<string, { snapshotVersion: string; item: TaskChainItem }>>({});
@@ -351,7 +352,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   const todayKey = shanghaiTodayKey();
 
   const loadChain = async (signal: AbortSignal, offset = 0, append = false, refresh = false, invalidateDetails = false) => {
-    setLoading(true);
+    if (append) setLoadingMore(true);
     setError('');
     try {
       const payload = await getTaskChainV2({
@@ -410,14 +411,20 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     } catch (reason) {
       if (!signal.aborted) setError(reason instanceof Error ? reason.message : '任务链读取失败');
     } finally {
-      if (!signal.aborted) setLoading(false);
+      if (!signal.aborted) {
+        setLoading(false);
+        if (append) setLoadingMore(false);
+      }
     }
   };
 
-  const refreshChain = () => void loadChain(new AbortController().signal, 0, false, true, true);
+  const refreshChain = () => {
+    setLoading(true);
+    void loadChain(new AbortController().signal, 0, false, true, true);
+  };
   const loadMore = () => {
     const offset = chain?.page?.nextOffset;
-    if (offset == null || loading) return;
+    if (offset == null || loadingMore) return;
     void loadChain(new AbortController().signal, offset, true);
   };
 
@@ -428,6 +435,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   }, [archivedDate, completedDate, filter, target]);
 
   useEffect(() => {
+    setLoading(true);
     const nextAdvancedOpen = Boolean(target?.advanced);
     advancedOpenRef.current = nextAdvancedOpen;
     setAdvancedOpen(nextAdvancedOpen);
@@ -637,6 +645,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
 
   const changeFilter = (name: FilterName) => {
     if (target) onClearTarget();
+    setLoading(true);
     setFilter(name);
     setExpandedProblemGroupId('');
     setExpandedChainId('');
@@ -665,6 +674,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
 
   const changeCompletedDate = (next: string) => {
     if (target) onClearTarget();
+    setLoading(true);
     setCompletedDate(next);
     setArchivedDate('');
     if (next) setFilter('已可播放');
@@ -687,6 +697,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   };
 
   const changeAdvancedVisibility = (next: boolean) => {
+    setLoading(true);
     advancedOpenRef.current = next;
     setAdvancedOpen(next);
     writeUrlQuery({ advanced: next }, 'replace');
@@ -1412,7 +1423,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
         {!groupedProblemView && chain?.page?.hasMore && (
           <div className="ops-task-more">
             <span>已显示 {items.length} / {chain.page.total} 条</span>
-            <button className="ops-action-button" disabled={loading} type="button" onClick={loadMore}>{loading ? '读取中' : '加载更多'}</button>
+            <button className="ops-action-button" disabled={loadingMore} type="button" onClick={loadMore}>{loadingMore ? '读取中' : '加载更多'}</button>
           </div>
         )}
       </section>

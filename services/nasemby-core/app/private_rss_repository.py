@@ -20,7 +20,7 @@ MATCH_STATUSES = {"candidate", "ignored", "triggered", "confirmed", "expired"}
 IDENTITY_STATUSES = {"identified", "conflict", "unidentified"}
 RSS_REVIEW_STATES = {"needs_review", "follow_needs_review", "unlinked"}
 RSS_FOLLOW_STATES = {"linked", "unlinked"}
-RSS_GROUP_SCOPES = {"scoreable", "cleanup"}
+RSS_GROUP_SCOPES = {"scoreable", "cleanup", "decision"}
 CLEANUP_RULE_VERSION = "rss-match-cleanup-v1"
 RSS_GROUP_STATES = {
     "initial_best",
@@ -861,7 +861,7 @@ class PrivateRssRepository:
         if target_media_type and target_media_type not in {"movie", "tv"}:
             raise ValueError("媒体类型无效")
         resource_type = str(resource_type or "").strip().lower()
-        if resource_type and resource_type not in {"movie", "tv"}:
+        if resource_type and resource_type not in {"movie", "tv", "unknown"}:
             raise ValueError("资源类型无效")
         if season_number in (None, ""):
             target_season = None
@@ -902,7 +902,9 @@ class PrivateRssRepository:
         if source_id:
             base_where.append("i.source_id=?")
             base_params.append(str(source_id))
-        if resource_type:
+        if resource_type == "unknown":
+            base_where.append("COALESCE(i.media_type, '') NOT IN ('movie', 'tv')")
+        elif resource_type:
             base_where.append("i.media_type=?")
             base_params.append(resource_type)
         if window_hours:
@@ -1090,6 +1092,131 @@ class PrivateRssRepository:
             if not row:
                 return None
             return self._public_items(connection, [row])[0] if public else dict(row)
+
+    def resource_counts_for_targets(self, targets):
+        """Return reliable RSS availability counts for calendar/task targets in one read."""
+        normalized = []
+        for index, source in enumerate(targets or []):
+            if not isinstance(source, dict):
+                continue
+            target_id = str(source.get("targetId") or index)[:120]
+            media_type = str(source.get("mediaType") or "").strip().lower()
+            tmdb_id = str(source.get("tmdbId") or "").strip()
+            subscription_id = str(source.get("subscriptionId") or "").strip()
+            if media_type not in {"movie", "tv"} or (not tmdb_id and not subscription_id):
+                continue
+            try:
+                season_number = int(source.get("seasonNumber") or 0)
+                episode_number = int(source.get("episodeNumber") or 0)
+            except (TypeError, ValueError):
+                continue
+            normalized.append({
+                "targetId": target_id,
+                "mediaType": media_type,
+                "tmdbId": tmdb_id if tmdb_id.isdigit() else "",
+                "subscriptionId": subscription_id[:240],
+                "seasonNumber": season_number,
+                "episodeNumber": episode_number,
+            })
+        if len(normalized) > 1000:
+            raise ValueError("RSS 资源目标过多")
+        empty = {
+            target["targetId"]: {
+                "total": 0,
+                "exactEpisode": 0,
+                "multiEpisode": 0,
+                "seasonPack": 0,
+                "scopePending": 0,
+            }
+            for target in normalized
+        }
+        if not normalized:
+            return empty
+
+        with closing(self.runtime.connect()) as connection:
+            stored_subscriptions = {}
+            for requested in {target["subscriptionId"] for target in normalized if target["subscriptionId"]}:
+                stored_subscriptions[requested] = self._stored_subscription_key(connection, requested)
+            tmdb_ids = sorted({target["tmdbId"] for target in normalized if target["tmdbId"]})
+            subscription_keys = sorted({value for value in stored_subscriptions.values() if value})
+            conditions = []
+            params = []
+            if tmdb_ids:
+                conditions.append(f"i.tmdb_id IN ({','.join('?' for _ in tmdb_ids)})")
+                params.extend(tmdb_ids)
+            if subscription_keys:
+                conditions.append(
+                    "m.subscription_key IN (" + ",".join("?" for _ in subscription_keys) + ")"
+                )
+                params.extend(subscription_keys)
+            if not conditions:
+                return empty
+            rows = connection.execute(
+                "SELECT i.id, i.title, i.category, i.media_type, i.season_number, "
+                "i.episode_start, i.episode_end, i.tmdb_id, i.imdb_id, i.identity_status, "
+                "m.subscription_key FROM rss_items i LEFT JOIN rss_subscription_matches m "
+                "ON m.item_id=i.id AND m.archive_state='active' "
+                "AND m.match_status IN ('candidate','triggered','confirmed') WHERE "
+                + " OR ".join(conditions),
+                tuple(params),
+            ).fetchall()
+
+        items = {}
+        for row in rows:
+            item_id = str(row["id"])
+            item = items.setdefault(item_id, {
+                "title": str(row["title"] or ""),
+                "category": str(row["category"] or ""),
+                "mediaType": str(row["media_type"] or ""),
+                "seasonNumber": row["season_number"],
+                "episodeStart": row["episode_start"],
+                "episodeEnd": row["episode_end"],
+                "tmdbId": str(row["tmdb_id"] or ""),
+                "imdbId": str(row["imdb_id"] or ""),
+                "identityStatus": str(row["identity_status"] or "unidentified"),
+                "subscriptionKeys": set(),
+            })
+            if row["subscription_key"]:
+                item["subscriptionKeys"].add(str(row["subscription_key"]))
+
+        for target in normalized:
+            stored_subscription = stored_subscriptions.get(target["subscriptionId"], "")
+            counts = empty[target["targetId"]]
+            for item in items.values():
+                subscription_linked = bool(
+                    stored_subscription and stored_subscription in item["subscriptionKeys"]
+                )
+                if subscription_linked:
+                    matched = _subscription_target_match(
+                        item,
+                        tmdb_id=target["tmdbId"],
+                        media_type=target["mediaType"],
+                        season_number=target["seasonNumber"] or None,
+                        episode_number=target["episodeNumber"] or None,
+                    )
+                elif target["tmdbId"] and item["tmdbId"] == target["tmdbId"]:
+                    matched = _target_match(
+                        item,
+                        tmdb_id=target["tmdbId"],
+                        media_type=target["mediaType"],
+                        season_number=target["seasonNumber"] or None,
+                        episode_number=target["episodeNumber"] or None,
+                    )
+                else:
+                    continue
+                if not matched:
+                    continue
+                counts["total"] += 1
+                scope = str(matched.get("episodeMatchState") or "")
+                if scope == "exact":
+                    counts["exactEpisode"] += 1
+                elif scope == "range":
+                    counts["multiEpisode"] += 1
+                elif scope == "season_pack":
+                    counts["seasonPack"] += 1
+                elif target["mediaType"] == "tv" and target["episodeNumber"]:
+                    counts["scopePending"] += 1
+        return empty
 
     def list_unidentified_items(self, limit=50):
         limit = max(1, min(int(limit or 50), 200))
@@ -2017,6 +2144,8 @@ class PrivateRssRepository:
                 state_parts.append("group_state<>'needs_cleanup'")
             elif group_scope == "cleanup":
                 state_parts.append("group_state='needs_cleanup'")
+            elif group_scope == "decision":
+                state_parts.append("group_state IN ('needs_cleanup', 'blocked')")
             state_where = f"WHERE {' AND '.join(state_parts)}" if state_parts else ""
             state_params = tuple(state_params)
             total = int(connection.execute(
@@ -2431,6 +2560,8 @@ class PrivateRssRepository:
             filtered = [group for group in filtered if group["state"] != "needs_cleanup"]
         elif group_scope == "cleanup":
             filtered = [group for group in filtered if group["state"] == "needs_cleanup"]
+        elif group_scope == "decision":
+            filtered = [group for group in filtered if group["state"] in {"needs_cleanup", "blocked"}]
         return {
             "groups": filtered[offset:offset + limit],
             "total": len(filtered),

@@ -1140,12 +1140,43 @@ class CalendarTimelineService:
         repository = getattr(task_service, "repository", None) if task_service else None
         task_items = task_payload.get("items") or []
         event_index = _episode_event_index(task_items, repository)
+        calendar_entries = calendar.get("entries") or []
+        rss_counts = {}
+        rss_service = self.app.extensions.get("mcc_private_rss")
+        rss_repository = getattr(rss_service, "repository", None) if rss_service else None
+        count_resources = getattr(rss_repository, "resource_counts_for_targets", None)
+        if callable(count_resources):
+            try:
+                rss_counts = count_resources([{
+                    "targetId": str(index),
+                    "subscriptionId": _text(entry.get("key")),
+                    "tmdbId": _text(entry.get("tmdbId")),
+                    "mediaType": _text(entry.get("mediaType")),
+                    "seasonNumber": _integer(entry.get("seasonNumber")),
+                    "episodeNumber": _integer(entry.get("episodeNumber")),
+                } for index, entry in enumerate(calendar_entries)])
+            except Exception:
+                rss_counts = {}
         raw_entries = []
-        for entry in calendar.get("entries") or []:
+        for index, entry in enumerate(calendar_entries):
+            task = _public_task(entry, task_items, current, repository, event_index)
+            resources = rss_counts.get(str(index)) or {}
+            resource_total = max(0, _integer(resources.get("total")))
+            if resource_total and not task.get("chainId"):
+                task = {
+                    **task,
+                    "reasonCode": "RSS_CANDIDATES_AVAILABLE",
+                    "reasonText": f"已找到 {resource_total} 个 RSS 候选，尚未形成下载或入库任务链",
+                }
             value = _normalize_entry_evidence({
                 **entry,
                 "airAt": f"{entry.get('date')}T00:00:00+08:00" if entry.get("date") else "",
-                **_public_task(entry, task_items, current, repository, event_index),
+                **task,
+                "rssResourceCount": resource_total,
+                "rssExactEpisodeCount": max(0, _integer(resources.get("exactEpisode"))),
+                "rssMultiEpisodeCount": max(0, _integer(resources.get("multiEpisode"))),
+                "rssSeasonPackCount": max(0, _integer(resources.get("seasonPack"))),
+                "rssScopePendingCount": max(0, _integer(resources.get("scopePending"))),
             })
             raw_entries.append({**value, "linkState": _calendar_link_state(value)})
         excluded_before_subscription = sum(_is_pre_subscription_episode(entry) for entry in raw_entries)

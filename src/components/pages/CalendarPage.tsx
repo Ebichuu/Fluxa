@@ -878,6 +878,14 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                   <span><b>首次确认可播放</b><strong>{formatEvidenceTime(entry.firstConfirmedPlayableAt || entry.playableAt)}</strong><small>{entry.playableSource || '尚无 Emby 集级证据'}</small></span>
                 </div>
                 {entry.reasonText && <p className="calendar-detail-item__reason">{entry.reasonText}</p>}
+                {Boolean(entry.rssResourceCount) && (
+                  <p className="calendar-detail-item__resources">
+                    RSS 资源：{entry.rssExactEpisodeCount ?? 0} 个单集
+                    {Boolean(entry.rssMultiEpisodeCount) && ` · ${entry.rssMultiEpisodeCount} 个多集包`}
+                    {Boolean(entry.rssSeasonPackCount) && ` · ${entry.rssSeasonPackCount} 个整季包`}
+                    {Boolean(entry.rssScopePendingCount) && ` · ${entry.rssScopePendingCount} 个范围待确认`}
+                  </p>
+                )}
                 <footer>
                   <button
                     className="ops-action-button ops-action-button--primary"
@@ -892,7 +900,10 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
                       episodeNumber: entry.episodeNumber
                     })}
                   >
-                    <FileSearch aria-hidden="true" size={14} />{entry.episodeNumber ? '查看本集资源' : '查看作品资源'}
+                    <FileSearch aria-hidden="true" size={14} />
+                    {entry.rssResourceCount
+                      ? `查看 ${entry.rssResourceCount} 个资源`
+                      : entry.episodeNumber ? '查看本集资源' : '查看作品资源'}
                   </button>
                   <button className="ops-action-button" type="button" onClick={() => onNavigate('subscriptions', { mediaType: entry.mediaType === 'movie' ? 'movie' : 'tv', subscriptionId: entry.key, tmdbId: entry.tmdbId, title: entry.title, seasonNumber: entrySeasonNumber(entry) })}>查看追更</button>
                   <button className="ops-action-button" type="button" onClick={() => onNavigate('tasks', { mediaType: entry.mediaType === 'movie' ? 'movie' : 'tv', chainId: entry.chainId, targetKey: entry.targetKey, subscriptionId: entry.key, tmdbId: entry.tmdbId, title: entry.title, seasonNumber: entrySeasonNumber(entry) })}>查看任务</button>

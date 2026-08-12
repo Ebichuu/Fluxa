@@ -148,6 +148,16 @@ class PrivateRssParserTests(unittest.TestCase):
         self.assertIsNone(item["season_number"])
         self.assertEqual((item["episode_start"], item["episode_end"]), (70, 70))
 
+    def test_missing_category_does_not_default_unknown_content_to_movie(self):
+        self.assertEqual(
+            extract_release_scope("CCTV5 2026 World Championship 1080i"),
+            ("", None, None, None),
+        )
+        self.assertEqual(
+            extract_release_scope("Live Concert 2026 2160p", ["Other"]),
+            ("", None, None, None),
+        )
+
     def test_nxm_scope_excludes_video_codec_tokens(self):
         movie = parse_private_feed(RSS_X265_MOVIE_SAMPLE)["items"][0]
 

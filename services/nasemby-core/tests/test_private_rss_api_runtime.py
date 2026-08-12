@@ -253,6 +253,7 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             )
             grouped_scoreable = client.get("/api/v2/rss-matches?view=groups&groupScope=scoreable&limit=10")
             grouped_cleanup = client.get("/api/v2/rss-matches?view=groups&groupScope=cleanup&limit=10")
+            grouped_decision = client.get("/api/v2/rss-matches?view=groups&groupScope=decision&limit=10")
             grouped_monitoring = client.get("/api/v2/rss-matches?view=groups&groupState=monitoring_rss&limit=10")
             grouped_upgrade = client.get("/api/v2/rss-matches?view=groups&groupState=upgrade_available&limit=10")
             grouped_subscription = client.get(
@@ -301,6 +302,8 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             self.assertEqual(grouped.get_json()["counts"]["monitoringRss"], 1)
             self.assertEqual(grouped_scoreable.get_json()["total"], 1)
             self.assertEqual(grouped_cleanup.get_json()["total"], 0)
+            self.assertEqual(grouped_decision.status_code, 200)
+            self.assertEqual(grouped_decision.get_json()["total"], 0)
             self.assertEqual(grouped_monitoring.get_json()["total"], 1)
             self.assertEqual(grouped_upgrade.get_json()["total"], 0)
             self.assertEqual(grouped_subscription.get_json()["total"], 1)
@@ -557,6 +560,9 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             }, {
                 "fingerprint": "movie-target", "title": "Unrelated Movie 2026", "tmdb_id": "998877",
                 "identity_status": "identified", "media_type": "movie",
+            }, {
+                "fingerprint": "unknown-target", "title": "CCTV5 Sports Recording 2026",
+                "identity_status": "unidentified", "media_type": "",
             }])
 
             response = app.test_client().get(
@@ -569,12 +575,16 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
 
             tv_resources = app.test_client().get("/api/v2/rss-items?resourceType=tv&window=all")
             movie_resources = app.test_client().get("/api/v2/rss-items?resourceType=movie&window=all")
+            unknown_resources = app.test_client().get("/api/v2/rss-items?resourceType=unknown&window=all")
             self.assertEqual(tv_resources.status_code, 200)
             self.assertEqual(tv_resources.get_json()["total"], 1)
             self.assertEqual(tv_resources.get_json()["items"][0]["mediaType"], "tv")
             self.assertEqual(movie_resources.status_code, 200)
             self.assertEqual(movie_resources.get_json()["total"], 1)
             self.assertEqual(movie_resources.get_json()["items"][0]["mediaType"], "movie")
+            self.assertEqual(unknown_resources.status_code, 200)
+            self.assertEqual(unknown_resources.get_json()["total"], 1)
+            self.assertEqual(unknown_resources.get_json()["items"][0]["mediaType"], "")
 
             self.assertEqual(app.test_client().get("/api/v2/rss-items?mediaType=invalid").status_code, 422)
             self.assertEqual(app.test_client().get("/api/v2/rss-items?resourceType=invalid").status_code, 422)

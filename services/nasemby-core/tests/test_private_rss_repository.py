@@ -381,6 +381,9 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             }, {
                 "fingerprint": "orphan",
                 "title": "Orphan Show S01E03",
+            }, {
+                "fingerprint": "blocked",
+                "title": "Blocked Show S01E03",
             }])
             items = {item["title"]: item for item in repository.search_items(limit=10)["items"]}
             scoreable = repository.create_match(
@@ -393,23 +396,40 @@ class PrivateRssRepositoryTests(unittest.TestCase):
                 "status": "blocked",
                 "reason": "subscription_missing",
             })
+            blocked = repository.create_match(
+                items["Blocked Show S01E03"]["id"], "tv:blocked:s1", "tv:blocked:s1:s1:e3", {},
+            )
+            repository.save_match_evaluation([blocked["id"]], {
+                "status": "blocked",
+                "reason": "identity_conflict",
+            })
 
             all_groups = repository.list_candidate_groups(limit=10)
             scoreable_groups = repository.list_candidate_groups(group_scope="scoreable", limit=10)
             cleanup_groups = repository.list_candidate_groups(group_scope="cleanup", limit=10)
+            decision_groups = repository.list_candidate_groups(group_scope="decision", limit=10)
 
-            self.assertEqual(all_groups["total"], 2)
-            self.assertEqual(all_groups["counts"]["total"], 2)
-            self.assertEqual(all_groups["counts"]["scoreable_total"], 1)
+            self.assertEqual(all_groups["total"], 3)
+            self.assertEqual(all_groups["counts"]["total"], 3)
+            self.assertEqual(all_groups["counts"]["scoreable_total"], 2)
             self.assertEqual(all_groups["counts"]["needs_cleanup"], 1)
-            self.assertEqual(scoreable_groups["total"], 1)
-            self.assertEqual(scoreable_groups["groups"][0]["candidates"][0]["id"], scoreable["id"])
+            self.assertEqual(all_groups["counts"]["blocked"], 1)
+            self.assertEqual(scoreable_groups["total"], 2)
+            self.assertEqual(
+                {group["candidates"][0]["id"] for group in scoreable_groups["groups"]},
+                {scoreable["id"], blocked["id"]},
+            )
             self.assertEqual(cleanup_groups["total"], 1)
             self.assertEqual(cleanup_groups["groups"][0]["state"], "needs_cleanup")
             self.assertEqual(cleanup_groups["groups"][0]["baselineState"], "baseline_missing")
             self.assertEqual(cleanup_groups["groups"][0]["blockerCode"], "subscription_missing")
             self.assertEqual(cleanup_groups["groups"][0]["nextAction"], "review_match_cleanup")
             self.assertEqual(cleanup_groups["groups"][0]["candidates"][0]["id"], orphan["id"])
+            self.assertEqual(decision_groups["total"], 2)
+            self.assertEqual(
+                {group["state"] for group in decision_groups["groups"]},
+                {"needs_cleanup", "blocked"},
+            )
             with self.assertRaisesRegex(ValueError, "候选组范围"):
                 repository.list_candidate_groups(group_scope="unknown")
 
@@ -918,6 +938,7 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             repository.upsert_items(source["id"], [
                 {"fingerprint": "anime", "title": "ニャニャゴ S01E01", "media_type": "tv", "season_number": 1},
                 {"fingerprint": "other", "title": "完全无关的种子", "media_type": "movie"},
+                {"fingerprint": "sports", "title": "CCTV5 体育直播", "media_type": ""},
             ])
 
             japanese = repository.search_items(query="ニャニャゴ")
@@ -926,13 +947,15 @@ class PrivateRssRepositoryTests(unittest.TestCase):
 
             invalid = repository.search_items(query="🦊")
             self.assertEqual(invalid["total"], 0)
-            self.assertEqual(repository.search_items()["total"], 2)
+            self.assertEqual(repository.search_items()["total"], 3)
             self.assertEqual(repository.search_items(resource_type="tv")["total"], 1)
             self.assertEqual(repository.search_items(resource_type="tv")["items"][0]["mediaType"], "tv")
             self.assertEqual(repository.search_items(resource_type="movie")["total"], 1)
             self.assertEqual(repository.search_items(resource_type="movie")["items"][0]["mediaType"], "movie")
+            self.assertEqual(repository.search_items(resource_type="unknown")["total"], 1)
+            self.assertEqual(repository.search_items(resource_type="unknown")["items"][0]["mediaType"], "")
             with self.assertRaisesRegex(ValueError, "资源类型"):
-                repository.search_items(resource_type="unknown")
+                repository.search_items(resource_type="invalid")
 
     def test_rss_source_title_is_extracted_from_description_and_searchable(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -993,6 +1016,61 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             )
             self.assertEqual(wrong_scope["total"], 1)
             self.assertEqual(wrong_scope["items"][0]["seasonNumber"], 2)
+
+    def test_resource_counts_for_calendar_target_separates_episode_and_season_pack(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "exact-episode",
+                "title": "Calendar Show S02E09",
+                "tmdb_id": "138502",
+                "identity_status": "identified",
+                "media_type": "tv",
+                "season_number": 2,
+                "episode_start": 9,
+                "episode_end": 9,
+            }, {
+                "fingerprint": "multi-episode",
+                "title": "Calendar Show S02E08-E10",
+                "tmdb_id": "138502",
+                "identity_status": "identified",
+                "media_type": "tv",
+                "season_number": 2,
+                "episode_start": 8,
+                "episode_end": 10,
+            }, {
+                "fingerprint": "season-pack",
+                "title": "Calendar Show S02 Complete",
+                "tmdb_id": "138502",
+                "identity_status": "identified",
+                "media_type": "tv",
+                "season_number": 2,
+            }, {
+                "fingerprint": "wrong-season",
+                "title": "Calendar Show S01 Complete",
+                "tmdb_id": "138502",
+                "identity_status": "identified",
+                "media_type": "tv",
+                "season_number": 1,
+            }])
+
+            counts = repository.resource_counts_for_targets([{
+                "targetId": "episode-9",
+                "subscriptionId": "sub-calendar",
+                "tmdbId": "138502",
+                "mediaType": "tv",
+                "seasonNumber": 2,
+                "episodeNumber": 9,
+            }])["episode-9"]
+
+            self.assertEqual(counts, {
+                "total": 3,
+                "exactEpisode": 1,
+                "multiEpisode": 1,
+                "seasonPack": 1,
+                "scopePending": 0,
+            })
 
     def test_tv_targeted_search_allows_no_year_and_unknown_season_without_conflicts(self):
         with tempfile.TemporaryDirectory() as directory:
