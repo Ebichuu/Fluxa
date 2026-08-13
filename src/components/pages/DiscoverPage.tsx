@@ -644,7 +644,13 @@ function reconciliationBadge(item: SubscriptionItem) {
       : item.torraFact?.state === 'active'
         ? { label: 'Torra 获取中', tone: 'ok', title: item.torraFact.reasonText || 'Torra 正在获取目标' }
         : item.torraFact?.state === 'succeeded'
-          ? { label: '获取目标已满足', tone: 'ok', title: 'Torra 已满足获取目标，仍需确认 Emby 可播放' }
+          ? {
+            label: '获取目标已满足',
+            tone: 'ok',
+            title: item.outcomeState === 'playable'
+              ? 'Torra 已满足获取目标；Emby 已确认目标集可播放'
+              : 'Torra 已满足获取目标，仍需确认 Emby 可播放'
+          }
           : item.reconciliationState === 'linked' || item.reconciliationState === 'only_torra' || item.torra?.status === 'linked'
             ? { label: '已在 Torra', tone: 'muted', title: 'Torra 已保存该追更，当前没有活动获取证据' }
             : null;

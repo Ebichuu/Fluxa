@@ -110,6 +110,118 @@ class ProblemGroupRuntimeTests(unittest.TestCase):
         self.assertEqual(group["reasonCode"], "SYMEDIA_LIBRARY_FAILED")
         self.assertEqual(group["reasonText"], "Symedia 作品识别失败")
 
+    def test_episode_falls_back_to_exact_target_key(self):
+        item = problem_item("target-key-fallback", season=1, episode=None)
+        item["targetKey"] = "tv:tmdb:123:season:1:episode:43"
+
+        group = derive_problem_groups([item])["groups"][0]
+
+        self.assertEqual(group["episodeNumbers"], [43])
+        self.assertEqual(group["members"][0]["episodeNumber"], 43)
+
+    def test_episode_falls_back_to_single_same_season_pipeline_unit(self):
+        item = problem_item("fact-fallback", season=1, episode=None)
+        item["targetKey"] = "tv:tmdb:123:season:1"
+        item["pipelineFacts"] = [{
+            "stage": "emby",
+            "scope": "season",
+            "unitKey": "tv:123:season:1",
+            "units": [{
+                "scope": "episode",
+                "unitKey": "tv:123:s1:e6",
+            }],
+        }]
+
+        group = derive_problem_groups([item])["groups"][0]
+
+        self.assertEqual(group["episodeNumbers"], [6])
+        self.assertEqual(group["members"][0]["episodeNumber"], 6)
+
+    def test_pipeline_fact_fallback_prefers_the_explicit_target_unit(self):
+        item = problem_item("target-unit-fallback", season=1, episode=None)
+        item["targetKey"] = "tv:tmdb:123:season:1"
+        item["targetUnitKey"] = "episode:6"
+        item["pipelineFacts"] = [{
+            "stage": "emby",
+            "scope": "season",
+            "units": [
+                {"scope": "episode", "unitKey": "episode:6"},
+                {"scope": "episode", "unitKey": "episode:7"},
+            ],
+        }]
+
+        group = derive_problem_groups([item])["groups"][0]
+
+        self.assertEqual(group["episodeNumbers"], [6])
+        self.assertEqual(group["members"][0]["episodeNumber"], 6)
+
+    def test_episode_falls_back_to_exact_owned_episode_evidence(self):
+        item = problem_item("evidence-fallback", season=1, episode=None)
+        item["targetKey"] = "tv:tmdb:123:season:1"
+        item["episodeEvidence"] = [{
+            "seasonNumber": 1,
+            "episodeStart": 6,
+            "episodeEnd": 6,
+            "ownerScope": "episode",
+            "ownerTargetKey": "tv:tmdb:123:season:1:episode:6",
+        }]
+
+        group = derive_problem_groups([item])["groups"][0]
+
+        self.assertEqual(group["episodeNumbers"], [6])
+        self.assertEqual(group["members"][0]["episodeNumber"], 6)
+
+    def test_season_wide_or_ambiguous_facts_do_not_guess_an_episode(self):
+        item = problem_item("broad-facts", season=1, episode=None)
+        item["targetKey"] = "tv:tmdb:123:season:1"
+        item["pipelineFacts"] = [{
+            "stage": "emby",
+            "scope": "season",
+            "unitKey": "tv:123:season:1",
+            "units": [
+                {"scope": "episode", "unitKey": "tv:123:s1:e6"},
+                {"scope": "episode", "unitKey": "tv:123:s1:e7"},
+                {"scope": "episode", "unitKey": "tv:123:s2:e8"},
+            ],
+        }]
+
+        group = derive_problem_groups([item])["groups"][0]
+
+        self.assertEqual(group["episodeNumbers"], [])
+        self.assertEqual(group["members"][0]["episodeNumber"], 0)
+
+    def test_range_or_unowned_episode_evidence_does_not_guess_an_episode(self):
+        item = problem_item("broad-evidence", season=1, episode=None)
+        item["targetKey"] = "tv:tmdb:123:season:1"
+        item["episodeEvidence"] = [
+            {
+                "seasonNumber": 1,
+                "episodeStart": 6,
+                "episodeEnd": 7,
+                "ownerScope": "season",
+                "ownerTargetKey": "tv:tmdb:123:season:1",
+            },
+            {
+                "seasonNumber": 1,
+                "episodeStart": 8,
+                "episodeEnd": 8,
+                "ownerScope": "season",
+                "ownerTargetKey": "tv:tmdb:123:season:1",
+            },
+            {
+                "seasonNumber": 1,
+                "episodeStart": 9,
+                "episodeEnd": 9,
+                "ownerScope": "episode",
+                "ownerTargetKey": "tv:tmdb:123:season:2:episode:9",
+            },
+        ]
+
+        group = derive_problem_groups([item])["groups"][0]
+
+        self.assertEqual(group["episodeNumbers"], [])
+        self.assertEqual(group["members"][0]["episodeNumber"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

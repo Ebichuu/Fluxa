@@ -4,8 +4,19 @@
 阶段或历史事件。调用方可以把同一份投影用于首页和任务中心。
 """
 
+from __future__ import annotations
+
 import hashlib
+import re
 import unicodedata
+
+
+_TARGET_EPISODE_PATTERN = re.compile(r":season:(\d+):episode:(\d+)$")
+_PIPELINE_UNIT_EPISODE_PATTERNS = (
+    re.compile(r":season:(\d+):episode:(\d+)$"),
+    re.compile(r":s(\d+):e(\d+)$", re.IGNORECASE),
+)
+_EPISODE_ONLY_UNIT_PATTERN = re.compile(r"^episode:(\d+)$", re.IGNORECASE)
 
 
 def _integer(value):
@@ -40,6 +51,83 @@ def _mechanical_title_key(value) -> str:
 
 def _resource_ref(item: dict) -> str:
     return str(item.get("chainId") or item.get("targetKey") or item.get("id") or "").strip()
+
+
+def _episode_from_target_key(item: dict) -> int | None:
+    match = _TARGET_EPISODE_PATTERN.search(str(item.get("targetKey") or ""))
+    if not match:
+        return None
+    item_season = _positive_integer(item.get("seasonNumber"))
+    target_season = _positive_integer(match.group(1))
+    if item_season is None or target_season != item_season:
+        return None
+    return _positive_integer(match.group(2))
+
+
+def _episode_from_unit_key(value, season: int) -> int | None:
+    unit_key = str(value or "").strip()
+    if not unit_key:
+        return None
+    for pattern in _PIPELINE_UNIT_EPISODE_PATTERNS:
+        match = pattern.search(unit_key)
+        if match:
+            return (
+                _positive_integer(match.group(2))
+                if _positive_integer(match.group(1)) == season
+                else None
+            )
+    match = _EPISODE_ONLY_UNIT_PATTERN.fullmatch(unit_key)
+    return _positive_integer(match.group(1)) if match else None
+
+
+def _episode_from_pipeline_facts(item: dict) -> int | None:
+    season = _positive_integer(item.get("seasonNumber"))
+    if season is None:
+        return None
+    episodes = set()
+    target_unit_key = str(item.get("targetUnitKey") or "").strip()
+    for fact in item.get("pipelineFacts") or []:
+        if not isinstance(fact, dict):
+            continue
+        candidates = [fact, *(fact.get("units") or [])]
+        for candidate in candidates:
+            if not isinstance(candidate, dict) or str(candidate.get("scope") or "") != "episode":
+                continue
+            unit_key = str(candidate.get("unitKey") or "").strip()
+            if target_unit_key and unit_key and unit_key != target_unit_key:
+                continue
+            episode = _episode_from_unit_key(unit_key, season)
+            if episode is not None:
+                episodes.add(episode)
+    return next(iter(episodes)) if len(episodes) == 1 else None
+
+
+def _episode_from_episode_evidence(item: dict) -> int | None:
+    season = _positive_integer(item.get("seasonNumber"))
+    if season is None:
+        return None
+    episodes = set()
+    for row in item.get("episodeEvidence") or []:
+        if not isinstance(row, dict) or _positive_integer(row.get("seasonNumber")) != season:
+            continue
+        start = _positive_integer(row.get("episodeStart"))
+        end = _positive_integer(row.get("episodeEnd"))
+        owner_scope = str(row.get("ownerScope") or "").strip()
+        owner_target = str(row.get("ownerTargetKey") or "").strip()
+        owner_episode = _episode_from_unit_key(owner_target, season)
+        exact_owner = owner_episode == start if owner_target else owner_scope == "episode"
+        if start is not None and end == start and exact_owner:
+            episodes.add(start)
+    return next(iter(episodes)) if len(episodes) == 1 else None
+
+
+def _episode_number(item: dict) -> int | None:
+    return (
+        _positive_integer(item.get("episodeNumber"))
+        or _episode_from_target_key(item)
+        or _episode_from_pipeline_facts(item)
+        or _episode_from_episode_evidence(item)
+    )
 
 
 def _pipeline_outcome(item: dict):
@@ -106,7 +194,7 @@ def _group_key(item: dict):
 
 
 def _member_sort_key(item: dict):
-    episode = _positive_integer(item.get("episodeNumber"))
+    episode = _episode_number(item)
     return (
         episode if episode is not None else 10**9,
         str(item.get("title") or ""),
@@ -142,7 +230,7 @@ def derive_problem_groups(items) -> dict:
         stage, reason_code = _stage_reason(primary)
         episodes = sorted({
             episode for member in ordered_members
-            if (episode := _positive_integer(member.get("episodeNumber"))) is not None
+            if (episode := _episode_number(member)) is not None
         })
         groups.append({
             "groupId": _group_id(key),
@@ -164,7 +252,7 @@ def derive_problem_groups(items) -> dict:
                 "mediaType": str(member.get("mediaType") or "unknown"),
                 "tmdbId": str(member.get("tmdbId") or ""),
                 "seasonNumber": _positive_integer(member.get("seasonNumber")) or 0,
-                "episodeNumber": _positive_integer(member.get("episodeNumber")) or 0,
+                "episodeNumber": _episode_number(member) or 0,
                 "identityState": str(member.get("identityState") or "unidentified"),
                 "reasonCode": str(member.get("reasonCode") or reason_code),
                 "reasonText": str(member.get("reasonText") or ""),
