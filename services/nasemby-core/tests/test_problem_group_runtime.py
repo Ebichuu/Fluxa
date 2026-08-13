@@ -171,6 +171,111 @@ class ProblemGroupRuntimeTests(unittest.TestCase):
         self.assertEqual(group["episodeNumbers"], [6])
         self.assertEqual(group["members"][0]["episodeNumber"], 6)
 
+    def test_episode_falls_back_to_current_failed_file_evidence(self):
+        item = problem_item("unowned-current-file", season=1, episode=None)
+        item["targetKey"] = "tv:title:bleach:season:1"
+        item["pipelineFacts"] = [{
+            "stage": "symedia",
+            "state": "failed",
+            "scope": "file",
+            "evidence": "verified",
+            "sourceRef": "62851",
+            "resultRef": "62851",
+            "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+        }]
+        item["episodeEvidence"] = [{
+            "seasonNumber": 1,
+            "episodeStart": 43,
+            "episodeEnd": 43,
+            "stage": "library",
+            "status": "blocked",
+            "artifactKey": "artifact:symedia:62851",
+            "ownerScope": "unlinked",
+            "ownerTargetKey": "",
+        }]
+
+        group = derive_problem_groups([item])["groups"][0]
+
+        self.assertEqual(group["episodeNumbers"], [43])
+        self.assertEqual(group["members"][0]["episodeNumber"], 43)
+
+    def test_current_failed_file_selects_latest_episode_from_history(self):
+        item = problem_item("unowned-history", season=1, episode=None)
+        item["targetKey"] = "tv:title:my-show:season:1"
+        item["pipelineFacts"] = [{
+            "stage": "symedia",
+            "state": "failed",
+            "scope": "file",
+            "evidence": "verified",
+            "sourceRef": "62933",
+            "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+            "units": [{
+                "unitKey": "62933",
+                "state": "failed",
+                "scope": "file",
+                "evidence": "verified",
+                "sourceRef": "62933",
+                "resultRef": "62933",
+            }],
+        }]
+        item["episodeEvidence"] = [
+            {
+                "seasonNumber": 1,
+                "episodeStart": episode,
+                "episodeEnd": episode,
+                "stage": "library",
+                "status": "blocked",
+                "artifactKey": f"artifact:symedia:{artifact}",
+                "ownerScope": "unlinked",
+                "ownerTargetKey": "",
+            }
+            for episode, artifact in ((4, "62724"), (5, "62801"), (6, "62933"))
+        ]
+
+        group = derive_problem_groups([item])["groups"][0]
+
+        self.assertEqual(group["episodeNumbers"], [6])
+        self.assertEqual(group["members"][0]["episodeNumber"], 6)
+
+    def test_multiple_current_failed_files_do_not_guess_an_episode(self):
+        item = problem_item("ambiguous-current-files", season=1, episode=None)
+        item["targetKey"] = "tv:title:my-show:season:1"
+        item["pipelineFacts"] = [{
+            "stage": "symedia",
+            "state": "failed",
+            "scope": "file",
+            "evidence": "verified",
+            "reasonCode": "SYMEDIA_LIBRARY_FAILED",
+            "units": [
+                {
+                    "unitKey": artifact,
+                    "state": "failed",
+                    "scope": "file",
+                    "evidence": "verified",
+                    "sourceRef": artifact,
+                }
+                for artifact in ("62933", "62934")
+            ],
+        }]
+        item["episodeEvidence"] = [
+            {
+                "seasonNumber": 1,
+                "episodeStart": episode,
+                "episodeEnd": episode,
+                "stage": "library",
+                "status": "blocked",
+                "artifactKey": f"artifact:symedia:{artifact}",
+                "ownerScope": "unlinked",
+                "ownerTargetKey": "",
+            }
+            for episode, artifact in ((6, "62933"), (7, "62934"))
+        ]
+
+        group = derive_problem_groups([item])["groups"][0]
+
+        self.assertEqual(group["episodeNumbers"], [])
+        self.assertEqual(group["members"][0]["episodeNumber"], 0)
+
     def test_season_wide_or_ambiguous_facts_do_not_guess_an_episode(self):
         item = problem_item("broad-facts", season=1, episode=None)
         item["targetKey"] = "tv:tmdb:123:season:1"

@@ -102,6 +102,70 @@ def _episode_from_pipeline_facts(item: dict) -> int | None:
     return next(iter(episodes)) if len(episodes) == 1 else None
 
 
+def _artifact_identity(value) -> str:
+    identity = str(value or "").strip()
+    while True:
+        previous = identity
+        for prefix in ("artifact:", "symedia:"):
+            if identity.lower().startswith(prefix):
+                identity = identity[len(prefix):]
+        if identity == previous:
+            return identity
+
+
+def _episode_from_selected_pipeline_evidence(item: dict) -> int | None:
+    """Use unowned Symedia evidence only when the selected failed file identifies it exactly."""
+    season = _positive_integer(item.get("seasonNumber"))
+    outcome = _pipeline_outcome(item)
+    stage = str((outcome or {}).get("stage") or "").strip().lower()
+    if season is None or stage != "symedia":
+        return None
+
+    selected_refs = set()
+    for fact in item.get("pipelineFacts") or []:
+        if (
+            not isinstance(fact, dict)
+            or str(fact.get("stage") or "").strip().lower() != stage
+            or str(fact.get("state") or "").strip().lower() != "failed"
+            or str(fact.get("evidence") or "").strip().lower() != "verified"
+        ):
+            continue
+        candidates = [fact, *(fact.get("units") or [])]
+        failed_candidates = [
+            candidate
+            for candidate in candidates
+            if isinstance(candidate, dict)
+            and str(candidate.get("state") or fact.get("state") or "").strip().lower() == "failed"
+        ]
+        for candidate in failed_candidates:
+            for key in ("sourceRef", "resultRef", "unitKey"):
+                identity = _artifact_identity(candidate.get(key))
+                if identity:
+                    selected_refs.add(identity)
+
+    # More than one selected file means the current failure does not identify a single episode.
+    if len(selected_refs) != 1:
+        return None
+
+    episodes = set()
+    selected_ref = next(iter(selected_refs))
+    compatible_stages = {stage, "library" if stage == "symedia" else stage}
+    for row in item.get("episodeEvidence") or []:
+        if (
+            not isinstance(row, dict)
+            or _positive_integer(row.get("seasonNumber")) != season
+            or str(row.get("stage") or "").strip().lower() not in compatible_stages
+            or str(row.get("status") or "").strip().lower() != "blocked"
+            or _artifact_identity(row.get("artifactKey")) != selected_ref
+        ):
+            continue
+        start = _positive_integer(row.get("episodeStart"))
+        end = _positive_integer(row.get("episodeEnd"))
+        if start is not None and end == start:
+            episodes.add(start)
+    return next(iter(episodes)) if len(episodes) == 1 else None
+
+
 def _episode_from_episode_evidence(item: dict) -> int | None:
     season = _positive_integer(item.get("seasonNumber"))
     if season is None:
@@ -126,6 +190,7 @@ def _episode_number(item: dict) -> int | None:
         _positive_integer(item.get("episodeNumber"))
         or _episode_from_target_key(item)
         or _episode_from_pipeline_facts(item)
+        or _episode_from_selected_pipeline_evidence(item)
         or _episode_from_episode_evidence(item)
     )
 
