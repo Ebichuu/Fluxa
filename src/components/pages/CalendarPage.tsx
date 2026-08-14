@@ -660,6 +660,7 @@ export function CalendarPage({ onNavigate }: CalendarPageProps) {
           <div><Library size={15} /><span>整理入库</span><strong>{isLoading ? '—' : counts.library}</strong></div>
           <div className={counts.missing ? 'is-alert' : undefined}><ListChecks size={15} /><span>逾期未获取</span><strong>{isLoading ? '—' : counts.missing}</strong></div>
           <div className="is-protected"><ShieldCheck size={15} /><span>正常保护</span><strong>{isLoading ? '—' : counts.protected}</strong></div>
+          <div className="is-faint"><CircleHelp size={15} /><span>暂未确认</span><strong>{isLoading ? '—' : counts.unknown}</strong></div>
           <div className="is-faint"><CircleHelp size={15} /><span>状态未关联</span><strong>{isLoading ? '—' : entryTotals.unlinked}</strong></div>
           <small className="ops-calendar-stat-scope">已可播放统计：{statisticScopeText(statisticsMeta?.playable, '当前日历查询')}</small>
         </div>

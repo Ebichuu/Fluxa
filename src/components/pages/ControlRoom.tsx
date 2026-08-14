@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Clapperboard, Download, ExternalLink, HeartPulse, RefreshCcw, Rss, ShieldCheck, Wrench } from 'lucide-react';
 import { getEmbyOverview, getEmbyRefreshStatus, getIntegrationSummary, getQbittorrentSummary, getSubscriptionCapabilities, getSymediaSummary, getTorraSummary, triggerEmbyRefresh } from '../../services/api';
 import type { EmbyOverview, EmbyRefreshStatus } from '../../types/emby';
@@ -131,8 +131,8 @@ function torraScheduleText(schedule: TorraSearchSchedule | null, state: 'confirm
   return schedule.nextRunAt ? `${status} · 下次 ${formatTimeAgo(schedule.nextRunAt)}` : status;
 }
 
-export function ControlRoom() {
-  const [focusedService, setFocusedService] = useState<ServiceModel['id']>('torra');
+export function ControlRoom({ initialService = 'torra' }: { initialService?: ServiceModel['id'] }) {
+  const [focusedService, setFocusedService] = useState<ServiceModel['id']>(initialService);
   const [qb, setQb] = useState<QbittorrentSummary | null>(null);
   const [emby, setEmby] = useState<EmbyOverview | null>(null);
   const [torra, setTorra] = useState<TorraSummary | null>(null);
@@ -147,6 +147,10 @@ export function ControlRoom() {
   const [servicesRefreshBusy, setServicesRefreshBusy] = useState(false);
   const [servicesRefreshFeedback, setServicesRefreshFeedback] = useState('');
   const [servicesLoaded, setServicesLoaded] = useState(false);
+
+  useEffect(() => {
+    setFocusedService(initialService);
+  }, [initialService]);
 
   const refreshAll = async (signal: AbortSignal, reportResult = false) => {
     const options = { signal };

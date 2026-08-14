@@ -10,6 +10,7 @@ export type ThemeMode = 'dark' | 'light';
 
 export interface TaskNavigationTarget {
   mediaType?: 'movie' | 'tv';
+  service?: 'torra' | 'qb' | 'symedia' | 'emby';
   resourceView?: 'new' | 'identify' | 'scoring' | 'upgrades' | 'cleanup';
   chainId?: string;
   targetKey?: string;

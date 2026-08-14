@@ -70,13 +70,17 @@ export function readNavigation(location: Location = window.location): Navigation
   const target: TaskNavigationTarget | null = page === 'media' && mediaRoute ? {
     mediaType: mediaRoute[1] as 'movie' | 'tv',
     tmdbId: mediaRoute[2]
-  } : ['tasks', 'subscriptions', 'rss-library'].includes(page) && (
+  } : ['control', 'tasks', 'subscriptions', 'rss-library'].includes(page) && (
     query.has('chainId') || query.has('targetKey') || query.has('subscriptionId') || query.has('tmdbId') || query.has('title')
     || query.has('outcomeState') || query.has('userState') || query.has('completedDate') || query.has('advanced') || query.has('identityState')
     || query.has('systemIssue') || query.has('archivedDate') || query.get('qbActive') === '1'
     || query.has('view') || query.has('episodeNumber') || query.has('matchId') || query.has('publishedDate') || query.has('window')
+    || query.has('service')
   ) ? {
     mediaType: query.get('mediaType') === 'movie' ? 'movie' : query.get('mediaType') === 'tv' ? 'tv' : undefined,
+    service: ['torra', 'qb', 'symedia', 'emby'].includes(query.get('service') || '')
+      ? query.get('service') as TaskNavigationTarget['service']
+      : undefined,
     resourceView: ['new', 'identify', 'scoring', 'upgrades', 'cleanup'].includes(query.get('view') || '')
       ? query.get('view') as TaskNavigationTarget['resourceView']
       : undefined,
@@ -121,6 +125,7 @@ export function pathForNavigation(page: PageId, target?: TaskNavigationTarget | 
   }
   const route = canonicalRoutes[page];
   const query = new URLSearchParams();
+  if (page === 'control' && target?.service) query.set('service', target.service);
   if (page === 'rss-library' && target) {
     if (target.resourceView && target.resourceView !== 'new') query.set('view', target.resourceView);
     if (target.subscriptionId) query.set('subscriptionId', target.subscriptionId);

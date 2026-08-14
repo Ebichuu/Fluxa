@@ -671,7 +671,12 @@ class TorraReadClient:
                     "total": len(rows),
                     "active": sum(row.get("enabled") is not False and row.get("completed") is not True for row in rows),
                     "completed": sum(row.get("completed") is True for row in rows),
-                    "running": sum(row.get("is_running") is True for row in rows),
+                    "running": sum(
+                        row.get("is_running") is True
+                        and row.get("enabled") is not False
+                        and row.get("completed") is not True
+                        for row in rows
+                    ),
                 },
                 "searchAutomation": self.get_search_automation_summary(len(rows)),
             }

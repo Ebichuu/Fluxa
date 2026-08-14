@@ -119,8 +119,9 @@ class TorraReadRuntimeContractTests(unittest.TestCase):
 
         rows = [
             {"id": "active", "enabled": True, "completed": False},
-            {"id": "completed", "enabled": True, "completed": True},
+            {"id": "completed", "enabled": True, "completed": True, "is_running": True},
             {"id": "disabled", "enabled": False, "completed": False, "is_running": True},
+            {"id": "running", "enabled": True, "completed": False, "is_running": True},
         ]
         session = FakeSession([
             FakeResponse(payload={"data": {"subscriptions": rows}}),
@@ -140,7 +141,7 @@ class TorraReadRuntimeContractTests(unittest.TestCase):
             "connected": True,
             "webUrl": "http://torra.example.test:9029",
             "lastCheckedAt": "2026-07-16T11:00:00.000Z",
-            "counts": {"total": 3, "active": 1, "completed": 1, "running": 1},
+            "counts": {"total": 4, "active": 2, "completed": 1, "running": 1},
             "searchAutomation": {
                 "capabilityState": "unsupported",
                 "subscriptionModes": {
@@ -148,7 +149,7 @@ class TorraReadRuntimeContractTests(unittest.TestCase):
                     "counts": {
                         "rssPreferred": None,
                         "automaticSearch": None,
-                        "unknown": 3,
+                        "unknown": 4,
                     },
                     "reasonCode": "TORRA_SUBSCRIPTION_MODE_NOT_EXPOSED",
                     "reasonText": "Torra 未提供可确认的订阅级搜索模式",
@@ -166,7 +167,7 @@ class TorraReadRuntimeContractTests(unittest.TestCase):
                     "state": "blocked",
                     "canApply": False,
                     "eligibleSubscriptions": 0,
-                    "blockedSubscriptions": 3,
+                    "blockedSubscriptions": 4,
                     "reasonCode": "TORRA_SUBSCRIPTION_MODE_NOT_EXPOSED",
                     "reasonText": "无法安全确认哪些订阅可调整为 RSS 优先",
                 },

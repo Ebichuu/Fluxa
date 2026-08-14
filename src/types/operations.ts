@@ -23,5 +23,7 @@ export interface ActivityLogItem {
 
 export interface ActivityLogResponse {
   ok: boolean;
+  view?: 'important' | 'raw';
   logs: ActivityLogItem[];
+  hasMore: boolean;
 }

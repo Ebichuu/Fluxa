@@ -191,7 +191,7 @@
 .ops-calendar-stats {
   align-self: end;
   display: grid;
-  grid-template-columns: repeat(7, minmax(72px, 1fr));
+  grid-template-columns: repeat(8, minmax(72px, 1fr));
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.075);
   border-radius: 22px;

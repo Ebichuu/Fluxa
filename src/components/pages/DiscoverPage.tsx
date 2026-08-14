@@ -734,7 +734,7 @@ function subscriptionRecommendedAction(item: SubscriptionItem) {
     return {
       reason: '作品或季集身份尚未确认',
       impact: '候选和后续任务不会自动绑定',
-      label: '选择作品和季'
+      label: '查看任务与身份详情'
     };
   }
   return null;

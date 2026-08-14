@@ -1389,7 +1389,7 @@ class TaskChainV2Service:
                 "task",
                 "manual_resolution_added",
                 "success",
-                f"已手动标记处理：{str(item.get('title') or '未命名媒体')}",
+                f"已标记为外部处理：{str(item.get('title') or '未命名媒体')}",
                 chain_id=canonical,
                 target_key=item.get("targetKey"),
                 stage=outcome.get("stage"),

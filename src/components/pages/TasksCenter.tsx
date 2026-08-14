@@ -43,7 +43,7 @@ const activityActionLabels: Record<string, string> = {
   torra_sync_run: '状态同步',
   torra_push_v2: '订阅推送',
   private_rss_request: '资源中心操作',
-  manual_resolution_added: '手动标记已处理',
+  manual_resolution_added: '标记已在外部处理',
   manual_resolution_restored: '恢复任务告警'
 };
 
@@ -177,12 +177,29 @@ function guidanceIcon(health: TaskChainHealthState) {
   return <Clock3 aria-hidden="true" size={16} />;
 }
 
-function targetLabel(item: TaskChainListItem | TaskChainItem) {
+type TaskTargetIdentity = Pick<TaskChainItem, 'mediaType' | 'seasonNumber' | 'targetKey'> & { episodeNumber?: number };
+
+function targetLabel(item: TaskTargetIdentity) {
   const episode = item.targetKey?.match(/:episode:(\d+)/)?.[1];
   const season = item.targetKey?.match(/:season:(\d+)/)?.[1] || (item.seasonNumber > 0 ? String(item.seasonNumber) : '');
   if (episode && season) return `S${season.padStart(2, '0')}E${episode.padStart(2, '0')}`;
   if (season) return `S${season.padStart(2, '0')}`;
   return item.mediaType === 'movie' ? '整部电影' : '整部剧集';
+}
+
+function currentFailureTarget(item: TaskTargetIdentity) {
+  if (item.mediaType !== 'tv' || !item.episodeNumber || item.episodeNumber <= 0) return '';
+  const targetEpisode = Number(item.targetKey?.match(/:episode:(\d+)/)?.[1] || 0);
+  if (targetEpisode === item.episodeNumber) return '';
+  const season = Number(item.targetKey?.match(/:season:(\d+)/)?.[1] || item.seasonNumber || 0);
+  if (season <= 0) return '';
+  return `S${String(season).padStart(2, '0')}E${String(item.episodeNumber).padStart(2, '0')}`;
+}
+
+function isSymediaIssue(item: TaskChainListItem | TaskChainItem) {
+  return item.pipelineOutcome?.stage === 'symedia'
+    || item.residualIssues?.some((issue) => issue.stage === 'symedia')
+    || item.reasonCode?.startsWith('SYMEDIA_');
 }
 
 function problemGroupTarget(group: TaskProblemGroup) {
@@ -338,6 +355,9 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   ));
   const [activities, setActivities] = useState<ActivityLogItem[]>([]);
   const [activityError, setActivityError] = useState('');
+  const [activityLimit, setActivityLimit] = useState(activityView === 'raw' ? 30 : 20);
+  const [activityHasMore, setActivityHasMore] = useState(false);
+  const [activityLoadingMore, setActivityLoadingMore] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(Boolean(target?.advanced));
   const [completedDate, setCompletedDate] = useState(target?.completedDate ?? '');
   const [archivedDate, setArchivedDate] = useState(target?.archivedDate ?? '');
@@ -544,29 +564,52 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
 
   const loadActivities = async (signal: AbortSignal) => {
     try {
-      const payload = await getActivityLogs(activityCategory, { signal, view: activityView });
+      const payload = await getActivityLogs(activityCategory, {
+        signal,
+        view: activityView,
+        limit: activityLimit
+      });
       if (!signal.aborted) {
         setActivities(payload.logs);
+        setActivityHasMore(payload.hasMore);
         setActivityError('');
       }
     } catch {
       if (!signal.aborted) setActivityError('活动日志暂不可用');
+    } finally {
+      if (!signal.aborted) setActivityLoadingMore(false);
     }
   };
 
   usePolling(loadActivities, 30000, {
     enabled: !qbActiveView,
-    key: `${activityCategory}:${activityView}:${qbActiveView}`
+    key: `${activityCategory}:${activityView}:${activityLimit}:${qbActiveView}`
   });
 
   const changeActivityCategory = (key: string) => {
+    if (key === activityCategory) return;
+    setActivities([]);
+    setActivityHasMore(false);
+    setActivityLoadingMore(false);
+    setActivityLimit(activityView === 'raw' ? 30 : 20);
     setActivityCategory(key);
     writeUrlQuery({ activityCategory: key || null }, 'replace');
   };
 
   const changeActivityView = (view: 'important' | 'raw') => {
+    if (view === activityView) return;
+    setActivities([]);
+    setActivityHasMore(false);
+    setActivityLoadingMore(false);
+    setActivityLimit(view === 'raw' ? 30 : 20);
     setActivityView(view);
     writeUrlQuery({ activityView: view === 'raw' ? 'raw' : null }, 'replace');
+  };
+
+  const loadMoreActivities = () => {
+    if (!activityHasMore || activityLoadingMore) return;
+    setActivityLoadingMore(true);
+    setActivityLimit((current) => current + (activityView === 'raw' ? 30 : 20));
   };
 
   const items = chain?.items ?? [];
@@ -853,13 +896,11 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
   ) => {
     const chainId = item.chainId || '';
     if (!chainId) return;
-    const targetText = item.mediaType === 'movie'
-      ? '整部电影'
-      : item.episodeNumber && item.episodeNumber > 0
-        ? `S${String(item.seasonNumber).padStart(2, '0')}E${String(item.episodeNumber).padStart(2, '0')}`
-        : item.seasonNumber > 0
-          ? `第 ${item.seasonNumber} 季`
-          : '当前媒体目标';
+    const chainTarget = targetLabel(item);
+    const failedFileTarget = currentFailureTarget(item);
+    const targetText = failedFileTarget
+      ? `链路 ${chainTarget} · 当前失败文件 ${failedFileTarget}`
+      : chainTarget;
     const manualResolution = 'manualResolution' in item ? item.manualResolution : undefined;
     setPendingManualResolution({
       mode,
@@ -880,7 +921,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
     setActionBusy(`manual-resolution:${pending.chainId}`);
     setActionFeedback({
       tone: 'success',
-      message: pending.mode === 'resolve' ? '正在保存人工处理记录…' : '正在恢复任务告警…'
+      message: pending.mode === 'resolve' ? '正在保存外部处理记录…' : '正在恢复任务告警…'
     });
     try {
       const result = pending.mode === 'resolve'
@@ -891,7 +932,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
       setActionFeedback({
         tone: 'success',
         message: pending.mode === 'resolve'
-          ? result.changed ? `已将「${pending.title}」标记为手动处理` : `「${pending.title}」已经标记为手动处理`
+          ? result.changed ? `已将「${pending.title}」记录为外部已处理` : `「${pending.title}」已经记录为外部已处理`
           : result.changed ? `已恢复「${pending.title}」的任务告警` : `「${pending.title}」当前没有人工处理记录`
       });
       await loadChain(new AbortController().signal, 0, false, false, true);
@@ -1157,36 +1198,44 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                   </button>
                   {expanded && (
                     <div className="ops-problem-group__members">
-                      {group.members.map((member) => (
-                        <div className="ops-problem-group__member" key={member.chainId}>
-                          <span>
-                            <strong>{member.mediaType === 'movie' ? '整部电影' : member.episodeNumber > 0 ? `S${String(member.seasonNumber).padStart(2, '0')}E${String(member.episodeNumber).padStart(2, '0')}` : problemGroupTarget(group)}</strong>
-                            <small>{member.resultText || member.userReasonText || member.reasonText || group.reasonText}</small>
-                          </span>
-                          <div className="ops-problem-group__member-actions">
-                            <button
-                              className="ops-action-button ops-action-button--primary"
-                              disabled={Boolean(actionBusy)}
-                              type="button"
-                              onClick={() => prepareManualResolution(member, 'resolve')}
-                            >
-                              <CheckCircle2 aria-hidden="true" size={14} />标记已处理
-                            </button>
-                            <button
-                              className="ops-action-button"
-                              type="button"
-                              onClick={() => onNavigate('tasks', {
-                                chainId: member.chainId,
-                                targetKey: member.targetKey,
-                                title: member.title,
-                                outcomeState: 'action_required'
-                              })}
-                            >
-                              查看任务<ChevronRight aria-hidden="true" size={14} />
-                            </button>
+                      {group.members.map((member) => {
+                        const failedFileTarget = currentFailureTarget(member);
+                        return (
+                          <div className="ops-problem-group__member" key={member.chainId}>
+                            <span>
+                              <strong>链路目标 {targetLabel(member)}</strong>
+                              <small>{failedFileTarget ? `当前失败文件 ${failedFileTarget} · ` : ''}{member.resultText || member.userReasonText || member.reasonText || group.reasonText}</small>
+                            </span>
+                            <div className="ops-problem-group__member-actions">
+                              <button
+                                className="ops-action-button ops-action-button--primary"
+                                type="button"
+                                onClick={() => onNavigate('tasks', {
+                                  chainId: member.chainId,
+                                  targetKey: member.targetKey,
+                                  title: member.title,
+                                  outcomeState: 'action_required'
+                                })}
+                              >
+                                查看任务<ChevronRight aria-hidden="true" size={14} />
+                              </button>
+                              {group.stage === 'symedia' && (
+                                <button className="ops-action-button" type="button" onClick={() => onNavigate('control', { service: 'symedia' })}>
+                                  <Server aria-hidden="true" size={14} />检查 Symedia
+                                </button>
+                              )}
+                              <button
+                                className="ops-action-button"
+                                disabled={Boolean(actionBusy)}
+                                type="button"
+                                onClick={() => prepareManualResolution(member, 'resolve')}
+                              >
+                                <CheckCircle2 aria-hidden="true" size={14} />标记已在外部处理
+                              </button>
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </article>
@@ -1208,6 +1257,8 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
             const separatedResidual = Boolean(!item.manualResolution && mediaResult && residualCount > 0);
             const showMediaResult = Boolean(!item.manualResolution && mediaResult && (outcomeState !== 'action_required' || separatedResidual));
             const residualIssue = item.residualIssues?.[0];
+            const failedFileTarget = outcomeState === 'action_required' ? currentFailureTarget(item) : '';
+            const symediaIssue = isSymediaIssue(detail ?? item);
             const stages = detail ? pipelineStageItems(detail) : [];
             const primaryAction = item.primaryAction;
             const detailsArePrimaryAction = Boolean(
@@ -1226,7 +1277,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
               <div className="ops-task-card__head">
                 <div className="ops-task-card__status">
                   <span className={`ops-task-state ${showMediaResult ? 'ops-task-state--media-result' : `ops-task-state--${outcomeState.replace(/_/g, '-')}`}`}>
-                    {item.manualResolution ? '已手动处理' : showMediaResult ? mediaResult?.resultText : outcomeStateLabel(outcomeState)}
+                    {item.manualResolution ? '已在外部处理' : showMediaResult ? mediaResult?.resultText : outcomeStateLabel(outcomeState)}
                   </span>
                 </div>
                 <div>
@@ -1239,7 +1290,8 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                     PT · {item.mediaType === 'movie' ? '电影' : item.mediaType === 'tv' ? `剧集${item.seasonNumber ? ` S${String(item.seasonNumber).padStart(2, '0')}` : ''}` : '未识别媒体'}
                   </p>
                   <div className="ops-task-card__identity">
-                    <span>目标 <strong>{targetLabel(item)}</strong></span>
+                    <span>链路目标 <strong>{targetLabel(item)}</strong></span>
+                    {failedFileTarget && <span>当前失败文件 <strong>{failedFileTarget}</strong></span>}
                     {(item.qbControl.active ?? item.concurrentDownloadCount ?? item.activeDownloadTasks ?? 0) > 1 && (
                       <span>并发下载 <strong>同一目标有 {item.qbControl.active ?? item.concurrentDownloadCount ?? item.activeDownloadTasks} 个 qB 任务同时下载</strong></span>
                     )}
@@ -1251,7 +1303,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
               {item.manualResolution && (
                 <div className="ops-task-guidance ops-task-guidance--manual-resolution" role="status">
                   <CheckCircle2 aria-hidden="true" size={16} />
-                  <div><strong>人工处理</strong><span>已在外部完成处理，Fluxa 不再把这次记录计为待处理告警。</span></div>
+                  <div><strong>外部处理</strong><span>已记录为外部处理，Fluxa 不再把这次记录计为待处理告警；原始故障并未因此修复。</span></div>
                   <div><strong>原始证据</strong><span>{item.manualResolution.originalReasonText || '原始失败阶段和原因仍保留在详情中。'}</span></div>
                 </div>
               )}
@@ -1364,14 +1416,19 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
                       <Rss aria-hidden="true" size={14} />查看来源候选
                     </button>
                   )}
+                  {symediaIssue && (
+                    <button className="ops-action-button" type="button" onClick={() => onNavigate('control', { service: 'symedia' })}>
+                      <Server aria-hidden="true" size={14} />检查 Symedia
+                    </button>
+                  )}
                   {outcomeState === 'action_required' && (
                     <button
-                      className="ops-action-button ops-action-button--primary"
+                      className="ops-action-button"
                       disabled={Boolean(actionBusy)}
                       type="button"
                       onClick={() => prepareManualResolution(item, 'resolve')}
                     >
-                      <CheckCircle2 aria-hidden="true" size={14} />标记已处理
+                      <CheckCircle2 aria-hidden="true" size={14} />标记已在外部处理
                     </button>
                   )}
                   {item.manualResolution && (
@@ -1479,6 +1536,19 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
             </article>
           ))}
         </div>
+        {!activityError && activities.length > 0 && activityHasMore && (
+          <div className="ops-task-more">
+            <span>已显示最近 {activities.length} 条</span>
+            <button
+              className="ops-action-button"
+              disabled={activityLoadingMore}
+              type="button"
+              onClick={loadMoreActivities}
+            >
+              {activityLoadingMore ? '读取中' : '加载更多'}
+            </button>
+          </div>
+        )}
       </section>}
 
       {!qbActiveView && mobileFiltersOpen && (
@@ -1580,20 +1650,20 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
       >
         {pendingManualResolution && (
           <>
-            <span className="ops-confirm-dialog__signal">任务告警 · {pendingManualResolution.mode === 'resolve' ? '人工处理' : '恢复'}</span>
+            <span className="ops-confirm-dialog__signal">任务告警 · {pendingManualResolution.mode === 'resolve' ? '外部处理' : '恢复'}</span>
             <h2 id="manual-resolution-title">
               {pendingManualResolution.mode === 'resolve'
-                ? `确认「${pendingManualResolution.title}」已处理？`
+                ? `确认「${pendingManualResolution.title}」已在外部处理？`
                 : `恢复「${pendingManualResolution.title}」的告警？`}
             </h2>
             <p id="manual-resolution-description">
               {pendingManualResolution.mode === 'resolve'
-                ? 'Fluxa 只会消除当前这次待处理告警，并保留原始失败证据；不会修改 115、Symedia、STRM 或 Emby。以后出现新的失败证据时会重新告警。'
+                ? 'Fluxa 只会将当前告警记录为已在外部处理并保留原始失败证据；不会修复原始故障，也不会触发下载、重试、入库或媒体库刷新。以后出现新的失败证据时会重新告警。'
                 : '恢复后，这条记录会重新进入“需要处理”，原始失败证据保持不变。'}
             </p>
             <div className="ops-confirm-dialog__meta">
               <span>媒体</span><strong>{pendingManualResolution.title}</strong>
-              <span>目标</span><strong>{pendingManualResolution.targetLabel}</strong>
+              <span>处理对象</span><strong>{pendingManualResolution.targetLabel}</strong>
               <span>原始原因</span><strong>{pendingManualResolution.originalReasonText}</strong>
               <span>外部系统</span><strong>不做任何修改</strong>
             </div>
@@ -1601,7 +1671,7 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
               <button className="ops-action-button" disabled={Boolean(actionBusy)} type="button" onClick={() => setPendingManualResolution(null)}>取消</button>
               <button className="ops-action-button ops-action-button--primary" data-dialog-initial-focus disabled={Boolean(actionBusy)} type="button" onClick={confirmManualResolution}>
                 {pendingManualResolution.mode === 'resolve' ? <CheckCircle2 size={14} /> : <RefreshCcw size={14} />}
-                {actionBusy ? '正在保存' : pendingManualResolution.mode === 'resolve' ? '确认已处理' : '确认恢复告警'}
+                {actionBusy ? '正在保存' : pendingManualResolution.mode === 'resolve' ? '确认外部已处理' : '确认恢复告警'}
               </button>
             </div>
           </>

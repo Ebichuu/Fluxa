@@ -17,3 +17,9 @@ const restored = readNavigation(new URL(`http://fluxa.local${path}`) as unknown 
 assert.equal(restored.page, 'rss-library');
 assert.equal(restored.target?.rssWindow, 'all');
 assert.equal(restored.target?.episodeNumber, 8);
+
+const controlPath = pathForNavigation('control', { service: 'symedia' });
+assert.equal(controlPath, '/control?service=symedia');
+const restoredControl = readNavigation(new URL(`http://fluxa.local${controlPath}`) as unknown as Location);
+assert.equal(restoredControl.page, 'control');
+assert.equal(restoredControl.target?.service, 'symedia');

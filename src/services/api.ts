@@ -80,8 +80,70 @@ export interface RequestOptions {
   timeoutMs?: number;
 }
 
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly requestId: string;
+
+  constructor(message: string, details: { status?: number; code?: string; requestId?: string } = {}) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = details.status ?? 0;
+    this.code = details.code ?? 'API_ERROR';
+    this.requestId = details.requestId ?? '';
+    Object.setPrototypeOf(this, ApiError.prototype);
+  }
+}
+
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
 const conditionalJsonCache = new Map<string, { etag: string; payload: unknown }>();
+
+interface ApiErrorPayload {
+  error?: unknown;
+  code?: unknown;
+  request_id?: unknown;
+  requestId?: unknown;
+}
+
+function apiText(value: unknown) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function currentInternalPath() {
+  if (typeof window === 'undefined') return '/';
+  const { pathname, search, hash } = window.location;
+  if (!pathname.startsWith('/') || pathname.startsWith('//')) return '/';
+  return `${pathname}${search}${hash}`;
+}
+
+function redirectToLogin() {
+  if (typeof window === 'undefined' || window.location.pathname.startsWith('/auth/login')) return;
+  const destination = `/auth/login?next=${encodeURIComponent(currentInternalPath())}`;
+  window.location.assign(destination);
+}
+
+async function apiErrorFromResponse(response: Response): Promise<ApiError> {
+  const payload = await response.json().catch(() => ({})) as ApiErrorPayload;
+  const code = apiText(payload.code) || 'HTTP_ERROR';
+  const requestId = apiText(payload.request_id)
+    || apiText(payload.requestId)
+    || apiText(response.headers.get('X-Request-ID'));
+  const error = new ApiError(
+    apiText(payload.error) || `请求失败：${response.status}`,
+    { status: response.status, code, requestId }
+  );
+  if (error.status === 401 && error.code === 'AUTH_REQUIRED') redirectToLogin();
+  return error;
+}
+
+function requestFailure(reason: unknown, timedOut: boolean, signal?: AbortSignal): never {
+  if (reason instanceof ApiError) throw reason;
+  if (timedOut) {
+    throw new ApiError('请求超时，请稍后重试', { code: 'REQUEST_TIMEOUT' });
+  }
+  if (signal?.aborted) throw reason;
+  throw new ApiError('网络连接失败，请检查服务是否可用', { code: 'NETWORK_ERROR' });
+}
 
 function requestSignal(signal: AbortSignal | undefined, timeoutMs: number) {
   const controller = new AbortController();
@@ -116,12 +178,11 @@ async function requestJson<T>(path: string, init: RequestInit = {}, options: Req
     });
 
     if (response.status === 204) return undefined as T;
-    const body = await response.json().catch(() => ({})) as T & { error?: string };
-    if (!response.ok) throw new Error(body.error || `请求失败：${response.status}`);
+    if (!response.ok) throw await apiErrorFromResponse(response);
+    const body = await response.json().catch(() => ({})) as T;
     return body;
   } catch (reason) {
-    if (request.timedOut()) throw new Error('请求超时，请稍后重试');
-    throw reason;
+    requestFailure(reason, request.timedOut(), options.signal);
   } finally {
     request.cleanup();
   }
@@ -143,14 +204,13 @@ async function readConditionalJson<T>(path: string, options: RequestOptions = {}
       }
     });
     if (response.status === 304 && cached) return cached.payload as T;
-    const body = await response.json().catch(() => ({})) as T & { error?: string };
-    if (!response.ok) throw new Error(body.error || `请求失败：${response.status}`);
+    if (!response.ok) throw await apiErrorFromResponse(response);
+    const body = await response.json().catch(() => ({})) as T;
     const etag = response.headers.get('ETag') ?? '';
     if (etag) conditionalJsonCache.set(path, { etag, payload: body });
     return body;
   } catch (reason) {
-    if (request.timedOut()) throw new Error('请求超时，请稍后重试');
-    throw reason;
+    requestFailure(reason, request.timedOut(), options.signal);
   } finally {
     request.cleanup();
   }
@@ -220,7 +280,7 @@ export async function runQbittorrentAction(input: {
   title: string;
   idempotencyKey?: string;
 }): Promise<QbittorrentActionResult> {
-  const response = await fetch(`/api/qbittorrent/actions/${input.action}`, {
+  return requestJson<QbittorrentActionResult>(`/api/qbittorrent/actions/${input.action}`, {
     method: 'POST',
     headers: {
       Accept: 'application/json',
@@ -228,11 +288,6 @@ export async function runQbittorrentAction(input: {
     },
     body: JSON.stringify({ hashes: input.hashes, taskId: input.taskId, title: input.title, idempotencyKey: input.idempotencyKey })
   });
-  const body = await response.json().catch(() => ({})) as QbittorrentActionResult & { error?: string };
-  if (!response.ok) {
-    throw new Error(body.error || `qBittorrent 操作失败：${response.status}`);
-  }
-  return body;
 }
 
 export function previewQbittorrentAction(input: {
@@ -268,15 +323,10 @@ export function getEmbyRefreshStatus(options?: RequestOptions): Promise<EmbyRefr
 }
 
 export async function triggerEmbyRefresh(): Promise<EmbyRefreshResult> {
-  const response = await fetch('/api/media/emby/refresh', {
+  return requestJson<EmbyRefreshResult>('/api/media/emby/refresh', {
     method: 'POST',
     headers: { Accept: 'application/json' }
   });
-  const body = await response.json().catch(() => ({})) as EmbyRefreshResult & { error?: string };
-  if (!response.ok) {
-    throw new Error(body.error || `Emby 刷新失败：${response.status}`);
-  }
-  return body;
 }
 
 export function getTaskChain(options?: RequestOptions): Promise<TaskChainResponse> {
@@ -345,11 +395,24 @@ export function getSystemMetrics(options?: RequestOptions): Promise<SystemMetric
   return readJson<SystemMetricsResponse>('/api/v2/system/metrics', options);
 }
 
-export function getActivityLogs(category = '', options?: RequestOptions & { view?: 'important' | 'raw' }): Promise<ActivityLogResponse> {
-  const query = new URLSearchParams({ limit: '100' });
+export async function getActivityLogs(
+  category = '',
+  options?: RequestOptions & { view?: 'important' | 'raw'; limit?: number }
+): Promise<ActivityLogResponse> {
+  const requestedLimit = Number.isFinite(options?.limit) ? Math.trunc(options?.limit as number) : 20;
+  const limit = Math.max(1, Math.min(requestedLimit, 999));
+  const query = new URLSearchParams({ limit: String(limit + 1) });
   if (category) query.set('category', category);
   if (options?.view === 'important') query.set('view', 'important');
-  return readJson<ActivityLogResponse>(`/api/v2/activity/logs?${query.toString()}`, options);
+  const payload = await readJson<Omit<ActivityLogResponse, 'hasMore'>>(
+    `/api/v2/activity/logs?${query.toString()}`,
+    options
+  );
+  return {
+    ...payload,
+    logs: payload.logs.slice(0, limit),
+    hasMore: payload.logs.length > limit
+  };
 }
 
 export function getSubscriptionCalendar(
@@ -615,13 +678,10 @@ async function patchJson<T>(path: string, body: unknown, options?: RequestOption
 }
 
 async function deleteRequest(path: string): Promise<void> {
-  const response = await fetch(path, {
+  return requestJson<void>(path, {
     method: 'DELETE',
     headers: { Accept: 'application/json' }
   });
-  if (response.status === 204) return;
-  const payload = await response.json().catch(() => ({})) as { error?: string };
-  if (!response.ok) throw new Error(payload.error || `请求失败：${response.status}`);
 }
 
 export function getRssSources(): Promise<RssSourceListResponse> {
