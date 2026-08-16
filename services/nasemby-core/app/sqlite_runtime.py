@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 SCHEMA_VERSION = 8
+BUSY_TIMEOUT_MS = 15_000
 
 
 def resolve_database_path(project_root=None, environment=None, legacy_path=None):
@@ -34,9 +35,13 @@ class SQLiteRuntime:
             if self._journal_ready:
                 return
             self.database_path.parent.mkdir(parents=True, exist_ok=True)
-            connection = sqlite3.connect(self.database_path, timeout=5, isolation_level=None)
+            connection = sqlite3.connect(
+                self.database_path,
+                timeout=BUSY_TIMEOUT_MS / 1000,
+                isolation_level=None,
+            )
             try:
-                connection.execute("PRAGMA busy_timeout=5000")
+                connection.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
                 journal = connection.execute("PRAGMA journal_mode").fetchone()[0]
                 if str(journal or "").lower() != "wal":
                     connection.execute("PRAGMA journal_mode=WAL")
@@ -47,11 +52,15 @@ class SQLiteRuntime:
     def connect(self):
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_wal()
-        connection = sqlite3.connect(self.database_path, timeout=5, isolation_level=None)
+        connection = sqlite3.connect(
+            self.database_path,
+            timeout=BUSY_TIMEOUT_MS / 1000,
+            isolation_level=None,
+        )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA synchronous=NORMAL")
-        connection.execute("PRAGMA busy_timeout=5000")
+        connection.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
         return connection
 
     @contextmanager

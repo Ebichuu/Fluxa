@@ -1107,49 +1107,108 @@ class TaskChainV2Service:
         self._cache = None
         self._cache_at = 0.0
         self._lock = threading.RLock()
+        self._refresh_condition = threading.Condition(self._lock)
+        self._refreshing = False
 
     def set_quality_watch_bridge(self, bridge):
         self.quality_watch_bridge = bridge
 
     def cached_snapshot(self):
-        return self._cache or {"items": []}
+        with self._lock:
+            return self._cache or {"items": []}
+
+    def _build_snapshot(self):
+        service = self.app.extensions.get("mcc_task_chain_service")
+        if not service:
+            raise RuntimeError("任务链尚未注册")
+        now_value = self.clock()
+        payload = adapt_task_chain(service.get_chain(), now=now_value)
+        issue_service = self.app.extensions.get("mcc_secupload_issue")
+        if issue_service:
+            secupload = (((payload.get("services") or {}).get("torra") or {}).get("secupload115"))
+            try:
+                payload["systemIssues"] = [issue_service.snapshot(secupload)]
+            except Exception:
+                payload["systemIssues"] = []
+        if self.repository:
+            project_history = getattr(self.repository, "project_historical_fact_times", None)
+            if callable(project_history):
+                project_history(payload)
+                _refresh_pipeline_projections(payload, now_value)
+            payload["ledger"] = self.repository.record_snapshot(payload)
+        if (
+            self.quality_watch_bridge
+            and (not self.repository or (payload.get("ledger") or {}).get("persisted") is True)
+        ):
+            try:
+                self.quality_watch_bridge.process_snapshot(payload)
+            except Exception:
+                pass
+        if self.repository:
+            _apply_manual_resolutions(payload, self.repository)
+        payload["version"] = _version(payload)
+        return payload
+
+    def _finish_refresh(self, payload=None):
+        with self._refresh_condition:
+            if payload is not None:
+                self._cache = payload
+                self._cache_at = time.monotonic()
+            self._refreshing = False
+            self._refresh_condition.notify_all()
+
+    def _refresh_in_background(self):
+        payload = None
+        try:
+            with self.app.app_context():
+                payload = self._build_snapshot()
+        except Exception as exc:
+            # Keep serving the last valid snapshot. The next poll will retry.
+            self.app.logger.warning("Task snapshot background refresh failed: %s", exc)
+        finally:
+            self._finish_refresh(payload)
+
+    def _start_background_refresh(self):
+        self._refreshing = True
+        threading.Thread(
+            target=self._refresh_in_background,
+            name="fluxa-task-snapshot-refresh",
+            daemon=True,
+        ).start()
 
     def full_snapshot(self, *, force=False):
-        with self._lock:
-            if not force and self._cache and time.monotonic() - self._cache_at < self.cache_seconds:
+        with self._refresh_condition:
+            cache_is_fresh = (
+                self._cache is not None
+                and time.monotonic() - self._cache_at < self.cache_seconds
+            )
+            if not force and cache_is_fresh:
                 return self._cache
-            service = self.app.extensions.get("mcc_task_chain_service")
-            if not service:
-                raise RuntimeError("任务链尚未注册")
-            now_value = self.clock()
-            payload = adapt_task_chain(service.get_chain(), now=now_value)
-            issue_service = self.app.extensions.get("mcc_secupload_issue")
-            if issue_service:
-                secupload = (((payload.get("services") or {}).get("torra") or {}).get("secupload115"))
-                try:
-                    payload["systemIssues"] = [issue_service.snapshot(secupload)]
-                except Exception:
-                    payload["systemIssues"] = []
-            if self.repository:
-                project_history = getattr(self.repository, "project_historical_fact_times", None)
-                if callable(project_history):
-                    project_history(payload)
-                    _refresh_pipeline_projections(payload, now_value)
-                payload["ledger"] = self.repository.record_snapshot(payload)
-            if (
-                self.quality_watch_bridge
-                and (not self.repository or (payload.get("ledger") or {}).get("persisted") is True)
-            ):
-                try:
-                    self.quality_watch_bridge.process_snapshot(payload)
-                except Exception:
-                    pass
-            if self.repository:
-                _apply_manual_resolutions(payload, self.repository)
-            payload["version"] = _version(payload)
-            self._cache = payload
-            self._cache_at = time.monotonic()
+            if not force and self._cache is not None:
+                if not self._refreshing:
+                    self._start_background_refresh()
+                return self._cache
+            if self._refreshing:
+                while self._refreshing:
+                    self._refresh_condition.wait()
+                if self._cache is not None:
+                    return self._cache
+            self._refreshing = True
+
+        payload = None
+        try:
+            payload = self._build_snapshot()
             return payload
+        finally:
+            self._finish_refresh(payload)
+
+    def _snapshot_for_mutation(self):
+        with self._refresh_condition:
+            while self._refreshing:
+                self._refresh_condition.wait()
+            if self._cache is not None:
+                return self._cache
+        return self.full_snapshot(force=True)
 
     def snapshot(self, health_filter=""):
         payload = self.full_snapshot(force=True)
@@ -1345,7 +1404,7 @@ class TaskChainV2Service:
             # The version came from the task list the user is acting on. Reuse that
             # cached snapshot when possible so this manual acknowledgement cannot
             # time out while all external services are refreshed again.
-            payload = self.full_snapshot(force=False)
+            payload = self._snapshot_for_mutation()
             if snapshot_version != str(payload.get("version") or ""):
                 raise TaskManualResolutionError(
                     "TASK_MANUAL_RESOLUTION_STALE",
@@ -1412,7 +1471,7 @@ class TaskChainV2Service:
                 503,
             )
         with self._lock:
-            payload = self.full_snapshot(force=False)
+            payload = self._snapshot_for_mutation()
             if snapshot_version != str(payload.get("version") or ""):
                 raise TaskManualResolutionError(
                     "TASK_MANUAL_RESOLUTION_STALE",

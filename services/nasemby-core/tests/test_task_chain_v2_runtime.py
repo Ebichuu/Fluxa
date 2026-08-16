@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 import tempfile
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,6 +57,44 @@ class FakeTaskChain:
 
 
 class TaskChainV2RuntimeTests(unittest.TestCase):
+    def test_expired_snapshot_is_served_while_refresh_runs_in_background(self):
+        refresh_started = threading.Event()
+        allow_refresh = threading.Event()
+
+        class SlowRefreshTaskChain(FakeTaskChain):
+            def get_chain(self):
+                if self.calls:
+                    refresh_started.set()
+                    allow_refresh.wait(timeout=2)
+                payload = super().get_chain()
+                payload["items"][0]["title"] = f"测试剧-{self.calls}"
+                return payload
+
+        app = Flask(f"{__name__}-stale-while-refresh")
+        fake = SlowRefreshTaskChain()
+        app.extensions["mcc_task_chain_service"] = fake
+        service = TaskChainV2Service(
+            app,
+            cache_seconds=1,
+            clock=lambda: datetime(2026, 7, 22, 3, 1, tzinfo=timezone.utc),
+        )
+        service.full_snapshot(force=True)
+        service._cache_at = time.monotonic() - 2
+
+        started_at = time.monotonic()
+        stale = service.full_snapshot()
+
+        self.assertLess(time.monotonic() - started_at, 0.5)
+        self.assertEqual(stale["items"][0]["title"], "测试剧-1")
+        self.assertTrue(refresh_started.wait(timeout=1))
+        self.assertEqual(service.full_snapshot()["items"][0]["title"], "测试剧-1")
+        allow_refresh.set()
+        deadline = time.monotonic() + 2
+        while service.cached_snapshot()["items"][0]["title"] != "测试剧-2" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(service.cached_snapshot()["items"][0]["title"], "测试剧-2")
+        self.assertEqual(fake.calls, 2)
+
     def test_manual_resolution_hides_exact_warning_preserves_evidence_and_is_reversible(self):
         with tempfile.TemporaryDirectory() as directory:
             chain = FakeTaskChain().get_chain()

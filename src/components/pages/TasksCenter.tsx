@@ -196,6 +196,15 @@ function currentFailureTarget(item: TaskTargetIdentity) {
   return `S${String(season).padStart(2, '0')}E${String(item.episodeNumber).padStart(2, '0')}`;
 }
 
+function firstCurrentFailureTarget(...items: Array<TaskTargetIdentity | undefined>) {
+  for (const item of items) {
+    if (!item) continue;
+    const target = currentFailureTarget(item);
+    if (target) return target;
+  }
+  return '';
+}
+
 function isSymediaIssue(item: TaskChainListItem | TaskChainItem) {
   return item.pipelineOutcome?.stage === 'symedia'
     || item.residualIssues?.some((issue) => issue.stage === 'symedia')
@@ -1249,6 +1258,9 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
             const chainId = item.chainId || item.id;
             const cachedDetail = details[chainId];
             const detail = cachedDetail?.snapshotVersion === (chain?.version ?? '') ? cachedDetail.item : undefined;
+            const problemMember = problemGroups
+              .flatMap((group) => group.members)
+              .find((member) => member.chainId === chainId);
             const expanded = expandedChainId === chainId;
             const health = resolvedHealth(item);
             const outcomeState = resolvedOutcomeState(item);
@@ -1257,7 +1269,9 @@ export function TasksCenter({ target, onClearTarget, onNavigate }: { target: Tas
             const separatedResidual = Boolean(!item.manualResolution && mediaResult && residualCount > 0);
             const showMediaResult = Boolean(!item.manualResolution && mediaResult && (outcomeState !== 'action_required' || separatedResidual));
             const residualIssue = item.residualIssues?.[0];
-            const failedFileTarget = outcomeState === 'action_required' ? currentFailureTarget(item) : '';
+            const failedFileTarget = outcomeState === 'action_required'
+              ? firstCurrentFailureTarget(problemMember, detail, item)
+              : '';
             const symediaIssue = isSymediaIssue(detail ?? item);
             const stages = detail ? pipelineStageItems(detail) : [];
             const primaryAction = item.primaryAction;

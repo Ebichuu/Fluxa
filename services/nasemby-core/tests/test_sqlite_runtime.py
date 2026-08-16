@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import closing
 from pathlib import Path
 
-from app.sqlite_runtime import SQLiteRuntime
+from app.sqlite_runtime import BUSY_TIMEOUT_MS, SQLiteRuntime
 
 
 class SQLiteRuntimeTests(unittest.TestCase):
@@ -24,7 +26,7 @@ class SQLiteRuntimeTests(unittest.TestCase):
                 ).fetchone()
             self.assertEqual(journal.lower(), "wal")
             self.assertEqual(foreign_keys, 1)
-            self.assertEqual(busy_timeout, 5000)
+            self.assertEqual(busy_timeout, BUSY_TIMEOUT_MS)
             self.assertEqual(version, 8)
             self.assertIsNone(probe)
 
@@ -58,6 +60,39 @@ class SQLiteRuntimeTests(unittest.TestCase):
             finally:
                 writer.rollback()
                 writer.close()
+
+    def test_transaction_waits_for_a_short_competing_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "media_control_center.sqlite3"
+            runtime = SQLiteRuntime(database)
+            runtime.initialize()
+            writer = runtime.connect()
+            writer.execute("CREATE TABLE lock_probe(value TEXT)")
+            writer.execute("BEGIN IMMEDIATE")
+            completed = threading.Event()
+            errors = []
+
+            def write_after_lock():
+                try:
+                    with runtime.transaction(immediate=True) as connection:
+                        connection.execute("INSERT INTO lock_probe VALUES ('ok')")
+                except Exception as exc:
+                    errors.append(exc)
+                finally:
+                    completed.set()
+
+            thread = threading.Thread(target=write_after_lock)
+            thread.start()
+            time.sleep(0.05)
+            writer.commit()
+            writer.close()
+            self.assertTrue(completed.wait(timeout=2))
+            thread.join(timeout=1)
+
+            self.assertEqual(errors, [])
+            with closing(runtime.connect()) as connection:
+                row = connection.execute("SELECT value FROM lock_probe").fetchone()
+            self.assertEqual(row["value"], "ok")
 
 
 if __name__ == "__main__":
