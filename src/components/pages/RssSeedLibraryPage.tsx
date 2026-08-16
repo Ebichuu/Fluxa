@@ -50,6 +50,11 @@ import {
 } from '../../types/rssSeedLibrary';
 import { formatTimeAgo } from '../../utils/formatters';
 import { createIdempotencyKey } from '../../utils/idempotency';
+import {
+  rssResourceActionFeedback,
+  rssResourcePreviewFeedback,
+  type RssResourceDownloadFeedback
+} from '../../utils/rssResourceDownloadFeedback';
 import { rssSeedFollowStateLabel } from '../../utils/rssProcessingState';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
 import { PosterImage } from '../layout/PosterImage';
@@ -475,6 +480,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const [matchesLoading, setMatchesLoading] = useState(false);
   const [matchActions, setMatchActions] = useState<Record<string, AutomationAction>>({});
   const [resourceDownloadActions, setResourceDownloadActions] = useState<Record<string, AutomationAction>>({});
+  const [resourceDownloadFeedback, setResourceDownloadFeedback] = useState<Record<string, RssResourceDownloadFeedback>>({});
   const [exactPreviews, setExactPreviews] = useState<Record<string, RssExactDownloadPreview>>({});
   const [matchPollTimedOut, setMatchPollTimedOut] = useState<Record<string, boolean>>({});
   const [matchBusy, setMatchBusy] = useState('');
@@ -843,6 +849,10 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
         const action = await getAutomationAction(actionId, { signal: controller.signal });
         if (controller.signal.aborted) return;
         setResourceDownloadActions((current) => ({ ...current, [itemId]: action }));
+        setResourceDownloadFeedback((current) => ({
+          ...current,
+          [itemId]: rssResourceActionFeedback(action)
+        }));
         if (['succeeded', 'failed', 'cancelled'].includes(action.status)) {
           await loadItems({ offset });
           if (action.status === 'failed') {
@@ -860,12 +870,21 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       }
       if (!controller.signal.aborted) {
         await loadItems({ offset });
+        setResourceDownloadFeedback((current) => ({
+          ...current,
+          [itemId]: { tone: 'error', message: '结果确认超时：请到任务中心查看 qB 是否已接收' }
+        }));
         setFeedback({ tone: 'error', message: 'qB 状态确认已超时，资源列表已刷新；可在任务中心继续确认。' });
       }
     } catch (reason) {
       if (!controller.signal.aborted) {
         await loadItems({ offset });
-        setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : 'qB 资源提交状态读取失败' });
+        const message = reason instanceof Error ? reason.message : 'qB 资源提交状态读取失败';
+        setResourceDownloadFeedback((current) => ({
+          ...current,
+          [itemId]: { tone: 'error', message: `结果确认失败：${message}` }
+        }));
+        setFeedback({ tone: 'error', message });
       }
     } finally {
       if (resourcePollRefs.current.get(itemId) === controller) resourcePollRefs.current.delete(itemId);
@@ -913,20 +932,28 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       const busyKey = `resource-preview:${item.id}`;
       setMatchBusy(busyKey);
       setFeedback(null);
+      setResourceDownloadFeedback((current) => ({
+        ...current,
+        [item.id]: { tone: 'pending', message: '正在检查自动分类、Torra 与 qB 状态…' }
+      }));
       try {
         const preview = await previewRssResourceDownload(item.id);
-        const primary = preview.blockers[0];
+        const itemFeedback = rssResourcePreviewFeedback(preview);
+        setResourceDownloadFeedback((current) => ({ ...current, [item.id]: itemFeedback }));
         if (preview.ready && preview.previewToken) {
           setResourceDownloadTarget({ item, preview });
         }
         setFeedback({
           tone: preview.ready ? 'ok' : 'error',
-          message: primary?.message || (preview.ready
-            ? `已自动归入 ${preview.categoryDirectory || preview.categoryLabel}`
-            : '资源下载预检未通过')
+          message: itemFeedback.message
         });
       } catch (reason) {
-        setFeedback({ tone: 'error', message: reason instanceof Error ? reason.message : '资源下载预检失败' });
+        const message = reason instanceof Error ? reason.message : '资源下载预检失败';
+        setResourceDownloadFeedback((current) => ({
+          ...current,
+          [item.id]: { tone: 'error', message: `未提交：${message}` }
+        }));
+        setFeedback({ tone: 'error', message });
       } finally {
         setMatchBusy('');
       }
@@ -983,6 +1010,10 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     const { item } = resourceDownloadTarget;
     setResourceDownloadTarget(null);
     setMatchBusy(`resource-download:${item.id}`);
+    setResourceDownloadFeedback((current) => ({
+      ...current,
+      [item.id]: { tone: 'pending', message: '正在提交到 qB…' }
+    }));
     startRssResourceDownload(item.id, {
       confirm: true,
       previewToken,
@@ -990,13 +1021,21 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     })
       .then((action) => {
         setResourceDownloadActions((current) => ({ ...current, [item.id]: action }));
+        setResourceDownloadFeedback((current) => ({
+          ...current,
+          [item.id]: rssResourceActionFeedback(action)
+        }));
         setFeedback({ tone: 'ok', message: '已按自动分类提交 qB，正在确认下载任务。' });
         void pollResourceDownloadAction(item.id, action.id);
       })
-      .catch((reason: unknown) => setFeedback({
-        tone: 'error',
-        message: reason instanceof Error ? reason.message : 'qB 资源提交失败'
-      }))
+      .catch((reason: unknown) => {
+        const message = reason instanceof Error ? reason.message : 'qB 资源提交失败';
+        setResourceDownloadFeedback((current) => ({
+          ...current,
+          [item.id]: { tone: 'error', message: `提交失败：${message}` }
+        }));
+        setFeedback({ tone: 'error', message });
+      })
       .finally(() => setMatchBusy(''));
   };
 
@@ -1405,6 +1444,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
               const isSeasonPackForEpisode = resourceContext.episodeNumber != null && scope === 'season_pack';
               const itemMatch = matchByItemId.get(item.id);
               const itemAction = resourceDownloadActions[item.id] || (itemMatch ? matchActions[itemMatch.id] : undefined);
+              const itemDownloadFeedback = resourceDownloadFeedback[item.id];
               const downloadBusy = [`exact-resolve:${item.id}`, `resource-preview:${item.id}`, `resource-download:${item.id}`].includes(matchBusy);
               const resourceDownloadActive = ['claimed', 'submitted', 'polling', 'succeeded'].includes(
                 itemAction?.type === 'rss-resource-download'
@@ -1492,6 +1532,16 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                           : <span className="rss-version-muted">等待版本信息</span>}
                       </div>
                     </div>
+                    {itemDownloadFeedback && (
+                      <div
+                        aria-live={itemDownloadFeedback.tone === 'error' ? 'assertive' : 'polite'}
+                        className={`rss-seed-action-feedback rss-seed-action-feedback--${itemDownloadFeedback.tone}`}
+                        role={itemDownloadFeedback.tone === 'error' ? 'alert' : 'status'}
+                      >
+                        <span aria-hidden="true" />
+                        {itemDownloadFeedback.message}
+                      </div>
+                    )}
                     <details className="rss-seed-technical">
                       <summary>技术信息</summary>
                       <dl>
