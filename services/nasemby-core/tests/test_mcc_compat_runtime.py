@@ -333,6 +333,29 @@ class MccCompatibilityContractTests(IsolatedActivityLogMixin, unittest.TestCase)
             "tmdbId": "101",
         })
 
+    def test_douban_browse_forwards_media_type_and_chart_category(self):
+        app = create_app(access_environment={})
+        sample = {
+            "success": True,
+            "source": "豆瓣",
+            "items": [],
+            "page": 2,
+            "total_pages": 2,
+            "total_results": 16,
+        }
+        with patch.object(discover_runtime, "fetch_douban", return_value=sample) as fetch_douban:
+            response = app.test_client().get(
+                "/api/discover/browse?source=douban&type=tv&doubanCategory=korean_tv&page=2&limit=16"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        fetch_douban.assert_called_once_with({
+            "page": "2",
+            "limit": "16",
+            "type": "tv",
+            "category": "korean_tv",
+        })
+
     def test_tmdb_discover_sources_accept_bearer_only_configuration(self):
         app = create_app(access_environment={})
         sample = {"success": True, "source": "TMDB", "items": [], "page": 1, "total_pages": 1, "total_results": 0}

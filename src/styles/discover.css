@@ -1701,8 +1701,12 @@
   min-height: 34px;
   border: 1px solid transparent;
   border-radius: 999px;
+  padding: 0 11px;
   background: transparent;
   color: var(--ops-faint);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1;
 }
 
 .ops-page--discover .discover-source--active,
@@ -1711,6 +1715,7 @@
   border-color: rgba(157, 184, 207, 0.14);
   background: rgba(157, 184, 207, 0.08);
   color: var(--ops-ink-strong);
+  font-weight: 500;
 }
 
 .ops-page--discover .discover-source:focus-visible {

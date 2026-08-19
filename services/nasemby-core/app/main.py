@@ -1696,7 +1696,7 @@ def create_app(
         subscription_loader=lambda: discover_runtime.load_subscription_items(remove_completed=False),
         config_loader=discover_runtime.load_subscription_config,
         media_metadata_cache_loader=discover_runtime.read_cached_rss_media_metadata,
-        item_enricher=discover_runtime.enrich_rss_items_from_imdb,
+        item_enricher=discover_runtime.enrich_rss_items,
     )
     application.extensions["mcc_quality_watch_key_migration"] = (
         quality_watch_key_migrator or run_quality_watch_key_migration

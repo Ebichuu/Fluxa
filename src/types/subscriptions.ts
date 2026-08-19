@@ -545,6 +545,7 @@ export interface DiscoverBrowseParams {
   year: string;
   genre: string;
   provider?: string;
+  doubanCategory: 'hot_movie' | 'movie_realtime' | 'showing' | 'hot_tv' | 'tv_realtime' | 'global_tv' | 'domestic_tv' | 'japanese_tv' | 'korean_tv' | 'american_tv' | 'anime_tv';
   page: number;
   limit?: number;
 }

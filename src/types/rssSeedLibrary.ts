@@ -84,11 +84,12 @@ export interface RssSeedItem {
 
 export type RssIdentityStatus = '' | RssSeedItem['identityStatus'];
 
-// 四类互斥的资源范围口径：每条资源只允许归入唯一分类。
-export type RssResourceScope = 'explicit_episode' | 'explicit_multi_episode' | 'season_pack' | 'scope_pending';
+// 五类互斥的资源范围口径：每条资源只允许归入唯一分类。
+export type RssResourceScope = 'movie' | 'explicit_episode' | 'explicit_multi_episode' | 'season_pack' | 'scope_pending';
 
 export interface RssResourceScopeCounts {
   total: number;
+  movie: number;
   explicitEpisode: number;
   explicitMultiEpisode: number;
   seasonPack: number;
@@ -96,8 +97,9 @@ export interface RssResourceScopeCounts {
 }
 
 export function classifyRssResourceScope(
-  item: Pick<RssSeedItem, 'seasonNumber' | 'episodeStart' | 'episodeEnd' | 'seasonScopeState'>
+  item: Pick<RssSeedItem, 'mediaType' | 'seasonNumber' | 'episodeStart' | 'episodeEnd' | 'seasonScopeState'>
 ): RssResourceScope {
+  if (item.mediaType === 'movie') return 'movie';
   const seasonConfirmed = item.seasonNumber != null && item.seasonScopeState !== 'unknown';
   if (!seasonConfirmed) return 'scope_pending';
   if (item.episodeStart != null) {
@@ -111,6 +113,7 @@ export function classifyRssResourceScope(
 export function countRssResourceScopes(scopes: RssResourceScope[]): RssResourceScopeCounts {
   return {
     total: scopes.length,
+    movie: scopes.filter((scope) => scope === 'movie').length,
     explicitEpisode: scopes.filter((scope) => scope === 'explicit_episode').length,
     explicitMultiEpisode: scopes.filter((scope) => scope === 'explicit_multi_episode').length,
     seasonPack: scopes.filter((scope) => scope === 'season_pack').length,
@@ -119,6 +122,7 @@ export function countRssResourceScopes(scopes: RssResourceScope[]): RssResourceS
 }
 
 export function rssResourceScopeLabel(scope: RssResourceScope) {
+  if (scope === 'movie') return '完整电影';
   if (scope === 'explicit_episode') return '明确单集';
   if (scope === 'explicit_multi_episode') return '明确多集';
   if (scope === 'season_pack') return '季包';
@@ -126,7 +130,7 @@ export function rssResourceScopeLabel(scope: RssResourceScope) {
 }
 
 export function rssResourceScopeSummaryText(counts: RssResourceScopeCounts) {
-  return `${counts.total} 个资源 · 明确单集 ${counts.explicitEpisode} · `
+  return `${counts.total} 个资源 · 完整电影 ${counts.movie} · 明确单集 ${counts.explicitEpisode} · `
     + `明确多集 ${counts.explicitMultiEpisode} · 季包 ${counts.seasonPack} · `
     + `范围待确认 ${counts.scopePending}`;
 }

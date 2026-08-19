@@ -197,6 +197,14 @@ class PrivateRssCollector:
             return {"attempted": 0, "enriched": 0}
         return self.repository.apply_imdb_enrichment(self._enrich_items(rows))
 
+    def _enrich_historical_title_year_items(self):
+        if not self.item_enricher:
+            return {"attempted": 0, "enriched": 0}
+        rows = self.repository.list_unidentified_items(limit=12)
+        if not rows:
+            return {"attempted": 0, "enriched": 0}
+        return self.repository.apply_title_year_enrichment(self._enrich_items(rows))
+
     def _request(self, session, url, headers, allow_http):
         response = None
         for _ in range(4):
@@ -269,5 +277,6 @@ class PrivateRssCollector:
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="private-rss-fetch") as executor:
             results = list(executor.map(fetch_one, sources))
         self._enrich_historical_imdb_items()
+        self._enrich_historical_title_year_items()
         self.repository.cleanup()
         return results

@@ -1328,6 +1328,46 @@ class PrivateRssRepository:
                     )
         return {"attempted": attempted, "enriched": enriched}
 
+    def apply_title_year_enrichment(self, items):
+        rows = [dict(item) for item in items or [] if isinstance(item, dict) and item.get("id")]
+        attempted = enriched = 0
+        checked_at = _iso()
+        with self.runtime.transaction(immediate=True) as connection:
+            for item in rows:
+                current = connection.execute(
+                    "SELECT media_type, tmdb_id, imdb_id, identity_status FROM rss_items WHERE id=?",
+                    (str(item.get("id")),),
+                ).fetchone()
+                if not current or str(current["identity_status"] or "") != "unidentified":
+                    continue
+                if str(current["tmdb_id"] or "") or str(current["imdb_id"] or ""):
+                    continue
+                attempted += 1
+                tmdb_id = str(item.get("tmdb_id") or item.get("tmdbId") or "").strip()[:24]
+                media_type = str(item.get("media_type") or item.get("mediaType") or "").strip().lower()
+                identity_source = str(item.get("identity_source") or item.get("identitySource") or "").strip()
+                current_type = str(current["media_type"] or "").strip().lower()
+                if (
+                    tmdb_id.isdigit()
+                    and media_type in {"movie", "tv"}
+                    and current_type in {"", media_type}
+                    and identity_source == "tmdb_title_year"
+                ):
+                    cursor = connection.execute(
+                        "UPDATE rss_items SET tmdb_id=?, media_type=?, identity_status='identified', "
+                        "identity_source='tmdb_title_year', identity_confidence='fallback', identity_updated_at=? "
+                        "WHERE id=? AND identity_status='unidentified' AND tmdb_id='' AND imdb_id=''",
+                        (tmdb_id, media_type, checked_at, str(item.get("id"))),
+                    )
+                    enriched += int(cursor.rowcount > 0)
+                else:
+                    connection.execute(
+                        "UPDATE rss_items SET identity_updated_at=? "
+                        "WHERE id=? AND identity_status='unidentified' AND tmdb_id='' AND imdb_id=''",
+                        (checked_at, str(item.get("id"))),
+                    )
+        return {"attempted": attempted, "enriched": enriched}
+
     def list_items_for_match(self, limit=200):
         limit = max(1, min(int(limit or 200), 200))
         with closing(self.runtime.connect()) as connection:

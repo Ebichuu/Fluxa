@@ -14,6 +14,40 @@ from app.subscription_repository import SubscriptionRepository
 class DiscoverCandidateRuntimeTests(unittest.TestCase):
     NOW = datetime(2026, 7, 28, 8, 0, tzinfo=timezone.utc)
 
+    def test_douban_browse_source_keeps_category_within_selected_media_type(self):
+        movie_key, movie_source = discover_runtime._douban_browse_source("movie", "korean_tv")
+        tv_key, tv_source = discover_runtime._douban_browse_source("tv", "korean_tv")
+
+        self.assertEqual(movie_key, "hot_movie")
+        self.assertEqual(movie_source["media_type"], "movie")
+        self.assertEqual(tv_key, "korean_tv")
+        self.assertEqual(tv_source["tag"], "韩剧")
+
+    def test_douban_subjects_use_selected_tv_chart(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"subjects":[{"id":"42","title":"Drama","year":"2026","rate":"8.1"}]}'
+
+        with patch.object(discover_runtime.urllib.request, "urlopen", return_value=Response()) as urlopen:
+            rows = discover_runtime.fetch_douban_subjects(2, 16, "tv", "korean_tv")
+
+        query = discover_runtime.urllib.parse.parse_qs(
+            discover_runtime.urllib.parse.urlparse(urlopen.call_args.args[0].full_url).query
+        )
+        self.assertEqual(query["type"], ["tv"])
+        self.assertEqual(query["tag"], ["韩剧"])
+        self.assertEqual(query["sort"], ["recommend"])
+        self.assertEqual(query["page_start"], ["16"])
+        self.assertEqual(rows[0]["media_type"], "tv")
+        self.assertEqual(rows[0]["source_key"], "korean_tv")
+        self.assertEqual(rows[0]["type"], "电视剧")
+
     def test_rss_media_metadata_reads_existing_cache_without_remote_fetch(self):
         discover_runtime.set_discover_item_cache({
             "title": "缓存作品中文名",
@@ -124,6 +158,123 @@ class DiscoverCandidateRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result[0]["tmdb_id"], "")
         self.assertEqual(result[0]["media_type"], "tv")
+
+    def test_rss_title_year_enrichment_accepts_one_exact_cross_type_result(self):
+        calls = []
+
+        def fake_http(url, timeout=18):
+            calls.append((url, timeout))
+            if "/search/movie?" in url:
+                return {"results": [{
+                    "id": 209403,
+                    "title": "坏话",
+                    "original_title": "Bad Words",
+                    "release_date": "2013-09-06",
+                    "poster_path": "/bad-words.jpg",
+                }]}
+            return {"results": []}
+
+        item = {
+            "title": "Bad Words 2013 1080p MA WEB-DL H.264 DDP5.1-HHWEB",
+            "media_type": "",
+            "season_number": None,
+            "episode_start": None,
+            "tmdb_id": "",
+            "imdb_id": "",
+            "identity_status": "unidentified",
+        }
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            discover_runtime,
+            "DISCOVER_CACHE_DB_PATH",
+            str(Path(directory) / "discover-cache.sqlite3"),
+        ), patch.object(
+            discover_runtime,
+            "load_tmdb_config",
+            return_value={
+                "api_key": "test-key",
+                "api_token": "",
+                "api_base_url": "https://api.themoviedb.org/3",
+                "image_base_url": "https://image.tmdb.org/t/p",
+            },
+        ), patch.object(discover_runtime, "http_json", side_effect=fake_http):
+            first = discover_runtime.enrich_rss_items_from_title_year([item])
+            second = discover_runtime.enrich_rss_items_from_title_year([item])
+            cached = discover_runtime.read_cached_rss_media_metadata({("movie", "209403", 0)})
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(first[0]["tmdb_id"], "209403")
+        self.assertEqual(first[0]["media_type"], "movie")
+        self.assertEqual(first[0]["identity_status"], "identified")
+        self.assertEqual(first[0]["identity_source"], "tmdb_title_year")
+        self.assertEqual(second[0]["tmdb_id"], "209403")
+        self.assertEqual(cached[("movie", "209403", 0)]["mediaTitle"], "坏话")
+        self.assertEqual(
+            cached[("movie", "209403", 0)]["posterUrl"],
+            "https://image.tmdb.org/t/p/w342/bad-words.jpg",
+        )
+
+    def test_rss_title_year_enrichment_rejects_ambiguous_movie_and_tv_results(self):
+        def fake_http(url, timeout=18):
+            if "/search/movie?" in url:
+                return {"results": [{
+                    "id": 10,
+                    "title": "Shared Title",
+                    "release_date": "2024-01-01",
+                }]}
+            return {"results": [{
+                "id": 20,
+                "name": "Shared Title",
+                "first_air_date": "2024-02-01",
+            }]}
+
+        item = {
+            "title": "Shared Title 2024 1080p WEB-DL",
+            "media_type": "",
+            "season_number": None,
+            "episode_start": None,
+            "tmdb_id": "",
+            "imdb_id": "",
+            "identity_status": "unidentified",
+        }
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            discover_runtime,
+            "DISCOVER_CACHE_DB_PATH",
+            str(Path(directory) / "discover-cache.sqlite3"),
+        ), patch.object(
+            discover_runtime,
+            "load_tmdb_config",
+            return_value={
+                "api_key": "test-key",
+                "api_token": "",
+                "api_base_url": "https://api.themoviedb.org/3",
+                "image_base_url": "https://image.tmdb.org/t/p",
+            },
+        ), patch.object(discover_runtime, "http_json", side_effect=fake_http):
+            result = discover_runtime.enrich_rss_items_from_title_year([item])
+
+        self.assertEqual(result[0]["tmdb_id"], "")
+        self.assertEqual(result[0]["identity_status"], "unidentified")
+
+    def test_rss_title_year_parser_uses_last_year_before_quality_and_rejects_tv_scope(self):
+        identity = discover_runtime._rss_release_title_year({
+            "title": "Blade Runner 2049 2017 2160p UHD BluRay",
+            "media_type": "",
+            "season_number": None,
+            "episode_start": None,
+            "tmdb_id": "",
+            "imdb_id": "",
+            "identity_status": "unidentified",
+        })
+        self.assertEqual(identity[:2], ("Blade Runner 2049", "2017"))
+        self.assertEqual(discover_runtime._rss_release_title_year({
+            "title": "Example Show S01 2026 1080p WEB-DL",
+            "media_type": "",
+            "season_number": 1,
+            "episode_start": None,
+            "tmdb_id": "",
+            "imdb_id": "",
+            "identity_status": "unidentified",
+        }), ("", "", ""))
 
     def add_candidate(self, repository, *, tmdb_id="200", media_type="tv", season=1, **payload):
         source = {

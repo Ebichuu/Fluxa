@@ -94,6 +94,10 @@ def _browse_target(source, args):
         params["platform"] = PLATFORM_LABELS[source]
         return discover_runtime.fetch_platform_hot, params
     if source == "douban":
+        params["type"] = "tv" if args.get("type") == "tv" else "movie"
+        category = str(args.get("doubanCategory") or "").strip()
+        if category in discover_runtime.DOUBAN_SUBSCRIPTION_SOURCES:
+            params["category"] = category
         return discover_runtime.fetch_douban, params
     params["type"] = "movie" if args.get("type") == "movie" else "tv"
     if source == "tmdb":

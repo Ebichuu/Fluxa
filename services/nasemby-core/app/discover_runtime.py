@@ -133,6 +133,8 @@ DISCOVER_CACHE_TTL_SECONDS = 6 * 60 * 60
 DISCOVER_PERMANENT_CACHE_SECONDS = 20 * 365 * 24 * 60 * 60
 RSS_IMDB_MISS_CACHE_SECONDS = 24 * 60 * 60
 RSS_IMDB_ENRICHMENT_BATCH_SIZE = 20
+RSS_TITLE_YEAR_MISS_CACHE_SECONDS = 24 * 60 * 60
+RSS_TITLE_YEAR_ENRICHMENT_BATCH_SIZE = 12
 DISCOVER_PRELOAD_PAGES = 3
 EMBY_LIBRARY_INDEX_TTL_SECONDS = 5 * 60
 EMBY_LIBRARY_INDEX_CACHE = {"time": 0, "data": None}
@@ -5489,6 +5491,170 @@ def enrich_rss_items_from_imdb(items, limit=RSS_IMDB_ENRICHMENT_BATCH_SIZE):
     return enriched
 
 
+def _rss_release_title_year(item):
+    """Extract a movie-like release title/year only when the filename shape is unambiguous."""
+    if not isinstance(item, dict):
+        return "", "", ""
+    status = str(item.get("identity_status") or item.get("identityStatus") or "").strip().lower()
+    tmdb_id = str(item.get("tmdb_id") or item.get("tmdbId") or "").strip()
+    imdb_id = _rss_imdb_id(item.get("imdb_id") or item.get("imdbId"))
+    media_type = str(item.get("media_type") or item.get("mediaType") or "").strip().lower()
+    if status != "unidentified" or tmdb_id or imdb_id or media_type not in {"", "movie"}:
+        return "", "", ""
+    if any(item.get(key) is not None for key in ("season_number", "seasonNumber", "episode_start", "episodeStart")):
+        return "", "", ""
+
+    release = str(item.get("title") or "").strip()
+    quality = re.search(
+        r"(?<![a-z0-9])(?:2160p|1080p|720p|480p|uhd|web[ ._-]?dl|webrip|blu[ ._-]?ray|bdrip|remux|hdtv)(?![a-z0-9])",
+        release,
+        flags=re.IGNORECASE,
+    )
+    if not quality:
+        return "", "", ""
+    year_matches = list(re.finditer(r"(?<!\d)((?:19|20)\d{2})(?!\d)", release[:quality.start()]))
+    if not year_matches:
+        return "", "", ""
+    year_match = year_matches[-1]
+    raw_title = release[:year_match.start()]
+    if re.search(r"(?:^|[\s._-])S\d{1,3}(?:E\d{1,4})?(?:$|[\s._-])", raw_title, flags=re.IGNORECASE):
+        return "", "", ""
+    title = re.sub(r"[._]+", " ", raw_title)
+    title = re.sub(r"\s+", " ", title).strip(" -[](){}")
+    if len(compact_match_text(title)) < 2 or not re.search(r"[A-Za-z\u4e00-\u9fff]", title):
+        return "", "", ""
+    return title, year_match.group(1), media_type
+
+
+def _resolve_rss_title_year_metadata(title, year, media_type=""):
+    """Resolve only one exact title+year TMDB hit across movie and TV search."""
+    title = str(title or "").strip()
+    year = extract_year(year)
+    media_type = media_type if media_type in {"movie", "tv"} else ""
+    if not title or not year:
+        return {}
+    query = {"title": compact_match_text(title), "year": year, "media_type": media_type}
+    cached = get_discover_cache("rss_title_year_find", query)
+    if isinstance(cached, dict):
+        item = cached.get("item")
+        if isinstance(item, dict):
+            set_discover_item_cache(item, "rss_title_year_find")
+            return deepcopy(item)
+        return {}
+
+    cfg = load_tmdb_config()
+    if not tmdb_credentials_available(cfg):
+        return {}
+    target = compact_match_text(title)
+    unique = {}
+    try:
+        for endpoint_type in ([media_type] if media_type else ["movie", "tv"]):
+            params = {
+                "api_key": cfg.get("api_key") or "",
+                "language": "zh-CN",
+                "include_adult": "false",
+                "query": title,
+                "page": "1",
+                "primary_release_year" if endpoint_type == "movie" else "first_air_date_year": year,
+            }
+            payload = http_json(
+                f"{cfg['api_base_url']}/search/{endpoint_type}?" + urllib.parse.urlencode(params),
+                timeout=12,
+            )
+            for row in payload.get("results") or []:
+                if not isinstance(row, dict) or not str(row.get("id") or "").isdigit():
+                    continue
+                names = {
+                    compact_match_text(row.get(key) or "")
+                    for key in ("title", "name", "original_title", "original_name")
+                    if row.get(key)
+                }
+                date = str(row.get("release_date") or row.get("first_air_date") or "")
+                if target not in names or not date.startswith(year):
+                    continue
+                unique[(endpoint_type, str(row.get("id")))] = (endpoint_type, row)
+    except Exception:
+        return {}
+
+    if len(unique) != 1:
+        set_discover_cache(
+            "rss_title_year_find",
+            query,
+            {"success": True, "resolved": False},
+            ttl=RSS_TITLE_YEAR_MISS_CACHE_SECONDS,
+        )
+        return {}
+
+    resolved_type, row = next(iter(unique.values()))
+    item = normalize_tmdb_item(row, resolved_type)
+    item.update({
+        "id": str(row.get("id")),
+        "tmdb_id": str(row.get("id")),
+        "media_type": resolved_type,
+        "source": "TMDB",
+    })
+    set_discover_cache(
+        "rss_title_year_find",
+        query,
+        {"success": True, "resolved": True, "item": item},
+        ttl=DISCOVER_PERMANENT_CACHE_SECONDS,
+    )
+    return deepcopy(item)
+
+
+def enrich_rss_items_from_title_year(items, limit=RSS_TITLE_YEAR_ENRICHMENT_BATCH_SIZE):
+    """Conservatively enrich unidentified movie-like rows from one exact title+year hit."""
+    source_items = [dict(item) for item in items or [] if isinstance(item, dict)]
+    try:
+        batch_limit = max(1, min(int(limit or RSS_TITLE_YEAR_ENRICHMENT_BATCH_SIZE), 50))
+    except (TypeError, ValueError):
+        batch_limit = RSS_TITLE_YEAR_ENRICHMENT_BATCH_SIZE
+    identities = []
+    item_identities = []
+    for item in source_items:
+        identity = _rss_release_title_year(item)
+        item_identities.append(identity)
+        if identity[0] and identity not in identities and len(identities) < batch_limit:
+            identities.append(identity)
+    if not identities:
+        return source_items
+
+    resolved = {}
+    with ThreadPoolExecutor(max_workers=min(4, len(identities)), thread_name_prefix="rss-title-year") as executor:
+        futures = {
+            executor.submit(_resolve_rss_title_year_metadata, title, year, media_type): identity
+            for identity in identities
+            for title, year, media_type in [identity]
+        }
+        for future in as_completed(futures):
+            try:
+                value = future.result()
+            except Exception:
+                value = {}
+            if isinstance(value, dict) and value.get("tmdb_id") and value.get("media_type"):
+                resolved[futures[future]] = value
+
+    enriched = []
+    for item, identity in zip(source_items, item_identities):
+        result = dict(item)
+        metadata = resolved.get(identity) or {}
+        resolved_type = str(metadata.get("media_type") or "").strip().lower()
+        existing_type = str(item.get("media_type") or item.get("mediaType") or "").strip().lower()
+        if metadata and resolved_type in {"movie", "tv"} and existing_type in {"", resolved_type}:
+            result["tmdb_id"] = str(metadata.get("tmdb_id") or "")
+            result["media_type"] = resolved_type
+            result["identity_status"] = "identified"
+            result["identity_source"] = "tmdb_title_year"
+            result["identity_confidence"] = "fallback"
+        enriched.append(result)
+    return enriched
+
+
+def enrich_rss_items(items):
+    """Apply explicit-ID enrichment first, then the conservative title/year fallback."""
+    return enrich_rss_items_from_title_year(enrich_rss_items_from_imdb(items))
+
+
 def read_cached_rss_media_metadata(identities):
     """Read card metadata from the existing discover cache without refreshing it."""
     normalized = set()
@@ -6266,12 +6432,23 @@ def parse_douban_chart(html):
     return items[:24]
 
 
-def fetch_douban_subjects(page, limit):
+def _douban_browse_source(media_type="movie", category=""):
+    media_type = "tv" if str(media_type or "").strip().lower() == "tv" else "movie"
+    category = str(category or "").strip()
+    source = DOUBAN_SUBSCRIPTION_SOURCES.get(category)
+    if not source or source.get("media_type") != media_type:
+        category = "hot_tv" if media_type == "tv" else "hot_movie"
+        source = DOUBAN_SUBSCRIPTION_SOURCES[category]
+    return category, source
+
+
+def fetch_douban_subjects(page, limit, media_type="movie", category=""):
+    source_key, source = _douban_browse_source(media_type, category)
     start = (page - 1) * limit
     params = {
-        "type": "movie",
-        "tag": "\u70ed\u95e8",
-        "sort": "recommend",
+        "type": source["media_type"],
+        "tag": source["tag"],
+        "sort": source["sort"],
         "page_limit": str(limit),
         "page_start": str(start),
     }
@@ -6294,12 +6471,15 @@ def fetch_douban_subjects(page, limit):
             "source": "\u8c46\u74e3",
             "title": title,
             "year": extract_year(subject.get("year"), subject.get("card_subtitle"), subject.get("episodes_info"), subject.get("url")) or current_year(),
-            "type": "\u7535\u5f71",
+            "type": "\u7535\u89c6\u5267" if source["media_type"] == "tv" else "\u7535\u5f71",
+            "media_type": source["media_type"],
             "rating": clean_html(subject.get("rate") or ""),
             "poster_url": subject.get("cover") or "",
             "backdrop_url": "",
             "id": str(subject.get("id") or ""),
             "url": subject.get("url") or "",
+            "source_key": source_key,
+            "source_label": source["label"],
         })
     return rows
 
@@ -6308,9 +6488,15 @@ def fetch_douban(query=None):
     query = query or {}
     page = parse_positive_int(query.get("page"), 1, 1, 500)
     limit = parse_positive_int(query.get("limit"), 24, 1, 24)
+    source_key, source = _douban_browse_source(
+        query.get("type"),
+        query.get("category") or query.get("doubanCategory"),
+    )
     now = time.time()
     try:
-        page_items = enrich_library_status_items(fetch_douban_subjects(page, limit))
+        page_items = enrich_library_status_items(
+            fetch_douban_subjects(page, limit, source["media_type"], source_key)
+        )
         total_pages = page + 1 if len(page_items) >= limit else page
         total_results = (page - 1) * limit + len(page_items)
         if len(page_items) >= limit:
@@ -6318,6 +6504,8 @@ def fetch_douban(query=None):
         return {
             "success": True,
             "source": "\u8c46\u74e3",
+            "category": source_key,
+            "category_label": source["label"],
             "items": page_items,
             "page": page,
             "limit": limit,
@@ -6328,6 +6516,8 @@ def fetch_douban(query=None):
             "generated_at": int(now),
         }
     except Exception:
+        if source_key != "hot_movie":
+            raise
         if DOUBAN_CACHE["items"] and now - DOUBAN_CACHE["time"] < 900:
             items = DOUBAN_CACHE["items"]
         else:
@@ -6341,6 +6531,8 @@ def fetch_douban(query=None):
     return {
         "success": True,
         "source": "豆瓣",
+        "category": source_key,
+        "category_label": source["label"],
         "items": page_items,
         "page": page,
         "limit": limit,

@@ -125,6 +125,37 @@ class PrivateRssCollectorTests(unittest.TestCase):
             self.assertEqual(stored["mediaType"], "movie")
             self.assertEqual(remaining, [])
 
+    def test_historical_title_year_enrichment_persists_exact_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "bad-words",
+                "title": "Bad Words 2013 1080p WEB-DL",
+                "media_type": "",
+                "identity_status": "unidentified",
+            }])
+
+            def enrich(items):
+                return [{
+                    **item,
+                    "tmdb_id": "209403",
+                    "media_type": "movie",
+                    "identity_status": "identified",
+                    "identity_source": "tmdb_title_year",
+                    "identity_confidence": "fallback",
+                } for item in items]
+
+            collector = PrivateRssCollector(repository, item_enricher=enrich)
+            result = collector._enrich_historical_title_year_items()
+            stored = repository.search_items()["items"][0]
+
+            self.assertEqual(result, {"attempted": 1, "enriched": 1})
+            self.assertEqual(stored["tmdbId"], "209403")
+            self.assertEqual(stored["mediaType"], "movie")
+            self.assertEqual(stored["identityStatus"], "identified")
+            self.assertEqual(stored["identitySource"], "tmdb_title_year")
+
     def test_fetch_persists_parsed_items_without_exposing_url(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")

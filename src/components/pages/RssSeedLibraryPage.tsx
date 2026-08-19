@@ -1158,6 +1158,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const timeline = useMemo(() => {
     if (resourceContext.episodeNumber == null) return items;
     const scopePriority = {
+      movie: 0,
       explicit_episode: 0,
       explicit_multi_episode: 1,
       season_pack: 2,

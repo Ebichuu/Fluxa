@@ -575,6 +575,9 @@ export function browseDiscover(params: DiscoverBrowseParams): Promise<DiscoverRe
   if (params.provider) {
     query.set('provider', params.provider);
   }
+  if (params.source === 'douban') {
+    query.set('doubanCategory', params.doubanCategory);
+  }
   return readJson<DiscoverResponse>(`/api/discover/browse?${query.toString()}`);
 }
 

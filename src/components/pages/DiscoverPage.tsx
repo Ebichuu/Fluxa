@@ -83,7 +83,8 @@ interface DiscoverPageProps {
 }
 
 type DiscoverSource = DiscoverBrowseParams['source'];
-type FilterKey = 'type' | 'trend' | 'sort' | 'language' | 'year' | 'genre';
+type DoubanCategory = DiscoverBrowseParams['doubanCategory'];
+type FilterKey = 'type' | 'trend' | 'sort' | 'language' | 'year' | 'genre' | 'doubanCategory';
 
 interface FilterOption {
   value: string;
@@ -118,6 +119,7 @@ const defaultFilters: DiscoverBrowseParams = {
   year: 'all',
   genre: 'all',
   provider: 'netflix',
+  doubanCategory: 'hot_movie',
   page: 1,
   limit: 16
 };
@@ -145,6 +147,30 @@ const streamingPlatforms: FilterOption[] = [
   { value: 'paramount', label: 'Paramount+' },
   { value: 'peacock', label: 'Peacock' }
 ];
+
+const doubanMovieCategories: FilterOption[] = [
+  { value: 'hot_movie', label: '热门电影' },
+  { value: 'movie_realtime', label: '实时热榜' },
+  { value: 'showing', label: '正在上映' }
+];
+
+const doubanTvCategories: FilterOption[] = [
+  { value: 'hot_tv', label: '热门剧集' },
+  { value: 'tv_realtime', label: '实时热榜' },
+  { value: 'global_tv', label: '全球剧集' },
+  { value: 'domestic_tv', label: '国产剧' },
+  { value: 'japanese_tv', label: '日剧' },
+  { value: 'korean_tv', label: '韩剧' },
+  { value: 'american_tv', label: '美剧' },
+  { value: 'anime_tv', label: '动画' }
+];
+
+function doubanCategoryForType(type: DiscoverBrowseParams['type'], value?: string | null): DoubanCategory {
+  const options = type === 'tv' ? doubanTvCategories : doubanMovieCategories;
+  return options.some((item) => item.value === value)
+    ? value as DoubanCategory
+    : type === 'tv' ? 'hot_tv' : 'hot_movie';
+}
 
 const filterGroups: FilterGroup[] = [
   {
@@ -246,6 +272,12 @@ function formatCount(value: number) {
 }
 
 function activeFilterCount(filters: DiscoverBrowseParams) {
+  if (filters.source === 'douban') {
+    return [
+      filters.type !== 'movie',
+      filters.doubanCategory !== doubanCategoryForType(filters.type)
+    ].filter(Boolean).length;
+  }
   if (filters.source !== 'tmdb' && filters.source !== 'streaming') return 0;
   return [
     filters.source === 'tmdb' && filters.trend !== defaultFilters.trend,
@@ -256,12 +288,12 @@ function activeFilterCount(filters: DiscoverBrowseParams) {
   ].filter(Boolean).length;
 }
 
-// 每个来源实际支持的筛选维度：日播/平台热更是固定剧集榜，不显示无效筛选
+// 每个来源实际支持的筛选维度：日播/平台热更是固定榜单，不显示无效筛选
 const sourceFilterKeys: Record<DiscoverSource, FilterKey[]> = {
   candidates: ['type'],
   tmdb: ['type', 'trend', 'sort', 'language', 'year', 'genre'],
   streaming: ['type', 'sort', 'language', 'year', 'genre'],
-  douban: [],
+  douban: ['type'],
   daily: [],
   tencent: [],
   youku: [],
@@ -286,7 +318,8 @@ function readDiscoverUrlState(location: Location = window.location): DiscoverUrl
   const sourceValue = query.get('source');
   const source = sources.some((item) => item.id === sourceValue) ? sourceValue as DiscoverSource : defaultFilters.source;
   const typeValue = query.get('type');
-  const type = forcedTypeForSource(source, typeValue === 'movie' || typeValue === 'tv' ? typeValue : defaultFilters.type);
+  const defaultType = source === 'douban' ? 'movie' : defaultFilters.type;
+  const type = forcedTypeForSource(source, typeValue === 'movie' || typeValue === 'tv' ? typeValue : defaultType);
   const parsedPage = Number(query.get('page'));
   const page = Number.isInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
   return {
@@ -300,6 +333,7 @@ function readDiscoverUrlState(location: Location = window.location): DiscoverUrl
       year: filterOptionValue('year', query.get('year'), defaultFilters.year),
       genre: filterOptionValue('genre', query.get('genre'), defaultFilters.genre),
       provider: streamingPlatforms.some((item) => item.value === query.get('provider')) ? query.get('provider') as string : defaultFilters.provider,
+      doubanCategory: doubanCategoryForType(type, query.get('doubanCategory')),
       page
     },
     query: query.get('q')?.trim() ?? '',
@@ -311,13 +345,19 @@ function writeDiscoverUrlState(state: DiscoverUrlState, mode: UrlHistoryMode) {
   writeUrlQuery({
     q: state.query || null,
     source: state.filters.source === defaultFilters.source ? null : state.filters.source,
-    type: state.filters.type === defaultFilters.type ? null : state.filters.type,
+    type: state.filters.type === (state.filters.source === 'douban' ? 'movie' : defaultFilters.type)
+      ? null
+      : state.filters.type,
     trend: state.filters.trend === defaultFilters.trend ? null : state.filters.trend,
     sort: state.filters.sort === defaultFilters.sort ? null : state.filters.sort,
     language: state.filters.language === defaultFilters.language ? null : state.filters.language,
     year: state.filters.year === defaultFilters.year ? null : state.filters.year,
     genre: state.filters.genre === defaultFilters.genre ? null : state.filters.genre,
     provider: state.filters.source === 'streaming' && state.filters.provider !== defaultFilters.provider ? state.filters.provider : null,
+    doubanCategory: state.filters.source === 'douban'
+      && state.filters.doubanCategory !== doubanCategoryForType(state.filters.type)
+      ? state.filters.doubanCategory
+      : null,
     page: state.page > 1 ? state.page : null
   }, mode);
 }
@@ -1473,10 +1513,12 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   }, [subs, subscriptionsOnly]);
 
   const changeSource = (source: DiscoverSource) => {
+    const nextType = source === 'douban' ? 'movie' : forcedTypeForSource(source, filters.type);
     const nextFilters = {
       ...filters,
       source,
-      type: forcedTypeForSource(source, filters.type),
+      type: nextType,
+      doubanCategory: doubanCategoryForType(nextType),
       page: 1
     };
     setQuery('');
@@ -1487,7 +1529,10 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   };
 
   const updateFilter = (key: FilterKey, value: string) => {
-    const nextFilters = { ...filters, [key]: value, page: 1 };
+    const nextFilters = { ...filters, [key]: value, page: 1 } as DiscoverBrowseParams;
+    if (filters.source === 'douban' && key === 'type') {
+      nextFilters.doubanCategory = doubanCategoryForType(value === 'tv' ? 'tv' : 'movie');
+    }
     setQuery('');
     setActiveSearch('');
     setSearchPage(1);
@@ -2488,7 +2533,14 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   const canPrev = pageInfo.page > 1;
   const canNext = pageInfo.page < totalPages;
   const filterCount = activeFilterCount(filters);
-  const visibleGroups = filterGroups.filter((group) => sourceFilterKeys[filters.source].includes(group.key));
+  const visibleGroups: FilterGroup[] = [
+    ...filterGroups.filter((group) => sourceFilterKeys[filters.source].includes(group.key)),
+    ...(filters.source === 'douban' ? [{
+      key: 'doubanCategory' as const,
+      label: '榜单',
+      options: filters.type === 'tv' ? doubanTvCategories : doubanMovieCategories
+    }] : [])
+  ];
   const visibleResources = useMemo(() => {
     const rows = resourceData?.items ?? [];
     return resourceSource === 'all'
@@ -2817,7 +2869,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
               <div className="discover-filter-row">
                 <span>筛选</span>
                 <div className="discover-filter-options">
-                  <small className="discover-filter-note">该来源是固定剧集榜单，支持搜索和翻页，无筛选维度。</small>
+                  <small className="discover-filter-note">该来源提供固定榜单，支持搜索和翻页，暂无其他筛选维度。</small>
                 </div>
               </div>
             )}

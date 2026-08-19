@@ -7,6 +7,26 @@ import {
   rssTorraAnalysisPresentation,
   summarizeRssOwnerships
 } from '../src/utils/rssLibraryPresentation.ts';
+import {
+  classifyRssResourceScope,
+  countRssResourceScopes,
+  rssResourceScopeLabel,
+  rssResourceScopeSummaryText
+} from '../src/types/rssSeedLibrary.ts';
+
+const movieScope = classifyRssResourceScope({
+  mediaType: 'movie',
+  seasonNumber: null,
+  episodeStart: null,
+  episodeEnd: null,
+  seasonScopeState: 'not_applicable'
+});
+assert.equal(movieScope, 'movie');
+assert.equal(rssResourceScopeLabel(movieScope), '完整电影');
+assert.equal(
+  rssResourceScopeSummaryText(countRssResourceScopes(['movie', 'explicit_episode', 'scope_pending'])),
+  '3 个资源 · 完整电影 1 · 明确单集 1 · 明确多集 0 · 季包 0 · 范围待确认 1'
+);
 
 assert.deepEqual(rssResourceClassificationBlocker({
   identityStatus: 'identified',
