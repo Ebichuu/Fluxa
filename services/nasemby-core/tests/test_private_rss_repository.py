@@ -384,6 +384,9 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             }, {
                 "fingerprint": "blocked",
                 "title": "Blocked Show S01E03",
+            }, {
+                "fingerprint": "retryable",
+                "title": "Retryable Show S01E03",
             }])
             items = {item["title"]: item for item in repository.search_items(limit=10)["items"]}
             scoreable = repository.create_match(
@@ -403,21 +406,37 @@ class PrivateRssRepositoryTests(unittest.TestCase):
                 "status": "blocked",
                 "reason": "identity_conflict",
             })
+            retryable = repository.create_match(
+                items["Retryable Show S01E03"]["id"],
+                "tv:retryable:s1",
+                "tv:retryable:s1:s1:e3",
+                {},
+            )
+            repository.save_match_evaluation([retryable["id"]], {
+                "status": "blocked",
+                "reason": "subscription_category_unconfirmed",
+            })
 
             all_groups = repository.list_candidate_groups(limit=10)
             scoreable_groups = repository.list_candidate_groups(group_scope="scoreable", limit=10)
             cleanup_groups = repository.list_candidate_groups(group_scope="cleanup", limit=10)
             decision_groups = repository.list_candidate_groups(group_scope="decision", limit=10)
+            artifact_decision_groups = repository.list_candidate_artifact_groups(
+                group_scope="decision", limit=10,
+            )
+            summary = repository.resource_center_summary(
+                "2026-01-01T00:00:00Z", "2027-01-01T00:00:00Z",
+            )
 
-            self.assertEqual(all_groups["total"], 3)
-            self.assertEqual(all_groups["counts"]["total"], 3)
-            self.assertEqual(all_groups["counts"]["scoreable_total"], 2)
+            self.assertEqual(all_groups["total"], 4)
+            self.assertEqual(all_groups["counts"]["total"], 4)
+            self.assertEqual(all_groups["counts"]["scoreable_total"], 3)
             self.assertEqual(all_groups["counts"]["needs_cleanup"], 1)
-            self.assertEqual(all_groups["counts"]["blocked"], 1)
-            self.assertEqual(scoreable_groups["total"], 2)
+            self.assertEqual(all_groups["counts"]["blocked"], 2)
+            self.assertEqual(scoreable_groups["total"], 3)
             self.assertEqual(
                 {group["candidates"][0]["id"] for group in scoreable_groups["groups"]},
-                {scoreable["id"], blocked["id"]},
+                {scoreable["id"], blocked["id"], retryable["id"]},
             )
             self.assertEqual(cleanup_groups["total"], 1)
             self.assertEqual(cleanup_groups["groups"][0]["state"], "needs_cleanup")
@@ -427,11 +446,71 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             self.assertEqual(cleanup_groups["groups"][0]["candidates"][0]["id"], orphan["id"])
             self.assertEqual(decision_groups["total"], 2)
             self.assertEqual(
-                {group["state"] for group in decision_groups["groups"]},
-                {"needs_cleanup", "blocked"},
+                {group["candidates"][0]["id"] for group in decision_groups["groups"]},
+                {orphan["id"], blocked["id"]},
+            )
+            self.assertEqual(artifact_decision_groups["total"], 2)
+            self.assertEqual(summary["needsDecision"], decision_groups["total"])
+            self.assertEqual(
+                {
+                    group["representativeMatch"]["id"]
+                    for group in artifact_decision_groups["groups"]
+                },
+                {orphan["id"], blocked["id"]},
             )
             with self.assertRaisesRegex(ValueError, "候选组范围"):
                 repository.list_candidate_groups(group_scope="unknown")
+
+    def test_pending_evaluations_retry_transient_reasons_and_rotate_fairly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "Retry", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "category",
+                "title": "Category S01E01",
+            }, {
+                "fingerprint": "scope",
+                "title": "Scope S01E01",
+            }, {
+                "fingerprint": "conflict",
+                "title": "Conflict S01E01",
+            }])
+            items = {item["title"]: item for item in repository.search_items(limit=10)["items"]}
+            category = repository.create_match(
+                items["Category S01E01"]["id"], "tv:category:s1", "tv:category:s1:e1", {},
+            )
+            scope = repository.create_match(
+                items["Scope S01E01"]["id"], "tv:scope:s1", "tv:scope:s1:e1", {},
+            )
+            conflict = repository.create_match(
+                items["Conflict S01E01"]["id"], "tv:conflict:s1", "tv:conflict:s1:e1", {},
+            )
+            repository.save_match_evaluation([category["id"]], {
+                "status": "blocked",
+                "reason": "subscription_category_unconfirmed",
+                "evaluatedAt": "2026-01-01T00:00:00Z",
+            })
+            repository.save_match_evaluation([scope["id"]], {
+                "status": "blocked",
+                "reason": "candidate_scope_mismatch",
+                "evaluatedAt": "2026-01-02T00:00:00Z",
+            })
+            repository.save_match_evaluation([conflict["id"]], {
+                "status": "blocked",
+                "reason": "identity_conflict",
+                "evaluatedAt": "2025-01-01T00:00:00Z",
+            })
+
+            first = repository.list_pending_evaluation_matches(limit=2)
+            self.assertEqual([match["id"] for match in first], [category["id"], scope["id"]])
+
+            repository.save_match_evaluation([category["id"]], {
+                "status": "blocked",
+                "reason": "subscription_category_unconfirmed",
+                "evaluatedAt": "2026-01-03T00:00:00Z",
+            })
+            rotated = repository.list_pending_evaluation_matches(limit=2)
+            self.assertEqual([match["id"] for match in rotated], [scope["id"], category["id"]])
 
     def test_candidate_group_paginates_units_and_keeps_all_versions_together(self):
         with tempfile.TemporaryDirectory() as directory:

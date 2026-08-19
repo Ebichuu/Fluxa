@@ -120,6 +120,10 @@ def _subscription_categories(subscription):
         "resolved_category",
         "resolvedCategory",
         "category",
+        "qb_category",
+        "qbCategory",
+        "download_category",
+        "downloadCategory",
     ):
         values = subscription.get(field)
         if isinstance(values, str):

@@ -1196,6 +1196,31 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     }, 'push');
   };
 
+  const viewCandidateScoringConditions = (group: RssMatchGroup, match: RssMatch) => {
+    const nextContext: RssResourceContext = {
+      ...emptyResourceContext,
+      contextTitle: group.title || match.itemTitle || '当前候选',
+      subscriptionId: group.subscriptionId || match.subscriptionId || '',
+      matchId: match.id
+    };
+    setResourceContext(nextContext);
+    setResourceView('scoring');
+    setOffset(0);
+    setMatchesOffset(0);
+    setFeedback(null);
+    writeRssLibraryUrlState({
+      view: 'scoring',
+      ...nextContext,
+      query,
+      sourceId,
+      identityStatus,
+      followState,
+      resourceType: mediaTypeFilter,
+      windowFilter,
+      offset: 0
+    }, 'push');
+  };
+
   const previewCleanupGroup = async (group: RssMatchGroup) => {
     const matchIds = group.candidates.map((candidate) => candidate.id);
     setCleanupBusy(true);
@@ -1284,7 +1309,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     resourceContext.publishedDate || resourceContext.subscriptionId || resourceContext.tmdbId || resourceContext.matchId
   );
   const resourceContextTitle = resourceContext.matchId
-    ? '任务来源候选'
+    ? resourceContext.contextTitle || '当前候选评分条件'
     : resourceContext.publishedDate
       ? `${resourceContext.publishedDate}${followState === 'linked' ? ' 追更命中新资源' : ' 新资源'}`
       : resourceContext.contextTitle || '当前追更资源';
@@ -1687,7 +1712,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                         </small>
                       )}
                       {(action || pollTimedOut) && <small className={action?.status === 'failed' || pollTimedOut ? 'rss-match-status rss-match-status--error' : 'rss-match-status'}>{pollTimedOut ? '人工 Torra 分析状态确认超时' : `人工 Torra 分析 · ${matchActionLabel(action, match.status)}`}</small>}
-                      <details className="rss-candidate-group__details">
+                      <details className="rss-candidate-group__details" open={sourceFocused || undefined}>
                         <summary>{group.unitResults?.length ? `查看 ${group.unitResults.length} 个集级结果` : `查看 ${group.candidateCount} 个候选版本`}</summary>
                         <div className="rss-candidate-group__versions">
                           {group.unitResults?.length ? group.unitResults.map((result) => result.match && (
@@ -1721,8 +1746,8 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
                         <Trash2 size={13} />{cleanupBusy ? '正在核验' : '预览归档'}
                       </button>
                     ) : resourceView === 'cleanup' ? (
-                      <button className="ops-action-button" type="button" onClick={() => changeResourceView('scoring')}>
-                        查看评分条件
+                      <button className="ops-action-button" type="button" onClick={() => viewCandidateScoringConditions(group, match)}>
+                        查看该候选评分条件
                       </button>
                     ) : pollTimedOut && action ? (
                       <button className="ops-action-button ops-action-button--primary" type="button" onClick={() => {

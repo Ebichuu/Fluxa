@@ -250,6 +250,7 @@ def _present_rss_match_group(group):
         "baselineState": str(group.get("baselineState") or "baseline_missing")[:80],
         "blockerCode": str(group.get("blockerCode") or "")[:80],
         "nextAction": str(group.get("nextAction") or "continue_monitoring")[:80],
+        "requiresDecision": bool(group.get("requiresDecision")),
         "lastCandidateAt": str(group.get("lastCandidateAt") or "")[:80],
         "ownerships": ownerships,
         "candidates": [

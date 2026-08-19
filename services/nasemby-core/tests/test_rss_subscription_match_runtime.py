@@ -1499,6 +1499,45 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(missing_match["evaluationReason"], "candidate_size_unconfirmed")
         self.assertIsNone(missing_match["candidateScore"])
 
+    def test_shadow_scoring_infers_missing_category_and_retries_blocked_candidate(self):
+        self._watch("tv:202:s1", episode=1, title="Test Show")
+        torra, _qb = self._enable_analysis()
+        domestic_rule = {**self._shadow_rule(), "category": ["tv::02-国产剧"]}
+        self._configure_shadow_torra(torra, [domestic_rule])
+        for field in ("category", "download_category", "save_path"):
+            torra.rows[0].pop(field)
+        inserted = self._insert(
+            "Test Show S01E01 2160p WEB-DL.mkv",
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=2_000_000_000,
+        )
+
+        with patch(
+            "app.subscription_compat_runtime._resolve_category",
+            return_value=(None, "缺少分类证据"),
+        ):
+            self.runtime.wake_matches(inserted["_match_ids"])
+        blocked = self.rss.get_match(inserted["_match_ids"][0])
+        self.assertEqual(blocked["evaluationStatus"], "blocked")
+        self.assertEqual(blocked["evaluationReason"], "subscription_category_unconfirmed")
+
+        with patch(
+            "app.subscription_compat_runtime._resolve_category",
+            return_value=({
+                "key": "tv_cn",
+                "label": "国产剧",
+                "directory": "02-国产剧",
+            }, "TMDB 详情：中国大陆剧集"),
+        ) as resolve_category:
+            result = self.runtime.wake_pending_candidates(limit=1)
+
+        evaluated = self.rss.get_match(inserted["_match_ids"][0])
+        self.assertEqual(result[0]["status"], "evaluated")
+        self.assertEqual(evaluated["evaluationStatus"], "scored")
+        self.assertEqual(evaluated["ruleId"], "anime-rule")
+        self.assertEqual(evaluated["candidateScore"], 30.0)
+        resolve_category.assert_called_once()
+
     def test_watch_unit_backfill_uses_first_download_time_and_is_idempotent(self):
         download_started = self.now[0] - timedelta(hours=1)
         self.subscriptions.append({

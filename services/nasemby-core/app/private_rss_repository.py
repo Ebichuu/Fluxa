@@ -32,6 +32,36 @@ RSS_GROUP_STATES = {
     "blocked",
 }
 RSS_ARTIFACT_GROUP_STATES = RSS_GROUP_STATES | {"partially_best"}
+RSS_MANUAL_DECISION_REASONS = {
+    "artifact_owner_conflict",
+    "baseline_artifact_conflict",
+    "baseline_size_conflict",
+    "identity_conflict",
+    "match_owner_conflict",
+    "rule_ambiguous",
+    "subscription_missing",
+    "subscription_identity_conflict",
+    "torra_subscription_identity_conflict",
+    "torra_subscription_key_conflict",
+    "torra_subscription_owner_mismatch",
+}
+RSS_RETRYABLE_EVALUATION_REASONS = {
+    "artifact_scope_unconfirmed",
+    "baseline_identity_unconfirmed",
+    "baseline_version_unconfirmed",
+    "candidate_scope_mismatch",
+    "candidate_size_unconfirmed",
+    "identity_unconfirmed",
+    "rule_ambiguous",
+    "rule_not_found",
+    "subscription_category_unconfirmed",
+    "subscription_media_type_unconfirmed",
+    "torra_rule_read_failed",
+    "torra_subscription_missing",
+    "torra_unavailable",
+    "version_fields_unconfirmed",
+    "watch_unit_missing",
+}
 MATCH_EVALUATION_COLUMNS = {
     "torra_subscription_id": "TEXT NOT NULL DEFAULT ''",
     "target_key": "TEXT NOT NULL DEFAULT ''",
@@ -1942,6 +1972,17 @@ class PrivateRssRepository:
         return "monitoring_rss"
 
     @staticmethod
+    def _candidate_group_requires_decision(candidates, group_state):
+        if group_state == "needs_cleanup":
+            return True
+        if group_state != "blocked":
+            return False
+        return any(
+            str(row.get("evaluationReason") or "") in RSS_MANUAL_DECISION_REASONS
+            for row in candidates
+        )
+
+    @staticmethod
     def _candidate_group_episode_label(candidates):
         reason = next((
             row.get("reason") for row in candidates
@@ -1957,8 +1998,8 @@ class PrivateRssRepository:
             return f"S{season_number:02d}E{episode_number:02d}"
         return "季集暂未确认"
 
-    @staticmethod
-    def _candidate_group_contract(candidates, group_state):
+    @classmethod
+    def _candidate_group_contract(cls, candidates, group_state):
         best = next((row for row in candidates if row.get("bestCandidate")), None)
         baseline = next((
             row for row in candidates
@@ -1986,7 +2027,11 @@ class PrivateRssRepository:
             next_action = "review_match_cleanup"
         elif group_state == "blocked":
             blocker_code = next((reason for reason in reasons if reason), "candidate_blocked")
-            next_action = "review_candidate_blocker"
+            next_action = (
+                "review_candidate_blocker"
+                if cls._candidate_group_requires_decision(candidates, group_state)
+                else "retry_candidate_evaluation"
+            )
         elif group_state == "upgrade_available":
             blocker_code = ""
             next_action = "preview_exact_download"
@@ -2011,6 +2056,9 @@ class PrivateRssRepository:
     @staticmethod
     def _candidate_groups_query(where=""):
         active_where = f"{where} AND archive_state='active'" if where else "WHERE archive_state='active'"
+        manual_reasons = ",".join(
+            "'" + reason + "'" for reason in sorted(RSS_MANUAL_DECISION_REASONS)
+        )
         return (
             "WITH candidate_groups AS ("
             "SELECT subscription_key, unit_key, MAX(created_at) AS latest_at, "
@@ -2021,7 +2069,10 @@ class PrivateRssRepository:
             "WHEN MAX(CASE WHEN is_best_candidate=1 AND decision IN ('same_score','lower_score','rule_rejected') THEN 1 ELSE 0 END)=1 THEN 'protected' "
             "WHEN COUNT(*)>0 AND SUM(CASE WHEN evaluation_status='blocked' AND evaluation_reason='subscription_missing' THEN 1 ELSE 0 END)=COUNT(*) THEN 'needs_cleanup' "
             "WHEN COUNT(*)>0 AND SUM(CASE WHEN evaluation_status='blocked' THEN 1 ELSE 0 END)=COUNT(*) THEN 'blocked' "
-            "ELSE 'monitoring_rss' END AS group_state "
+            "ELSE 'monitoring_rss' END AS group_state, "
+            "MAX(CASE WHEN evaluation_status='blocked' AND evaluation_reason IN ("
+            + manual_reasons
+            + ") THEN 1 ELSE 0 END) AS decision_required "
             f"FROM rss_subscription_matches {active_where} GROUP BY subscription_key, unit_key"
             ") "
         )
@@ -2145,7 +2196,10 @@ class PrivateRssRepository:
             elif group_scope == "cleanup":
                 state_parts.append("group_state='needs_cleanup'")
             elif group_scope == "decision":
-                state_parts.append("group_state IN ('needs_cleanup', 'blocked')")
+                state_parts.append(
+                    "(group_state='needs_cleanup' OR "
+                    "(group_state='blocked' AND decision_required=1))"
+                )
             state_where = f"WHERE {' AND '.join(state_parts)}" if state_parts else ""
             state_params = tuple(state_params)
             total = int(connection.execute(
@@ -2432,6 +2486,7 @@ class PrivateRssRepository:
             "baselineState": baseline_state,
             "blockerCode": blocker_code,
             "nextAction": next_action,
+            "requiresDecision": cls._candidate_group_requires_decision(candidates, state),
             "lastCandidateAt": max((
                 str(row.get("evaluatedAt") or row.get("createdAt") or "") for row in candidates
             ), default=""),
@@ -2561,7 +2616,10 @@ class PrivateRssRepository:
         elif group_scope == "cleanup":
             filtered = [group for group in filtered if group["state"] == "needs_cleanup"]
         elif group_scope == "decision":
-            filtered = [group for group in filtered if group["state"] in {"needs_cleanup", "blocked"}]
+            filtered = [
+                group for group in filtered
+                if group["state"] == "needs_cleanup" or group.get("requiresDecision") is True
+            ]
         return {
             "groups": filtered[offset:offset + limit],
             "total": len(filtered),
@@ -2636,7 +2694,9 @@ class PrivateRssRepository:
             ).fetchone()["count"])
             decision_count = int(connection.execute(
                 grouped_query
-                + "SELECT COUNT(*) AS count FROM candidate_groups WHERE group_state IN ('needs_cleanup', 'blocked')"
+                + "SELECT COUNT(*) AS count FROM candidate_groups "
+                "WHERE group_state='needs_cleanup' OR "
+                "(group_state='blocked' AND decision_required=1)"
             ).fetchone()["count"])
         return {
             "newToday": int(item_counts["new_today"] or 0),
@@ -2675,14 +2735,15 @@ class PrivateRssRepository:
 
     def list_pending_evaluation_matches(self, limit=20):
         limit = max(1, min(int(limit or 20), 50))
+        retryable_reasons = sorted(RSS_RETRYABLE_EVALUATION_REASONS)
+        placeholders = ",".join("?" for _ in retryable_reasons)
         with closing(self.runtime.connect()) as connection:
             rows = connection.execute(
                 "SELECT * FROM rss_subscription_matches "
                 "WHERE archive_state='active' AND match_status='candidate' AND (evaluation_status='pending' "
-                "OR (evaluation_status='blocked' AND evaluation_reason IN "
-                "('rule_ambiguous', 'version_fields_unconfirmed'))) "
-                "ORDER BY created_at, id LIMIT ?",
-                (limit,),
+                f"OR (evaluation_status='blocked' AND evaluation_reason IN ({placeholders}))) "
+                "ORDER BY COALESCE(NULLIF(evaluated_at, ''), created_at), id LIMIT ?",
+                (*retryable_reasons, limit),
             ).fetchall()
         return [self._match(row) for row in rows]
 

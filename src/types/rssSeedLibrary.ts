@@ -269,6 +269,7 @@ export interface RssMatchGroup {
   baselineState?: 'baseline_ready' | 'baseline_pending' | 'baseline_missing' | 'baseline_conflict' | 'baseline_expired' | string;
   blockerCode?: string;
   nextAction?: string;
+  requiresDecision?: boolean;
   coveredUnits?: string[];
   coveredEpisodeStart?: number | null;
   coveredEpisodeEnd?: number | null;

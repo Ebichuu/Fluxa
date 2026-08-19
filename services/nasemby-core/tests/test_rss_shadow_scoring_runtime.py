@@ -78,6 +78,17 @@ class RssShadowScoringRuntimeTests(unittest.TestCase):
         self.assertEqual(reason, "")
         self.assertEqual(selected["id"], "one")
 
+    def test_selects_rule_from_torra_download_category_fields(self):
+        for field in ("qb_category", "download_category"):
+            with self.subTest(field=field):
+                selected, reason = select_subscription_rule(
+                    [rule()],
+                    {"media_type": "tv", field: "anime"},
+                )
+
+                self.assertEqual(reason, "")
+                self.assertEqual(selected["id"], "anime-rule")
+
     def test_scores_supported_rule_and_keeps_version_decision_separate(self):
         result = score_rss_candidate(rule(), {
             "title": "Show.S01E01.2160p.WEB-DL.mkv",

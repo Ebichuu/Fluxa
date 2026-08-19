@@ -1376,11 +1376,65 @@ class RssSubscriptionMatchRuntime:
             ))
         return saved
 
+    @staticmethod
+    def _select_scoring_rule(rules, subscription, torra_row, item=None):
+        merged = {
+            **(subscription if isinstance(subscription, dict) else {}),
+            **(torra_row if isinstance(torra_row, dict) else {}),
+        }
+        rule, reason = select_subscription_rule(rules, merged)
+        if rule or reason != "subscription_category_unconfirmed":
+            return rule, reason
+
+        source_item = item if isinstance(item, dict) else {}
+        try:
+            from app.subscription_compat_runtime import _resolve_category
+
+            category, _category_reason = _resolve_category({
+                **merged,
+                "title": _text(
+                    source_item.get("title")
+                    or merged.get("title")
+                    or merged.get("name")
+                    or merged.get("keyword")
+                ),
+                "media_type": _media_type(
+                    source_item.get("media_type")
+                    or source_item.get("mediaType")
+                    or merged.get("media_type")
+                    or merged.get("mediaType")
+                    or merged.get("type")
+                ),
+                "tmdb_id": _tmdb_id(source_item) or _tmdb_id(merged),
+                "target_season": (
+                    _int(source_item.get("season_number", source_item.get("seasonNumber")))
+                    or RssSubscriptionMatchRuntime._subscription_season(merged)
+                ),
+            })
+        except Exception:
+            category = None
+        if not isinstance(category, dict):
+            return None, reason
+
+        evidence = [
+            _text(category.get(key))
+            for key in ("key", "label", "directory")
+            if _text(category.get(key))
+        ]
+        if not evidence:
+            return None, reason
+        return select_subscription_rule(
+            rules,
+            {**merged, "resolved_category": evidence},
+        )
+
     def _score_artifact_contexts(self, rules, rule_hashes, contexts, baseline_inputs):
         primary = contexts[0]
-        rule, reason = select_subscription_rule(
+        rule, reason = self._select_scoring_rule(
             rules,
-            {**primary["subscription"], **primary["torraRow"]},
+            primary["subscription"],
+            primary["torraRow"],
+            primary["item"],
         )
         if not rule:
             return self._save_shadow_result(contexts, self._unconfirmed_shadow_result(reason))
@@ -2219,9 +2273,11 @@ class RssSubscriptionMatchRuntime:
                     ):
                         add_blocker("RSS_EXACT_TARGET_CHANGED", "候选季集范围或产物身份已经变化")
                     else:
-                        rule, rule_error = select_subscription_rule(
+                        rule, rule_error = self._select_scoring_rule(
                             rules,
-                            {**context["subscription"], **torra_row},
+                            context["subscription"],
+                            torra_row,
+                            item,
                         )
                         if not rule:
                             add_blocker("RSS_EXACT_RULE_UNCONFIRMED", "适用 Torra 规则暂未确认")
