@@ -131,6 +131,8 @@ SUBSCRIPTION_DETAIL_CACHE_VERSION = 3
 DISCOVER_CACHE_DB_PATH = str(PROJECT_ROOT / "db" / "discover_cache.db")
 DISCOVER_CACHE_TTL_SECONDS = 6 * 60 * 60
 DISCOVER_PERMANENT_CACHE_SECONDS = 20 * 365 * 24 * 60 * 60
+RSS_IMDB_MISS_CACHE_SECONDS = 24 * 60 * 60
+RSS_IMDB_ENRICHMENT_BATCH_SIZE = 20
 DISCOVER_PRELOAD_PAGES = 3
 EMBY_LIBRARY_INDEX_TTL_SECONDS = 5 * 60
 EMBY_LIBRARY_INDEX_CACHE = {"time": 0, "data": None}
@@ -5361,6 +5363,132 @@ def get_cached_discover_item(item):
     return None
 
 
+def _rss_imdb_id(value):
+    imdb_id = str(value or "").strip().lower()
+    return imdb_id if re.fullmatch(r"tt\d{5,12}", imdb_id) else ""
+
+
+def _resolve_rss_imdb_metadata(imdb_id):
+    """Resolve one explicit IMDb identity through TMDB and cache the public card metadata."""
+    imdb_id = _rss_imdb_id(imdb_id)
+    if not imdb_id:
+        return {}
+    query = {"external_source": "imdb_id", "external_id": imdb_id}
+    cached = get_discover_cache("rss_imdb_find", query)
+    if isinstance(cached, dict):
+        item = cached.get("item")
+        if isinstance(item, dict):
+            set_discover_item_cache(item, "rss_imdb_find")
+            return deepcopy(item)
+        return {}
+
+    cfg = load_tmdb_config()
+    if not tmdb_credentials_available(cfg):
+        return {}
+    params = {
+        "api_key": cfg.get("api_key") or "",
+        "external_source": "imdb_id",
+        "language": "zh-CN",
+    }
+    try:
+        payload = http_json(
+            f"{cfg['api_base_url']}/find/{urllib.parse.quote(imdb_id)}?"
+            + urllib.parse.urlencode(params),
+            timeout=12,
+        )
+    except Exception:
+        return {}
+
+    candidates = []
+    for result_key, media_type in (("movie_results", "movie"), ("tv_results", "tv")):
+        for row in payload.get(result_key) or []:
+            if not isinstance(row, dict) or not str(row.get("id") or "").isdigit():
+                continue
+            candidates.append((media_type, row))
+    unique = {
+        (media_type, str(row.get("id"))): (media_type, row)
+        for media_type, row in candidates
+    }
+    if len(unique) != 1:
+        set_discover_cache(
+            "rss_imdb_find",
+            query,
+            {"success": True, "resolved": False},
+            ttl=RSS_IMDB_MISS_CACHE_SECONDS,
+        )
+        return {}
+
+    media_type, row = next(iter(unique.values()))
+    item = normalize_tmdb_item(row, media_type)
+    item.update({
+        "id": str(row.get("id")),
+        "tmdb_id": str(row.get("id")),
+        "imdb_id": imdb_id,
+        "media_type": media_type,
+        "source": "TMDB",
+    })
+    set_discover_cache(
+        "rss_imdb_find",
+        query,
+        {"success": True, "resolved": True, "item": item},
+        ttl=DISCOVER_PERMANENT_CACHE_SECONDS,
+    )
+    return deepcopy(item)
+
+
+def enrich_rss_items_from_imdb(items, limit=RSS_IMDB_ENRICHMENT_BATCH_SIZE):
+    """Enrich IMDb-only RSS rows without changing rows that have conflicting scope evidence."""
+    source_items = [dict(item) for item in items or [] if isinstance(item, dict)]
+    try:
+        batch_limit = max(1, min(int(limit or RSS_IMDB_ENRICHMENT_BATCH_SIZE), 50))
+    except (TypeError, ValueError):
+        batch_limit = RSS_IMDB_ENRICHMENT_BATCH_SIZE
+    imdb_ids = []
+    for item in source_items:
+        imdb_id = _rss_imdb_id(item.get("imdb_id") or item.get("imdbId"))
+        tmdb_id = str(item.get("tmdb_id") or item.get("tmdbId") or "").strip()
+        status = str(item.get("identity_status") or item.get("identityStatus") or "").strip().lower()
+        if imdb_id and not tmdb_id and status == "identified" and imdb_id not in imdb_ids:
+            imdb_ids.append(imdb_id)
+        if len(imdb_ids) >= batch_limit:
+            break
+    if not imdb_ids:
+        return source_items
+
+    resolved = {}
+    with ThreadPoolExecutor(max_workers=min(4, len(imdb_ids)), thread_name_prefix="rss-imdb-find") as executor:
+        futures = {executor.submit(_resolve_rss_imdb_metadata, imdb_id): imdb_id for imdb_id in imdb_ids}
+        for future in as_completed(futures):
+            try:
+                value = future.result()
+            except Exception:
+                value = {}
+            if isinstance(value, dict) and value.get("tmdb_id") and value.get("media_type"):
+                resolved[futures[future]] = value
+
+    enriched = []
+    for item in source_items:
+        result = dict(item)
+        imdb_id = _rss_imdb_id(item.get("imdb_id") or item.get("imdbId"))
+        metadata = resolved.get(imdb_id) or {}
+        resolved_type = str(metadata.get("media_type") or "").strip().lower()
+        existing_type = str(item.get("media_type") or item.get("mediaType") or "").strip().lower()
+        if metadata and resolved_type in {"movie", "tv"} and existing_type in {"", resolved_type}:
+            result["tmdb_id"] = str(metadata.get("tmdb_id") or "")
+            result["media_type"] = resolved_type
+            sources = [
+                value.strip()
+                for value in str(item.get("identity_source") or item.get("identitySource") or "").split(",")
+                if value.strip()
+            ]
+            if "tmdb_find" not in sources:
+                sources.append("tmdb_find")
+            result["identity_source"] = ",".join(sources)
+            result["identity_confidence"] = "strong"
+        enriched.append(result)
+    return enriched
+
+
 def read_cached_rss_media_metadata(identities):
     """Read card metadata from the existing discover cache without refreshing it."""
     normalized = set()
@@ -5371,7 +5499,7 @@ def read_cached_rss_media_metadata(identities):
             season = int(season_number or 0) if media_type == "tv" else 0
         except (TypeError, ValueError):
             continue
-        if not tmdb_id.isdigit() or (media_type == "tv" and season <= 0):
+        if not tmdb_id.isdigit() or season < 0:
             continue
         normalized.add((media_type, tmdb_id, season))
     path = Path(DISCOVER_CACHE_DB_PATH)

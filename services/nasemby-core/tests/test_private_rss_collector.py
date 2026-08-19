@@ -69,6 +69,62 @@ class BlockingSession(FakeSession):
 
 
 class PrivateRssCollectorTests(unittest.TestCase):
+    def test_imdb_only_item_is_enriched_before_persisting(self):
+        payload = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>IMDb</title><item>
+<title>Ballerina 2025 2160p WEB-DL</title><guid>ballerina</guid>
+<description><![CDATA[IMDb https://www.imdb.com/title/tt7181546/]]></description>
+</item></channel></rss>"""
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+
+            def enrich(items):
+                return [{
+                    **item,
+                    "tmdb_id": "541671",
+                    "media_type": "movie",
+                    "identity_source": "rss_description,tmdb_find",
+                } for item in items]
+
+            collector = PrivateRssCollector(
+                repository,
+                session=FakeSession(FakeResponse(payload=payload)),
+                url_validator=lambda url, allow_http=False: url,
+                item_enricher=enrich,
+            )
+            collector.fetch_source(source["id"], persist=True)
+
+            stored = repository.search_items()["items"][0]
+            self.assertEqual(stored["tmdbId"], "541671")
+            self.assertEqual(stored["mediaType"], "movie")
+            self.assertEqual(stored["identitySource"], "rss_description,tmdb_find")
+
+    def test_historical_imdb_enrichment_rotates_checked_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "old-imdb",
+                "title": "Old IMDb Release",
+                "imdb_id": "tt1234567",
+                "identity_status": "identified",
+                "identity_source": "rss_description",
+            }])
+
+            def enrich(items):
+                return [{**item, "tmdb_id": "7654321", "media_type": "movie"} for item in items]
+
+            collector = PrivateRssCollector(repository, item_enricher=enrich)
+            result = collector._enrich_historical_imdb_items()
+            remaining = repository.list_imdb_items_for_enrichment(limit=12)
+            stored = repository.search_items()["items"][0]
+
+            self.assertEqual(result, {"attempted": 1, "enriched": 1})
+            self.assertEqual(stored["tmdbId"], "7654321")
+            self.assertEqual(stored["mediaType"], "movie")
+            self.assertEqual(remaining, [])
+
     def test_fetch_persists_parsed_items_without_exposing_url(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")

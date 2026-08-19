@@ -37,6 +37,94 @@ class DiscoverCandidateRuntimeTests(unittest.TestCase):
             "https://image.tmdb.org/t/p/w342/cached.jpg",
         )
 
+    def test_rss_media_metadata_accepts_show_level_cache_without_season_scope(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            discover_runtime,
+            "DISCOVER_CACHE_DB_PATH",
+            str(Path(directory) / "discover-cache.sqlite3"),
+        ):
+            discover_runtime.set_discover_item_cache({
+                "title": "未标季剧集",
+                "media_type": "tv",
+                "tmdb_id": "778899",
+                "poster_url": "https://image.tmdb.org/t/p/w342/show.jpg",
+            }, "test")
+
+            result = discover_runtime.read_cached_rss_media_metadata({("tv", "778899", 0)})
+
+        self.assertEqual(result[("tv", "778899", 0)]["mediaTitle"], "未标季剧集")
+        self.assertEqual(result[("tv", "778899", 0)]["posterUrl"], "https://image.tmdb.org/t/p/w342/show.jpg")
+
+    def test_rss_imdb_enrichment_resolves_exact_tmdb_result_and_reuses_cache(self):
+        calls = []
+
+        def fake_http(url, timeout=18):
+            calls.append((url, timeout))
+            return {
+                "movie_results": [{
+                    "id": 541671,
+                    "title": "芭蕾杀姬",
+                    "release_date": "2025-06-06",
+                    "poster_path": "/ballerina.jpg",
+                }],
+                "tv_results": [],
+            }
+
+        item = {
+            "title": "Ballerina 2025 2160p WEB-DL",
+            "media_type": "",
+            "tmdb_id": "",
+            "imdb_id": "tt7181546",
+            "identity_status": "identified",
+            "identity_source": "rss_description",
+        }
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            discover_runtime,
+            "DISCOVER_CACHE_DB_PATH",
+            str(Path(directory) / "discover-cache.sqlite3"),
+        ), patch.object(
+            discover_runtime,
+            "load_tmdb_config",
+            return_value={
+                "api_key": "test-key",
+                "api_token": "",
+                "api_base_url": "https://api.themoviedb.org/3",
+                "image_base_url": "https://image.tmdb.org/t/p",
+            },
+        ), patch.object(discover_runtime, "http_json", side_effect=fake_http):
+            first = discover_runtime.enrich_rss_items_from_imdb([item])
+            second = discover_runtime.enrich_rss_items_from_imdb([item])
+            cached = discover_runtime.read_cached_rss_media_metadata({("movie", "541671", 0)})
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(first[0]["tmdb_id"], "541671")
+        self.assertEqual(first[0]["media_type"], "movie")
+        self.assertIn("tmdb_find", first[0]["identity_source"])
+        self.assertEqual(second[0]["tmdb_id"], "541671")
+        self.assertEqual(cached[("movie", "541671", 0)]["mediaTitle"], "芭蕾杀姬")
+        self.assertEqual(
+            cached[("movie", "541671", 0)]["posterUrl"],
+            "https://image.tmdb.org/t/p/w342/ballerina.jpg",
+        )
+
+    def test_rss_imdb_enrichment_does_not_override_conflicting_scope_type(self):
+        item = {
+            "title": "Series S01E01",
+            "media_type": "tv",
+            "tmdb_id": "",
+            "imdb_id": "tt1234567",
+            "identity_status": "identified",
+        }
+        with patch.object(
+            discover_runtime,
+            "_resolve_rss_imdb_metadata",
+            return_value={"tmdb_id": "123", "media_type": "movie"},
+        ):
+            result = discover_runtime.enrich_rss_items_from_imdb([item])
+
+        self.assertEqual(result[0]["tmdb_id"], "")
+        self.assertEqual(result[0]["media_type"], "tv")
+
     def add_candidate(self, repository, *, tmdb_id="200", media_type="tv", season=1, **payload):
         source = {
             "title": payload.pop("title", "日播候选"),

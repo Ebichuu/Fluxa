@@ -251,6 +251,9 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             artifact_grouped_by_item = client.get(
                 f"/api/v2/rss-matches?view=artifact-groups&itemId={item_id}&limit=2"
             )
+            artifact_grouped_searched = client.get(
+                "/api/v2/rss-matches?view=artifact-groups&q=%E6%B5%8B%E8%AF%95&sort=score&limit=10"
+            )
             grouped_scoreable = client.get("/api/v2/rss-matches?view=groups&groupScope=scoreable&limit=10")
             grouped_cleanup = client.get("/api/v2/rss-matches?view=groups&groupScope=cleanup&limit=10")
             grouped_decision = client.get("/api/v2/rss-matches?view=groups&groupScope=decision&limit=10")
@@ -268,6 +271,9 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             invalid_view = client.get("/api/v2/rss-matches?view=unknown")
             invalid_group_state = client.get("/api/v2/rss-matches?view=groups&groupState=unknown")
             invalid_group_scope = client.get("/api/v2/rss-matches?view=groups&groupScope=unknown")
+            invalid_artifact_sort = client.get(
+                "/api/v2/rss-matches?view=artifact-groups&sort=unknown"
+            )
 
             self.assertEqual(created.status_code, 201)
             self.assertEqual(detail.status_code, 200)
@@ -277,6 +283,8 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             self.assertEqual(grouped.status_code, 200)
             self.assertEqual(artifact_grouped.status_code, 200)
             self.assertEqual(artifact_grouped_by_item.status_code, 200)
+            self.assertEqual(artifact_grouped_searched.status_code, 200)
+            self.assertEqual(artifact_grouped_searched.get_json()["total"], 1)
             self.assertEqual(artifact_grouped_by_item.get_json()["total"], 1)
             self.assertEqual(
                 artifact_grouped_by_item.get_json()["groups"][0]["candidates"][0]["itemId"],
@@ -308,6 +316,8 @@ class PrivateRssApiRuntimeTests(unittest.TestCase):
             self.assertEqual(grouped_upgrade.get_json()["total"], 0)
             self.assertEqual(grouped_subscription.get_json()["total"], 1)
             self.assertEqual(grouped_match.get_json()["groups"][0]["candidates"][0]["id"], created.get_json()["id"])
+            self.assertEqual(invalid_artifact_sort.status_code, 422)
+            self.assertEqual(invalid_artifact_sort.get_json()["code"], "RSS_MATCH_QUERY_INVALID")
             self.assertEqual(published_today.get_json()["total"], 1)
             self.assertEqual(invalid_published_date.status_code, 422)
             self.assertEqual(invalid_published_date.get_json()["code"], "RSS_QUERY_INVALID")

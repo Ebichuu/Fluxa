@@ -534,6 +534,7 @@ def register_private_rss(
     config_loader=None,
     match_runtime=None,
     media_metadata_cache_loader=None,
+    item_enricher=None,
 ):
     resolved_environment = os.environ if environment is None else environment
     repository = repository or PrivateRssRepository(
@@ -564,6 +565,7 @@ def register_private_rss(
             repository,
             item_matcher=match_runtime.match_inserted_rows,
             match_waker=match_runtime.wake_matches,
+            item_enricher=item_enricher,
         ),
         match_runtime=match_runtime,
     )
@@ -711,6 +713,9 @@ def register_private_rss(
                         status=request.args.get("status") or "",
                         group_state=request.args.get("groupState") or "",
                         group_scope=request.args.get("groupScope") or "",
+                        query=request.args.get("q") or "",
+                        blocker_code=request.args.get("blockerCode") or "",
+                        sort=request.args.get("sort") or "recent",
                         subscription_id=request.args.get("subscriptionId") or "",
                         media_type=request.args.get("mediaType") or "",
                         season_number=request.args.get("seasonNumber") or None,

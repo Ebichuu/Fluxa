@@ -701,6 +701,18 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             self.assertEqual(
                 repository.list_candidate_artifact_groups(group_state="partially_best")["total"], 1
             )
+            self.assertEqual(
+                repository.list_candidate_artifact_groups(blocker_code="artifact_partially_best")["total"], 1
+            )
+            searched = repository.list_candidate_artifact_groups(query="REMUX")
+            self.assertEqual(searched["total"], 1)
+            self.assertEqual(searched["groups"][0]["candidateCount"], 1)
+            self.assertEqual(
+                repository.list_candidate_artifact_groups(sort="score")["groups"][0]["bestCandidateScore"], 90
+            )
+            self.assertEqual(
+                repository.list_candidate_artifact_groups(sort="gain")["groups"][0]["bestCandidateScore"], 90
+            )
             ranged_by_item = repository.list_candidate_artifact_groups(
                 item_id=items["Range Show S01E02-E03 2160p"]["id"], limit=2,
             )
@@ -714,6 +726,8 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             self.assertEqual(repository.list_candidate_artifact_groups(item_id="rss:missing")["total"], 0)
             with self.assertRaisesRegex(ValueError, "资源 ID"):
                 repository.list_candidate_artifact_groups(item_id="x" * 81)
+            with self.assertRaisesRegex(ValueError, "排序"):
+                repository.list_candidate_artifact_groups(sort="unknown")
 
     def test_needs_review_filter_uses_full_repository_scope(self):
         with tempfile.TemporaryDirectory() as directory:

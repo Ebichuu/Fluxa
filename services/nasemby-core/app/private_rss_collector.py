@@ -76,12 +76,21 @@ def _retry_after_seconds(value, now=None):
 
 
 class PrivateRssCollector:
-    def __init__(self, repository, session=None, url_validator=None, item_matcher=None, match_waker=None):
+    def __init__(
+        self,
+        repository,
+        session=None,
+        url_validator=None,
+        item_matcher=None,
+        match_waker=None,
+        item_enricher=None,
+    ):
         self.repository = repository
         self.session = session
         self.url_validator = url_validator or validate_feed_url
         self.item_matcher = item_matcher
         self.match_waker = match_waker
+        self.item_enricher = item_enricher
         self._global_slots = threading.BoundedSemaphore(2)
         self._source_locks = {}
         self._source_locks_guard = threading.Lock()
@@ -148,9 +157,10 @@ class PrivateRssCollector:
     def _store_result(self, source, response, parsed, persist):
         result = {"status": "success", "items": len(parsed["items"]), "title": parsed.get("title") or ""}
         if persist:
+            items = self._enrich_items(parsed["items"])
             changes = self.repository.upsert_items(
                 source["id"],
-                parsed["items"],
+                items,
                 on_insert=self.item_matcher,
             )
             match_ids = changes.pop("_match_ids", [])
@@ -168,6 +178,24 @@ class PrivateRssCollector:
             )
             result.update(changes)
         return result
+
+    def _enrich_items(self, items):
+        source_items = [dict(item) for item in items or [] if isinstance(item, dict)]
+        if not source_items or not self.item_enricher:
+            return source_items
+        try:
+            enriched = self.item_enricher(source_items)
+        except Exception:
+            return source_items
+        return enriched if isinstance(enriched, list) and len(enriched) == len(source_items) else source_items
+
+    def _enrich_historical_imdb_items(self):
+        if not self.item_enricher:
+            return {"attempted": 0, "enriched": 0}
+        rows = self.repository.list_imdb_items_for_enrichment(limit=12)
+        if not rows:
+            return {"attempted": 0, "enriched": 0}
+        return self.repository.apply_imdb_enrichment(self._enrich_items(rows))
 
     def _request(self, session, url, headers, allow_http):
         response = None
@@ -240,5 +268,6 @@ class PrivateRssCollector:
         sources = self.repository.due_sources()
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="private-rss-fetch") as executor:
             results = list(executor.map(fetch_one, sources))
+        self._enrich_historical_imdb_items()
         self.repository.cleanup()
         return results

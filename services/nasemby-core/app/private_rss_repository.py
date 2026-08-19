@@ -476,6 +476,7 @@ class PrivateRssRepository:
                 "tmdb_id TEXT NOT NULL DEFAULT '', imdb_id TEXT NOT NULL DEFAULT '', "
                 "identity_status TEXT NOT NULL DEFAULT 'unidentified', identity_source TEXT NOT NULL DEFAULT '', "
                 "identity_confidence TEXT NOT NULL DEFAULT '', identity_updated_at TEXT NOT NULL DEFAULT '', "
+                "imdb_enrichment_checked_at TEXT NOT NULL DEFAULT '', "
                 "match_checked_at TEXT NOT NULL DEFAULT '', "
                 "created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, expires_at TEXT NOT NULL, UNIQUE(source_id, fingerprint))"
             )
@@ -524,6 +525,10 @@ class PrivateRssRepository:
                 connection.execute("ALTER TABLE rss_items ADD COLUMN identity_confidence TEXT NOT NULL DEFAULT ''")
             if "identity_updated_at" not in item_columns:
                 connection.execute("ALTER TABLE rss_items ADD COLUMN identity_updated_at TEXT NOT NULL DEFAULT ''")
+            if "imdb_enrichment_checked_at" not in item_columns:
+                connection.execute(
+                    "ALTER TABLE rss_items ADD COLUMN imdb_enrichment_checked_at TEXT NOT NULL DEFAULT ''"
+                )
             if "match_checked_at" not in item_columns:
                 connection.execute("ALTER TABLE rss_items ADD COLUMN match_checked_at TEXT NOT NULL DEFAULT ''")
             connection.execute(
@@ -533,6 +538,10 @@ class PrivateRssRepository:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_rss_items_match_check "
                 "ON rss_items(match_checked_at, identity_status)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rss_items_imdb_enrichment "
+                "ON rss_items(imdb_enrichment_checked_at, published_at DESC)"
             )
             _initialize_match_table(connection)
             _initialize_rule_snapshot_table(connection)
@@ -1266,6 +1275,58 @@ class PrivateRssRepository:
                 "SELECT COUNT(*) AS count FROM rss_items "
                 "WHERE identity_status='unidentified' AND tmdb_id='' AND imdb_id=''"
             ).fetchone()["count"])
+
+    def list_imdb_items_for_enrichment(self, limit=12, retry_hours=168):
+        limit = max(1, min(int(limit or 12), 50))
+        retry_before = _iso(_now() - timedelta(hours=max(1, int(retry_hours or 168))))
+        with closing(self.runtime.connect()) as connection:
+            return [dict(row) for row in connection.execute(
+                "SELECT i.*, s.name AS source_name, s.domain AS source_domain "
+                "FROM rss_items i JOIN rss_sources s ON s.id=i.source_id "
+                "WHERE i.identity_status='identified' AND i.tmdb_id='' AND i.imdb_id<>'' "
+                "AND (i.imdb_enrichment_checked_at='' OR i.imdb_enrichment_checked_at<=?) "
+                "ORDER BY CASE WHEN i.imdb_enrichment_checked_at='' THEN 0 ELSE 1 END, "
+                "COALESCE(NULLIF(i.published_at, ''), i.created_at) DESC, i.id DESC LIMIT ?",
+                (retry_before, limit),
+            ).fetchall()]
+
+    def apply_imdb_enrichment(self, items):
+        rows = [dict(item) for item in items or [] if isinstance(item, dict) and item.get("id")]
+        attempted = enriched = 0
+        checked_at = _iso()
+        with self.runtime.transaction(immediate=True) as connection:
+            for item in rows:
+                current = connection.execute(
+                    "SELECT media_type, tmdb_id, imdb_id, identity_status, identity_source "
+                    "FROM rss_items WHERE id=?",
+                    (str(item.get("id")),),
+                ).fetchone()
+                if not current or str(current["identity_status"] or "") != "identified":
+                    continue
+                if str(current["tmdb_id"] or "") or not str(current["imdb_id"] or ""):
+                    continue
+                attempted += 1
+                tmdb_id = str(item.get("tmdb_id") or item.get("tmdbId") or "").strip()[:24]
+                media_type = str(item.get("media_type") or item.get("mediaType") or "").strip().lower()
+                current_type = str(current["media_type"] or "").strip().lower()
+                if tmdb_id.isdigit() and media_type in {"movie", "tv"} and current_type in {"", media_type}:
+                    sources = [value for value in str(current["identity_source"] or "").split(",") if value]
+                    if "tmdb_find" not in sources:
+                        sources.append("tmdb_find")
+                    cursor = connection.execute(
+                        "UPDATE rss_items SET tmdb_id=?, media_type=?, identity_source=?, "
+                        "identity_confidence='strong', identity_updated_at=?, imdb_enrichment_checked_at=? "
+                        "WHERE id=? AND identity_status='identified' AND tmdb_id=''",
+                        (tmdb_id, media_type, ",".join(sources)[:160], checked_at, checked_at, str(item.get("id"))),
+                    )
+                    enriched += int(cursor.rowcount > 0)
+                else:
+                    connection.execute(
+                        "UPDATE rss_items SET imdb_enrichment_checked_at=? "
+                        "WHERE id=? AND identity_status='identified' AND tmdb_id=''",
+                        (checked_at, str(item.get("id"))),
+                    )
+        return {"attempted": attempted, "enriched": enriched}
 
     def list_items_for_match(self, limit=200):
         limit = max(1, min(int(limit or 200), 200))
@@ -2498,6 +2559,9 @@ class PrivateRssRepository:
         status="",
         group_state="",
         group_scope="",
+        query="",
+        blocker_code="",
+        sort="recent",
         subscription_id="",
         media_type="",
         season_number=None,
@@ -2516,6 +2580,15 @@ class PrivateRssRepository:
         group_scope = str(group_scope or "").strip().lower()
         if group_scope and group_scope not in RSS_GROUP_SCOPES:
             raise ValueError("RSS 产物候选范围无效")
+        query = str(query or "").strip()
+        if len(query) > 240:
+            raise ValueError("RSS 产物候选搜索无效")
+        blocker_code = str(blocker_code or "").strip().lower()
+        if len(blocker_code) > 80:
+            raise ValueError("RSS 产物候选阻断原因无效")
+        sort = str(sort or "recent").strip().lower()
+        if sort not in {"recent", "score", "gain"}:
+            raise ValueError("RSS 产物候选排序无效")
         media_type = str(media_type or "").strip().lower()
         if media_type and media_type not in {"movie", "tv"}:
             raise ValueError("媒体类型无效")
@@ -2545,6 +2618,12 @@ class PrivateRssRepository:
             if item_id:
                 where.append("m.item_id=?")
                 params.append(item_id)
+            if query:
+                where.append(
+                    "(instr(lower(i.title), lower(?))>0 OR "
+                    "instr(lower(m.subscription_key), lower(?))>0)"
+                )
+                params.extend((query, query))
             selected_subscription = self._stored_subscription_key(connection, subscription_id)
             if subscription_id:
                 where.append("m.subscription_key=?")
@@ -2602,15 +2681,38 @@ class PrivateRssRepository:
             self._artifact_group_projection(subscription, "" if artifact.startswith("match:") else artifact, candidates)
             for (subscription, artifact), candidates in grouped.items()
         ]
-        groups.sort(key=lambda group: (
-            str(group.get("lastCandidateAt") or ""), str(group.get("id") or "")
-        ), reverse=True)
+        if sort == "score":
+            groups.sort(key=lambda group: (
+                float(group["bestCandidateScore"])
+                if isinstance(group.get("bestCandidateScore"), (int, float))
+                and not isinstance(group.get("bestCandidateScore"), bool)
+                else float("-inf"),
+                str(group.get("lastCandidateAt") or ""),
+                str(group.get("id") or ""),
+            ), reverse=True)
+        elif sort == "gain":
+            groups.sort(key=lambda group: (
+                float(group["bestCandidateScore"]) - float(group["baselineScore"])
+                if isinstance(group.get("bestCandidateScore"), (int, float))
+                and not isinstance(group.get("bestCandidateScore"), bool)
+                and isinstance(group.get("baselineScore"), (int, float))
+                and not isinstance(group.get("baselineScore"), bool)
+                else float("-inf"),
+                str(group.get("lastCandidateAt") or ""),
+                str(group.get("id") or ""),
+            ), reverse=True)
+        else:
+            groups.sort(key=lambda group: (
+                str(group.get("lastCandidateAt") or ""), str(group.get("id") or "")
+            ), reverse=True)
         counts = {state: 0 for state in RSS_ARTIFACT_GROUP_STATES}
         for group in groups:
             counts[group["state"]] += 1
         filtered = groups
         if group_state:
             filtered = [group for group in filtered if group["state"] == group_state]
+        if blocker_code:
+            filtered = [group for group in filtered if group.get("blockerCode") == blocker_code]
         if group_scope == "scoreable":
             filtered = [group for group in filtered if group["state"] != "needs_cleanup"]
         elif group_scope == "cleanup":

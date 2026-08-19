@@ -52,8 +52,6 @@ def media_identity(row, *, require_identified=False):
     if media_type not in {"movie", "tv"} or not tmdb_id.isdigit():
         return None
     season = _integer(_value(row, "season_number")) if media_type == "tv" else 0
-    if media_type == "tv" and season <= 0:
-        return None
     return media_type, tmdb_id, season
 
 

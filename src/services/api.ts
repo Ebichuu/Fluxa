@@ -790,6 +790,9 @@ export function getRssArtifactGroups(input: {
   status?: string;
   groupState?: RssMatchGroup['state'];
   groupScope?: 'scoreable' | 'cleanup' | 'decision';
+  query?: string;
+  blockerCode?: string;
+  sort?: 'recent' | 'score' | 'gain';
   subscriptionId?: string;
   mediaType?: 'movie' | 'tv';
   seasonNumber?: number;
@@ -803,6 +806,9 @@ export function getRssArtifactGroups(input: {
   if (input.status) query.set('status', input.status);
   if (input.groupState) query.set('groupState', input.groupState);
   if (input.groupScope) query.set('groupScope', input.groupScope);
+  if (input.query) query.set('q', input.query);
+  if (input.blockerCode) query.set('blockerCode', input.blockerCode);
+  if (input.sort) query.set('sort', input.sort);
   if (input.subscriptionId) query.set('subscriptionId', input.subscriptionId);
   if (input.mediaType) query.set('mediaType', input.mediaType);
   if (input.seasonNumber != null) query.set('seasonNumber', String(input.seasonNumber));
