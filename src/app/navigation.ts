@@ -11,7 +11,7 @@ const canonicalRoutes: Record<PageId, string> = {
   'subscription-settings': '/following/settings',
   'rss-library': '/rss-library',
   settings: '/settings',
-  media: '/media'
+  media: '/hall'
 };
 
 const legacyRoutes: Record<string, PageId> = {
@@ -19,7 +19,8 @@ const legacyRoutes: Record<string, PageId> = {
   '/subscriptions': 'subscriptions',
   '/subscription-settings': 'subscription-settings',
   '/tasks-center': 'tasks',
-  '/control-room': 'control'
+  '/control-room': 'control',
+  '/media': 'hall'
 };
 
 export interface NavigationState {

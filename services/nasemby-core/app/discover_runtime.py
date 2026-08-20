@@ -16,6 +16,7 @@ from importlib.machinery import SourcelessFileLoader
 from pathlib import Path
 
 from app.activity_log import write_activity
+from app.private_rss_parser import extract_release_scope
 from app.sqlite_runtime import resolve_database_path
 from app.subscription_migration import migrate_legacy_subscription_files
 from app.subscription_repository import SubscriptionRepository
@@ -121,6 +122,7 @@ PLATFORM_HOT_SOURCES = {
 }
 
 DOUBAN_CACHE = {"time": 0, "items": []}
+DOUBAN_CACHE_SCHEMA_VERSION = 2
 TMDB_CONFIG = None
 PANSOU_MODULE = None
 HDHIVE_MODULE = None
@@ -2864,7 +2866,7 @@ def fetch_douban_subscription_source(source_key, limit=24):
         rows.append({
             "id": str(subject.get("id") or ""),
             "title": title,
-            "year": extract_year(subject.get("year"), subject.get("card_subtitle"), subject.get("episodes_info"), subject.get("url")) or current_year(),
+            "year": extract_year(subject.get("year"), subject.get("card_subtitle"), subject.get("episodes_info")),
             "type": "\u7535\u89c6\u5267" if source["media_type"] == "tv" else "\u7535\u5f71",
             "media_type": source["media_type"],
             "rating": rate_text,
@@ -5045,10 +5047,6 @@ def extract_year(*values):
     return ""
 
 
-def current_year():
-    return str(time.localtime().tm_year)
-
-
 def tmdb_year_for_candidate(item_type, tmdb_id):
     cfg = load_tmdb_config()
     if not tmdb_credentials_available(cfg) or item_type not in ("movie", "tv") or not tmdb_id:
@@ -5492,16 +5490,14 @@ def enrich_rss_items_from_imdb(items, limit=RSS_IMDB_ENRICHMENT_BATCH_SIZE):
 
 
 def _rss_release_title_year(item):
-    """Extract a movie-like release title/year only when the filename shape is unambiguous."""
+    """Extract an unambiguous movie or explicit-season TV release title/year."""
     if not isinstance(item, dict):
         return "", "", ""
     status = str(item.get("identity_status") or item.get("identityStatus") or "").strip().lower()
     tmdb_id = str(item.get("tmdb_id") or item.get("tmdbId") or "").strip()
     imdb_id = _rss_imdb_id(item.get("imdb_id") or item.get("imdbId"))
     media_type = str(item.get("media_type") or item.get("mediaType") or "").strip().lower()
-    if status != "unidentified" or tmdb_id or imdb_id or media_type not in {"", "movie"}:
-        return "", "", ""
-    if any(item.get(key) is not None for key in ("season_number", "seasonNumber", "episode_start", "episodeStart")):
+    if status != "unidentified" or tmdb_id or imdb_id or media_type not in {"", "movie", "tv"}:
         return "", "", ""
 
     release = str(item.get("title") or "").strip()
@@ -5516,14 +5512,33 @@ def _rss_release_title_year(item):
     if not year_matches:
         return "", "", ""
     year_match = year_matches[-1]
-    raw_title = release[:year_match.start()]
-    if re.search(r"(?:^|[\s._-])S\d{1,3}(?:E\d{1,4})?(?:$|[\s._-])", raw_title, flags=re.IGNORECASE):
+    scope_type, _season, _episode_start, _episode_end = extract_release_scope(
+        release,
+        [str(item.get("category") or "")],
+    )
+    scope_marker = re.search(
+        r"(?<![A-Za-z0-9])S\d{1,2}(?:[ ._-]*E\d{1,4}(?:\s*[-~]\s*E?\d{1,4})?)?(?![A-Za-z0-9])",
+        release[:quality.start()],
+        flags=re.IGNORECASE,
+    )
+    explicit_tv = scope_type == "tv" and scope_marker is not None
+    if media_type == "tv" and not explicit_tv:
         return "", "", ""
+    if media_type == "movie" and explicit_tv:
+        return "", "", ""
+    if not explicit_tv and any(
+        item.get(key) is not None
+        for key in ("season_number", "seasonNumber", "episode_start", "episodeStart")
+    ):
+        return "", "", ""
+
+    title_end = min(year_match.start(), scope_marker.start()) if explicit_tv else year_match.start()
+    raw_title = release[:title_end]
     title = re.sub(r"[._]+", " ", raw_title)
     title = re.sub(r"\s+", " ", title).strip(" -[](){}")
     if len(compact_match_text(title)) < 2 or not re.search(r"[A-Za-z\u4e00-\u9fff]", title):
         return "", "", ""
-    return title, year_match.group(1), media_type
+    return title, year_match.group(1), "tv" if explicit_tv else media_type
 
 
 def _resolve_rss_title_year_metadata(title, year, media_type=""):
@@ -5603,7 +5618,7 @@ def _resolve_rss_title_year_metadata(title, year, media_type=""):
 
 
 def enrich_rss_items_from_title_year(items, limit=RSS_TITLE_YEAR_ENRICHMENT_BATCH_SIZE):
-    """Conservatively enrich unidentified movie-like rows from one exact title+year hit."""
+    """Conservatively enrich unidentified movie and explicit-season TV releases."""
     source_items = [dict(item) for item in items or [] if isinstance(item, dict)]
     try:
         batch_limit = max(1, min(int(limit or RSS_TITLE_YEAR_ENRICHMENT_BATCH_SIZE), 50))
@@ -5646,6 +5661,18 @@ def enrich_rss_items_from_title_year(items, limit=RSS_TITLE_YEAR_ENRICHMENT_BATC
             result["identity_status"] = "identified"
             result["identity_source"] = "tmdb_title_year"
             result["identity_confidence"] = "fallback"
+            if resolved_type == "tv":
+                scope_type, season, episode_start, episode_end = extract_release_scope(
+                    item.get("title"),
+                    [str(item.get("category") or "")],
+                )
+                if scope_type == "tv":
+                    if item.get("season_number", item.get("seasonNumber")) is None:
+                        result["season_number"] = season
+                    if item.get("episode_start", item.get("episodeStart")) is None:
+                        result["episode_start"] = episode_start
+                    if item.get("episode_end", item.get("episodeEnd")) is None:
+                        result["episode_end"] = episode_end
         enriched.append(result)
     return enriched
 
@@ -6421,7 +6448,7 @@ def parse_douban_chart(html):
                 items.append({
                     "source": "豆瓣",
                     "title": title,
-                    "year": extract_year(block) or current_year(),
+                    "year": extract_year(block),
                     "type": "电影",
                     "rating": "",
                     "poster_url": img_match.group(1) if img_match else "",
@@ -6470,7 +6497,7 @@ def fetch_douban_subjects(page, limit, media_type="movie", category=""):
         rows.append({
             "source": "\u8c46\u74e3",
             "title": title,
-            "year": extract_year(subject.get("year"), subject.get("card_subtitle"), subject.get("episodes_info"), subject.get("url")) or current_year(),
+            "year": extract_year(subject.get("year"), subject.get("card_subtitle"), subject.get("episodes_info")),
             "type": "\u7535\u89c6\u5267" if source["media_type"] == "tv" else "\u7535\u5f71",
             "media_type": source["media_type"],
             "rating": clean_html(subject.get("rate") or ""),
@@ -6549,7 +6576,13 @@ _fetch_douban_uncached = fetch_douban
 
 def fetch_douban(query=None):
     query = dict(query or {})
-    return cached_discover_call("douban", query, lambda: _fetch_douban_uncached(query), ttl=discover_cache_ttl_for_query(query))
+    cache_query = {**query, "_schema": DOUBAN_CACHE_SCHEMA_VERSION}
+    return cached_discover_call(
+        "douban",
+        cache_query,
+        lambda: _fetch_douban_uncached(query),
+        ttl=discover_cache_ttl_for_query(query),
+    )
 
 
 def infer_season_episode(text):

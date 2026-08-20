@@ -318,6 +318,25 @@ class EmbyRuntimeContractTests(IsolatedActivityLogMixin, unittest.TestCase):
             self.assertIn("api_key=api-key", url)
             self.assertNotIn("api-key", str(_kwargs))
 
+    def test_emby_library_does_not_present_child_folder_count_as_media_count(self):
+        from app.emby_runtime import EmbyClient, EmbyConfig
+
+        session = FakeSession([FakeResponse(payload={"Items": [{
+            "Id": "series",
+            "Name": "日番",
+            "CollectionType": "tvshows",
+            "ChildCount": 1,
+        }]})])
+        client = EmbyClient(EmbyConfig(
+            base_url="http://emby.example.test",
+            api_key="api-key",
+            user_id="user-id",
+        ), session=session)
+
+        library = client.get_libraries()[0]
+
+        self.assertNotIn("itemCount", library)
+
     def test_tmdb_library_index_paginates_and_links_episode_to_series_across_pages(self):
         from urllib.parse import parse_qs, urlsplit
 

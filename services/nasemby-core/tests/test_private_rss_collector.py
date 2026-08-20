@@ -156,6 +156,44 @@ class PrivateRssCollectorTests(unittest.TestCase):
             self.assertEqual(stored["identityStatus"], "identified")
             self.assertEqual(stored["identitySource"], "tmdb_title_year")
 
+    def test_historical_title_year_enrichment_repairs_explicit_tv_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "mystic-nine-e29",
+                "title": "Mystic Nine S01E29 2026 2160p WEB-DL",
+                "media_type": "",
+                "season_number": None,
+                "episode_start": None,
+                "episode_end": None,
+                "identity_status": "unidentified",
+            }])
+
+            def enrich(items):
+                return [{
+                    **item,
+                    "tmdb_id": "296003",
+                    "media_type": "tv",
+                    "season_number": 1,
+                    "episode_start": 29,
+                    "episode_end": 29,
+                    "identity_status": "identified",
+                    "identity_source": "tmdb_title_year",
+                    "identity_confidence": "fallback",
+                } for item in items]
+
+            collector = PrivateRssCollector(repository, item_enricher=enrich)
+            result = collector._enrich_historical_title_year_items()
+            stored = repository.search_items()["items"][0]
+
+            self.assertEqual(result, {"attempted": 1, "enriched": 1})
+            self.assertEqual(stored["tmdbId"], "296003")
+            self.assertEqual(stored["mediaType"], "tv")
+            self.assertEqual(stored["seasonNumber"], 1)
+            self.assertEqual(stored["episodeStart"], 29)
+            self.assertEqual(stored["episodeEnd"], 29)
+
     def test_fetch_persists_parsed_items_without_exposing_url(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")

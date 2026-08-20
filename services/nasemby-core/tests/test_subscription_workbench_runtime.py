@@ -15,6 +15,7 @@ from app.subscription_workbench_runtime import (
     SubscriptionWorkbenchService,
     _candidate_scan_snapshot,
     _candidate_time_detail,
+    _fact_stage,
     _reconciliation_action_required,
     _reconciliation_composition,
     register_subscription_workbench,
@@ -110,6 +111,25 @@ class FakeRssService:
 
 
 class SubscriptionWorkbenchRuntimeTests(unittest.TestCase):
+    def test_fact_stage_uses_public_symedia_reason_instead_of_internal_detail(self):
+        result = _fact_stage({
+            "stage": "symedia",
+            "state": "protected",
+            "reasonCode": "QUALITY_WEIGHT_NOT_HIGHER",
+            "reasonText": (
+                "保留 /CloudNAS/Media/电视剧/测试剧/S01E01.mkv，"
+                "候选 /115/downloads/S01E01.mkv 权重 31.2 未高于 31.8"
+            ),
+            "userReasonText": "未命中允许入库的版本规则，已保留现有版本",
+        }, "尚无 Symedia 整理证据")
+
+        self.assertEqual(result, {
+            "status": "protected",
+            "detail": "未命中允许入库的版本规则，已保留现有版本",
+        })
+        self.assertNotIn("/CloudNAS/", str(result))
+        self.assertNotIn("31.2", str(result))
+
     def test_reconciliation_composition_is_mutually_exclusive_and_complete(self):
         items = [
             {"reconciliationState": "linked"},

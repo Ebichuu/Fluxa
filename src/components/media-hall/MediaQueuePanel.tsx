@@ -73,7 +73,7 @@ export function MediaQueuePanel({
         <div className="media-queue-panel__title-block">
           <div className="media-queue-panel__title">媒体库浏览</div>
           <div className="media-queue-panel__sub">
-            {activeLibrary ? activeLibrary.name : 'Media Center'} · {items.length} 项
+            {activeLibrary ? activeLibrary.name : 'Media Center'} · 已加载 {items.length} 项
           </div>
         </div>
         <div className="media-queue-panel__head-actions">

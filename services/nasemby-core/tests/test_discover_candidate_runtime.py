@@ -47,6 +47,25 @@ class DiscoverCandidateRuntimeTests(unittest.TestCase):
         self.assertEqual(rows[0]["media_type"], "tv")
         self.assertEqual(rows[0]["source_key"], "korean_tv")
         self.assertEqual(rows[0]["type"], "电视剧")
+        self.assertEqual(rows[0]["year"], "2026")
+
+    def test_douban_subjects_do_not_invent_current_year_when_source_omits_it(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"subjects":[{"id":"37201968","title":"Reply 1988","rate":"9.7","url":"https://movie.douban.com/subject/37201968/"}]}'
+
+        with patch.object(discover_runtime.urllib.request, "urlopen", return_value=Response()):
+            rows = discover_runtime.fetch_douban_subjects(1, 16, "tv", "korean_tv")
+            subscription_rows = discover_runtime.fetch_douban_subscription_source("korean_tv", 16)
+
+        self.assertEqual(rows[0]["year"], "")
+        self.assertEqual(subscription_rows[0]["year"], "")
 
     def test_rss_media_metadata_reads_existing_cache_without_remote_fetch(self):
         discover_runtime.set_discover_item_cache({
@@ -255,7 +274,54 @@ class DiscoverCandidateRuntimeTests(unittest.TestCase):
         self.assertEqual(result[0]["tmdb_id"], "")
         self.assertEqual(result[0]["identity_status"], "unidentified")
 
-    def test_rss_title_year_parser_uses_last_year_before_quality_and_rejects_tv_scope(self):
+    def test_rss_title_year_enrichment_resolves_explicit_tv_episode_and_repairs_scope(self):
+        calls = []
+
+        def fake_http(url, timeout=18):
+            calls.append((url, timeout))
+            return {"results": [{
+                "id": 296003,
+                "name": "Mystic Nine",
+                "original_name": "Mystic Nine",
+                "first_air_date": "2026-01-01",
+                "poster_path": "/mystic-nine.jpg",
+            }]}
+
+        item = {
+            "title": "Mystic Nine S01E29 2026 2160p WEB-DL H.265",
+            "media_type": "",
+            "season_number": None,
+            "episode_start": None,
+            "episode_end": None,
+            "tmdb_id": "",
+            "imdb_id": "",
+            "identity_status": "unidentified",
+        }
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            discover_runtime,
+            "DISCOVER_CACHE_DB_PATH",
+            str(Path(directory) / "discover-cache.sqlite3"),
+        ), patch.object(
+            discover_runtime,
+            "load_tmdb_config",
+            return_value={
+                "api_key": "test-key",
+                "api_token": "",
+                "api_base_url": "https://api.themoviedb.org/3",
+                "image_base_url": "https://image.tmdb.org/t/p",
+            },
+        ), patch.object(discover_runtime, "http_json", side_effect=fake_http):
+            result = discover_runtime.enrich_rss_items_from_title_year([item])
+
+        self.assertEqual(len(calls), 1)
+        self.assertIn("/search/tv?", calls[0][0])
+        self.assertEqual(result[0]["tmdb_id"], "296003")
+        self.assertEqual(result[0]["media_type"], "tv")
+        self.assertEqual(result[0]["season_number"], 1)
+        self.assertEqual(result[0]["episode_start"], 29)
+        self.assertEqual(result[0]["episode_end"], 29)
+
+    def test_rss_title_year_parser_uses_last_year_and_accepts_explicit_tv_scope(self):
         identity = discover_runtime._rss_release_title_year({
             "title": "Blade Runner 2049 2017 2160p UHD BluRay",
             "media_type": "",
@@ -274,7 +340,16 @@ class DiscoverCandidateRuntimeTests(unittest.TestCase):
             "tmdb_id": "",
             "imdb_id": "",
             "identity_status": "unidentified",
-        }), ("", "", ""))
+        }), ("Example Show", "2026", "tv"))
+        self.assertEqual(discover_runtime._rss_release_title_year({
+            "title": "Example Show 2026 S01E09 1080p WEB-DL",
+            "media_type": "",
+            "season_number": None,
+            "episode_start": None,
+            "tmdb_id": "",
+            "imdb_id": "",
+            "identity_status": "unidentified",
+        }), ("Example Show", "2026", "tv"))
 
     def add_candidate(self, repository, *, tmdb_id="200", media_type="tv", season=1, **payload):
         source = {

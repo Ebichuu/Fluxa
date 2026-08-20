@@ -367,14 +367,16 @@ class EmbyClient:
                 continue
             primary = _image_url(item_id, "Primary") if (item.get("ImageTags") or {}).get("Primary") else ""
             backdrop = _image_url(item_id, "Backdrop") if item.get("BackdropImageTags") else primary
-            result.append({
+            library = {
                 "id": item_id,
                 "name": name,
                 "collectionType": item.get("CollectionType") or item.get("Type") or "library",
                 "posterUrl": primary or backdrop,
                 "backdropUrl": backdrop or primary,
-                "itemCount": item.get("RecursiveItemCount") if item.get("RecursiveItemCount") is not None else item.get("ChildCount"),
-            })
+            }
+            if item.get("RecursiveItemCount") is not None:
+                library["itemCount"] = item.get("RecursiveItemCount")
+            result.append(library)
         return result
 
     def get_home_media(self, library_id=None, limit=20) -> list[dict]:

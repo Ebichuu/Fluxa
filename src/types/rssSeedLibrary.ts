@@ -107,7 +107,7 @@ export function classifyRssResourceScope(
     if (end === item.episodeStart) return 'explicit_episode';
     return end > item.episodeStart ? 'explicit_multi_episode' : 'scope_pending';
   }
-  return item.seasonScopeState === 'confirmed' ? 'season_pack' : 'scope_pending';
+  return 'season_pack';
 }
 
 export function countRssResourceScopes(scopes: RssResourceScope[]): RssResourceScopeCounts {

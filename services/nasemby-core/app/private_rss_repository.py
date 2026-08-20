@@ -608,6 +608,14 @@ class PrivateRssRepository:
 
     @staticmethod
     def _public_item(row):
+        parsed_type, parsed_season, parsed_episode_start, parsed_episode_end = extract_release_scope(
+            row["title"],
+            [row["category"]],
+        )
+        media_type = str(row["media_type"] or "") or parsed_type
+        season_number = row["season_number"] if row["season_number"] is not None else parsed_season
+        episode_start = row["episode_start"] if row["episode_start"] is not None else parsed_episode_start
+        episode_end = row["episode_end"] if row["episode_end"] is not None else parsed_episode_end
         item = {
             "id": row["id"],
             "sourceId": row["source_id"],
@@ -619,10 +627,10 @@ class PrivateRssRepository:
             "publishedAt": row["published_at"],
             "category": row["category"],
             "sizeBytes": int(row["size_bytes"] or 0),
-            "mediaType": row["media_type"],
-            "seasonNumber": row["season_number"],
-            "episodeStart": row["episode_start"],
-            "episodeEnd": row["episode_end"],
+            "mediaType": media_type,
+            "seasonNumber": season_number,
+            "episodeStart": episode_start,
+            "episodeEnd": episode_end,
             "versionSummary": row["version_summary"],
             "tmdbId": row["tmdb_id"],
             "imdbId": row["imdb_id"],
@@ -1335,7 +1343,8 @@ class PrivateRssRepository:
         with self.runtime.transaction(immediate=True) as connection:
             for item in rows:
                 current = connection.execute(
-                    "SELECT media_type, tmdb_id, imdb_id, identity_status FROM rss_items WHERE id=?",
+                    "SELECT media_type, season_number, episode_start, episode_end, "
+                    "tmdb_id, imdb_id, identity_status FROM rss_items WHERE id=?",
                     (str(item.get("id")),),
                 ).fetchone()
                 if not current or str(current["identity_status"] or "") != "unidentified":
@@ -1347,6 +1356,9 @@ class PrivateRssRepository:
                 media_type = str(item.get("media_type") or item.get("mediaType") or "").strip().lower()
                 identity_source = str(item.get("identity_source") or item.get("identitySource") or "").strip()
                 current_type = str(current["media_type"] or "").strip().lower()
+                season_number = item.get("season_number", item.get("seasonNumber"))
+                episode_start = item.get("episode_start", item.get("episodeStart"))
+                episode_end = item.get("episode_end", item.get("episodeEnd"))
                 if (
                     tmdb_id.isdigit()
                     and media_type in {"movie", "tv"}
@@ -1354,10 +1366,19 @@ class PrivateRssRepository:
                     and identity_source == "tmdb_title_year"
                 ):
                     cursor = connection.execute(
-                        "UPDATE rss_items SET tmdb_id=?, media_type=?, identity_status='identified', "
+                        "UPDATE rss_items SET tmdb_id=?, media_type=?, season_number=?, "
+                        "episode_start=?, episode_end=?, identity_status='identified', "
                         "identity_source='tmdb_title_year', identity_confidence='fallback', identity_updated_at=? "
                         "WHERE id=? AND identity_status='unidentified' AND tmdb_id='' AND imdb_id=''",
-                        (tmdb_id, media_type, checked_at, str(item.get("id"))),
+                        (
+                            tmdb_id,
+                            media_type,
+                            season_number,
+                            episode_start,
+                            episode_end,
+                            checked_at,
+                            str(item.get("id")),
+                        ),
                     )
                     enriched += int(cursor.rowcount > 0)
                 else:

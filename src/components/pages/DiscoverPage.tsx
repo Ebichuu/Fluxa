@@ -70,6 +70,7 @@ import type {
 import { handleHorizontalTabKeyDown } from '../../utils/keyboardNavigation';
 import { createIdempotencyKey } from '../../utils/idempotency';
 import { statisticDisplayValue, statisticScopeText } from '../../utils/statistics';
+import { subscriptionYearOptions } from '../../utils/discoverSubscriptions';
 import type { AppNavigate, TaskNavigationTarget } from '../layout/AppTopNav';
 import { HealthBadge } from '../status/HealthBadge';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
@@ -1367,15 +1368,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       : `${item.mediaType}:${item.tmdbId}`
   ))), [subs]);
   const subscriptionYears = useMemo(() => {
-    const latestYear = new Date().getFullYear() + 1;
-    const years = new Set(
-      Array.from({ length: latestYear - 1899 }, (_, index) => String(latestYear - index))
-    );
-    subs.forEach((item) => {
-      if (item.year) years.add(item.year);
-    });
-    if (/^\d{4}$/.test(subscriptionYear)) years.add(subscriptionYear);
-    return [...years].sort().reverse();
+    return subscriptionYearOptions(subs, subscriptionYear);
   }, [subs, subscriptionYear]);
   const visibleSubscriptions = useMemo(() => {
     if (subscriptionTab === 'blocked') return [];

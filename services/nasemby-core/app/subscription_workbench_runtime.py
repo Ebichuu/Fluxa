@@ -268,9 +268,10 @@ def _fact_stage(fact, fallback_detail):
         "protected": "protected",
         "not_applicable": "waiting",
     }.get(state, "unknown")
+    public_fact = present_pipeline_fact(row) if row else {}
     return {
         "status": status,
-        "detail": str(row.get("reasonText") or fallback_detail),
+        "detail": str(public_fact.get("reasonText") or fallback_detail),
     }
 
 

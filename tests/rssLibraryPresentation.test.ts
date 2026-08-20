@@ -23,6 +23,25 @@ const movieScope = classifyRssResourceScope({
 });
 assert.equal(movieScope, 'movie');
 assert.equal(rssResourceScopeLabel(movieScope), '完整电影');
+assert.equal(classifyRssResourceScope({
+  mediaType: 'tv',
+  seasonNumber: 1,
+  episodeStart: 29,
+  episodeEnd: 29
+}), 'explicit_episode');
+assert.equal(classifyRssResourceScope({
+  mediaType: 'tv',
+  seasonNumber: 1,
+  episodeStart: null,
+  episodeEnd: null
+}), 'season_pack');
+assert.equal(classifyRssResourceScope({
+  mediaType: 'tv',
+  seasonNumber: 1,
+  episodeStart: null,
+  episodeEnd: null,
+  seasonScopeState: 'unknown'
+}), 'scope_pending');
 assert.equal(
   rssResourceScopeSummaryText(countRssResourceScopes(['movie', 'explicit_episode', 'scope_pending'])),
   '3 个资源 · 完整电影 1 · 明确单集 1 · 明确多集 0 · 季包 0 · 范围待确认 1'

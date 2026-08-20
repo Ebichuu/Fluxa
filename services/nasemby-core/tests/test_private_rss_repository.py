@@ -46,6 +46,29 @@ class PrivateRssRepositoryTests(unittest.TestCase):
             "identity_confidence": "strong",
         }
 
+    def test_public_item_recovers_explicit_tv_scope_from_legacy_title(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = PrivateRssRepository(Path(directory) / "media_control_center.sqlite3")
+            source = repository.save_source({"name": "测试站", "feedUrl": "https://tracker.example/rss"})
+            repository.upsert_items(source["id"], [{
+                "fingerprint": "legacy-mystic-nine-e29",
+                "title": "Mystic Nine S01E29 2026 2160p WEB-DL",
+                "media_type": "",
+                "season_number": None,
+                "episode_start": None,
+                "episode_end": None,
+                "tmdb_id": "296003",
+                "identity_status": "identified",
+                "identity_source": "legacy",
+            }])
+
+            item = repository.search_items()["items"][0]
+
+            self.assertEqual(item["mediaType"], "tv")
+            self.assertEqual(item["seasonNumber"], 1)
+            self.assertEqual(item["episodeStart"], 29)
+            self.assertEqual(item["episodeEnd"], 29)
+
     def test_media_metadata_uses_matched_subscription_priority_and_chinese_search(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "media_control_center.sqlite3"
