@@ -2071,17 +2071,35 @@ class PrivateRssRepository:
         }
 
     @staticmethod
+    def _current_best_is_actionable(candidate):
+        summary = (
+            candidate.get("candidateSummary")
+            if isinstance(candidate.get("candidateSummary"), dict)
+            else {}
+        )
+        if str(summary.get("versionState") or "") == "unconfirmed":
+            return False
+        assessment = summary.get("upgradeAssessment")
+        if isinstance(assessment, dict):
+            return assessment.get("meaningful") is True
+        return True
+
+    @staticmethod
     def _candidate_group_state(candidates):
         best = next((row for row in candidates if row.get("bestCandidate")), None)
         if best:
             decision = str(best.get("decision") or "")
             if decision == "current_best":
-                return "upgrade_available"
+                return (
+                    "upgrade_available"
+                    if PrivateRssRepository._current_best_is_actionable(best)
+                    else "protected"
+                )
             if decision == "best_available":
                 return "initial_best"
             if decision == "best_waiting_baseline":
                 return "waiting_baseline"
-            if decision in {"same_score", "lower_score", "rule_rejected"}:
+            if decision in {"same_score", "lower_score", "not_meaningful_upgrade", "rule_rejected"}:
                 return "protected"
         if candidates and all(
             row.get("evaluationStatus") == "blocked"
@@ -2185,10 +2203,13 @@ class PrivateRssRepository:
             "WITH candidate_groups AS ("
             "SELECT subscription_key, unit_key, MAX(created_at) AS latest_at, "
             "CASE "
-            "WHEN MAX(CASE WHEN is_best_candidate=1 AND decision='current_best' THEN 1 ELSE 0 END)=1 THEN 'upgrade_available' "
+            "WHEN MAX(CASE WHEN is_best_candidate=1 AND decision='current_best' "
+            "AND candidate_summary_json NOT LIKE '%\"versionState\":\"unconfirmed\"%' "
+            "AND (candidate_summary_json NOT LIKE '%\"upgradeAssessment\"%' "
+            "OR candidate_summary_json LIKE '%\"meaningful\":true%') THEN 1 ELSE 0 END)=1 THEN 'upgrade_available' "
             "WHEN MAX(CASE WHEN is_best_candidate=1 AND decision='best_available' THEN 1 ELSE 0 END)=1 THEN 'initial_best' "
             "WHEN MAX(CASE WHEN is_best_candidate=1 AND decision='best_waiting_baseline' THEN 1 ELSE 0 END)=1 THEN 'waiting_baseline' "
-            "WHEN MAX(CASE WHEN is_best_candidate=1 AND decision IN ('same_score','lower_score','rule_rejected') THEN 1 ELSE 0 END)=1 THEN 'protected' "
+            "WHEN MAX(CASE WHEN is_best_candidate=1 AND decision IN ('same_score','lower_score','not_meaningful_upgrade','rule_rejected') THEN 1 ELSE 0 END)=1 THEN 'protected' "
             "WHEN COUNT(*)>0 AND SUM(CASE WHEN evaluation_status='blocked' AND evaluation_reason='subscription_missing' THEN 1 ELSE 0 END)=COUNT(*) THEN 'needs_cleanup' "
             "WHEN COUNT(*)>0 AND SUM(CASE WHEN evaluation_status='blocked' THEN 1 ELSE 0 END)=COUNT(*) THEN 'blocked' "
             "ELSE 'monitoring_rss' END AS group_state, "
@@ -2477,7 +2498,10 @@ class PrivateRssRepository:
                 "AND evaluation_status='scored' AND torra_subscription_id<>'' "
                 "AND target_key<>'' AND rule_id<>'' AND rule_hash<>'' "
                 "AND candidate_score IS NOT NULL AND baseline_score IS NOT NULL "
-                "AND candidate_score>baseline_score THEN 1 ELSE 0 END)=1"
+                "AND candidate_score>baseline_score "
+                "AND candidate_summary_json NOT LIKE '%\"versionState\":\"unconfirmed\"%' "
+                "AND (candidate_summary_json NOT LIKE '%\"upgradeAssessment\"%' "
+                "OR candidate_summary_json LIKE '%\"meaningful\":true%') THEN 1 ELSE 0 END)=1"
                 ") eligible_artifacts"
             ).fetchone()
         counts = {state: 0 for state in RSS_GROUP_STATES}
@@ -2522,6 +2546,7 @@ class PrivateRssRepository:
             media_type, season_number, episode_number = cls._candidate_episode_scope(representative)
             wins_unit = any(
                 row.get("bestCandidate") and row.get("decision") == "current_best"
+                and cls._current_best_is_actionable(row)
                 for row in rows
             )
             unit_results.append({
@@ -2904,7 +2929,9 @@ class PrivateRssRepository:
             rows = connection.execute(
                 "SELECT * FROM rss_subscription_matches "
                 "WHERE archive_state='active' AND match_status='candidate' AND (evaluation_status='pending' "
-                f"OR (evaluation_status='blocked' AND evaluation_reason IN ({placeholders}))) "
+                f"OR (evaluation_status='blocked' AND evaluation_reason IN ({placeholders})) "
+                "OR (evaluation_status='scored' AND baseline_score IS NOT NULL "
+                "AND candidate_summary_json NOT LIKE '%\"upgradeAssessment\"%')) "
                 "ORDER BY COALESCE(NULLIF(evaluated_at, ''), created_at), id LIMIT ?",
                 (*retryable_reasons, limit),
             ).fetchall()

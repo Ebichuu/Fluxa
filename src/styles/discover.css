@@ -992,6 +992,51 @@
   line-height: 1.5;
 }
 
+.quality-watch-panel__upgrade {
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+  border: 1px solid rgba(67, 194, 151, 0.16);
+  border-radius: 7px;
+  background: rgba(67, 194, 151, 0.055);
+}
+
+.quality-watch-panel__upgrade > span {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.quality-watch-panel__upgrade b {
+  color: rgba(108, 219, 180, 0.82);
+  font-size: 11px;
+}
+
+.quality-watch-panel__upgrade strong {
+  color: rgba(232, 236, 239, 0.86);
+  font-size: 12px;
+}
+
+.quality-watch-panel__upgrade small,
+.quality-watch-panel__advanced > summary {
+  color: var(--ops-faint);
+  font-size: 11px;
+}
+
+.quality-watch-panel__advanced {
+  display: grid;
+  gap: 8px;
+}
+
+.quality-watch-panel__advanced > summary {
+  width: max-content;
+  cursor: pointer;
+}
+
+.quality-watch-panel__advanced[open] > summary {
+  margin-bottom: 8px;
+}
+
 .sub-detail__section > strong,
 .sub-detail__season-head > strong {
   color: rgba(232, 236, 239, 0.76);

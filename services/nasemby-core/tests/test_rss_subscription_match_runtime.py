@@ -1678,6 +1678,59 @@ class RssSubscriptionMatchRuntimeTests(unittest.TestCase):
         self.assertEqual(stored_unit["best_match_id"], match["id"])
         self.assertEqual(stored_unit["best_candidate_score"], 30.0)
 
+    def test_release_group_score_nudge_does_not_become_a_rewash_upgrade(self):
+        self._watch(
+            "tv:202:s1",
+            episode=2,
+            title="Test Show",
+            media_category="anime",
+        )
+        torra, qb = self._enable_analysis()
+        rule = self._shadow_rule()
+        rule["releaseGroup"] = {
+            "blacklist": [],
+            "whitelist": [],
+            "baseline": {"name": "BaselineGroup", "pattern": "BaselineGroup", "score": 1},
+            "candidate": {"name": "CandidateGroup", "pattern": "CandidateGroup", "score": 1.2},
+        }
+        rule["releaseGroup_weight"] = 1
+        self._configure_shadow_torra(torra, [rule])
+        torra.rows[0]["downloaded_episode_files"] = {
+            "2": ["/downloads/Test.Show.S01E02.2160p.WEB-DL.BaselineGroup.mkv"],
+        }
+        qb.tasks = [{
+            "name": "Test.Show.S01E02.2160p.WEB-DL.BaselineGroup.mkv",
+            "size": 2_000_000_000,
+            "status": "completed",
+        }]
+
+        inserted = self._insert(
+            "Test Show S01E02 2160p WEB-DL CandidateGroup.mkv",
+            start=2,
+            end=2,
+            published_at=self.now[0].isoformat().replace("+00:00", "Z"),
+            size_bytes=2_000_000_000,
+            download_url="https://tracker.example/download?passkey=private",
+        )
+        self.runtime.wake_matches(inserted["_match_ids"])
+
+        match = self.rss.get_match(inserted["_match_ids"][0])
+        self.assertAlmostEqual(match["candidateScore"] - match["baselineScore"], 0.2)
+        self.assertEqual(match["decision"], "not_meaningful_upgrade")
+        self.assertEqual(match["evaluationReason"], "upgrade_gain_too_small")
+        self.assertTrue(match["bestCandidate"])
+        self.assertFalse(match["candidateSummary"]["upgradeAssessment"]["meaningful"])
+        self.assertEqual(
+            self.rss.list_candidate_groups()["groups"][0]["state"],
+            "protected",
+        )
+        preview = self.runtime.preview_exact_download(match["id"])
+        self.assertFalse(preview["ready"])
+        self.assertIn(
+            "RSS_EXACT_NOT_MEANINGFUL_UPGRADE",
+            {row["code"] for row in preview["blockers"]},
+        )
+
     def _prepare_resource_download(
         self,
         *,

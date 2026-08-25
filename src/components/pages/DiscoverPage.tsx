@@ -11,6 +11,7 @@ import {
   getAutomationAction,
   getDiscoverCandidates,
   getMoviePilotPreview,
+  getRssArtifactGroups,
   getRssSeedItems,
   getSubscriptionQualityWatch,
   getSubscriptionDetail,
@@ -38,7 +39,7 @@ import {
   unblockSubscription,
   updateSubscriptionQualityWatch
 } from '../../services/api';
-import type { AutomationAction, RssMatch, RssSeedItem, RssSeedListResponse } from '../../types/rssSeedLibrary';
+import type { AutomationAction, RssMatch, RssMatchGroup, RssMatchGroupListResponse, RssSeedItem, RssSeedListResponse } from '../../types/rssSeedLibrary';
 import {
   classifyRssResourceScope,
   countRssResourceScopes,
@@ -798,6 +799,20 @@ function watchStateLabel(state: string) {
   return labels[state] || state || '未知状态';
 }
 
+function qualityUpgradeEvidence(group: RssMatchGroup | undefined) {
+  const match = group?.representativeMatch
+    ?? group?.candidates.find((candidate) => candidate.bestCandidate)
+    ?? group?.candidates[0];
+  const fields = match?.candidateSummary?.upgradeAssessment?.improvedFields ?? [];
+  return fields.slice(0, 3).map((field) => {
+    const before = field.baselineLabels.join(' / ');
+    const after = field.candidateLabels.join(' / ');
+    if (before && after) return `${field.label} ${before} → ${after}`;
+    if (after) return `${field.label}提升为 ${after}`;
+    return `${field.label}明确提升`;
+  }).join(' · ');
+}
+
 function unitLabel(unit: QualityWatchResponse['units'][number]) {
   if (unit.episodeNumber != null) {
     return `S${String(unit.seasonNumber ?? 1).padStart(2, '0')}E${String(unit.episodeNumber).padStart(2, '0')}`;
@@ -962,6 +977,11 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
   const [torraPushMessage, setTorraPushMessage] = useState('');
   const [torraPushBusy, setTorraPushBusy] = useState('');
   const [qualityWatch, setQualityWatch] = useState<QualityWatchResponse | null>(null);
+  const [qualityUpgrades, setQualityUpgrades] = useState<{
+    subscriptionId: string;
+    seasonNumber: number | null;
+    payload: RssMatchGroupListResponse;
+  } | null>(null);
   const [qualityWatchBusy, setQualityWatchBusy] = useState('');
   const [qualityWatchMessage, setQualityWatchMessage] = useState('');
   const [selectedUnitId, setSelectedUnitId] = useState('');
@@ -2005,6 +2025,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     setTorraPushMessage('');
     setTorraPushBusy('');
     setQualityWatch(null);
+    setQualityUpgrades(null);
     setQualityWatchBusy('');
     setQualityWatchMessage('');
     setSelectedUnitId('');
@@ -2271,6 +2292,7 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
     setDetailId(item.id);
     setDetail(null);
     setQualityWatch(null);
+    setQualityUpgrades(null);
     setQualityAutomationAction(null);
     setMoviePilotPreview(null);
     setQualityWatchMessage('');
@@ -2285,9 +2307,17 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
       item.readOnly
         ? Promise.resolve({ success: true, detail: null, seasons: [] } as SubscriptionDetailResponse)
         : getSubscriptionDetail(item.id, requestedSeason ?? undefined, { signal: controller.signal }),
-      getSubscriptionQualityWatch(item.id, { signal: controller.signal })
+      getSubscriptionQualityWatch(item.id, { signal: controller.signal }),
+      getRssArtifactGroups({
+        subscriptionId: item.id,
+        groupState: 'upgrade_available',
+        mediaType: item.mediaType === 'movie' ? 'movie' : 'tv',
+        ...(requestedSeason != null ? { seasonNumber: requestedSeason } : {}),
+        limit: 5,
+        offset: 0
+      }, { signal: controller.signal })
     ])
-      .then(([detailResult, watchResult]) => {
+      .then(([detailResult, watchResult, upgradeResult]) => {
         if (controller.signal.aborted) return;
         if (detailResult.status === 'fulfilled') {
           setDetail(detailResult.value);
@@ -2307,6 +2337,13 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
         } else {
           setQualityWatchMessage(watchResult.reason instanceof Error ? watchResult.reason.message : '质量观察状态暂不可用');
         }
+        if (upgradeResult.status === 'fulfilled') {
+          setQualityUpgrades({
+            subscriptionId: item.id!,
+            seasonNumber: requestedSeason,
+            payload: upgradeResult.value
+          });
+        }
       })
       .finally(() => {
         if (!controller.signal.aborted) setDetailLoading(false);
@@ -2316,6 +2353,21 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
 
   const selectDetailSeason = (item: SubscriptionItem, seasonNumber: number) => {
     setDetailSeason(seasonNumber);
+    setQualityUpgrades(null);
+    if (item.id) {
+      getRssArtifactGroups({
+        subscriptionId: item.id,
+        groupState: 'upgrade_available',
+        mediaType: item.mediaType === 'movie' ? 'movie' : 'tv',
+        seasonNumber,
+        limit: 5,
+        offset: 0
+      }).then((payload) => setQualityUpgrades({
+        subscriptionId: item.id!,
+        seasonNumber,
+        payload
+      })).catch(() => undefined);
+    }
     writeFollowingDetailTarget(item, seasonNumber, 'replace');
   };
 
@@ -3350,6 +3402,54 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
             ? selectedWatchUnit?.seasonNumber || activeSeasonNumber || item.seasonNumber || null
             : null;
           const resourceEpisodeNumber = selectedWatchUnit?.episodeNumber || null;
+          const currentQualityUpgrades = qualityUpgrades
+            && qualityUpgrades.subscriptionId === item.id
+            && qualityUpgrades.seasonNumber === resourceSeasonNumber
+            ? qualityUpgrades.payload
+            : null;
+          const qualityUpgradeCount = currentQualityUpgrades?.total ?? 0;
+          const qualityUpgradeGroup = currentQualityUpgrades?.groups[0];
+          const qualityEvidence = qualityUpgradeEvidence(qualityUpgradeGroup);
+          const qualityActionFailed = Boolean(
+            qualityAutomationAction && ['failed', 'cancelled'].includes(qualityAutomationAction.status)
+          );
+          const qualityActionInProgress = Boolean(
+            qualityAutomationAction
+            && (
+              !terminalAutomationStates.has(qualityAutomationAction.status)
+              || (qualityAutomationAction.type === 'rewash-download' && qualityAutomationAction.status === 'succeeded')
+            )
+          );
+          const torraUpgradeCount = qualityAutomationAction?.type === 'rewash-analysis'
+            && qualityAutomationAction.status === 'succeeded'
+            ? qualityAutomationAction.result?.selectedCount ?? 0
+            : 0;
+          const qualityTargetReached = Boolean(
+            currentQualityWatch?.units.length
+            && currentQualityWatch.units.every((unit) => unit.state === 'target_reached')
+          );
+          const qualityStatus = !currentQualityWatch && !currentQualityUpgrades
+            ? '读取中'
+            : qualityActionFailed
+              ? '失败'
+              : qualityActionInProgress
+                ? '处理中'
+                : qualityUpgradeCount > 0 || torraUpgradeCount > 0
+                  ? `可洗版${qualityUpgradeCount > 1 ? ` ${qualityUpgradeCount}` : ''}`
+                  : qualityTargetReached
+                    ? '已完成'
+                    : currentQualityWatch?.paused
+                      ? '已暂停'
+                      : '持续观察';
+          const qualityStatusIsOk = Boolean(
+            (currentQualityWatch || currentQualityUpgrades)
+            && (
+              qualityUpgradeCount > 0
+              || torraUpgradeCount > 0
+              || qualityTargetReached
+              || (!qualityActionFailed && !currentQualityWatch?.paused)
+            )
+          );
           const resourceIdentityReady = Boolean(
             resourceTmdbId
             && (item.mediaType === 'movie' || item.mediaType === 'tv')
@@ -3667,82 +3767,102 @@ export function DiscoverPage({ navigationTarget = null, onNavigate, view = 'disc
                   )}
                   <section className="sub-detail__section quality-watch-panel">
                     <div className="quality-watch-panel__head">
-                      <div><strong>质量观察与人工追更</strong><small>{qualityWatch ? (qualityWatch.policy.lifecycleMode === 'fixed_window' ? `${qualityWatch.policy.windowHours} 小时固定窗口` : `跟随 RSS · ${qualityWatch.policy.windowHours} 小时宽限期`) : '读取中'}</small></div>
-                      {qualityWatch && (
-                        <span className={qualityWatch.paused || qualityWatch.units.length === 0 ? 'state-chip' : 'state-chip state-chip--ok'}>
-                          {qualityWatch.paused ? '已暂停' : qualityWatch.units.length > 0 ? '观察中' : '等待基线'}
-                        </span>
+                      <div><strong>洗版状态</strong><small>持续检查新版本，只有明确提升才提醒你</small></div>
+                      <span className={qualityStatusIsOk ? 'state-chip state-chip--ok' : 'state-chip'}>{qualityStatus}</span>
+                    </div>
+                    {qualityUpgradeCount > 0 && qualityUpgradeGroup ? (
+                      <div className="quality-watch-panel__upgrade">
+                        <span><b>{qualityUpgradeGroup.episodeLabel}</b><strong>{qualityEvidence || '已确认画质、音质或字幕存在明确提升'}</strong></span>
+                        <small>{qualityUpgradeGroup.title || item.title}{qualityUpgradeCount > 1 ? ` · 另有 ${qualityUpgradeCount - 1} 个可洗版版本` : ''}</small>
+                      </div>
+                    ) : currentQualityUpgrades ? (
+                      <p className="quality-watch-panel__status">当前版本已保护；分数微调、发布组差异和关键质量退步不会触发洗版。</p>
+                    ) : (
+                      <p className="quality-watch-panel__status">正在核对当前版本与 RSS 新资源…</p>
+                    )}
+                    <div className="quality-watch-panel__actions">
+                      {qualityUpgradeCount > 0 && (
+                        <button
+                          className="ops-action-button ops-action-button--primary"
+                          type="button"
+                          onClick={() => onNavigate('rss-library', {
+                            resourceView: 'upgrades',
+                            subscriptionId: item.id,
+                            tmdbId: resourceTmdbId,
+                            mediaType: item.mediaType === 'movie' ? 'movie' : 'tv',
+                            title: detailInfo?.title || item.title,
+                            seasonNumber: resourceSeasonNumber
+                          })}
+                        >
+                          <Download size={13} />查看并确认洗版
+                        </button>
+                      )}
+                      {currentQualityWatch && currentQualityWatch.units.length > 0 && (
+                        <button
+                          className={qualityUpgradeCount > 0 ? 'ops-action-button' : 'ops-action-button ops-action-button--primary'}
+                          disabled={Boolean(qualityWatchBusy) || Boolean(qualityAutomationAction && !terminalAutomationStates.has(qualityAutomationAction.status)) || (currentQualityWatch.units.length > 1 && !selectedUnitId)}
+                          type="button"
+                          onClick={() => startAnalysis(item)}
+                        >
+                          <RefreshCcw size={13} />{qualityWatchBusy === `analysis:${item.id}` ? '正在检查' : '立即检查'}
+                        </button>
+                      )}
+                      {qualityAutomationAction?.status === 'succeeded' && qualityAutomationAction.type === 'rewash-analysis' && (qualityAutomationAction.result?.selectedCount ?? 0) > 0 && (
+                        <button className="ops-action-button" disabled={Boolean(qualityWatchBusy)} type="button" onClick={() => startDownload(item)}>
+                          <Download size={13} />{qualityWatchBusy === `download:${item.id}` ? '正在提交' : '下载升级版本'}
+                        </button>
                       )}
                     </div>
-                    {qualityWatch && qualityWatch.units.length > 0 ? (
-                      <>
-                        {qualityWatch.units.length > 1 && (
+                    {qualityAutomationAction && <p className="quality-watch-panel__status" role="status">{automationStatusLabel(qualityAutomationAction)}</p>}
+                    {currentQualityWatch && currentQualityWatch.units.length > 0 ? (
+                      <details className="quality-watch-panel__advanced">
+                        <summary>观察设置与集级状态</summary>
+                        {currentQualityWatch.units.length > 1 && (
                           <label className="quality-watch-panel__unit">
                             观察单元
                             <select aria-label="选择质量观察单元" value={selectedUnitId} onChange={(event) => setSelectedUnitId(event.target.value)}>
-                              {qualityWatch.units.map((unit) => <option key={unit.id} value={unit.id}>{unitLabel(unit)} · {watchStateLabel(unit.state)}</option>)}
+                              {currentQualityWatch.units.map((unit) => <option key={unit.id} value={unit.id}>{unitLabel(unit)} · {watchStateLabel(unit.state)}</option>)}
                             </select>
                           </label>
                         )}
                         <div className="quality-watch-panel__units">
-                          {qualityWatch.units.slice(0, 4).map((unit) => (
+                          {currentQualityWatch.units.slice(0, 4).map((unit) => (
                             <span key={unit.id}><b>{unitLabel(unit)}</b><small>{watchStateLabel(unit.state)}</small></span>
                           ))}
                         </div>
-                        <div className="quality-watch-panel__actions">
-                          {!qualityWatch.readOnly && !item.readOnly && (
-                            <>
-                              <button
-                                className="tool-link"
-                                disabled={qualityWatchBusy === `update:${item.id}` || Boolean(qualityAutomationAction && !terminalAutomationStates.has(qualityAutomationAction.status))}
-                                type="button"
-                                onClick={() => updateQualityWatch(item, { paused: !qualityWatch.paused })}
-                              >
-                                {qualityWatch.paused ? <Play size={13} /> : <Pause size={13} />}
-                                {qualityWatch.paused ? '恢复观察' : '暂停观察'}
-                              </button>
-                              <button
-                                className="tool-link"
-                                disabled={qualityWatchBusy === `update:${item.id}` || Boolean(qualityAutomationAction && !terminalAutomationStates.has(qualityAutomationAction.status))}
-                                type="button"
-                                onClick={() => {
-                                  const windowHours = qualityWatch.policy.windowHours === 24 ? 48 : 24;
-                                  updateQualityWatch(item, { windowHours, scheduleMinutes: windowHours === 24 ? [720, 1440] : [720, 1440, 2880] });
-                                }}
-                              >
-                                <RotateCcw size={13} />切换 {qualityWatch.policy.windowHours === 24 ? '48' : '24'} 小时{qualityWatch.policy.lifecycleMode === 'fixed_window' ? '窗口' : '宽限期'}
-                              </button>
-                            </>
-                          )}
-                          <button
-                            className="ops-action-button ops-action-button--primary"
-                            disabled={Boolean(qualityWatchBusy) || Boolean(qualityAutomationAction && !terminalAutomationStates.has(qualityAutomationAction.status)) || (qualityWatch.units.length > 1 && !selectedUnitId)}
-                            type="button"
-                            onClick={() => startAnalysis(item)}
-                          >
-                            <RefreshCcw size={13} />{qualityWatchBusy === `analysis:${item.id}` ? '正在提交' : '人工分析升级'}
-                          </button>
-                          {qualityAutomationAction?.status === 'succeeded' && qualityAutomationAction.type === 'rewash-analysis' && (qualityAutomationAction.result?.selectedCount ?? 0) > 0 && (
+                        {!currentQualityWatch.readOnly && !item.readOnly && (
+                          <div className="quality-watch-panel__actions">
                             <button
-                              className="ops-action-button"
-                              disabled={Boolean(qualityWatchBusy)}
+                              className="tool-link"
+                              disabled={qualityWatchBusy === `update:${item.id}` || Boolean(qualityAutomationAction && !terminalAutomationStates.has(qualityAutomationAction.status))}
                               type="button"
-                              onClick={() => startDownload(item)}
+                              onClick={() => updateQualityWatch(item, { paused: !currentQualityWatch.paused })}
                             >
-                              <Download size={13} />{qualityWatchBusy === `download:${item.id}` ? '正在提交' : '下载升级候选'}
+                              {currentQualityWatch.paused ? <Play size={13} /> : <Pause size={13} />}
+                              {currentQualityWatch.paused ? '恢复观察' : '暂停观察'}
                             </button>
-                          )}
-                        </div>
-                        {qualityAutomationAction && <p className="quality-watch-panel__status" role="status">{automationStatusLabel(qualityAutomationAction)}</p>}
-                      </>
+                            <button
+                              className="tool-link"
+                              disabled={qualityWatchBusy === `update:${item.id}` || Boolean(qualityAutomationAction && !terminalAutomationStates.has(qualityAutomationAction.status))}
+                              type="button"
+                              onClick={() => {
+                                const windowHours = currentQualityWatch.policy.windowHours === 24 ? 48 : 24;
+                                updateQualityWatch(item, { windowHours, scheduleMinutes: windowHours === 24 ? [720, 1440] : [720, 1440, 2880] });
+                              }}
+                            >
+                              <RotateCcw size={13} />切换 {currentQualityWatch.policy.windowHours === 24 ? '48' : '24'} 小时{currentQualityWatch.policy.lifecycleMode === 'fixed_window' ? '窗口' : '宽限期'}
+                            </button>
+                          </div>
+                        )}
+                      </details>
                     ) : (
-                      <small className="sub-detail__hint">当前没有可操作的观察单元，等待首个版本或入库基线。</small>
+                      <small className="sub-detail__hint">等待首个版本入库后建立质量基线。</small>
                     )}
-                    {qualityWatch?.missingFallback && (
+                    {currentQualityWatch?.missingFallback && (
                       <p className="quality-watch-panel__status">
-                        缺集搜索兜底 · {qualityWatch.missingFallback.reasonText}
-                        {qualityWatch.missingFallback.episodeNumbers.length > 0
-                          ? ` · E${qualityWatch.missingFallback.episodeNumbers.map((episode) => String(episode).padStart(2, '0')).join('、E')}`
+                        缺集搜索兜底 · {currentQualityWatch.missingFallback.reasonText}
+                        {currentQualityWatch.missingFallback.episodeNumbers.length > 0
+                          ? ` · E${currentQualityWatch.missingFallback.episodeNumbers.map((episode) => String(episode).padStart(2, '0')).join('、E')}`
                           : ''}
                       </p>
                     )}

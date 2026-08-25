@@ -51,6 +51,37 @@ TORRA_MEDIA_CATEGORIES = {
     "variety": {"label": "综艺", "directory": "06-综艺"},
     "movie": {"label": "电影", "directory": "10-电影"},
 }
+MIN_MEANINGFUL_SCORE_GAIN = 1.0
+MEANINGFUL_UPGRADE_FIELDS = {
+    "videoFormat",
+    "audioCodec",
+    "videoCodec",
+    "color_depth",
+    "frame_rate",
+    "dolby_vision",
+    "dynamic_range",
+    "enhancement",
+    "resource_type",
+    "release_type",
+    "streaming_service",
+    "subtitle",
+    "custom_attributes",
+}
+UPGRADE_FIELD_LABELS = {
+    "videoFormat": "分辨率",
+    "audioCodec": "音频",
+    "videoCodec": "视频编码",
+    "color_depth": "色深",
+    "frame_rate": "帧率",
+    "dolby_vision": "杜比视界",
+    "dynamic_range": "动态范围",
+    "enhancement": "画面增强",
+    "resource_type": "片源",
+    "release_type": "发布类型",
+    "streaming_service": "流媒体源",
+    "subtitle": "字幕",
+    "custom_attributes": "质量特征",
+}
 PERMANENT_RECLAIM_CONTEXT_CODES = {
     "window_expired": "RSS_REWASH_WINDOW_EXPIRED",
     "watch_unit_missing": "RSS_REWASH_WATCH_UNIT_MISSING",
@@ -208,6 +239,104 @@ def _subscription_aliases(subscription):
 
 def _truthy(value):
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _summary_field_scores(summary):
+    summary = summary if isinstance(summary, dict) else {}
+    result = {}
+    for row in summary.get("scoreBreakdown") or []:
+        if not isinstance(row, dict):
+            continue
+        field = _text(row.get("field"))
+        score = row.get("score")
+        if (
+            field not in MEANINGFUL_UPGRADE_FIELDS
+            or isinstance(score, bool)
+            or not isinstance(score, (int, float))
+        ):
+            continue
+        current = result.setdefault(field, {"score": 0.0, "labels": []})
+        current["score"] += float(score)
+        label = _text(row.get("label"))
+        if label and label not in current["labels"]:
+            current["labels"].append(label)
+    return result
+
+
+def _meaningful_upgrade_assessment(
+    candidate_score,
+    baseline_score,
+    candidate_summary,
+    baseline_summary,
+):
+    if (
+        isinstance(candidate_score, bool)
+        or not isinstance(candidate_score, (int, float))
+        or isinstance(baseline_score, bool)
+        or not isinstance(baseline_score, (int, float))
+    ):
+        return {
+            "meaningful": False,
+            "reason": "baseline_version_unconfirmed",
+            "minimumScoreGain": MIN_MEANINGFUL_SCORE_GAIN,
+            "scoreGain": None,
+            "improvedFields": [],
+            "regressedFields": [],
+        }
+
+    candidate_summary = candidate_summary if isinstance(candidate_summary, dict) else {}
+    baseline_summary = baseline_summary if isinstance(baseline_summary, dict) else {}
+    candidate_version = _text(candidate_summary.get("versionState"))
+    baseline_version = _text(baseline_summary.get("versionState"))
+    gain = round(float(candidate_score) - float(baseline_score), 4)
+    candidate_fields = _summary_field_scores(candidate_summary)
+    baseline_fields = _summary_field_scores(baseline_summary)
+    improved = []
+    regressed = []
+    for field in sorted(MEANINGFUL_UPGRADE_FIELDS):
+        candidate = candidate_fields.get(field, {"score": 0.0, "labels": []})
+        baseline = baseline_fields.get(field, {"score": 0.0, "labels": []})
+        delta = round(float(candidate["score"]) - float(baseline["score"]), 4)
+        if abs(delta) < 0.0001:
+            continue
+        target = improved if delta > 0 else regressed
+        target.append({
+            "field": field,
+            "label": UPGRADE_FIELD_LABELS.get(field, field),
+            "scoreGain": delta,
+            "candidateLabels": list(candidate["labels"]),
+            "baselineLabels": list(baseline["labels"]),
+        })
+
+    reason = "meaningful_upgrade"
+    meaningful = True
+    if candidate_version != "accepted":
+        meaningful = False
+        reason = "version_fields_unconfirmed"
+    elif baseline_version == "unconfirmed":
+        meaningful = False
+        reason = "baseline_version_unconfirmed"
+    elif gain <= 0:
+        meaningful = False
+        reason = "candidate_not_higher"
+    elif gain < MIN_MEANINGFUL_SCORE_GAIN:
+        meaningful = False
+        reason = "upgrade_gain_too_small"
+    elif regressed:
+        meaningful = False
+        reason = "quality_dimension_regression"
+    elif not improved and baseline_version != "rejected":
+        meaningful = False
+        reason = "quality_dimension_not_improved"
+
+    return {
+        "meaningful": meaningful,
+        "reason": reason,
+        "minimumScoreGain": MIN_MEANINGFUL_SCORE_GAIN,
+        "scoreGain": gain,
+        "improvedFields": improved,
+        "regressedFields": regressed,
+    }
 
 
 def qb_task_matches(task, subscription, unit):
@@ -1457,6 +1586,16 @@ class RssSubscriptionMatchRuntime:
                 context,
                 baseline_inputs,
             )
+            assessment = _meaningful_upgrade_assessment(
+                score.get("score"),
+                baseline_score,
+                candidate_summary,
+                baseline_summary,
+            )
+            scored_candidate_summary = {
+                **candidate_summary,
+                **({"upgradeAssessment": assessment} if baseline_score is not None else {}),
+            }
             if score["versionState"] == "rejected":
                 decision = "rule_rejected"
             elif baseline_score is None:
@@ -1465,23 +1604,30 @@ class RssSubscriptionMatchRuntime:
                     if self._is_subscription_target(context["unit"])
                     else "waiting_baseline"
                 )
-            elif score["score"] > float(baseline_score):
+            elif assessment["meaningful"]:
                 decision = "upgrade_available"
             elif score["score"] == float(baseline_score):
                 decision = "same_score"
-            else:
+            elif score["score"] < float(baseline_score):
                 decision = "lower_score"
+            else:
+                decision = "not_meaningful_upgrade"
             results.append({
                 "status": "scored",
                 "decision": decision,
                 "reason": (
                     "version_fields_unconfirmed"
                     if score["versionState"] == "unconfirmed"
-                    else baseline_reason or "shadow_only_no_download"
+                    else baseline_reason
+                    or (
+                        assessment["reason"]
+                        if decision == "not_meaningful_upgrade"
+                        else "shadow_only_no_download"
+                    )
                 ),
                 "candidateScore": score["score"],
                 "baselineScore": baseline_score,
-                "candidateSummary": candidate_summary,
+                "candidateSummary": scored_candidate_summary,
                 "baselineSummary": baseline_summary,
                 "ruleId": rule_id,
                 "ruleHash": rule_hash,
@@ -1561,11 +1707,40 @@ class RssSubscriptionMatchRuntime:
                 if match.get("decision") == "initial_candidate"
                 else "best_waiting_baseline"
             )
-        if score > baseline:
+        assessment = _meaningful_upgrade_assessment(
+            score,
+            baseline,
+            match.get("candidateSummary"),
+            match.get("baselineSummary"),
+        )
+        if assessment["meaningful"]:
             return "current_best"
         if score == baseline:
             return "same_score"
-        return "lower_score"
+        if score < baseline:
+            return "lower_score"
+        return "not_meaningful_upgrade"
+
+    @staticmethod
+    def _winner_reason(match, decision):
+        candidate_summary = (
+            match.get("candidateSummary")
+            if isinstance(match.get("candidateSummary"), dict)
+            else {}
+        )
+        if candidate_summary.get("versionState") == "unconfirmed":
+            return "version_fields_unconfirmed"
+        if decision == "current_best":
+            return "meaningful_upgrade"
+        if decision == "not_meaningful_upgrade":
+            assessment = _meaningful_upgrade_assessment(
+                match.get("candidateScore"),
+                match.get("baselineScore"),
+                candidate_summary,
+                match.get("baselineSummary"),
+            )
+            return assessment["reason"]
+        return "shadow_only_no_download"
 
     def _reconcile_champions(self, contexts):
         fresh = {
@@ -1605,7 +1780,11 @@ class RssSubscriptionMatchRuntime:
                     if (match.get("artifactKey") or f"match:{match['id']}") in available_artifacts
                 ]
                 if available:
-                    winners[group_key] = min(available, key=lambda match: (
+                    meaningful = [
+                        match for match in available
+                        if match.get("decision") == "upgrade_available"
+                    ]
+                    winners[group_key] = min(meaningful or available, key=lambda match: (
                         -float(match["candidateScore"]),
                         _text(match.get("createdAt")),
                         _text(match.get("artifactKey")),
@@ -1662,8 +1841,9 @@ class RssSubscriptionMatchRuntime:
             "best_waiting_baseline": 0,
             "lower_score": 1,
             "same_score": 2,
-            "best_available": 3,
-            "current_best": 4,
+            "not_meaningful_upgrade": 3,
+            "best_available": 4,
+            "current_best": 5,
         }
         for artifact_key, matches in artifacts.items():
             artifact_outcomes = outcomes.get(artifact_key) or []
@@ -1681,17 +1861,15 @@ class RssSubscriptionMatchRuntime:
                 if wins_all
                 else "superseded"
             )
+            decision_match = next((
+                match for match in matches
+                if self._winner_decision(match) == decision
+            ), matches[0])
             updates.append({
                 "matchIds": [match["id"] for match in matches],
                 "decision": decision,
                 "reason": (
-                    "version_fields_unconfirmed"
-                    if wins_all and any(
-                        isinstance(match.get("candidateSummary"), dict)
-                        and match["candidateSummary"].get("versionState") == "unconfirmed"
-                        for match in matches
-                    )
-                    else "shadow_only_no_download"
+                    self._winner_reason(decision_match, decision)
                     if wins_all
                     else "higher_scored_candidate"
                 ),
@@ -2201,6 +2379,17 @@ class RssSubscriptionMatchRuntime:
             if isinstance(match.get("candidateSummary"), dict)
             else {}
         )
+        baseline_summary = (
+            match.get("baselineSummary")
+            if isinstance(match.get("baselineSummary"), dict)
+            else {}
+        )
+        upgrade_assessment = _meaningful_upgrade_assessment(
+            candidate_score,
+            baseline_score,
+            candidate_summary,
+            baseline_summary,
+        )
         if candidate_summary.get("versionState") != "accepted":
             add_blocker(
                 "RSS_EXACT_VERSION_UNCONFIRMED",
@@ -2212,6 +2401,18 @@ class RssSubscriptionMatchRuntime:
             add_blocker("RSS_EXACT_BASELINE_UNCONFIRMED", "当前版本基线暂未确认")
         elif baseline_score is not None and candidate_score <= baseline_score:
             add_blocker("RSS_EXACT_NOT_STRICT_UPGRADE", "候选分数没有严格高于当前版本")
+        elif not upgrade_assessment["meaningful"]:
+            messages = {
+                "upgrade_gain_too_small": "候选分数变化过小，不足以证明观影质量提升",
+                "quality_dimension_regression": "候选在画质、音质或字幕维度存在退步",
+                "quality_dimension_not_improved": "候选没有可确认的画质、音质或字幕提升",
+                "version_fields_unconfirmed": "候选版本条件尚未完全确认",
+                "baseline_version_unconfirmed": "当前版本条件尚未完全确认",
+            }
+            add_blocker(
+                "RSS_EXACT_NOT_MEANINGFUL_UPGRADE",
+                messages.get(upgrade_assessment["reason"], "候选尚不能证明是有意义的质量升级"),
+            )
         if not match.get("torraLinked"):
             add_blocker("RSS_EXACT_SUBSCRIPTION_UNCONFIRMED", "Torra 订阅绑定暂未确认")
         if not _text(match.get("targetKey")) or not _text(match.get("artifactKey")):
@@ -2332,11 +2533,6 @@ class RssSubscriptionMatchRuntime:
                                 qb_summary=qb_summary,
                                 symedia_rows=symedia_rows,
                             )
-                            baseline_summary = (
-                                match.get("baselineSummary")
-                                if isinstance(match.get("baselineSummary"), dict)
-                                else {}
-                            )
                             if resolved.get("status") != "ready":
                                 add_blocker("RSS_EXACT_BASELINE_UNCONFIRMED", "当前版本无法从最新证据重新确认")
                             elif resolved.get("status") == "ready" and (
@@ -2431,6 +2627,15 @@ class RssSubscriptionMatchRuntime:
                 if candidate_score is not None and baseline_score is not None
                 else None
             ),
+            "upgradeHighlights": [
+                {
+                    "field": row["field"],
+                    "label": row["label"],
+                    "candidateLabels": row["candidateLabels"],
+                    "baselineLabels": row["baselineLabels"],
+                }
+                for row in upgrade_assessment["improvedFields"]
+            ],
             "blockers": blockers,
             "observedAt": observed_at.isoformat().replace("+00:00", "Z"),
             "_execution": routing,
@@ -2509,6 +2714,17 @@ class RssSubscriptionMatchRuntime:
         representative = group.get("representativeMatch") or {}
         candidate_score = group.get("bestCandidateScore")
         baseline_score = group.get("baselineScore")
+        upgrade_highlights = []
+        seen_highlights = set()
+        for validation in validations:
+            for highlight in validation.get("upgradeHighlights") or []:
+                if not isinstance(highlight, dict):
+                    continue
+                highlight_key = json.dumps(highlight, ensure_ascii=False, sort_keys=True)
+                if highlight_key in seen_highlights:
+                    continue
+                seen_highlights.add(highlight_key)
+                upgrade_highlights.append(highlight)
         public = {
             "status": "ready" if not blockers else "blocked",
             "ready": not blockers,
@@ -2533,6 +2749,7 @@ class RssSubscriptionMatchRuntime:
                 and not isinstance(baseline_score, bool)
                 else None
             ),
+            "upgradeHighlights": upgrade_highlights,
             "downloadCategory": _text(routes[0].get("category"))[:120] if routes else "",
             "downloadCategoryConfigured": bool(_text(routes[0].get("category"))) if routes else False,
             "destinationConfigured": bool(routes),

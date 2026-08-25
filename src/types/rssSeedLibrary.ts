@@ -255,6 +255,22 @@ export interface RssScoreSummary {
     label: string;
     score: number;
   }>;
+  upgradeAssessment?: {
+    meaningful: boolean;
+    reason: string;
+    minimumScoreGain: number;
+    scoreGain: number | null;
+    improvedFields: RssUpgradeHighlight[];
+    regressedFields: RssUpgradeHighlight[];
+  };
+}
+
+export interface RssUpgradeHighlight {
+  field: string;
+  label: string;
+  scoreGain?: number;
+  candidateLabels: string[];
+  baselineLabels: string[];
 }
 
 export interface RssMatchGroup {
@@ -367,6 +383,7 @@ export interface RssExactDownloadPreview {
   candidateScore?: number | null;
   baselineScore?: number | null;
   scoreGain?: number | null;
+  upgradeHighlights?: RssUpgradeHighlight[];
   episodeLabel?: string;
   coveredUnitCount?: number;
   coveredEpisodeStart?: number | null;

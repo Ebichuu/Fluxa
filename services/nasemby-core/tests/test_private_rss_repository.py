@@ -611,6 +611,10 @@ class PrivateRssRepositoryTests(unittest.TestCase):
                 repository.list_candidate_groups(group_state="protected")["total"],
                 0,
             )
+            self.assertEqual(
+                {row["id"] for row in repository.list_pending_evaluation_matches(limit=50)},
+                {match["id"] for match, _score in matches},
+            )
             self.assertEqual(repository.candidate_contract_summary()["automatic_eligible_count"], 1)
             scoped = repository.list_candidate_groups(
                 subscription_id="tv:123:s1",

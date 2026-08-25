@@ -349,6 +349,11 @@ const shadowReasonLabels: Record<string, string> = {
   baseline_artifact_conflict: '当前版本存在多个冲突文件',
   baseline_size_conflict: '当前版本文件大小存在冲突',
   higher_scored_candidate: '已被同集更高分候选取代',
+  meaningful_upgrade: '已确认存在明确质量提升',
+  upgrade_gain_too_small: '分数变化过小，不视为有效洗版',
+  quality_dimension_not_improved: '画质、音质或字幕没有明确提升',
+  quality_dimension_regression: '画质、音质或字幕存在退步',
+  candidate_not_higher: '候选没有高于当前版本',
   rule_pattern_missing: '规则字段不完整',
   rule_pattern_invalid: '规则表达式无法安全解析',
   rule_group_invalid: '规则分组无法安全解析',
@@ -396,6 +401,17 @@ function scoreLabel(value: number | null | undefined) {
   return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
 }
 
+function upgradeHighlightLabel(match: RssMatch) {
+  const fields = match.candidateSummary?.upgradeAssessment?.improvedFields ?? [];
+  return fields.slice(0, 3).map((field) => {
+    const before = field.baselineLabels.join(' / ');
+    const after = field.candidateLabels.join(' / ');
+    if (before && after) return `${field.label} ${before} → ${after}`;
+    if (after) return `${field.label}提升为 ${after}`;
+    return `${field.label}明确提升`;
+  }).join(' · ');
+}
+
 function shadowEvaluationLabel(match: RssMatch) {
   if (match.evaluationStatus === 'scored' && typeof match.candidateScore === 'number') {
     const candidate = `候选 ${scoreLabel(match.candidateScore)} 分`;
@@ -409,7 +425,12 @@ function shadowEvaluationLabel(match: RssMatch) {
     if (typeof match.baselineScore !== 'number') return `${candidate}${versionNote}`;
     const baseline = `当前版本 ${scoreLabel(match.baselineScore)} 分`;
     if (['upgrade_available', 'current_best'].includes(match.decision || '')) {
-      return `${candidate} · ${baseline} · 提升 ${scoreLabel(match.candidateScore - match.baselineScore)} 分${versionNote}`;
+      const evidence = upgradeHighlightLabel(match);
+      return `${candidate} · ${baseline} · 明确升级${evidence ? `：${evidence}` : ''}${versionNote}`;
+    }
+    if (match.decision === 'not_meaningful_upgrade') {
+      const reason = shadowReasonLabels[match.evaluationReason || ''] || '暂未发现明确质量提升';
+      return `${candidate} · ${baseline} · 已保护当前版本：${reason}${versionNote}`;
     }
     if (match.decision === 'same_score') return `${candidate} · 与当前版本同分${versionNote}`;
     if (match.decision === 'lower_score') return `${candidate} · 低于${baseline}${versionNote}`;
@@ -428,7 +449,7 @@ function candidateGroupScoreLabel(group: RssMatchGroup) {
       ? `${scoreLabel(group.bestCandidateScore)} 分`
       : '评分暂未确认';
     const conclusion = group.winsAllCoveredUnits
-      ? '当前唯一冠军'
+      ? '明确升级已确认'
       : group.state === 'partially_best'
         ? '仅部分集胜出，禁止提交'
         : group.state === 'protected'
@@ -1379,7 +1400,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
     resourceContext.publishedDate || resourceContext.subscriptionId || resourceContext.tmdbId || resourceContext.matchId
   ) && Boolean(matchSearch || matchStateFilter || matchBlockerFilter || matchSort !== 'recent');
   const matchPanelSummary = resourceView === 'upgrades'
-    ? matchesTotal ? `${matchesTotal} 个覆盖范围全部胜出的唯一产物` : '当前没有可洗版的更高分候选'
+    ? matchesTotal ? `${matchesTotal} 个已确认画质、音质或字幕提升的版本` : '当前没有值得洗版的明确升级'
     : resourceView === 'cleanup'
       ? matchesTotal ? `${matchesTotal} 个候选组需要确认身份、规则或订阅归属` : '当前没有需要人工决定的候选'
       : matchesTotal
@@ -1388,7 +1409,7 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
   const upgradeEmpty = (matchGroupCounts.waitingBaseline ?? 0) > 0
     ? {
         title: `${matchGroupCounts.waitingBaseline} 个候选组正在等待当前版本基线`,
-        detail: '候选已经到达，但尚不能证明它严格优于当前入库版本。',
+        detail: '候选已经到达，但尚不能证明它在观影质量上优于当前版本。',
         action: 'baseline' as const
       }
     : ((matchGroupCounts.blocked ?? 0) + (matchGroupCounts.needsCleanup ?? 0)) > 0
@@ -1400,12 +1421,12 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
       : (matchGroupCounts.monitoringRss ?? 0) > 0
         ? {
             title: '候选仍在评分或持续观察',
-            detail: 'Torra 规则评分完成后，只会把严格高于当前版本的候选列在这里。',
+            detail: '只有画质、音质或字幕存在明确提升，且没有关键退步的版本才会列在这里。',
             action: 'scoring' as const
           }
         : {
-            title: '当前没有可洗版的更高分候选',
-            detail: '已评分候选均未严格高于当前入库版本。',
+            title: '当前没有值得洗版的明确升级',
+            detail: '分数微调、发布组差异或关键质量维度退步都不会触发洗版。',
             action: 'none' as const
           };
   const hasResourceContext = Boolean(
@@ -2188,7 +2209,12 @@ export function RssSeedLibraryPage({ onNavigate }: { onNavigate: AppNavigate }) 
             <div className="ops-confirm-dialog__meta">
               <span>作品</span><strong>{exactDownloadTarget.group.title || '已匹配追更作品'}</strong>
               <span>覆盖范围</span><strong>{exactDownloadTarget.preview.episodeLabel || exactDownloadTarget.group.episodeLabel || `${exactDownloadTarget.preview.coveredUnitCount ?? 1} 集`}</strong>
-              <span>分数提升</span><strong>{typeof exactDownloadTarget.preview.scoreGain === 'number' ? scoreLabel(exactDownloadTarget.preview.scoreGain) : '已通过严格高分校验'}</strong>
+              <span>升级依据</span><strong>{exactDownloadTarget.preview.upgradeHighlights?.map((row) => {
+                const before = row.baselineLabels.join(' / ');
+                const after = row.candidateLabels.join(' / ');
+                return before && after ? `${row.label} ${before} → ${after}` : `${row.label}${after ? `提升为 ${after}` : '明确提升'}`;
+              }).join(' · ') || '已通过明确质量提升校验'}</strong>
+              <span>综合分变化</span><strong>{typeof exactDownloadTarget.preview.scoreGain === 'number' ? `${scoreLabel(exactDownloadTarget.preview.scoreGain)} 分` : '已确认'}</strong>
               <span>qB 分类</span><strong>{exactDownloadTarget.preview.downloadCategory || '未设置 · 按订阅目录提交'}</strong>
             </div>
             <div className="ops-confirm-dialog__actions">
