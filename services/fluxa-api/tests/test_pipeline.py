@@ -23,7 +23,7 @@ class PipelineTests(unittest.TestCase):
     def test_symedia_low_score_is_protected_not_error(self):
         outcome, label, _ = classify_symedia_record({"status": False, "errmsg": "权重得分低于现有版本，跳过覆盖"})
         self.assertEqual(outcome, "rule_protected")
-        self.assertIn("正常保护", label)
+        self.assertIn("正常权重拒绝", label)
 
     def test_pipeline_honesty_unconfirmed_115_and_no_false_sa_alarm(self):
         with tempfile.TemporaryDirectory() as tmp:

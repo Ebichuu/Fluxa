@@ -25,6 +25,26 @@ export interface RetryActionSpec {
   payload: Record<string, unknown>;
 }
 
+export interface SaRecordRef {
+  id: string;
+  mediaKey: string;
+  mediaType: MediaType;
+  tmdbId: string;
+  title: string;
+  seasons: string;
+  episodes: string;
+  seasonEpisode?: string;
+  src: string;
+  dest: string;
+  fileName: string;
+  fileSize?: number | null;
+  outcome: string;
+  outcomeLabel: string;
+  reasonText: string;
+  date: string;
+  webUrl: string;
+}
+
 export interface ActionableIssue {
   issueKey: string;
   severity: 'error' | 'warn';
@@ -36,8 +56,120 @@ export interface ActionableIssue {
   episodeLabel: string;
   errorText: string;
   retryAction: RetryActionSpec | null;
+  saRecord?: SaRecordRef | null;
   appUrl: string;
   appLabel: string;
+}
+
+export interface SaRecoveryProposal {
+  mediaType: MediaType;
+  tmdbId: string;
+  canonicalTitle: string;
+  originalTitle: string;
+  year: string;
+  posterUrl: string;
+  sourceSeason: number | null;
+  sourceEpisode: number | null;
+  targetSeason: number | null;
+  targetEpisode: number | null;
+  seasonName: string;
+  seasonAirDate: string;
+  episodeName: string;
+  episodeAirDate: string;
+  seasonChanged: boolean;
+  sequelConflict: { hasConflict: boolean; reasons: string[]; warningText: string };
+  alreadyInEmby?: boolean;
+  score: number;
+  confidence: 'high' | 'medium' | 'low';
+  reasons: string[];
+  suggestedFileName: string;
+}
+
+export interface SaIdentifyMapping {
+  id: number;
+  arcKey: string;
+  arcTitle: string;
+  sourceSeason: number;
+  mediaType: MediaType;
+  tmdbId: string;
+  canonicalTitle: string;
+  targetSeason: number;
+  seasonName: string;
+  episodeOffset: number;
+  transferTaskId: string;
+  autoApply: boolean;
+  confirmedBySample: string;
+  updatedAt: string;
+}
+
+export interface SaRecoveryJob {
+  id: number;
+  saRecordId: string;
+  fileName: string;
+  srcPath: string;
+  failedDate: string;
+  tmdbId: string;
+  canonicalTitle: string;
+  mediaType: MediaType;
+  sourceSeason: number | null;
+  sourceEpisode: number | null;
+  targetSeason: number | null;
+  targetEpisode: number | null;
+  strategy: string;
+  renamedFrom: string;
+  renamedTo: string;
+  status: 'draft' | 'file_prepared' | 'submitted' | 'processing' | 'not_processed' | 'resolved' | 'failed';
+  attemptCount: number;
+  maxAttempts: number;
+  lastError: string;
+  verification: {
+    saSuccessConfirmed?: boolean;
+    saSuccessRecordId?: string;
+    tmdbAndEpisodeMatched?: boolean;
+    destVideoConfirmed?: boolean;
+    destPath?: string;
+    strmOrEmbyConfirmed?: boolean;
+    embyEntryConfirmed?: boolean;
+    detail?: string;
+    checkedAt?: string;
+  };
+  submittedAt: string;
+  resolvedAt: string;
+}
+
+export interface SaDiagnoseResponse {
+  record: {
+    id: string;
+    fileName: string;
+    src: string;
+    date: string;
+    outcome: string;
+    reasonText: string;
+    fileSize?: number | null;
+  };
+  parsed: {
+    fileName: string;
+    inferredMediaType: MediaType;
+    arcTitle: string;
+    cleanedTitle: string;
+    arcKey: string;
+    sourceSeason: number | null;
+    sourceEpisode: number | null;
+    year: string;
+    specialMarkers: string[];
+    hasSpecialMarkers: boolean;
+    specsTail: string;
+    searchQueries: string[];
+  };
+  fileCheck: { checked: boolean; exists: boolean | null; sizeBytes: number | null; detail: string };
+  searchedQueries: Array<{ query: string; hitCount: number }>;
+  savedMapping: SaIdentifyMapping | null;
+  canAutoApply: boolean;
+  requiresConfirm: boolean;
+  proposals: SaRecoveryProposal[];
+  saTransferTasks: Array<{ id: string; name: string; sourcePath: string; targetPath: string }>;
+  saCapabilities: { transferManual?: boolean; manualIdentifyParams?: string[]; openapiChecked?: boolean };
+  latestJob: SaRecoveryJob | null;
 }
 
 export interface QbTask {

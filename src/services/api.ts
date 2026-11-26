@@ -12,6 +12,10 @@ import type {
   ReleaseGroupCheck,
   RssPreviewItem,
   RssSource,
+  SaDiagnoseResponse,
+  SaIdentifyMapping,
+  SaRecordRef,
+  SaRecoveryJob,
   UnifiedSubscription,
 } from '../types/api';
 
@@ -149,4 +153,27 @@ export const api = {
     requestJson<{ ok: boolean; message: string }>(`/api/settings/test/${encodeURIComponent(service)}`, {
       method: 'POST',
     }),
+
+  diagnoseSaFailure: (record: SaRecordRef, manualTmdbId = '', manualMediaType = '') =>
+    requestJson<SaDiagnoseResponse>('/api/sa-recovery/diagnose', {
+      method: 'POST',
+      body: JSON.stringify({ record, manualTmdbId, manualMediaType }),
+    }),
+  executeSaRecovery: (payload: Record<string, unknown>) =>
+    requestJson<{ ok: boolean; message: string; job: SaRecoveryJob; mapping?: SaIdentifyMapping | null }>(
+      '/api/sa-recovery/execute',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    ),
+  verifySaRecovery: (jobId: number) =>
+    requestJson<{ ok: boolean; resolved: boolean; status: string; message: string; job: SaRecoveryJob }>(
+      `/api/sa-recovery/jobs/${jobId}/verify`,
+      { method: 'POST' }
+    ),
+  getSaMappings: () =>
+    requestJson<{ mappings: SaIdentifyMapping[]; jobs: SaRecoveryJob[] }>('/api/sa-recovery/mappings'),
+  deleteSaMapping: (mappingId: number) =>
+    requestJson<{ ok: boolean }>(`/api/sa-recovery/mappings/${mappingId}`, { method: 'DELETE' }),
 };

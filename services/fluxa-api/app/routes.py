@@ -20,6 +20,7 @@ from app.domain.pipeline import (
     merge_subscriptions,
 )
 from app.domain.release_rules import evaluate_release_group, evaluate_subscription_guardrail
+from app.domain.sa_recovery import diagnose_sa_failure, execute_sa_recovery, verify_sa_recovery
 
 api = Blueprint("fluxa_api", __name__, url_prefix="/api")
 
@@ -474,6 +475,68 @@ def action_execute():
 @api.get("/audit")
 def list_audit():
     return jsonify({"items": _store().list_audit(limit=50)})
+
+
+# -- SA Identify Failure Diagnosis, Scoped Mappings & Safe Recovery -------
+
+@api.post("/sa-recovery/diagnose")
+def sa_recovery_diagnose():
+    body = request.get_json(silent=True) or {}
+    record = body.get("record") if isinstance(body.get("record"), dict) else {}
+    if not record.get("fileName") and not record.get("src"):
+        return jsonify({"error": "缺少 SA 失败记录的文件名或路径"}), 400
+    result = diagnose_sa_failure(
+        record=record,
+        settings=_store().get_settings(),
+        store=_store(),
+        manual_tmdb_id=str(body.get("manualTmdbId") or "").strip(),
+        manual_media_type=str(body.get("manualMediaType") or "").strip(),
+    )
+    return jsonify(result)
+
+
+@api.post("/sa-recovery/execute")
+def sa_recovery_execute():
+    body = request.get_json(silent=True) or {}
+    try:
+        result = execute_sa_recovery(
+            payload=body,
+            settings=_store().get_settings(),
+            store=_store(),
+        )
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
+
+
+@api.post("/sa-recovery/jobs/<int:job_id>/verify")
+def sa_recovery_verify(job_id: int):
+    try:
+        result = verify_sa_recovery(
+            job_id=job_id,
+            settings=_store().get_settings(),
+            store=_store(),
+        )
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+
+
+@api.get("/sa-recovery/mappings")
+def list_sa_mappings():
+    store = _store()
+    return jsonify({
+        "mappings": store.list_sa_mappings(),
+        "jobs": store.list_sa_recovery_jobs(limit=30),
+    })
+
+
+@api.delete("/sa-recovery/mappings/<int:mapping_id>")
+def delete_sa_mapping(mapping_id: int):
+    _store().delete_sa_mapping(mapping_id)
+    return jsonify({"ok": True})
 
 
 # -- Settings & Connectivity Test -----------------------------------------

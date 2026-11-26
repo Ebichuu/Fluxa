@@ -98,6 +98,60 @@ class FluxaStore:
                         error_text TEXT NOT NULL DEFAULT '',
                         created_at TEXT NOT NULL
                     );
+
+                    CREATE TABLE IF NOT EXISTS sa_identify_mappings (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        arc_key TEXT NOT NULL,
+                        arc_title TEXT NOT NULL,
+                        source_season INTEGER NOT NULL DEFAULT 1,
+                        media_type TEXT NOT NULL DEFAULT 'tv',
+                        tmdb_id TEXT NOT NULL,
+                        canonical_title TEXT NOT NULL,
+                        target_season INTEGER NOT NULL,
+                        season_name TEXT NOT NULL DEFAULT '',
+                        episode_offset INTEGER NOT NULL DEFAULT 0,
+                        transfer_task_id TEXT NOT NULL DEFAULT '',
+                        auto_apply INTEGER NOT NULL DEFAULT 1,
+                        confirmed_by_sample TEXT NOT NULL DEFAULT '',
+                        evidence_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        UNIQUE(arc_key, source_season)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS sa_recovery_jobs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        sa_record_id TEXT NOT NULL,
+                        file_name TEXT NOT NULL,
+                        src_path TEXT NOT NULL DEFAULT '',
+                        failed_date TEXT NOT NULL DEFAULT '',
+                        failure_reason TEXT NOT NULL DEFAULT '',
+                        arc_key TEXT NOT NULL DEFAULT '',
+                        mapping_id INTEGER,
+                        media_type TEXT NOT NULL DEFAULT 'tv',
+                        tmdb_id TEXT NOT NULL DEFAULT '',
+                        canonical_title TEXT NOT NULL DEFAULT '',
+                        source_season INTEGER,
+                        source_episode INTEGER,
+                        target_season INTEGER,
+                        target_episode INTEGER,
+                        strategy TEXT NOT NULL DEFAULT '',
+                        transfer_task_id TEXT NOT NULL DEFAULT '',
+                        renamed_from TEXT NOT NULL DEFAULT '',
+                        renamed_to TEXT NOT NULL DEFAULT '',
+                        rollback_json TEXT NOT NULL DEFAULT '{}',
+                        status TEXT NOT NULL DEFAULT 'draft',
+                        attempt_count INTEGER NOT NULL DEFAULT 0,
+                        max_attempts INTEGER NOT NULL DEFAULT 2,
+                        last_error TEXT NOT NULL DEFAULT '',
+                        verification_json TEXT NOT NULL DEFAULT '{}',
+                        submitted_at TEXT NOT NULL DEFAULT '',
+                        resolved_at TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_sa_recovery_record
+                        ON sa_recovery_jobs(sa_record_id, id DESC);
                     """
                 )
                 conn.commit()
@@ -429,6 +483,295 @@ class FluxaStore:
                 ]
             finally:
                 conn.close()
+
+    # -- SA Identify Mappings & Recovery Jobs -----------------------------
+
+    def list_sa_mappings(self) -> list[dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute("SELECT * FROM sa_identify_mappings ORDER BY updated_at DESC, id DESC").fetchall()
+                return [self._row_to_mapping(r) for r in rows]
+            finally:
+                conn.close()
+
+    def find_sa_mapping(self, arc_key: str, source_season: int) -> dict[str, Any] | None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM sa_identify_mappings WHERE arc_key = ? AND source_season = ?",
+                    (arc_key, int(source_season)),
+                ).fetchone()
+                return self._row_to_mapping(row) if row else None
+            finally:
+                conn.close()
+
+    def save_sa_mapping(
+        self,
+        *,
+        arc_key: str,
+        arc_title: str,
+        source_season: int,
+        media_type: str,
+        tmdb_id: str,
+        canonical_title: str,
+        target_season: int,
+        season_name: str = "",
+        episode_offset: int = 0,
+        transfer_task_id: str = "",
+        auto_apply: bool = True,
+        confirmed_by_sample: str = "",
+        evidence: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = _now_iso()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO sa_identify_mappings (
+                        arc_key, arc_title, source_season, media_type, tmdb_id,
+                        canonical_title, target_season, season_name, episode_offset,
+                        transfer_task_id, auto_apply, confirmed_by_sample, evidence_json,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(arc_key, source_season) DO UPDATE SET
+                        arc_title = excluded.arc_title,
+                        media_type = excluded.media_type,
+                        tmdb_id = excluded.tmdb_id,
+                        canonical_title = excluded.canonical_title,
+                        target_season = excluded.target_season,
+                        season_name = excluded.season_name,
+                        episode_offset = excluded.episode_offset,
+                        transfer_task_id = excluded.transfer_task_id,
+                        auto_apply = excluded.auto_apply,
+                        confirmed_by_sample = excluded.confirmed_by_sample,
+                        evidence_json = excluded.evidence_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        arc_key,
+                        arc_title,
+                        int(source_season),
+                        media_type,
+                        str(tmdb_id),
+                        canonical_title,
+                        int(target_season),
+                        season_name,
+                        int(episode_offset),
+                        transfer_task_id,
+                        1 if auto_apply else 0,
+                        confirmed_by_sample,
+                        json.dumps(evidence or {}, ensure_ascii=False),
+                        now,
+                        now,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return self.find_sa_mapping(arc_key, source_season) or {}
+
+    def delete_sa_mapping(self, mapping_id: int) -> bool:
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute("DELETE FROM sa_identify_mappings WHERE id = ?", (int(mapping_id),))
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    @staticmethod
+    def _row_to_mapping(row: sqlite3.Row) -> dict[str, Any]:
+        try:
+            evidence = json.loads(row["evidence_json"] or "{}")
+        except Exception:
+            evidence = {}
+        return {
+            "id": int(row["id"]),
+            "arcKey": str(row["arc_key"]),
+            "arcTitle": str(row["arc_title"]),
+            "sourceSeason": int(row["source_season"]),
+            "mediaType": str(row["media_type"]),
+            "tmdbId": str(row["tmdb_id"]),
+            "canonicalTitle": str(row["canonical_title"]),
+            "targetSeason": int(row["target_season"]),
+            "seasonName": str(row["season_name"]),
+            "episodeOffset": int(row["episode_offset"]),
+            "transferTaskId": str(row["transfer_task_id"]),
+            "autoApply": bool(row["auto_apply"]),
+            "confirmedBySample": str(row["confirmed_by_sample"]),
+            "evidence": evidence,
+            "createdAt": str(row["created_at"]),
+            "updatedAt": str(row["updated_at"]),
+        }
+
+    def create_or_update_sa_recovery_job(self, data: dict[str, Any]) -> dict[str, Any]:
+        now = _now_iso()
+        job_id = data.get("id")
+        with self._lock:
+            conn = self._connect()
+            try:
+                if job_id:
+                    conn.execute(
+                        """
+                        UPDATE sa_recovery_jobs SET
+                            mapping_id = ?, media_type = ?, tmdb_id = ?, canonical_title = ?,
+                            target_season = ?, target_episode = ?, strategy = ?, transfer_task_id = ?,
+                            renamed_from = ?, renamed_to = ?, rollback_json = ?,
+                            status = ?, attempt_count = ?, max_attempts = ?, last_error = ?,
+                            verification_json = ?, submitted_at = ?, resolved_at = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            data.get("mappingId"),
+                            data.get("mediaType", "tv"),
+                            str(data.get("tmdbId") or ""),
+                            str(data.get("canonicalTitle") or ""),
+                            data.get("targetSeason"),
+                            data.get("targetEpisode"),
+                            str(data.get("strategy") or ""),
+                            str(data.get("transferTaskId") or ""),
+                            str(data.get("renamedFrom") or ""),
+                            str(data.get("renamedTo") or ""),
+                            json.dumps(data.get("rollback") or {}, ensure_ascii=False),
+                            str(data.get("status") or "pending"),
+                            int(data.get("attemptCount") or 0),
+                            int(data.get("maxAttempts") or 2),
+                            str(data.get("lastError") or ""),
+                            json.dumps(data.get("verification") or {}, ensure_ascii=False),
+                            str(data.get("submittedAt") or ""),
+                            str(data.get("resolvedAt") or ""),
+                            now,
+                            int(job_id),
+                        ),
+                    )
+                    conn.commit()
+                    resolved_id = int(job_id)
+                else:
+                    cur = conn.execute(
+                        """
+                        INSERT INTO sa_recovery_jobs (
+                            sa_record_id, file_name, src_path, failed_date, failure_reason, arc_key,
+                            mapping_id, media_type, tmdb_id, canonical_title,
+                            source_season, source_episode, target_season, target_episode,
+                            strategy, transfer_task_id, renamed_from, renamed_to, rollback_json,
+                            status, attempt_count, max_attempts, last_error, verification_json,
+                            submitted_at, resolved_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(data.get("saRecordId") or ""),
+                            str(data.get("fileName") or ""),
+                            str(data.get("srcPath") or ""),
+                            str(data.get("failedDate") or ""),
+                            str(data.get("failureReason") or ""),
+                            str(data.get("arcKey") or ""),
+                            data.get("mappingId"),
+                            data.get("mediaType", "tv"),
+                            str(data.get("tmdbId") or ""),
+                            str(data.get("canonicalTitle") or ""),
+                            data.get("sourceSeason"),
+                            data.get("sourceEpisode"),
+                            data.get("targetSeason"),
+                            data.get("targetEpisode"),
+                            str(data.get("strategy") or ""),
+                            str(data.get("transferTaskId") or ""),
+                            str(data.get("renamedFrom") or ""),
+                            str(data.get("renamedTo") or ""),
+                            json.dumps(data.get("rollback") or {}, ensure_ascii=False),
+                            str(data.get("status") or "pending"),
+                            int(data.get("attemptCount") or 0),
+                            int(data.get("maxAttempts") or 2),
+                            str(data.get("lastError") or ""),
+                            json.dumps(data.get("verification") or {}, ensure_ascii=False),
+                            str(data.get("submittedAt") or ""),
+                            str(data.get("resolvedAt") or ""),
+                            now,
+                            now,
+                        ),
+                    )
+                    conn.commit()
+                    resolved_id = int(cur.lastrowid)
+                row = conn.execute("SELECT * FROM sa_recovery_jobs WHERE id = ?", (resolved_id,)).fetchone()
+                return self._row_to_recovery_job(row)
+            finally:
+                conn.close()
+
+    def get_sa_recovery_job(self, job_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute("SELECT * FROM sa_recovery_jobs WHERE id = ?", (int(job_id),)).fetchone()
+                return self._row_to_recovery_job(row) if row else None
+            finally:
+                conn.close()
+
+    def get_latest_sa_recovery_for_record(self, sa_record_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM sa_recovery_jobs WHERE sa_record_id = ? ORDER BY id DESC LIMIT 1",
+                    (str(sa_record_id),),
+                ).fetchone()
+                return self._row_to_recovery_job(row) if row else None
+            finally:
+                conn.close()
+
+    def list_sa_recovery_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
+        limit = max(1, min(200, int(limit)))
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute("SELECT * FROM sa_recovery_jobs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+                return [self._row_to_recovery_job(r) for r in rows]
+            finally:
+                conn.close()
+
+    @staticmethod
+    def _row_to_recovery_job(row: sqlite3.Row) -> dict[str, Any]:
+        try:
+            rollback = json.loads(row["rollback_json"] or "{}")
+        except Exception:
+            rollback = {}
+        try:
+            verification = json.loads(row["verification_json"] or "{}")
+        except Exception:
+            verification = {}
+        return {
+            "id": int(row["id"]),
+            "saRecordId": str(row["sa_record_id"]),
+            "fileName": str(row["file_name"]),
+            "srcPath": str(row["src_path"]),
+            "failedDate": str(row["failed_date"]),
+            "failureReason": str(row["failure_reason"]),
+            "arcKey": str(row["arc_key"]),
+            "mappingId": int(row["mapping_id"]) if row["mapping_id"] is not None else None,
+            "mediaType": str(row["media_type"]),
+            "tmdbId": str(row["tmdb_id"]),
+            "canonicalTitle": str(row["canonical_title"]),
+            "sourceSeason": int(row["source_season"]) if row["source_season"] is not None else None,
+            "sourceEpisode": int(row["source_episode"]) if row["source_episode"] is not None else None,
+            "targetSeason": int(row["target_season"]) if row["target_season"] is not None else None,
+            "targetEpisode": int(row["target_episode"]) if row["target_episode"] is not None else None,
+            "strategy": str(row["strategy"]),
+            "transferTaskId": str(row["transfer_task_id"]),
+            "renamedFrom": str(row["renamed_from"]),
+            "renamedTo": str(row["renamed_to"]),
+            "rollback": rollback,
+            "status": str(row["status"]),
+            "attemptCount": int(row["attempt_count"]),
+            "maxAttempts": int(row["max_attempts"]),
+            "lastError": str(row["last_error"]),
+            "verification": verification,
+            "submittedAt": str(row["submitted_at"]),
+            "resolvedAt": str(row["resolved_at"]),
+            "createdAt": str(row["created_at"]),
+            "updatedAt": str(row["updated_at"]),
+        }
 
     # -- Admin credentials helper -----------------------------------------
 

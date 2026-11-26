@@ -254,10 +254,54 @@ def build_actionable_issues(snapshot: dict[str, Any], prefs: dict[str, dict[str,
             "appLabel": "打开 Torra",
         })
 
-    # 4. Symedia (SA) real failures or identify failures ONLY (never rule_protected!)
-    for rec in snapshot.get("saHistory") or []:
-        if rec["outcome"] not in {"failed", "identify_failed"}:
+    # 4. Symedia (SA) real failures or identify failures ONLY (never rule_protected / version_rejected!)
+    # Chain same-file records so a file that later succeeded no longer surfaces stale failure alarms.
+    sa_history = snapshot.get("saHistory") or []
+    succeeded_files = {
+        (rec.get("fileName") or "").casefold()
+        for rec in sa_history
+        if rec["outcome"] in {"archived", "replaced"} and rec.get("fileName")
+    }
+    seen_failed_files: set[str] = set()
+    for rec in sa_history:
+        fname_key = (rec.get("fileName") or "").casefold()
+        # Post-archive sequel/year sanity audit on "archived" movie records (Point 3: Hostel Part II -> 1690)
+        if rec["outcome"] in {"archived", "replaced"} and rec.get("mediaType") == "movie" and rec.get("fileName"):
+            from app.domain.sa_recovery import check_sequel_identity_conflict, parse_media_filename
+            p_src = parse_media_filename(rec["fileName"])
+            dest_year_m = __import__("re").search(r"\b((?:19|20)\d{2})\b", rec.get("dest") or "")
+            conflict = check_sequel_identity_conflict(
+                source_name=p_src["arcTitle"],
+                source_year=p_src["year"],
+                target_title=rec.get("title") or "",
+                target_year=dest_year_m.group(1) if dest_year_m else "",
+            )
+            if conflict["hasConflict"]:
+                issue_key = f"sa_conflict:{rec['id'] or rec['fileName']}"
+                if issue_key not in muted_keys:
+                    issues.append({
+                        "issueKey": issue_key,
+                        "severity": "warn",
+                        "stage": "symedia",
+                        "stageLabel": "SA 疑似串片",
+                        "title": rec["title"],
+                        "subtitle": rec["fileName"],
+                        "mediaKey": rec.get("mediaKey") or "",
+                        "episodeLabel": "",
+                        "errorText": f"SA 显示归档成功但疑似认错作品：{conflict['warningText']}",
+                        "retryAction": None,
+                        "saRecord": rec,
+                        "appUrl": rec.get("webUrl") or "",
+                        "appLabel": "打开 SA 核对",
+                    })
             continue
+
+        if rec["outcome"] not in {"failed", "identify_failed", "auth_or_connection_error"}:
+            continue
+        if fname_key and (fname_key in succeeded_files or fname_key in seen_failed_files):
+            continue
+        if fname_key:
+            seen_failed_files.add(fname_key)
         issue_key = f"sa:{rec['id'] or rec['fileName']}"
         if issue_key in muted_keys:
             continue
@@ -266,13 +310,14 @@ def build_actionable_issues(snapshot: dict[str, Any], prefs: dict[str, dict[str,
             "issueKey": issue_key,
             "severity": "error",
             "stage": "symedia",
-            "stageLabel": "SA 整理",
+            "stageLabel": "SA 识别失败" if rec["outcome"] == "identify_failed" else "SA 故障",
             "title": rec["title"],
             "subtitle": rec["fileName"],
             "mediaKey": rec.get("mediaKey") or "",
             "episodeLabel": ep_label,
             "errorText": f"{rec['outcomeLabel']}：{rec['reasonText']}",
             "retryAction": None,
+            "saRecord": rec if rec["outcome"] == "identify_failed" else None,
             "appUrl": rec.get("webUrl") or "",
             "appLabel": "打开 SA 处理",
         })

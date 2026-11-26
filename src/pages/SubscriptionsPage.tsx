@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { ExternalLink, RefreshCw, Rss, ShieldCheck } from 'lucide-react';
+import { ExternalLink, RefreshCw, Rss, ShieldCheck, Trash2 } from 'lucide-react';
 import { api } from '../services/api';
 import type {
   AppSettings,
@@ -8,6 +8,8 @@ import type {
   MediaType,
   ReleaseGroupCheck,
   RssPreviewItem,
+  SaIdentifyMapping,
+  SaRecoveryJob,
   UnifiedSubscription,
 } from '../types/api';
 import { StatusPill } from '../components/StatusPill';
@@ -17,9 +19,11 @@ interface SubscriptionsPageProps {
 }
 
 export function SubscriptionsPage({ onOpenMedia }: SubscriptionsPageProps) {
-  const [tab, setTab] = useState<'list' | 'checker' | 'logs'>('list');
+  const [tab, setTab] = useState<'list' | 'checker' | 'mappings' | 'logs'>('list');
   const [items, setItems] = useState<UnifiedSubscription[]>([]);
   const [logs, setLogs] = useState<DecisionLog[]>([]);
+  const [saMappings, setSaMappings] = useState<SaIdentifyMapping[]>([]);
+  const [saJobs, setSaJobs] = useState<SaRecoveryJob[]>([]);
   const [guardrails, setGuardrails] = useState<AppSettings['guardrails'] | null>(null);
   const [filterIntent, setFilterIntent] = useState<'all' | IntentMode | 'dup'>('all');
   const [loading, setLoading] = useState(true);
@@ -37,10 +41,12 @@ export function SubscriptionsPage({ onOpenMedia }: SubscriptionsPageProps) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.getSubscriptions();
+      const [res, saRes] = await Promise.all([api.getSubscriptions(), api.getSaMappings()]);
       setItems(res.items);
       setLogs(res.decisionLogs);
       setGuardrails(res.guardrails);
+      setSaMappings(saRes.mappings);
+      setSaJobs(saRes.jobs);
       if (res.guardrails.siteOfficialGroups.length) {
         setTestSiteId((cur) => cur || res.guardrails.siteOfficialGroups[0].siteId);
       }
@@ -108,6 +114,9 @@ export function SubscriptionsPage({ onOpenMedia }: SubscriptionsPageProps) {
           </button>
           <button className={`tab-btn ${tab === 'checker' ? 'active' : ''}`} type="button" onClick={() => setTab('checker')}>
             站点官组校验 & RSS 透视
+          </button>
+          <button className={`tab-btn ${tab === 'mappings' ? 'active' : ''}`} type="button" onClick={() => setTab('mappings')}>
+            SA 篇章映射（{saMappings.length}）
           </button>
           <button className={`tab-btn ${tab === 'logs' ? 'active' : ''}`} type="button" onClick={() => setTab('logs')}>
             决策解释记录（{logs.length}）
@@ -268,6 +277,95 @@ export function SubscriptionsPage({ onOpenMedia }: SubscriptionsPageProps) {
                       <a className="btn btn-sm" href={item.detailUrl} target="_blank" rel="noreferrer">
                         站点详情 <ExternalLink size={12} />
                       </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
+      {tab === 'mappings' && (
+        <div className="stack">
+          <section className="card">
+            <div className="card-header">
+              <h2 className="card-title">已确认的 SA 篇章限定映射</h2>
+              <span className="muted">严格限定到具体篇章指纹，后续同类集数可复用，绝不误改其他作品的 S01</span>
+            </div>
+            {!saMappings.length ? (
+              <div className="muted">暂无已保存的篇章映射。在首页 SA 识别失败条目中点击「诊断与恢复」确认一次后即会沉淀于此。</div>
+            ) : (
+              <div className="list">
+                {saMappings.map((m) => (
+                  <div key={m.id} className="list-row">
+                    <div className="row-main">
+                      <div className="row-title">
+                        <strong>{m.arcTitle}</strong>
+                        <StatusPill
+                          status="protected"
+                          label={`S${String(m.sourceSeason).padStart(2, '0')} → TMDB #${m.tmdbId} S${String(m.targetSeason).padStart(2, '0')}`}
+                        />
+                        <span>{m.canonicalTitle}{m.seasonName ? ` · ${m.seasonName}` : ''}</span>
+                      </div>
+                      <div className="muted" style={{ marginTop: 4 }}>
+                        确认样本：{m.confirmedBySample || '-'} · 更新于 {m.updatedAt}
+                      </div>
+                    </div>
+                    <button
+                      className="btn btn-sm"
+                      type="button"
+                      onClick={async () => {
+                        await api.deleteSaMapping(m.id);
+                        setToast({ tone: 'ok', text: '已删除该条篇章映射' });
+                        await load();
+                      }}
+                    >
+                      <Trash2 size={13} /> 删除
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="card">
+            <div className="card-header">
+              <h2 className="card-title">最近 SA 单文件恢复记录</h2>
+              <span className="muted">核验新 SA 成功记录、TMDB/季集、目标视频与 STRM 后才标验证成功</span>
+            </div>
+            {!saJobs.length ? (
+              <div className="muted">暂无 SA 恢复执行记录。</div>
+            ) : (
+              <div className="list">
+                {saJobs.map((j) => (
+                  <div key={j.id} className="list-row">
+                    <div className="row-main">
+                      <div className="row-title">
+                        <StatusPill
+                          status={j.status === 'resolved' ? 'ok' : j.status === 'failed' ? 'error' : j.status === 'not_processed' ? 'warn' : 'active'}
+                          label={j.status === 'resolved' ? '验证成功' : j.status === 'failed' ? '再次失败' : j.status === 'not_processed' ? '尚未处理' : '待处理 / 核验中'}
+                        />
+                        <span>{j.canonicalTitle}</span>
+                        {j.targetSeason && j.targetEpisode && (
+                          <span className="pill idle">S{String(j.targetSeason).padStart(2, '0')}E{String(j.targetEpisode).padStart(2, '0')}</span>
+                        )}
+                      </div>
+                      <div className="muted" style={{ marginTop: 4, wordBreak: 'break-all' }}>{j.fileName}</div>
+                      <div style={{ fontSize: 13, marginTop: 4 }}>{j.verification.detail || j.lastError}</div>
+                    </div>
+                    {j.status !== 'resolved' && (
+                      <button
+                        className="btn btn-sm btn-primary"
+                        type="button"
+                        onClick={async () => {
+                          const r = await api.verifySaRecovery(j.id);
+                          setToast({ tone: r.resolved ? 'ok' : 'error', text: r.message });
+                          await load();
+                        }}
+                      >
+                        核验结果
+                      </button>
                     )}
                   </div>
                 ))}

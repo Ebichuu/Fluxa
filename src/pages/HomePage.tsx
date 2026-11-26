@@ -13,8 +13,9 @@ import {
   Tv,
 } from 'lucide-react';
 import { api } from '../services/api';
-import type { ActionImpactPreview, ActionableIssue, DashboardResponse, MediaType } from '../types/api';
+import type { ActionImpactPreview, ActionableIssue, DashboardResponse, MediaType, SaRecordRef } from '../types/api';
 import { ConfirmImpactModal } from '../components/ConfirmImpactModal';
+import { SaRecoveryModal } from '../components/SaRecoveryModal';
 import { StatusPill } from '../components/StatusPill';
 
 interface HomePageProps {
@@ -47,6 +48,7 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
     payload: Record<string, unknown>;
     preview: ActionImpactPreview;
   } | null>(null);
+  const [saRecoveryRecord, setSaRecoveryRecord] = useState<SaRecordRef | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
 
   const load = useCallback(async (days = calDays) => {
@@ -237,8 +239,17 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
                   )}
                 </div>
                 <div className="row-actions">
+                  {issue.saRecord && (
+                    <button
+                      className="btn btn-sm btn-primary"
+                      type="button"
+                      onClick={() => setSaRecoveryRecord(issue.saRecord || null)}
+                    >
+                      诊断与恢复
+                    </button>
+                  )}
                   {issue.mediaKey && (
-                    <button className="btn btn-sm btn-primary" type="button" onClick={() => openMediaKey(issue.mediaKey)}>
+                    <button className="btn btn-sm" type="button" onClick={() => openMediaKey(issue.mediaKey)}>
                       查全链路
                     </button>
                   )}
@@ -478,6 +489,14 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
           busy={actionBusy}
           onCancel={() => setPendingAction(null)}
           onConfirm={() => void confirmPending()}
+        />
+      )}
+
+      {saRecoveryRecord && (
+        <SaRecoveryModal
+          record={saRecoveryRecord}
+          onClose={() => setSaRecoveryRecord(null)}
+          onUpdated={() => void load(calDays)}
         />
       )}
     </div>
