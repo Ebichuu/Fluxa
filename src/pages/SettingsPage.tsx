@@ -87,11 +87,14 @@ export function SettingsPage() {
 
   const addSiteGroup = () => {
     if (!settings || !newSiteName.trim()) return;
+    const groups = newSiteGroups.split(/[\s,，]+/).map((s) => s.trim()).filter(Boolean);
     const nextRow: SiteOfficialGroup = {
+      priority: settings.guardrails.siteOfficialGroups.length + 1,
       siteId: newSiteName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_') || `site_${Date.now()}`,
       siteName: newSiteName.trim(),
+      matchMode: groups.length > 0 ? 'group_list' : 'official_tag',
       domains: newSiteDomain.split(/[\s,，]+/).map((s) => s.trim()).filter(Boolean),
-      officialGroups: newSiteGroups.split(/[\s,，]+/).map((s) => s.trim()).filter(Boolean),
+      officialGroups: groups,
     };
     setSettings({
       ...settings,
@@ -107,10 +110,12 @@ export function SettingsPage() {
 
   const updateSiteGroups = (index: number, groupsText: string) => {
     if (!settings) return;
+    const groups = groupsText.split(/[\s,，]+/).map((s) => s.trim()).filter(Boolean);
     const copy = [...settings.guardrails.siteOfficialGroups];
     copy[index] = {
       ...copy[index],
-      officialGroups: groupsText.split(/[\s,，]+/).map((s) => s.trim()).filter(Boolean),
+      officialGroups: groups,
+      matchMode: groups.length > 0 ? 'group_list' : 'official_tag',
     };
     setSettings({ ...settings, guardrails: { ...settings.guardrails, siteOfficialGroups: copy } });
   };
@@ -165,29 +170,23 @@ export function SettingsPage() {
           {/* MoviePilot Neo */}
           <section className="card stack">
             <div className="card-header" style={{ marginBottom: 0 }}>
-              <h2 className="card-title">MoviePilot Neo</h2>
+              <h2 className="card-title">MoviePilot Neo（仅 API 根地址 + X-API-KEY Token）</h2>
               <button className="btn btn-sm" type="button" onClick={() => void testService('moviepilot')}>测试连接</button>
             </div>
+            <div className="muted">Token 仅保存在后端 SQLite，不写入前端或日志；订阅交由 Neo 后直接沿用 Neo 现有选种过滤规则。</div>
             {testResults.moviepilot && <div className={`banner ${testResults.moviepilot.ok ? 'ok' : 'error'}`}>{testResults.moviepilot.message}</div>}
             <div className="form-grid">
               <div className="field">
-                <label>内网 API 地址（如 http://192.168.1.10:3000）</label>
-                <input type="text" value={settings.services.moviepilot.baseUrl} onChange={(e) => setSvc('moviepilot', { baseUrl: e.target.value })} />
+                <label>内网 API 根地址（如 http://192.168.50.50:3001/api/v1）</label>
+                <input type="text" placeholder="http://192.168.50.50:3001/api/v1" value={settings.services.moviepilot.baseUrl} onChange={(e) => setSvc('moviepilot', { baseUrl: e.target.value })} />
               </div>
               <div className="field">
-                <label>外网/快捷跳转地址（可选，留空同上）</label>
-                <input type="text" value={settings.services.moviepilot.webUrl} onChange={(e) => setSvc('moviepilot', { webUrl: e.target.value })} />
+                <label>前端跳转地址（如 http://192.168.50.50:3000）</label>
+                <input type="text" placeholder="http://192.168.50.50:3000" value={settings.services.moviepilot.webUrl} onChange={(e) => setSvc('moviepilot', { webUrl: e.target.value })} />
               </div>
               <div className="field">
-                <label>API Token（优先使用）</label>
+                <label>API Token（通过 X-API-KEY 请求头认证）</label>
                 <input type="password" placeholder={secretPlaceholder('moviepilot', 'apiToken')} value={settings.services.moviepilot.apiToken} onChange={(e) => setSvc('moviepilot', { apiToken: e.target.value })} />
-              </div>
-              <div className="field">
-                <label>或 账号 / 密码（留空则仅用 Token）</label>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <input type="text" placeholder="用户名" value={settings.services.moviepilot.username} onChange={(e) => setSvc('moviepilot', { username: e.target.value })} />
-                  <input type="password" placeholder={secretPlaceholder('moviepilot', 'password')} value={settings.services.moviepilot.password} onChange={(e) => setSvc('moviepilot', { password: e.target.value })} />
-                </div>
               </div>
             </div>
           </section>
@@ -381,21 +380,34 @@ export function SettingsPage() {
                 onChange={(e) => setSettings({ ...settings, guardrails: { ...settings.guardrails, requireSiteOfficialGroup: e.target.checked } })}
               />
             </label>
+            <label className="toggle-row">
+              <span><strong>无合格官种时继续等待（不偷偷回退非官组）</strong><div className="muted">严格按「来源站 + 该站官组 / 本站官方标签」匹配，大小写不敏感但强制完整组名边界</div></span>
+              <input
+                type="checkbox"
+                checked={settings.guardrails.noFallbackToNonOfficial}
+                onChange={(e) => setSettings({ ...settings, guardrails: { ...settings.guardrails, noFallbackToNonOfficial: e.target.checked } })}
+              />
+            </label>
           </section>
 
           <section className="card stack">
-            <h2 className="card-title">站点 → 本站官组映射表</h2>
-            <div className="muted">按来源站分别维护本站官组，绝不使用跨站通用的发布组白名单。</div>
+            <h2 className="card-title">站点 → 本站官组映射表（按优先级排序）</h2>
+            <div className="muted">初始数据导入自你现有 Neo 规则（排名有优先级）。留空组名表示按「本站官方标签」判定；绝不合并成跨站通用白名单。</div>
             <div className="list">
               {settings.guardrails.siteOfficialGroups.map((site, idx) => (
                 <div key={site.siteId} className="list-row">
                   <div className="row-main">
                     <div className="row-title">
+                      <span className="pill idle">#{site.priority}</span>
                       <strong>{site.siteName}</strong>
-                      <span className="muted">{site.domains.join(', ')}</span>
+                      <span className={`pill ${site.matchMode === 'official_tag' ? 'protected' : 'active'}`}>
+                        {site.matchMode === 'official_tag' ? '本站官方标签' : '官组名配对'}
+                      </span>
+                      {site.domains.length > 0 && <span className="muted">{site.domains.join(', ')}</span>}
                     </div>
                     <input
                       type="text"
+                      placeholder="留空则按「本站官方标签」判定；填写组名（逗号分隔）则按本站官组严格匹配"
                       style={{ marginTop: 6, width: '100%', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)' }}
                       value={site.officialGroups.join(', ')}
                       onChange={(e) => updateSiteGroups(idx, e.target.value)}

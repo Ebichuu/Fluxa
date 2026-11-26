@@ -8,33 +8,77 @@ from app.domain.release_rules import evaluate_release_group, evaluate_subscripti
 
 
 class ReleaseRulesTests(unittest.TestCase):
-    def test_site_official_group_matches_same_site(self):
+    def test_site_official_group_matches_same_site_case_insensitive(self):
         res = evaluate_release_group(
-            title="Show.Name.S01E01.2026.2160p.WEB-DL.H265-HDHWEB",
+            title="Show.Name.S01E01.2026.2160p.WEB-DL.H265-adweb",
             site_official_groups=DEFAULT_SITE_OFFICIAL_GROUPS,
-            site_id="hdhome",
-            site_name="HDHome",
+            site_id="audiences",
+            site_name="观众",
             require_site_official=True,
             block_cross_site_repost=True,
         )
         self.assertEqual(res["classification"], "site_official")
         self.assertTrue(res["allowed"])
-        self.assertEqual(res["releaseGroup"], "HDHWEB")
+        self.assertEqual(res["sitePriority"], 1)
 
-    def test_cross_site_repost_is_flagged_and_blocked(self):
-        # M-Team site posting an HDHome official group => cross-site repost, NOT site official!
+    def test_strict_group_boundary_blocks_adwebfake(self):
+        # ADWebFAKE MUST NOT match ADWeb!
         res = evaluate_release_group(
-            title="Show.Name.S01E01.2026.2160p.WEB-DL.H265-HDHWEB",
+            title="Show.Name.S01E01.2026.2160p.WEB-DL.H265-ADWebFAKE",
+            site_official_groups=DEFAULT_SITE_OFFICIAL_GROUPS,
+            site_id="audiences",
+            site_name="观众",
+            require_site_official=True,
+            block_cross_site_repost=True,
+            no_fallback_to_non_official=True,
+        )
+        self.assertEqual(res["classification"], "non_official")
+        self.assertFalse(res["allowed"])
+        self.assertIn("不回退非官组", res["reasonText"])
+
+    def test_cross_site_repost_frds_on_mteam_is_blocked(self):
+        # FRDS on 馒头 MUST be flagged as cross-site repost (owner: 朋友) and rejected!
+        res = evaluate_release_group(
+            title="Movie.Name.2026.2160p.WEB-DL.H265-FRDS",
             site_official_groups=DEFAULT_SITE_OFFICIAL_GROUPS,
             site_id="mteam",
-            site_name="M-Team",
-            require_site_official=False,
+            site_name="馒头",
+            require_site_official=True,
             block_cross_site_repost=True,
         )
         self.assertEqual(res["classification"], "cross_site_repost")
         self.assertFalse(res["allowed"])
-        self.assertEqual(res["ownerSite"], "HDHome")
+        self.assertEqual(res["ownerSite"], "朋友")
         self.assertIn("跨站转载", res["reasonText"])
+
+    def test_official_tag_site_passes_only_with_tag_and_blocks_cross_site(self):
+        # 高清视界 uses official_tag mode
+        without_tag = evaluate_release_group(
+            title="Show.2026.S01E01.2160p-SomeGroup",
+            site_official_groups=DEFAULT_SITE_OFFICIAL_GROUPS,
+            site_id="hdvideo",
+            has_official_tag=False,
+        )
+        self.assertFalse(without_tag["allowed"])
+        self.assertEqual(without_tag["matchMode"], "official_tag")
+
+        with_tag = evaluate_release_group(
+            title="Show.2026.S01E01.2160p-HDVWEB",
+            site_official_groups=DEFAULT_SITE_OFFICIAL_GROUPS,
+            site_id="hdvideo",
+            has_official_tag=True,
+        )
+        self.assertTrue(with_tag["allowed"])
+        self.assertEqual(with_tag["classification"], "site_official")
+
+        repost_on_tag_site = evaluate_release_group(
+            title="Show.2026.S01E01.2160p-FRDS",
+            site_official_groups=DEFAULT_SITE_OFFICIAL_GROUPS,
+            site_id="hdvideo",
+            has_official_tag=True,
+        )
+        self.assertFalse(repost_on_tag_site["allowed"])
+        self.assertEqual(repost_on_tag_site["classification"], "cross_site_repost")
 
     def test_old_movie_from_chart_is_blocked_unless_collect(self):
         guardrails = {

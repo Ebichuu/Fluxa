@@ -27,7 +27,8 @@ export function SubscriptionsPage({ onOpenMedia }: SubscriptionsPageProps) {
 
   // Release group checker state
   const [testSiteId, setTestSiteId] = useState('mteam');
-  const [testTitle, setTestTitle] = useState('Show.Name.S01E01.2026.2160p.WEB-DL.H265-HDHWEB');
+  const [testTitle, setTestTitle] = useState('Show.Name.S01E01.2026.2160p.WEB-DL.H265-FRDS');
+  const [testOfficialTag, setTestOfficialTag] = useState(false);
   const [checkResult, setCheckResult] = useState<ReleaseGroupCheck | null>(null);
   const [rssItems, setRssItems] = useState<RssPreviewItem[]>([]);
   const [rssErrors, setRssErrors] = useState<string[]>([]);
@@ -68,7 +69,11 @@ export function SubscriptionsPage({ onOpenMedia }: SubscriptionsPageProps) {
   const runCheck = async (e: FormEvent) => {
     e.preventDefault();
     try {
-      const res = await api.checkReleaseGroup({ siteId: testSiteId, title: testTitle });
+      const res = await api.checkReleaseGroup({
+        siteId: testSiteId,
+        title: testTitle,
+        hasOfficialTag: testOfficialTag,
+      });
       setCheckResult(res);
     } catch (err) {
       setToast({ tone: 'error', text: err instanceof Error ? err.message : '校验失败' });
@@ -197,11 +202,11 @@ export function SubscriptionsPage({ onOpenMedia }: SubscriptionsPageProps) {
             </div>
             <form className="form-grid" onSubmit={runCheck}>
               <div className="field">
-                <label>来源站点</label>
+                <label>来源站点（按优先级排序）</label>
                 <select value={testSiteId} onChange={(e) => setTestSiteId(e.target.value)}>
                   {(guardrails?.siteOfficialGroups || []).map((s) => (
                     <option key={s.siteId} value={s.siteId}>
-                      {s.siteName}（官组：{s.officialGroups.slice(0, 4).join(', ')}…）
+                      #{s.priority} {s.siteName}（{s.matchMode === 'official_tag' ? '本站官方标签' : s.officialGroups.slice(0, 4).join(', ')}）
                     </option>
                   ))}
                 </select>
@@ -210,6 +215,10 @@ export function SubscriptionsPage({ onOpenMedia }: SubscriptionsPageProps) {
                 <label>种子标题 / 文件名</label>
                 <input type="text" value={testTitle} onChange={(e) => setTestTitle(e.target.value)} />
               </div>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                <input type="checkbox" checked={testOfficialTag} onChange={(e) => setTestOfficialTag(e.target.checked)} />
+                模拟该种子带有「本站官方标签」（用于高清视界 / AGSVPT 等标签站）
+              </label>
               <div>
                 <button className="btn btn-primary" type="submit">检验归属与拦截结果</button>
               </div>

@@ -49,12 +49,13 @@ class AuthAndApiTests(unittest.TestCase):
             self.assertEqual(dash["counts"]["issues"], 0)
             self.assertEqual(len(dash["services"]), 6)
 
-            # Check release group endpoint: cross-site repost blocked
+            # Check release group endpoint: FRDS on 馒头 (mteam) is cross-site repost blocked!
             check = client.post(
                 "/api/guardrails/check-release",
-                json={"siteId": "mteam", "title": "Movie.2026.2160p-HDHome"},
+                json={"siteId": "mteam", "title": "Movie.2026.2160p-FRDS"},
             ).get_json()
             self.assertEqual(check["classification"], "cross_site_repost")
+            self.assertEqual(check["ownerSite"], "朋友")
             self.assertFalse(check["allowed"])
 
             # Check old movie guardrail blocks auto chart subscription unless overridden/collect

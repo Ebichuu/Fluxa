@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 ROOT_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = ROOT_DIR.parent.parent if (ROOT_DIR.parent.parent / "package.json").is_file() else ROOT_DIR
 
-# Load optional workspace .env only for initial defaults
 if (REPO_ROOT / ".env").is_file():
     load_dotenv(REPO_ROOT / ".env", override=False)
 
@@ -25,65 +24,126 @@ def resolve_data_dirs() -> tuple[Path, Path]:
     return runtime / "data", runtime / "db"
 
 
+# Initial import from MoviePilot Neo rules (ordered by priority).
+# Note: represents initial user rule snapshot, editable in Settings.
 DEFAULT_SITE_OFFICIAL_GROUPS: list[dict[str, Any]] = [
     {
-        "siteId": "mteam",
-        "siteName": "M-Team",
-        "domains": ["kp.m-team.cc", "api.m-team.cc", "m-team.cc"],
-        "officialGroups": ["MTeam", "MTeamTV", "MPAD", "MWeb", "OneHD"],
-    },
-    {
-        "siteId": "hdhome",
-        "siteName": "HDHome",
-        "domains": ["hdhome.org"],
-        "officialGroups": ["HDHome", "HDH", "HDHTV", "HDHPad", "HDHWEB"],
-    },
-    {
-        "siteId": "zmpt",
-        "siteName": "织梦",
-        "domains": ["zmpt.cc"],
-        "officialGroups": ["ZmWeb", "ZMPT", "ZmTeam"],
-    },
-    {
-        "siteId": "qingwa",
-        "siteName": "青蛙",
-        "domains": ["qingwapt.com", "new.qingwa.pro"],
-        "officialGroups": ["FROG", "FROGTV", "FROGWeb", "QingWa"],
-    },
-    {
-        "siteId": "chdbits",
-        "siteName": "CHDBits",
-        "domains": ["ptchdbits.co", "chdbits.co"],
-        "officialGroups": ["CHD", "CHDWEB", "CHDPAD", "CHDHKTV"],
-    },
-    {
-        "siteId": "hdsky",
-        "siteName": "HDSky",
-        "domains": ["hdsky.me"],
-        "officialGroups": ["HDSky", "HDS", "HDSWEB", "HDSPad", "HDSTV"],
-    },
-    {
-        "siteId": "ourbits",
-        "siteName": "OurBits",
-        "domains": ["ourbits.club"],
-        "officialGroups": ["OurBits", "OurTV", "OurPad", "PbK", "Ao", "MGs", "iLoveTV", "iLoveHD"],
-    },
-    {
+        "priority": 1,
         "siteId": "audiences",
         "siteName": "观众",
+        "matchMode": "group_list",
         "domains": ["audiences.me"],
-        "officialGroups": ["Audies", "ADE", "ADWeb", "ADAudio", "ADeBook"],
+        "officialGroups": ["Audies", "ADWeb", "ADE"],
     },
     {
-        "siteId": "frds",
-        "siteName": "FRDS",
-        "domains": ["pt.keepfrds.com"],
-        "officialGroups": ["FRDS", "Yumi"],
+        "priority": 2,
+        "siteId": "hhanclub",
+        "siteName": "憨憨",
+        "matchMode": "group_list",
+        "domains": ["hhanclub.top"],
+        "officialGroups": ["HHWEB"],
     },
+    {
+        "priority": 3,
+        "siteId": "ubits",
+        "siteName": "UBits",
+        "matchMode": "group_list",
+        "domains": ["ubits.club"],
+        "officialGroups": ["UBits", "UBWEB", "UBTV"],
+    },
+    {
+        "priority": 4,
+        "siteId": "hdsky",
+        "siteName": "天空",
+        "matchMode": "group_list",
+        "domains": ["hdsky.me"],
+        "officialGroups": ["HDS", "HDSky", "HDSTV", "HDSPad", "HDSWEB"],
+    },
+    {
+        "priority": 5,
+        "siteId": "chdbits",
+        "siteName": "彩虹岛",
+        "matchMode": "group_list",
+        "domains": ["ptchdbits.co", "chdbits.co"],
+        "officialGroups": ["CHD", "CHDWEB", "CHDBits", "CHDTV", "CHDPAD"],
+    },
+    {
+        "priority": 6,
+        "siteId": "springsunday",
+        "siteName": "春天",
+        "matchMode": "group_list",
+        "domains": ["springsunday.net"],
+        "officialGroups": ["CMCT", "CMCTV"],
+    },
+    {
+        "priority": 7,
+        "siteId": "ourbits",
+        "siteName": "我堡",
+        "matchMode": "group_list",
+        "domains": ["ourbits.club"],
+        "officialGroups": ["OurBits", "OurTV", "FLTTH", "Ao", "PbK", "MGs", "iLoveHD", "iLoveTV"],
+    },
+    {
+        "priority": 8,
+        "siteId": "mteam",
+        "siteName": "馒头",
+        "matchMode": "group_list",
+        "domains": ["kp.m-team.cc", "api.m-team.cc", "m-team.cc"],
+        "officialGroups": ["MTeam", "MTeamTV", "MWeb", "MPAD"],
+    },
+    {
+        "priority": 9,
+        "siteId": "qingwa",
+        "siteName": "青蛙",
+        "matchMode": "group_list",
+        "domains": ["qingwapt.com", "new.qingwa.pro"],
+        "officialGroups": ["FROG", "FROGWeb", "FROGE"],
+    },
+    {
+        "priority": 10,
+        "siteId": "frds",
+        "siteName": "朋友",
+        "matchMode": "group_list",
+        "domains": ["pt.keepfrds.com"],
+        "officialGroups": ["FRDS", "Yumi", "cXcY"],
+    },
+    {
+        "priority": 11,
+        "siteId": "pter",
+        "siteName": "猫站",
+        "matchMode": "group_list",
+        "domains": ["pterclub.com"],
+        "officialGroups": ["PTer", "PTerDIY", "PTerWEB", "PTerTV", "PTerMV"],
+    },
+    {
+        "priority": 12,
+        "siteId": "zmpt",
+        "siteName": "织梦",
+        "matchMode": "group_list",
+        "domains": ["zmpt.cc"],
+        "officialGroups": ["ZmWeb"],
+    },
+    {
+        "priority": 13,
+        "siteId": "pthome",
+        "siteName": "家园",
+        "matchMode": "group_list",
+        "domains": ["pthome.net"],
+        "officialGroups": ["PTH", "PTHome", "PTHWEB", "PTHtv"],
+    },
+    # Sites currently judged by site-level "official" tag (no fixed release-group list)
+    {"priority": 14, "siteId": "hdvideo", "siteName": "高清视界", "matchMode": "official_tag", "domains": [], "officialGroups": []},
+    {"priority": 15, "siteId": "crabpt", "siteName": "蟹黄堡", "matchMode": "official_tag", "domains": [], "officialGroups": []},
+    {"priority": 16, "siteId": "open", "siteName": "皇后", "matchMode": "official_tag", "domains": [], "officialGroups": []},
+    {"priority": 17, "siteId": "hdkyl", "siteName": "麒麟", "matchMode": "official_tag", "domains": [], "officialGroups": []},
+    {"priority": 18, "siteId": "agsvpt", "siteName": "AGSVPT", "matchMode": "official_tag", "domains": ["agsvpt.com"], "officialGroups": []},
+    {"priority": 19, "siteId": "hddolby", "siteName": "高清杜比", "matchMode": "official_tag", "domains": ["hddolby.com"], "officialGroups": []},
+    {"priority": 20, "siteId": "sunny", "siteName": "Sunny", "matchMode": "official_tag", "domains": [], "officialGroups": []},
+    {"priority": 21, "siteId": "cola", "siteName": "Cola", "matchMode": "official_tag", "domains": [], "officialGroups": []},
 ]
 
 SECRET_FIELDS: dict[str, set[str]] = {
-    "moviepilot": {"apiToken", "password"},
+    "moviepilot": {"apiToken"},
     "torra": {"token", "password"},
     "qbittorrent": {"password"},
     "symedia": {"token", "password"},
@@ -100,8 +160,6 @@ def default_settings() -> dict[str, Any]:
                 "baseUrl": (os.environ.get("MOVIEPILOT_BASE_URL") or os.environ.get("ENV_MOVIEPILOT_URL") or "").strip().rstrip("/"),
                 "webUrl": (os.environ.get("MOVIEPILOT_WEB_URL") or "").strip().rstrip("/"),
                 "apiToken": (os.environ.get("MOVIEPILOT_API_TOKEN") or os.environ.get("ENV_MOVIEPILOT_API_TOKEN") or "").strip(),
-                "username": (os.environ.get("MOVIEPILOT_USERNAME") or os.environ.get("ENV_MOVIEPILOT_USERNAME") or "").strip(),
-                "password": (os.environ.get("MOVIEPILOT_PASSWORD") or "").strip(),
             },
             "torra": {
                 "baseUrl": (os.environ.get("TORRA_BASE_URL") or "").strip().rstrip("/"),
@@ -150,8 +208,9 @@ def default_settings() -> dict[str, Any]:
             "blockOldMoviesFromCharts": True,
             "blockFinishedOldSeriesFromCharts": True,
             "onlySubscribeLatestSeasonForReturning": True,
-            "requireSiteOfficialGroup": False,
+            "requireSiteOfficialGroup": True,
             "blockCrossSiteRepost": True,
+            "noFallbackToNonOfficial": True,
             "defaultSubscribeTarget": "moviepilot",
             "defaultIntent": "follow",
             "siteOfficialGroups": DEFAULT_SITE_OFFICIAL_GROUPS,
@@ -202,7 +261,7 @@ def merge_settings(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any
                 continue
             if key == "siteOfficialGroups" and isinstance(value, list):
                 cleaned_sites = []
-                for row in value:
+                for idx, row in enumerate(value, start=1):
                     if not isinstance(row, dict):
                         continue
                     site_name = str(row.get("siteName") or "").strip()
@@ -211,12 +270,21 @@ def merge_settings(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any
                         continue
                     domains = [str(d).strip().lower() for d in (row.get("domains") or []) if str(d).strip()]
                     groups = [str(g).strip() for g in (row.get("officialGroups") or []) if str(g).strip()]
+                    raw_mode = str(row.get("matchMode") or "").strip()
+                    match_mode = raw_mode if raw_mode in {"group_list", "official_tag"} else ("group_list" if groups else "official_tag")
+                    try:
+                        priority = max(1, int(row.get("priority") or idx))
+                    except (TypeError, ValueError):
+                        priority = idx
                     cleaned_sites.append({
+                        "priority": priority,
                         "siteId": site_id,
                         "siteName": site_name,
+                        "matchMode": match_mode,
                         "domains": domains,
                         "officialGroups": groups,
                     })
+                cleaned_sites.sort(key=lambda r: (r["priority"], r["siteName"]))
                 g_target[key] = cleaned_sites
             elif isinstance(g_target[key], bool):
                 g_target[key] = bool(value)

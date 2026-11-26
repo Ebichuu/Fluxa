@@ -250,7 +250,7 @@ def list_subscriptions_view():
 
 @api.post("/guardrails/check-release")
 def check_release_group():
-    """Test or evaluate any torrent title against (source_site + site official groups)."""
+    """Test or evaluate any torrent title against (source_site + site official groups / official tag)."""
     body = request.get_json(silent=True) or {}
     settings = _store().get_settings()
     g = settings["guardrails"]
@@ -261,8 +261,11 @@ def check_release_group():
         site_name=str(body.get("siteName") or ""),
         site_domain=str(body.get("siteDomain") or ""),
         release_group=str(body.get("releaseGroup") or ""),
-        require_site_official=bool(g.get("requireSiteOfficialGroup", False)),
+        has_official_tag=bool(body.get("hasOfficialTag", False)),
+        site_tags=body.get("siteTags") if isinstance(body.get("siteTags"), list) else None,
+        require_site_official=bool(g.get("requireSiteOfficialGroup", True)),
         block_cross_site_repost=bool(g.get("blockCrossSiteRepost", True)),
+        no_fallback_to_non_official=bool(g.get("noFallbackToNonOfficial", True)),
     )
     return jsonify(result)
 
@@ -287,8 +290,9 @@ def rss_preview():
                     site_name=src["name"],
                     site_domain=row["siteDomain"],
                     release_group=row["releaseGroup"],
-                    require_site_official=bool(g.get("requireSiteOfficialGroup", False)),
+                    require_site_official=bool(g.get("requireSiteOfficialGroup", True)),
                     block_cross_site_repost=bool(g.get("blockCrossSiteRepost", True)),
+                    no_fallback_to_non_official=bool(g.get("noFallbackToNonOfficial", True)),
                 )
                 all_items.append({**row, "sourceName": src["name"], "groupCheck": check})
         except Exception as exc:

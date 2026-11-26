@@ -25,77 +25,67 @@ def _int_or_none(val: object) -> int | None:
         return None
 
 
+def normalize_api_root(base_url: str) -> str:
+    """Accept either http://host:3001 or http://host:3001/api/v1 without doubling /api/v1."""
+    cleaned = str(base_url or "").strip().rstrip("/")
+    if not cleaned:
+        return ""
+    if cleaned.lower().endswith("/api/v1"):
+        return cleaned
+    return f"{cleaned}/api/v1"
+
+
 class MoviePilotAdapter:
-    """First-class MoviePilot Neo / v2 REST API adapter."""
+    """MoviePilot Neo v2 REST adapter verified against v2.16.12.
+
+    Uses strictly `X-API-KEY` header authentication (never query string token,
+    never unverified username/password endpoints).
+    """
 
     def __init__(self, cfg: dict[str, Any], session: requests.Session | None = None):
-        self.base_url = str(cfg.get("baseUrl") or "").strip().rstrip("/")
+        self.raw_base_url = str(cfg.get("baseUrl") or "").strip().rstrip("/")
+        self.api_root = normalize_api_root(self.raw_base_url)
         self.web_url = str(cfg.get("webUrl") or "").strip().rstrip("/")
         self.api_token = str(cfg.get("apiToken") or "").strip()
-        self.username = str(cfg.get("username") or "").strip()
-        self.password = str(cfg.get("password") or "")
         self.http = session or requests.Session()
-        self._bearer = ""
 
     @property
     def configured(self) -> bool:
-        return bool(self.base_url and (self.api_token or (self.username and self.password)))
+        return bool(self.api_root and self.api_token)
 
     def app_url(self, path: str = "") -> str:
-        return safe_web_url(self.web_url, self.base_url, path)
+        fallback = re.sub(r"/api/v1$", "", self.raw_base_url, flags=re.I)
+        return safe_web_url(self.web_url, fallback, path)
 
-    def _login(self) -> tuple[dict[str, str], dict[str, str]]:
-        if self.api_token:
-            return (
-                {"Accept": "application/json", "X-API-KEY": self.api_token},
-                {"token": self.api_token},
-            )
-        if not self._bearer and self.username and self.password:
-            resp = self.http.post(
-                f"{self.base_url}/api/v1/login/access-token",
-                data={"username": self.username, "password": self.password},
-                headers={"Accept": "application/json"},
-                timeout=TIMEOUT,
-            )
-            if resp.status_code >= 400:
-                raise RuntimeError(f"MoviePilot 登录失败 ({resp.status_code})")
-            body = resp.json() if resp.content else {}
-            token = str(body.get("access_token") or body.get("token") or "").strip()
-            if not token:
-                raise RuntimeError("MoviePilot 登录未返回 access_token")
-            self._bearer = token
-        return (
-            {"Accept": "application/json", "Authorization": f"Bearer {self._bearer}"},
-            {},
-        )
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Accept": "application/json",
+            "X-API-KEY": self.api_token,
+        }
 
-    def _request(self, method: str, path: str, *, params: dict[str, Any] | None = None, json_body: Any = None) -> Any:
+    def _request(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: Any = None,
+    ) -> Any:
         if not self.configured:
-            raise RuntimeError("MoviePilot Neo 未配置")
-        headers, auth_params = self._login()
-        merged_params = {**auth_params, **(params or {})}
-        url = f"{self.base_url}/{path.lstrip('/')}"
+            raise RuntimeError("MoviePilot Neo 未配置 API 地址或 API Token")
+        url = f"{self.api_root}/{endpoint.lstrip('/')}"
         resp = self.http.request(
             method,
             url,
-            headers=headers,
-            params=merged_params,
+            headers=self._headers(),
+            params=params,
             json=json_body,
             timeout=TIMEOUT,
         )
-        if resp.status_code in {401, 403} and not self.api_token and self.username:
-            self._bearer = ""
-            headers, auth_params = self._login()
-            resp = self.http.request(
-                method,
-                url,
-                headers=headers,
-                params={**auth_params, **(params or {})},
-                json=json_body,
-                timeout=TIMEOUT,
-            )
+        if resp.status_code in {401, 403}:
+            raise RuntimeError("MoviePilot Neo 认证失败，请检查 X-API-KEY Token")
         if resp.status_code >= 400:
-            raise RuntimeError(f"MoviePilot 响应异常 ({resp.status_code})")
+            raise RuntimeError(f"MoviePilot Neo 响应异常 ({resp.status_code})")
         return resp.json() if resp.content else {}
 
     def check_health(self) -> dict[str, Any]:
@@ -135,7 +125,8 @@ class MoviePilotAdapter:
     def list_subscriptions(self) -> list[dict[str, Any]]:
         if not self.configured:
             return []
-        data = self._request("GET", "/api/v1/subscribe/list")
+        # Verified endpoint on MoviePilot Neo v2.16.12: GET /api/v1/subscribe/
+        data = self._request("GET", "subscribe/")
         rows = data if isinstance(data, list) else (data.get("data") if isinstance(data, dict) else [])
         if not isinstance(rows, list):
             return []
@@ -150,13 +141,20 @@ class MoviePilotAdapter:
             title = str(row.get("name") or row.get("title") or "").strip()
             year_match = re.search(r"(?:19|20)\d{2}", str(row.get("year") or row.get("date") or ""))
             year = year_match.group(0) if year_match else ""
-            # Extract rule / version preference hints already configured in MP Neo
-            rule_parts = [
-                str(row.get(k) or "").strip()
-                for k in ("quality", "resolution", "effect", "filter_groups", "include")
-                if row.get(k)
-            ]
-            rule_summary = " · ".join(p for p in rule_parts if p) or "沿用 MoviePilot Neo 默认规则"
+
+            # Surface Neo's own bound filter groups / rules directly without duplicating rules in Fluxa
+            rule_parts: list[str] = []
+            fg = row.get("filter_groups")
+            if isinstance(fg, list) and fg:
+                rule_parts.append(f"规则组：{', '.join(str(x) for x in fg)}")
+            elif isinstance(fg, str) and fg.strip():
+                rule_parts.append(f"规则组：{fg.strip()}")
+            for k, label in (("quality", "质量"), ("resolution", "分辨率"), ("effect", "特效"), ("include", "包含")):
+                val = str(row.get(k) or "").strip()
+                if val:
+                    rule_parts.append(f"{label}：{val}")
+            rule_summary = " · ".join(rule_parts) or "沿用 MoviePilot Neo 现有默认规则"
+
             normalized.append({
                 "source": "moviepilot",
                 "sourceLabel": "MoviePilot Neo",
@@ -175,17 +173,18 @@ class MoviePilotAdapter:
                 "sites": row.get("sites") if isinstance(row.get("sites"), list) else [],
                 "include": str(row.get("include") or "").strip(),
                 "exclude": str(row.get("exclude") or "").strip(),
-                "originReason": str(row.get("description") or "").strip() or "MoviePilot Neo 订阅",
+                "originReason": str(row.get("description") or "").strip() or "MoviePilot Neo 订阅（由 Neo 执行选种过滤）",
                 "updatedAt": str(row.get("last_update") or row.get("date") or "").strip(),
                 "webUrl": self.app_url("subscribe/tv" if mtype == "tv" else "subscribe/movie"),
             })
         return normalized
 
     def list_download_history(self, limit: int = 80) -> list[dict[str, Any]]:
+        """Optional read: if Neo does not expose this path, return [] gracefully."""
         if not self.configured:
             return []
         try:
-            data = self._request("GET", "/api/v1/history/download", params={"page": 1, "count": limit})
+            data = self._request("GET", "history/download", params={"page": 1, "count": limit})
         except Exception:
             return []
         rows = data if isinstance(data, list) else (data.get("data") if isinstance(data, dict) else [])
@@ -212,10 +211,10 @@ class MoviePilotAdapter:
     def trigger_subscribe_search(self, subscription_id: str) -> dict[str, Any]:
         sub_id = str(subscription_id or "").strip()
         if not sub_id:
-            raise ValueError("缺少 MoviePilot 订阅 ID")
-        data = self._request("GET", f"/api/v1/subscribe/search/{sub_id}")
+            raise ValueError("缺少 MoviePilot Neo 订阅 ID")
+        data = self._request("GET", f"subscribe/search/{sub_id}")
         ok = bool(data.get("success", True)) if isinstance(data, dict) else True
-        msg = str(data.get("message") or ("已触发 MoviePilot 单条搜索" if ok else "触发失败")) if isinstance(data, dict) else "已触发搜索"
+        msg = str(data.get("message") or ("已触发 MoviePilot Neo 单条订阅搜索" if ok else "触发失败")) if isinstance(data, dict) else "已触发搜索"
         return {"ok": ok, "message": sanitize_text(msg)}
 
     def add_subscription(
@@ -230,6 +229,7 @@ class MoviePilotAdapter:
         include: str = "",
         exclude: str = "",
     ) -> dict[str, Any]:
+        """Delegate subscription to MoviePilot Neo so Neo applies its existing filtering rules."""
         payload: dict[str, Any] = {
             "name": title,
             "type": "电视剧" if media_type == "tv" else "电影",
@@ -243,7 +243,7 @@ class MoviePilotAdapter:
             payload["include"] = include
         if exclude:
             payload["exclude"] = exclude
-        data = self._request("POST", "/api/v1/subscribe/", json_body=payload)
+        data = self._request("POST", "subscribe/", json_body=payload)
         ok = bool(data.get("success", True)) if isinstance(data, dict) else True
-        msg = str(data.get("message") or ("已添加到 MoviePilot Neo 订阅" if ok else "添加订阅失败")) if isinstance(data, dict) else "已添加订阅"
+        msg = str(data.get("message") or ("已交由 MoviePilot Neo 订阅并按 Neo 规则选种" if ok else "添加订阅失败")) if isinstance(data, dict) else "已添加订阅"
         return {"ok": ok, "message": sanitize_text(msg), "raw": data}

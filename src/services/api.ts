@@ -84,7 +84,7 @@ export const api = {
       guardrails: AppSettings['guardrails'];
     }>('/api/subscriptions'),
 
-  checkReleaseGroup: (payload: { siteId?: string; siteName?: string; title: string }) =>
+  checkReleaseGroup: (payload: { siteId?: string; siteName?: string; title: string; hasOfficialTag?: boolean }) =>
     requestJson<ReleaseGroupCheck>('/api/guardrails/check-release', {
       method: 'POST',
       body: JSON.stringify(payload),

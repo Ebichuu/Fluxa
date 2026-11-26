@@ -256,6 +256,8 @@ export interface DiscoverItem {
 export interface ReleaseGroupCheck {
   releaseGroup: string;
   sourceSite: string;
+  sitePriority?: number;
+  matchMode?: 'group_list' | 'official_tag' | 'unmapped';
   versionTags: string[];
   classification: 'site_official' | 'cross_site_repost' | 'non_official' | 'site_unmapped' | 'unknown_group';
   classificationLabel: string;
@@ -266,15 +268,17 @@ export interface ReleaseGroupCheck {
 }
 
 export interface SiteOfficialGroup {
+  priority: number;
   siteId: string;
   siteName: string;
+  matchMode: 'group_list' | 'official_tag';
   domains: string[];
   officialGroups: string[];
 }
 
 export interface AppSettings {
   services: {
-    moviepilot: { baseUrl: string; webUrl: string; apiToken: string; username: string; password: string; _hasSecrets?: Record<string, boolean> };
+    moviepilot: { baseUrl: string; webUrl: string; apiToken: string; _hasSecrets?: Record<string, boolean> };
     torra: { baseUrl: string; webUrl: string; token: string; username: string; password: string; _hasSecrets?: Record<string, boolean> };
     qbittorrent: { baseUrl: string; webUrl: string; username: string; password: string; protectSeeding: boolean; _hasSecrets?: Record<string, boolean> };
     symedia: { baseUrl: string; webUrl: string; token: string; username: string; password: string; _hasSecrets?: Record<string, boolean> };
@@ -290,6 +294,7 @@ export interface AppSettings {
     onlySubscribeLatestSeasonForReturning: boolean;
     requireSiteOfficialGroup: boolean;
     blockCrossSiteRepost: boolean;
+    noFallbackToNonOfficial: boolean;
     defaultSubscribeTarget: 'moviepilot' | 'torra';
     defaultIntent: IntentMode;
     siteOfficialGroups: SiteOfficialGroup[];
