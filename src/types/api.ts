@@ -254,8 +254,17 @@ export interface CalendarDay {
   items: CalendarEpisodeItem[];
 }
 
+export interface SnapshotCacheMeta {
+  fromCache: boolean;
+  stale: boolean;
+  refreshing: boolean;
+  cacheAgeSeconds: number;
+  updatedAt: string;
+}
+
 export interface DashboardResponse {
   generatedAt: string;
+  cache?: SnapshotCacheMeta;
   services: ServiceHealth[];
   counts: {
     todayUpdates: number;

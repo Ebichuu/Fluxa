@@ -826,6 +826,15 @@ def diagnose_sa_failure(
         status_message = "无法可靠识别：未找到与源文件作品身份可靠匹配的 TMDB 候选（已过滤无关作品），请手动输入 TMDB ID 核对季集"
     elif no_recovery_needed:
         status_message = str(top_existing.get("summary") or "已有版本，无需补库")
+        # Auto-mark this stale failure record as covered by existing preferred version so Home 「异常待办」 ignores it by default
+        rec_id_str = str(record.get("id") or "").strip()
+        if rec_id_str:
+            store.set_cache(f"sa_covered:{rec_id_str}", {
+                "noRecoveryNeeded": True,
+                "existingSourceTag": top_existing.get("existingSourceTag") or "",
+                "existingFileName": top_existing.get("existingFileName") or "",
+                "summary": status_message,
+            })
     else:
         status_message = ""
 

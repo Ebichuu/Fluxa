@@ -35,6 +35,10 @@ def _auth():
     return current_app.config["FLUXA_AUTH"]
 
 
+def _snapshots():
+    return current_app.config["FLUXA_SNAPSHOTS"]
+
+
 # -- Auth -----------------------------------------------------------------
 
 @api.get("/auth/session")
@@ -88,11 +92,13 @@ def auth_logout():
 def get_dashboard():
     store = _store()
     settings = store.get_settings()
-    adapters = build_adapters(settings)
-    snapshot = collect_upstream_snapshot(adapters)
+    force_refresh = str(request.args.get("refresh") or "").strip().lower() in {"1", "true", "yes"}
+    force_emby = str(request.args.get("forceEmby") or "").strip().lower() in {"1", "true", "yes"}
+    snapshot, cache_meta = _snapshots().get_snapshot(force_refresh=force_refresh, force_emby=force_emby)
+    adapters = build_adapters(settings, store=store)
     prefs = store.list_preferences()
 
-    issues = build_actionable_issues(snapshot, prefs)
+    issues = build_actionable_issues(snapshot, prefs, store=store)
     subs = merge_subscriptions(snapshot, prefs)
 
     # Parse optional calendar range
@@ -121,6 +127,7 @@ def get_dashboard():
 
     return jsonify({
         "generatedAt": snapshot["generatedAt"],
+        "cache": cache_meta,
         "services": snapshot["services"],
         "counts": {
             "todayUpdates": len(calendar["todayItems"]),
@@ -146,8 +153,9 @@ def get_media_pipeline(media_type: str, tmdb_id: str):
         return jsonify({"error": "无效的作品标识"}), 400
     store = _store()
     settings = store.get_settings()
-    adapters = build_adapters(settings)
-    snapshot = collect_upstream_snapshot(adapters)
+    force_refresh = str(request.args.get("refresh") or "").strip().lower() in {"1", "true", "yes"}
+    snapshot, _ = _snapshots().get_snapshot(force_refresh=force_refresh)
+    adapters = build_adapters(settings, store=store)
     data = build_media_pipeline(
         media_type=media_type,
         tmdb_id=tmdb_id,
@@ -214,7 +222,7 @@ def global_search():
 
     # Also match existing MP Neo / Torra subscriptions if TMDB is not configured
     if not results:
-        snapshot = collect_upstream_snapshot(adapters)
+        snapshot, _ = _snapshots().get_snapshot(force_refresh=False)
         q_low = query.casefold()
         for sub in merge_subscriptions(snapshot, store.list_preferences()):
             if q_low in sub["title"].casefold() and sub["mediaKey"] and sub["mediaKey"] not in seen:
@@ -238,13 +246,14 @@ def global_search():
 def list_subscriptions_view():
     store = _store()
     settings = store.get_settings()
-    adapters = build_adapters(settings)
-    snapshot = collect_upstream_snapshot(adapters)
+    force_refresh = str(request.args.get("refresh") or "").strip().lower() in {"1", "true", "yes"}
+    snapshot, cache_meta = _snapshots().get_snapshot(force_refresh=force_refresh)
     prefs = store.list_preferences()
     items = merge_subscriptions(snapshot, prefs)
     logs = store.list_decision_logs(limit=40)
     return jsonify({
         "generatedAt": snapshot["generatedAt"],
+        "cache": cache_meta,
         "items": items,
         "decisionLogs": logs,
         "guardrails": settings["guardrails"],
@@ -549,12 +558,18 @@ def sa_recovery_diagnose():
     record = body.get("record") if isinstance(body.get("record"), dict) else {}
     if not record.get("fileName") and not record.get("src"):
         return jsonify({"error": "缺少 SA 失败记录的文件名或路径"}), 400
+    store = _store()
+    settings = store.get_settings()
+    snapshot, _ = _snapshots().get_snapshot(force_refresh=False)
+    adapters = build_adapters(settings, store=store)
     result = diagnose_sa_failure(
         record=record,
-        settings=_store().get_settings(),
-        store=_store(),
+        settings=settings,
+        store=store,
         manual_tmdb_id=str(body.get("manualTmdbId") or "").strip(),
         manual_media_type=str(body.get("manualMediaType") or "").strip(),
+        adapters=adapters,
+        snapshot=snapshot,
     )
     return jsonify(result)
 
@@ -725,6 +740,8 @@ def get_settings():
 def save_settings():
     body = request.get_json(silent=True) or {}
     updated = _store().save_settings(body)
+    _snapshots().invalidate()
+    _snapshots().trigger_background_refresh(force_emby=True)
     return jsonify({"ok": True, "settings": redact_settings(updated)})
 
 

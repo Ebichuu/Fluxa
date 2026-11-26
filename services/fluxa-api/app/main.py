@@ -8,6 +8,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from app.auth import AuthManager, SESSION_COOKIE
 from app.config import REPO_ROOT, resolve_data_dirs
+from app.domain.pipeline import SnapshotCoordinator
 from app.domain.rss_auto_download import RssAutoPoller
 from app.routes import api
 from app.storage import FluxaStore
@@ -31,10 +32,13 @@ def create_app(
 
     app.config["FLUXA_STORE"] = store
     app.config["FLUXA_AUTH"] = auth
+    snapshots = SnapshotCoordinator(store)
+    app.config["FLUXA_SNAPSHOTS"] = snapshots
     if enable_poller:
         poller = RssAutoPoller(store)
         poller.start()
         app.config["FLUXA_RSS_POLLER"] = poller
+        snapshots.start_background_poller(interval_seconds=90)
 
     dist_dir = Path(
         frontend_dist

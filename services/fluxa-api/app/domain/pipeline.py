@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import re
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.adapters.emby import EmbyAdapter
-from app.adapters.http_utils import compact_title, extract_season_episode
+from app.adapters.http_utils import compact_title, extract_season_episode, sanitize_text
 from app.adapters.moviepilot import MoviePilotAdapter
 from app.adapters.qbittorrent import QbittorrentAdapter
 from app.adapters.symedia import SymediaAdapter
@@ -15,62 +17,397 @@ from app.adapters.torra import TorraAdapter
 from app.storage import FluxaStore
 
 BEIJING_TZ = timezone(timedelta(hours=8))
+SNAPSHOT_FRESH_TTL_SECONDS = 60.0
+EMBY_CACHE_TTL_SECONDS = 300.0
+TMDB_HEALTH_CACHE_TTL_SECONDS = 600.0
+TMDB_DATA_CACHE_TTL_SECONDS = 21600.0  # 6 hours for season episodes & media details
 
 
 def _now_iso() -> str:
     return datetime.now(BEIJING_TZ).isoformat(timespec="seconds")
 
 
-def build_adapters(settings: dict[str, Any]) -> dict[str, Any]:
+class CachedTmdbProxy:
+    """SQLite-backed cache wrapper around TmdbAdapter for season episodes & details (6h TTL)."""
+
+    def __init__(self, inner: Any, store: FluxaStore, ttl_seconds: float = TMDB_DATA_CACHE_TTL_SECONDS):
+        self._inner = inner
+        self._store = store
+        self._ttl = ttl_seconds
+
+    @property
+    def configured(self) -> bool:
+        return bool(getattr(self._inner, "configured", False))
+
+    def check_health(self) -> dict[str, Any]:
+        return self._inner.check_health()
+
+    def search(self, query: str) -> list[dict[str, Any]]:
+        return self._inner.search(query)
+
+    def discover(self, category: str = "trending_tv") -> list[dict[str, Any]]:
+        return self._inner.discover(category)
+
+    def get_details(self, media_type: str, tmdb_id: str) -> dict[str, Any] | None:
+        if not self.configured:
+            return None
+        key = f"tmdb:detail:{media_type}:{tmdb_id}"
+        cached = self._store.get_cache(key)
+        if cached and cached["ageSeconds"] <= self._ttl:
+            return cached["payload"]
+        val = self._inner.get_details(media_type, tmdb_id)
+        if val is not None:
+            self._store.set_cache(key, val)
+        return val
+
+    def get_season_episodes(self, tmdb_id: str, season_number: int) -> list[dict[str, Any]]:
+        if not self.configured:
+            return []
+        key = f"tmdb:season:{tmdb_id}:{int(season_number)}"
+        cached = self._store.get_cache(key)
+        if cached and cached["ageSeconds"] <= self._ttl:
+            return cached["payload"]
+        val = self._inner.get_season_episodes(tmdb_id, int(season_number))
+        if val:
+            self._store.set_cache(key, val)
+        return val
+
+
+def build_adapters(settings: dict[str, Any], *, store: FluxaStore | None = None) -> dict[str, Any]:
     svcs = settings.get("services") or {}
+    tmdb_raw = TmdbAdapter(svcs.get("tmdb") or {})
     return {
         "moviepilot": MoviePilotAdapter(svcs.get("moviepilot") or {}),
         "torra": TorraAdapter(svcs.get("torra") or {}),
         "qbittorrent": QbittorrentAdapter(svcs.get("qbittorrent") or {}),
         "symedia": SymediaAdapter(svcs.get("symedia") or {}),
         "emby": EmbyAdapter(svcs.get("emby") or {}),
-        "tmdb": TmdbAdapter(svcs.get("tmdb") or {}),
+        "tmdb": CachedTmdbProxy(tmdb_raw, store) if store is not None else tmdb_raw,
     }
 
 
-def collect_upstream_snapshot(adapters: dict[str, Any]) -> dict[str, Any]:
-    """Collect read-only facts from all configured upstream services concurrently."""
+def _unconfigured_health(service: str, name: str, web_url: str) -> dict[str, Any]:
+    return {
+        "service": service,
+        "name": name,
+        "configured": False,
+        "connected": False,
+        "status": "unconfigured",
+        "message": "未配置",
+        "webUrl": web_url,
+    }
+
+
+def _error_health(service: str, name: str, exc: Exception, web_url: str) -> dict[str, Any]:
+    return {
+        "service": service,
+        "name": name,
+        "configured": True,
+        "connected": False,
+        "status": "error",
+        "message": sanitize_text(exc),
+        "webUrl": web_url,
+    }
+
+
+def collect_upstream_snapshot(
+    adapters: dict[str, Any],
+    *,
+    store: FluxaStore | None = None,
+    force_emby: bool = False,
+) -> dict[str, Any]:
+    """Collect read-only facts from all configured upstream services concurrently — ONCE per service!
+
+    Eliminates duplicate health+data fetches and reuses SQLite-cached Emby library snapshots (5 min TTL)
+    so refreshes stay fast even on large libraries.
+    """
+
+    def _fetch_mp():
+        mp = adapters["moviepilot"]
+        if not mp.configured:
+            return _unconfigured_health("moviepilot", "MoviePilot Neo", mp.app_url()), [], []
+        try:
+            subs = mp.list_subscriptions()
+            hist = _safe_call(mp.list_download_history, [])
+            health = {
+                "service": "moviepilot",
+                "name": "MoviePilot Neo",
+                "configured": True,
+                "connected": True,
+                "status": "ok",
+                "message": f"在线 · {len(subs)} 条订阅",
+                "count": len(subs),
+                "webUrl": mp.app_url(),
+            }
+            return health, subs, hist
+        except Exception as exc:
+            return _error_health("moviepilot", "MoviePilot Neo", exc, mp.app_url()), [], []
+
+    def _fetch_torra():
+        tr = adapters["torra"]
+        empty_sec = {"available": False, "activeRuns": [], "successFiles": [], "failedFiles": [], "recentRuns": [], "webUrl": tr.app_url()}
+        if not tr.configured:
+            return _unconfigured_health("torra", "Torra", tr.app_url()), [], empty_sec
+        try:
+            subs = tr.list_subscriptions()
+            sec = _safe_call(tr.get_secupload_evidence, empty_sec)
+            health = {
+                "service": "torra",
+                "name": "Torra",
+                "configured": True,
+                "connected": True,
+                "status": "ok",
+                "message": f"在线 · {len(subs)} 条订阅",
+                "count": len(subs),
+                "webUrl": tr.app_url(),
+            }
+            return health, subs, sec
+        except Exception as exc:
+            return _error_health("torra", "Torra", exc, tr.app_url()), [], empty_sec
+
+    def _fetch_qb():
+        qb = adapters["qbittorrent"]
+        if not qb.configured:
+            return _unconfigured_health("qbittorrent", "qBittorrent", qb.app_url()), []
+        try:
+            torrents = qb.list_torrents()
+            active = sum(1 for t in torrents if t["status"] in {"downloading", "stalled", "checking"})
+            issues = sum(1 for t in torrents if t["status"] in {"missing_files", "error", "stalled"})
+            msg = f"在线 · {active} 个下载中" + (f"，{issues} 个异常" if issues else "")
+            health = {
+                "service": "qbittorrent",
+                "name": "qBittorrent",
+                "configured": True,
+                "connected": True,
+                "status": "warn" if issues else "ok",
+                "message": msg,
+                "count": len(torrents),
+                "webUrl": qb.app_url(),
+            }
+            return health, torrents
+        except Exception as exc:
+            return _error_health("qbittorrent", "qBittorrent", exc, qb.app_url()), []
+
+    def _fetch_sa():
+        sa = adapters["symedia"]
+        if not sa.configured:
+            return _unconfigured_health("symedia", "Symedia (SA)", sa.app_url()), []
+        try:
+            records = sa.list_transfer_history(count=120)
+            fails = sum(1 for r in records if r["outcome"] in {"failed", "identify_failed"})
+            msg = f"在线 · 最近 {len(records)} 条记录" + (f"，{fails} 条异常" if fails else "")
+            health = {
+                "service": "symedia",
+                "name": "Symedia (SA)",
+                "configured": True,
+                "connected": True,
+                "status": "warn" if fails else "ok",
+                "message": msg,
+                "count": len(records),
+                "webUrl": sa.app_url(),
+            }
+            return health, records
+        except Exception as exc:
+            return _error_health("symedia", "Symedia (SA)", exc, sa.app_url()), []
+
+    def _fetch_emby():
+        emby = adapters["emby"]
+        empty_lib = {"available": False, "movies": {}, "series": {}, "episodes": {}, "episodeDetails": {}, "recentToday": [], "truncated": False, "truncationWarning": ""}
+        if not emby.configured:
+            return _unconfigured_health("emby", "Emby", emby.app_url()), empty_lib
+        if store is not None and not force_emby:
+            cached = store.get_cache("snapshot:emby")
+            if cached and cached["ageSeconds"] <= EMBY_CACHE_TTL_SECONDS and isinstance(cached["payload"], dict) and cached["payload"].get("available"):
+                lib = cached["payload"]
+                total = len(lib.get("movies") or {}) + len(lib.get("series") or {})
+                health = {
+                    "service": "emby",
+                    "name": "Emby",
+                    "configured": True,
+                    "connected": True,
+                    "status": "ok",
+                    "message": f"在线 · {total} 部影视（缓存 {int(cached['ageSeconds'])}s）",
+                    "count": total,
+                    "webUrl": emby.app_url(),
+                }
+                return health, lib
+        lib = _safe_call(emby.fetch_library_snapshot, empty_lib)
+        if lib.get("available"):
+            if store is not None:
+                store.set_cache("snapshot:emby", lib)
+            total = len(lib.get("movies") or {}) + len(lib.get("series") or {})
+            health = {
+                "service": "emby",
+                "name": "Emby",
+                "configured": True,
+                "connected": True,
+                "status": "ok",
+                "message": f"在线 · {total} 部影视",
+                "count": total,
+                "webUrl": emby.app_url(),
+            }
+            return health, lib
+        return {
+            "service": "emby",
+            "name": "Emby",
+            "configured": True,
+            "connected": False,
+            "status": "error",
+            "message": lib.get("error") or "Emby 连接失败",
+            "webUrl": emby.app_url(),
+        }, lib
+
+    def _fetch_tmdb_health():
+        tmdb = adapters["tmdb"]
+        if not tmdb.configured:
+            return _unconfigured_health("tmdb", "TMDB", "https://www.themoviedb.org")
+        if store is not None:
+            cached = store.get_cache("snapshot:tmdb_health")
+            if cached and cached["ageSeconds"] <= TMDB_HEALTH_CACHE_TTL_SECONDS and isinstance(cached["payload"], dict):
+                return cached["payload"]
+        health = tmdb.check_health()
+        if store is not None and health.get("connected"):
+            store.set_cache("snapshot:tmdb_health", health)
+        return health
+
     with ThreadPoolExecutor(max_workers=6) as pool:
-        f_mp_health = pool.submit(adapters["moviepilot"].check_health)
-        f_torra_health = pool.submit(adapters["torra"].check_health)
-        f_qb_health = pool.submit(adapters["qbittorrent"].check_health)
-        f_sa_health = pool.submit(adapters["symedia"].check_health)
-        f_emby_health = pool.submit(adapters["emby"].check_health)
-        f_tmdb_health = pool.submit(adapters["tmdb"].check_health)
+        f_mp = pool.submit(_fetch_mp)
+        f_tr = pool.submit(_fetch_torra)
+        f_qb = pool.submit(_fetch_qb)
+        f_sa = pool.submit(_fetch_sa)
+        f_emby = pool.submit(_fetch_emby)
+        f_tmdb = pool.submit(_fetch_tmdb_health)
 
-        f_mp_subs = pool.submit(lambda: _safe_call(adapters["moviepilot"].list_subscriptions, []))
-        f_mp_hist = pool.submit(lambda: _safe_call(adapters["moviepilot"].list_download_history, []))
-        f_torra_subs = pool.submit(lambda: _safe_call(adapters["torra"].list_subscriptions, []))
-        f_torra_sec = pool.submit(lambda: _safe_call(adapters["torra"].get_secupload_evidence, {"available": False, "activeRuns": [], "successFiles": [], "failedFiles": [], "recentRuns": [], "webUrl": adapters["torra"].app_url()}))
-        f_qb_tasks = pool.submit(lambda: _safe_call(adapters["qbittorrent"].list_torrents, []))
-        f_sa_hist = pool.submit(lambda: _safe_call(adapters["symedia"].list_transfer_history, []))
-        f_emby_lib = pool.submit(lambda: _safe_call(adapters["emby"].fetch_library_snapshot, {"available": False, "movies": {}, "series": {}, "episodes": {}, "recentToday": []}))
+        mp_h, mp_subs, mp_hist = f_mp.result()
+        tr_h, tr_subs, tr_sec = f_tr.result()
+        qb_h, qb_tasks = f_qb.result()
+        sa_h, sa_hist = f_sa.result()
+        emby_h, emby_lib = f_emby.result()
+        tmdb_h = f_tmdb.result()
 
-        services = [
-            f_mp_health.result(),
-            f_torra_health.result(),
-            f_qb_health.result(),
-            f_sa_health.result(),
-            f_emby_health.result(),
-            f_tmdb_health.result(),
-        ]
+        services = [mp_h, tr_h, qb_h, sa_h, emby_h, tmdb_h]
         return {
             "generatedAt": _now_iso(),
             "services": services,
             "serviceMap": {s["service"]: s for s in services},
-            "mpSubs": f_mp_subs.result(),
-            "mpHistory": f_mp_hist.result(),
-            "torraSubs": f_torra_subs.result(),
-            "torraSecupload": f_torra_sec.result(),
-            "qbTasks": f_qb_tasks.result(),
-            "saHistory": f_sa_hist.result(),
-            "emby": f_emby_lib.result(),
+            "mpSubs": mp_subs,
+            "mpHistory": mp_hist,
+            "torraSubs": tr_subs,
+            "torraSecupload": tr_sec,
+            "qbTasks": qb_tasks,
+            "saHistory": sa_hist,
+            "emby": emby_lib,
         }
+
+
+class SnapshotCoordinator:
+    """SQLite-backed stale-while-revalidate snapshot cache + single-flight background refresher.
+
+    Guarantees homepage/subscriptions/media pages render in milliseconds from SQLite instead of
+    blocking 15-45s on live upstream fetches every refresh.
+    """
+
+    def __init__(self, store: FluxaStore, *, fresh_ttl: float = SNAPSHOT_FRESH_TTL_SECONDS):
+        self.store = store
+        self.fresh_ttl = fresh_ttl
+        self._refresh_lock = threading.Lock()
+        self._refreshing = False
+        self._poller_started = False
+
+    @property
+    def is_refreshing(self) -> bool:
+        return self._refreshing
+
+    def start_background_poller(self, interval_seconds: int = 90) -> None:
+        with self._refresh_lock:
+            if self._poller_started:
+                return
+            self._poller_started = True
+
+        def _loop():
+            # Warm cache shortly after boot without slowing container startup
+            time.sleep(2)
+            while True:
+                try:
+                    settings = self.store.get_settings()
+                    adapters = build_adapters(settings, store=self.store)
+                    if any(a.configured for a in adapters.values()):
+                        self.refresh_now(force_emby=False)
+                except Exception:
+                    pass
+                time.sleep(max(30, int(interval_seconds)))
+
+        threading.Thread(target=_loop, name="fluxa-snapshot-refresher", daemon=True).start()
+
+    def refresh_now(self, *, force_emby: bool = False) -> dict[str, Any]:
+        with self._refresh_lock:
+            self._refreshing = True
+            try:
+                settings = self.store.get_settings()
+                adapters = build_adapters(settings, store=self.store)
+                snap = collect_upstream_snapshot(adapters, store=self.store, force_emby=force_emby)
+                self.store.set_cache("snapshot:upstream", snap, updated_iso=snap["generatedAt"])
+                return snap
+            finally:
+                self._refreshing = False
+
+    def trigger_background_refresh(self, *, force_emby: bool = False) -> bool:
+        if self._refreshing:
+            return False
+
+        def _bg():
+            try:
+                self.refresh_now(force_emby=force_emby)
+            except Exception:
+                pass
+
+        threading.Thread(target=_bg, name="fluxa-snapshot-bg", daemon=True).start()
+        return True
+
+    def get_snapshot(
+        self,
+        *,
+        force_refresh: bool = False,
+        force_emby: bool = False,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Return `(snapshot, cache_meta)` using SQLite cache + stale-while-revalidate."""
+        if force_refresh:
+            snap = self.refresh_now(force_emby=force_emby)
+            return snap, {
+                "fromCache": False,
+                "stale": False,
+                "refreshing": False,
+                "cacheAgeSeconds": 0.0,
+                "updatedAt": snap["generatedAt"],
+            }
+
+        cached = self.store.get_cache("snapshot:upstream")
+        if cached and isinstance(cached.get("payload"), dict):
+            age = float(cached["ageSeconds"])
+            stale = age > self.fresh_ttl
+            refreshing = self._refreshing
+            if stale and not refreshing:
+                refreshing = self.trigger_background_refresh(force_emby=False)
+            return cached["payload"], {
+                "fromCache": True,
+                "stale": stale,
+                "refreshing": refreshing,
+                "cacheAgeSeconds": age,
+                "updatedAt": cached["updatedIso"],
+            }
+
+        # Cold start (empty cache): if nothing configured, return immediately; otherwise warm once and persist
+        snap = self.refresh_now(force_emby=False)
+        return snap, {
+            "fromCache": False,
+            "stale": False,
+            "refreshing": False,
+            "cacheAgeSeconds": 0.0,
+            "updatedAt": snap["generatedAt"],
+        }
+
+    def invalidate(self) -> None:
+        self.store.clear_cache_prefix("snapshot:")
 
 
 def _safe_call(fn, fallback):
@@ -225,8 +562,15 @@ def _title_matches(
     return False
 
 
-def build_actionable_issues(snapshot: dict[str, Any], prefs: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    """Extract only real, actionable problems — never false-alarming on SA rule_protected skips."""
+def build_actionable_issues(
+    snapshot: dict[str, Any],
+    prefs: dict[str, dict[str, Any]],
+    *,
+    store: FluxaStore | None = None,
+) -> list[dict[str, Any]]:
+    """Extract only real, actionable problems — never false-alarming on SA rule_protected skips
+    or identify failures already covered by an existing preferred library version (e.g. CR版 over LINETV版).
+    """
     muted_keys: set[str] = set()
     for p in prefs.values():
         for mk in p.get("mutedIssueKeys") or []:
@@ -389,6 +733,37 @@ def build_actionable_issues(snapshot: dict[str, Any], prefs: dict[str, dict[str,
         issue_key = f"sa:{rec['id'] or rec['fileName']}"
         if issue_key in muted_keys:
             continue
+        # Auto-ignore SA identify_failed items already covered by a preferred existing version (e.g. CR版 over LINETV版)
+        if rec["outcome"] == "identify_failed" and store is not None:
+            rec_id = str(rec.get("id") or "")
+            if rec_id:
+                covered = store.get_cache(f"sa_covered:{rec_id}")
+                if covered and isinstance(covered.get("payload"), dict) and covered["payload"].get("noRecoveryNeeded"):
+                    continue
+                latest_job = store.get_latest_sa_recovery_for_record(rec_id)
+                if latest_job and latest_job.get("status") in {"resolved", "skipped_existing"}:
+                    continue
+            if rec.get("fileName"):
+                from app.domain.sa_recovery import detect_existing_version_for_target, parse_media_filename
+                p_fail = parse_media_filename(rec["fileName"])
+                mapping = (
+                    store.find_sa_mapping(p_fail["arcKey"], p_fail["sourceSeason"])
+                    if p_fail.get("arcKey") and p_fail.get("sourceSeason")
+                    else None
+                )
+                if mapping and p_fail.get("sourceEpisode"):
+                    target_ep = int(p_fail["sourceEpisode"]) + int(mapping.get("episodeOffset") or 0)
+                    ev = detect_existing_version_for_target(
+                        media_type=mapping["mediaType"],
+                        tmdb_id=mapping["tmdbId"],
+                        target_season=mapping["targetSeason"],
+                        target_episode=target_ep,
+                        failed_file_name=rec["fileName"],
+                        emby=snapshot.get("emby") or {},
+                        sa_history=sa_history,
+                    )
+                    if ev.get("noRecoveryNeeded"):
+                        continue
         ep_label = f"{rec['seasons']}{rec['episodes']}".strip()
         issues.append({
             "issueKey": issue_key,

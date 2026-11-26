@@ -55,9 +55,10 @@ export const api = {
     }),
   logout: () => requestJson<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
 
-  getDashboard: (days = 7, startDate = '') => {
+  getDashboard: (days = 7, startDate = '', refresh = false) => {
     const qs = new URLSearchParams({ days: String(days) });
     if (startDate) qs.set('startDate', startDate);
+    if (refresh) qs.set('refresh', '1');
     return requestJson<DashboardResponse>(`/api/dashboard?${qs.toString()}`);
   },
 
@@ -82,13 +83,13 @@ export const api = {
 
   search: (q: string) => requestJson<{ items: DiscoverItem[] }>(`/api/search?q=${encodeURIComponent(q)}`),
 
-  getSubscriptions: () =>
+  getSubscriptions: (refresh = false) =>
     requestJson<{
       generatedAt: string;
       items: UnifiedSubscription[];
       decisionLogs: DecisionLog[];
       guardrails: AppSettings['guardrails'];
-    }>('/api/subscriptions'),
+    }>(refresh ? '/api/subscriptions?refresh=1' : '/api/subscriptions'),
 
   checkReleaseGroup: (payload: { siteId?: string; siteName?: string; title: string; hasOfficialTag?: boolean }) =>
     requestJson<ReleaseGroupCheck>('/api/guardrails/check-release', {

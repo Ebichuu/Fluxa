@@ -51,11 +51,11 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
   const [saRecoveryRecord, setSaRecoveryRecord] = useState<SaRecordRef | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
 
-  const load = useCallback(async (days = calDays) => {
+  const load = useCallback(async (days = calDays, refresh = false) => {
     setLoading(true);
     setError('');
     try {
-      const res = await api.getDashboard(days);
+      const res = await api.getDashboard(days, '', refresh);
       setData(res);
       setSelectedDate((cur) => cur || res.calendar.today);
     } catch (err) {
@@ -66,8 +66,17 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
   }, [calDays]);
 
   useEffect(() => {
-    void load(calDays);
+    void load(calDays, false);
   }, [calDays, load]);
+
+  // If backend returned instant SQLite cache and triggered a background refresh, quietly re-read once after 2.5s
+  useEffect(() => {
+    if (!data?.cache?.refreshing) return;
+    const timer = window.setTimeout(() => {
+      void load(calDays, false);
+    }, 2500);
+    return () => window.clearTimeout(timer);
+  }, [data?.cache?.refreshing, data?.generatedAt, calDays, load]);
 
   const runBoundedAction = async (actionType: string, payload: Record<string, unknown>) => {
     setToast(null);
@@ -143,7 +152,11 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
             {issueCount > 0 ? <AlertTriangle size={20} /> : activeCount > 0 ? <Clock3 size={20} /> : <CheckCircle2 size={20} />}
           </div>
           <div>
-            <p className="hero-eyebrow">首页 · 追更日历与链路进度</p>
+            <p className="hero-eyebrow">
+              首页 · 追更日历与链路进度
+              {data?.generatedAt ? ` · 快照 ${data.generatedAt.slice(11, 19)}` : ''}
+              {data?.cache?.refreshing ? '（后台同步中…）' : data?.cache?.fromCache ? '（本地缓存秒开）' : ''}
+            </p>
             <h1 className="hero-title">{heroHeadline}</h1>
           </div>
         </div>
@@ -151,7 +164,7 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
           {data && !anyServiceConfigured && (
             <button className="btn btn-primary" type="button" onClick={onGoSettings}>配置服务连接</button>
           )}
-          <button className="btn" type="button" onClick={() => void load(calDays)} disabled={loading}>
+          <button className="btn" type="button" onClick={() => void load(calDays, true)} disabled={loading}>
             <RefreshCw size={14} /> {loading ? '刷新中…' : '刷新'}
           </button>
         </div>

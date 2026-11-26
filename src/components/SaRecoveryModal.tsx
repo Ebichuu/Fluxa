@@ -50,6 +50,9 @@ export function SaRecoveryModal({ record, onClose, onUpdated }: SaRecoveryModalP
       if (res.saCapabilities?.openapiChecked && !res.saCapabilities?.supportsExplicitIdentify && res.fileCheck?.exists) {
         setStrategy('rename_and_manual');
       }
+      if (res.noRecoveryNeeded) {
+        onUpdated();
+      }
     } catch (err) {
       setFeedback({ tone: 'error', text: err instanceof Error ? err.message : '诊断失败' });
     } finally {
@@ -267,8 +270,8 @@ export function SaRecoveryModal({ record, onClose, onUpdated }: SaRecoveryModalP
             {activeExisting && (
               <div className="banner ok" style={{ borderColor: 'var(--accent)' }}>
                 <ShieldCheck size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
-                <strong>{activeExisting.badgeLabel || '已有版本，无需补库'}：</strong>
                 {activeExisting.summary}
+                {activeExisting.noRecoveryNeeded ? '（已自动从首页异常待办默认忽略）' : ''}
               </div>
             )}
 

@@ -194,6 +194,13 @@ class FluxaStore:
                         ON rss_auto_items(torrent_hash);
                     CREATE INDEX IF NOT EXISTS idx_rss_auto_items_rule
                         ON rss_auto_items(rule_id, id DESC);
+
+                    CREATE TABLE IF NOT EXISTS kv_cache (
+                        cache_key TEXT PRIMARY KEY,
+                        payload_json TEXT NOT NULL,
+                        updated_at REAL NOT NULL,
+                        updated_iso TEXT NOT NULL
+                    );
                     """
                 )
                 # Safe online column migration for existing SQLite databases
@@ -1247,6 +1254,72 @@ class FluxaStore:
             "createdAt": str(row["created_at"]),
             "updatedAt": str(row["updated_at"]),
         }
+
+    # -- Persistent SQLite Snapshot & TMDB Cache --------------------------
+
+    def get_cache(self, cache_key: str) -> dict[str, Any] | None:
+        key = str(cache_key or "").strip()
+        if not key:
+            return None
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT payload_json, updated_at, updated_iso FROM kv_cache WHERE cache_key = ?",
+                    (key,),
+                ).fetchone()
+                if not row:
+                    return None
+                payload = json.loads(row["payload_json"])
+                updated_at = float(row["updated_at"])
+                age = max(0.0, time.time() - updated_at)
+                return {
+                    "payload": payload,
+                    "updatedAt": updated_at,
+                    "updatedIso": str(row["updated_iso"]),
+                    "ageSeconds": round(age, 1),
+                }
+            except Exception:
+                return None
+            finally:
+                conn.close()
+
+    def set_cache(self, cache_key: str, payload: Any, *, updated_iso: str = "") -> None:
+        key = str(cache_key or "").strip()
+        if not key:
+            return
+        now_ts = time.time()
+        iso = updated_iso or _now_iso()
+        serialized = json.dumps(payload, ensure_ascii=False)
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO kv_cache (cache_key, payload_json, updated_at, updated_iso)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(cache_key) DO UPDATE SET
+                        payload_json = excluded.payload_json,
+                        updated_at = excluded.updated_at,
+                        updated_iso = excluded.updated_iso
+                    """,
+                    (key, serialized, now_ts, iso),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def clear_cache_prefix(self, prefix: str = "") -> None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                if prefix:
+                    conn.execute("DELETE FROM kv_cache WHERE cache_key LIKE ?", (f"{prefix}%",))
+                else:
+                    conn.execute("DELETE FROM kv_cache")
+                conn.commit()
+            finally:
+                conn.close()
 
     # -- Admin credentials helper -----------------------------------------
 

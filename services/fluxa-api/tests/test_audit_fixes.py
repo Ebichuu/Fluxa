@@ -437,6 +437,97 @@ class AuditSecurityAndAccuracyTests(unittest.TestCase):
         self.assertIn("2/4", cal["truncationWarning"])
         self.assertTrue(cal["embyTruncated"])
 
+    def test_7_sqlite_snapshot_cache_and_auto_ignore_covered_cr_failure(self):
+        """验证 SQLite 快照缓存（秒开不重复打上游）+ 同集已有 CR 版时首页异常待办自动默认忽略 LINETV 失败。"""
+        from app.domain.pipeline import CachedTmdbProxy, SnapshotCoordinator, build_actionable_issues
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FluxaStore(Path(tmp) / "test.sqlite3")
+            # 1. Persistent SQLite snapshot cache returns immediately without hitting upstream again
+            cached_snap = {
+                "generatedAt": "2026-11-27T00:00:00+08:00",
+                "services": [],
+                "serviceMap": {},
+                "mpSubs": [],
+                "mpHistory": [],
+                "torraSubs": [],
+                "torraSecupload": {},
+                "qbTasks": [],
+                "saHistory": [],
+                "emby": {"available": True, "movies": {}, "series": {}, "episodes": {}, "recentToday": []},
+            }
+            store.set_cache("snapshot:upstream", cached_snap, updated_iso=cached_snap["generatedAt"])
+            coord = SnapshotCoordinator(store, fresh_ttl=300.0)
+            snap, meta = coord.get_snapshot(force_refresh=False)
+            self.assertTrue(meta["fromCache"])
+            self.assertFalse(meta["stale"])
+            self.assertEqual(snap["generatedAt"], "2026-11-27T00:00:00+08:00")
+
+            # 2. CachedTmdbProxy caches season episodes in SQLite (only calls upstream ONCE)
+            class _CountingTmdb:
+                configured = True
+                def __init__(self):
+                    self.calls = 0
+                def get_season_episodes(self, tid, snum):
+                    self.calls += 1
+                    return [{"seasonNumber": snum, "episodeNumber": 9, "episodeLabel": f"S{snum:02d}E09", "name": "Ep9", "airDate": "2026-11-26"}]
+
+            raw_tmdb = _CountingTmdb()
+            proxy = CachedTmdbProxy(raw_tmdb, store)
+            self.assertEqual(len(proxy.get_season_episodes("205493", 3)), 1)
+            self.assertEqual(len(proxy.get_season_episodes("205493", 3)), 1)
+            self.assertEqual(raw_tmdb.calls, 1)
+
+            # 3. Auto-ignore SA identify_failed LINETV item when CR version already exists for 205493 S03E09!
+            linetv_file = "Shin.Tennis.no.Oujisama.U.17.World.Cup.Kesshou.Member.Ketteisen.S01E09.2026.1080p.LINETV.WEB-DL.H264.AAC-ADWeb.mkv"
+            cr_file = "The.Prince.of.Tennis.II.S03E09.2026.1080p.CR.WEB-DL.H264.AAC-ADWeb.mkv"
+            store.save_sa_mapping(
+                arc_key="shintenshinooujisama_test",
+                arc_title="Shin Tennis no Oujisama U 17 World Cup Kesshou Member Ketteisen",
+                source_season=1,
+                media_type="tv",
+                tmdb_id="205493",
+                canonical_title="新网球王子 U-17世界杯篇",
+                target_season=3,
+            )
+            store.set_cache("sa_covered:88638", {"noRecoveryNeeded": True, "existingSourceTag": "CR"})
+            snap_with_cr = {
+                **cached_snap,
+                "saHistory": [
+                    {
+                        "id": "88638",
+                        "fileName": linetv_file,
+                        "title": linetv_file,
+                        "mediaType": "tv",
+                        "mediaKey": "",
+                        "seasons": "",
+                        "episodes": "",
+                        "outcome": "identify_failed",
+                        "outcomeLabel": "SA 识别失败",
+                        "reasonText": "没有查询到媒体信息",
+                        "webUrl": "",
+                    },
+                    {
+                        "id": "88910",
+                        "fileName": cr_file,
+                        "title": "新网球王子",
+                        "mediaType": "tv",
+                        "mediaKey": "tv:205493",
+                        "tmdbId": "205493",
+                        "seasons": "S03",
+                        "episodes": "E09",
+                        "seasonEpisode": "S03E09",
+                        "dest": f"/emby/{cr_file}",
+                        "outcome": "archived",
+                        "outcomeLabel": "归档成功",
+                        "reasonText": "已完成",
+                        "webUrl": "",
+                    },
+                ],
+            }
+            issues = build_actionable_issues(snap_with_cr, {}, store=store)
+            self.assertEqual(issues, [])
+
 
 if __name__ == "__main__":
     unittest.main()
