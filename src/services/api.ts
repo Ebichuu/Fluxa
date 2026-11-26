@@ -1,1159 +1,152 @@
-import type { HealthResponse, HomeMediaResponse } from '../types/media';
-import type { EmbyOverview, EmbyRefreshResult, EmbyRefreshStatus } from '../types/emby';
-import type { QbittorrentAction, QbittorrentActionPreview, QbittorrentActionResult, QbittorrentSummary } from '../types/qbittorrent';
-import type { SymediaSummary } from '../types/symedia';
-import type { TorraSummary } from '../types/torra';
-import type { TaskChainDetailResponse, TaskChainHealthState, TaskChainQuery, TaskChainResponse, TaskChainSummaryResponse, TaskManualResolutionResponse } from '../types/taskChain';
-import type { IntegrationSummary } from '../types/integrations';
-import type { ActivityLogResponse, SystemMetricsResponse } from '../types/operations';
-import type { HomeSummaryResponse } from '../types/homeSummary';
-import type { RuntimeSettingsResponse, RuntimeSettingsUpdate } from '../types/runtimeSettings';
 import type {
-  AutomationAction,
-  CreateRssMatchInput,
-  RssExactDownloadPreview,
-  RssIdentityBackfillResponse,
-  RssMatch,
-  RssMatchCleanupPreview,
-  RssMatchCleanupResult,
-  RssMatchGroup,
-  RssMatchGroupListResponse,
-  RssMatchListResponse,
-  RssMatchRunResponse,
-  RssResourceDownloadPreview,
-  RssSeedItem,
-  RssSeedListResponse,
+  ActionImpactPreview,
+  AppSettings,
+  AuditRecord,
+  AuthSession,
+  DashboardResponse,
+  DecisionLog,
+  DiscoverItem,
+  IntentMode,
+  MediaPipelineResponse,
+  MediaType,
+  ReleaseGroupCheck,
+  RssPreviewItem,
   RssSource,
-  RssSourceInput,
-  RssSourceListResponse
-} from '../types/rssSeedLibrary';
-import type {
-  DiscoverBrowseParams,
-  CandidateMigrationPreview,
-  CandidateMigrationResult,
-  DiscoverCandidateFollowPreview,
-  DiscoverCandidateFollowResponse,
-  DiscoverCandidateListResponse,
-  DiscoverResourceResponse,
-  DiscoverResult,
-  DiscoverResponse,
-  SubscriptionCalendarResponse,
-  SubscriptionCalendarTimelineResponse,
-  SubscriptionConfigResponse,
-  SubscriptionDetailResponse,
-  SubscriptionHubConfig,
-  SubscriptionItem,
-  SubscriptionListResponse,
-  SubscriptionPushPreview,
-  SubscriptionCapabilitiesResponse,
-  SubscriptionSaveResponse,
-  SubscriptionVisualBackfillResponse,
-  SubscriptionWorkbenchResponse,
-  SubscriptionReconciliationResponse,
-  TorraSubscriptionSyncPreview,
-  TorraSubscriptionSyncResult,
-  TorraSubscriptionSyncStatus,
-  TorraPushPreviewResponse,
-  TorraPushResult,
-  MediaCategory
-} from '../types/subscriptions';
-import type { MediaOverviewResponse, MediaSearchResponse } from '../types/mediaSearch';
-import type {
-  MoviePilotPreview,
-  MoviePilotPushResult,
-  BaselineInitializationPreview,
-  BaselineInitializationResult,
-  QualityWatchBridgeMode,
-  QualityWatchBridgeSummary,
-  QualityWatchResponse,
-  SubscriptionAutomationSettings
-} from '../types/subscriptions';
+  UnifiedSubscription,
+} from '../types/api';
 
-export interface AuthSessionResponse {
-  enabled: boolean;
-  authenticated: boolean;
-  expiresAt: string | null;
-}
-
-export interface RequestOptions {
-  signal?: AbortSignal;
-  timeoutMs?: number;
-}
-
-export class ApiError extends Error {
-  readonly status: number;
-  readonly code: string;
-  readonly requestId: string;
-
-  constructor(message: string, details: { status?: number; code?: string; requestId?: string } = {}) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = details.status ?? 0;
-    this.code = details.code ?? 'API_ERROR';
-    this.requestId = details.requestId ?? '';
-    Object.setPrototypeOf(this, ApiError.prototype);
-  }
-}
-
-const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
-const conditionalJsonCache = new Map<string, { etag: string; payload: unknown }>();
-
-interface ApiErrorPayload {
-  error?: unknown;
-  code?: unknown;
-  request_id?: unknown;
-  requestId?: unknown;
-}
-
-function apiText(value: unknown) {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-function currentInternalPath() {
-  if (typeof window === 'undefined') return '/';
-  const { pathname, search, hash } = window.location;
-  if (!pathname.startsWith('/') || pathname.startsWith('//')) return '/';
-  return `${pathname}${search}${hash}`;
-}
-
-function redirectToLogin() {
-  if (typeof window === 'undefined' || window.location.pathname.startsWith('/auth/login')) return;
-  const destination = `/auth/login?next=${encodeURIComponent(currentInternalPath())}`;
-  window.location.assign(destination);
-}
-
-async function apiErrorFromResponse(response: Response): Promise<ApiError> {
-  const payload = await response.json().catch(() => ({})) as ApiErrorPayload;
-  const code = apiText(payload.code) || 'HTTP_ERROR';
-  const requestId = apiText(payload.request_id)
-    || apiText(payload.requestId)
-    || apiText(response.headers.get('X-Request-ID'));
-  const error = new ApiError(
-    apiText(payload.error) || `请求失败：${response.status}`,
-    { status: response.status, code, requestId }
-  );
-  if (error.status === 401 && error.code === 'AUTH_REQUIRED') redirectToLogin();
-  return error;
-}
-
-function requestFailure(reason: unknown, timedOut: boolean, signal?: AbortSignal): never {
-  if (reason instanceof ApiError) throw reason;
-  if (timedOut) {
-    throw new ApiError('请求超时，请稍后重试', { code: 'REQUEST_TIMEOUT' });
-  }
-  if (signal?.aborted) throw reason;
-  throw new ApiError('网络连接失败，请检查服务是否可用', { code: 'NETWORK_ERROR' });
-}
-
-function requestSignal(signal: AbortSignal | undefined, timeoutMs: number) {
-  const controller = new AbortController();
-  let timedOut = false;
-  const abort = () => controller.abort();
-  if (signal?.aborted) abort();
-  signal?.addEventListener('abort', abort, { once: true });
-  const timer = window.setTimeout(() => {
-    timedOut = true;
-    abort();
-  }, timeoutMs);
-  return {
-    signal: controller.signal,
-    timedOut: () => timedOut,
-    cleanup: () => {
-      window.clearTimeout(timer);
-      signal?.removeEventListener('abort', abort);
-    }
-  };
-}
-
-async function requestJson<T>(path: string, init: RequestInit = {}, options: RequestOptions = {}): Promise<T> {
-  const request = requestSignal(options.signal, options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
-  try {
-    const response = await fetch(path, {
-      ...init,
-      signal: request.signal,
-      headers: {
-        Accept: 'application/json',
-        ...(init.headers ?? {})
-      }
-    });
-
-    if (response.status === 204) return undefined as T;
-    if (!response.ok) throw await apiErrorFromResponse(response);
-    const body = await response.json().catch(() => ({})) as T;
-    return body;
-  } catch (reason) {
-    requestFailure(reason, request.timedOut(), options.signal);
-  } finally {
-    request.cleanup();
-  }
-}
-
-async function readJson<T>(path: string, options?: RequestOptions): Promise<T> {
-  return requestJson<T>(path, { headers: { Accept: 'application/json' } }, options);
-}
-
-async function readConditionalJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const cached = conditionalJsonCache.get(path);
-  const request = requestSignal(options.signal, options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
-  try {
-    const response = await fetch(path, {
-      signal: request.signal,
-      headers: {
-        Accept: 'application/json',
-        ...(cached?.etag ? { 'If-None-Match': cached.etag } : {})
-      }
-    });
-    if (response.status === 304 && cached) return cached.payload as T;
-    if (!response.ok) throw await apiErrorFromResponse(response);
-    const body = await response.json().catch(() => ({})) as T;
-    const etag = response.headers.get('ETag') ?? '';
-    if (etag) conditionalJsonCache.set(path, { etag, payload: body });
-    return body;
-  } catch (reason) {
-    requestFailure(reason, request.timedOut(), options.signal);
-  } finally {
-    request.cleanup();
-  }
-}
-
-export function getHomeMedia(libraryId?: string, options?: RequestOptions): Promise<HomeMediaResponse> {
-  const query = libraryId ? `?libraryId=${encodeURIComponent(libraryId)}` : '';
-  return readJson<HomeMediaResponse>(`/api/media/home${query}`, options);
-}
-
-export function getHealth(options?: RequestOptions): Promise<HealthResponse> {
-  return readJson<HealthResponse>('/api/health', options);
-}
-
-export function getHomeSummary(options?: RequestOptions): Promise<HomeSummaryResponse> {
-  return readJson<HomeSummaryResponse>('/api/v2/home/summary', options);
-}
-
-export function searchMediaEverywhere(query: string, limit = 10, options?: RequestOptions): Promise<MediaSearchResponse> {
-  const params = new URLSearchParams({ q: query, limit: String(limit) });
-  return readJson<MediaSearchResponse>(`/api/v2/search?${params.toString()}`, options);
-}
-
-export function getMediaOverview(mediaKey: string, options?: RequestOptions): Promise<MediaOverviewResponse> {
-  return readJson<MediaOverviewResponse>(`/api/v2/media/${encodeURIComponent(mediaKey)}`, options);
-}
-
-export function getIntegrationSummary(probe = false, options?: RequestOptions): Promise<IntegrationSummary> {
-  return readJson<IntegrationSummary>(`/api/v2/integrations${probe ? '?probe=1' : ''}`, options);
-}
-
-export function getAuthSession(): Promise<AuthSessionResponse> {
-  return readJson<AuthSessionResponse>('/api/auth/session');
-}
-
-export function getRuntimeSettings(): Promise<RuntimeSettingsResponse> {
-  return readJson<RuntimeSettingsResponse>('/api/v2/settings/runtime');
-}
-
-export function saveRuntimeSettings(input: RuntimeSettingsUpdate): Promise<RuntimeSettingsResponse> {
-  return requestJson<RuntimeSettingsResponse>('/api/v2/settings/runtime', {
-    method: 'PUT',
+async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const resp = await fetch(url, {
+    credentials: 'same-origin',
     headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      ...(init?.headers || {}),
     },
-    body: JSON.stringify(input)
+    ...init,
   });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const msg = (data && (data.error || data.message)) || `请求失败 (${resp.status})`;
+    const err = new Error(msg) as Error & { status?: number; body?: unknown };
+    err.status = resp.status;
+    err.body = data;
+    throw err;
+  }
+  return data as T;
 }
 
-export async function logoutAuthSession(): Promise<void> {
-  const response = await fetch('/auth/logout', {
-    method: 'POST',
-    headers: { Accept: 'text/html' }
-  });
-  if (!response.ok) throw new Error(`退出失败：${response.status}`);
-}
-
-export function getQbittorrentSummary(options?: RequestOptions): Promise<QbittorrentSummary> {
-  return readJson<QbittorrentSummary>('/api/qbittorrent/summary', options);
-}
-
-export async function runQbittorrentAction(input: {
-  action: QbittorrentAction;
-  hashes: string[];
-  taskId: string;
-  title: string;
-  idempotencyKey?: string;
-}): Promise<QbittorrentActionResult> {
-  return requestJson<QbittorrentActionResult>(`/api/qbittorrent/actions/${input.action}`, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ hashes: input.hashes, taskId: input.taskId, title: input.title, idempotencyKey: input.idempotencyKey })
-  });
-}
-
-export function previewQbittorrentAction(input: {
-  action: QbittorrentAction;
-  hashes: string[];
-  taskId: string;
-  title: string;
-}): Promise<QbittorrentActionPreview> {
-  return requestJson<QbittorrentActionPreview>(`/api/qbittorrent/actions/${input.action}/preview`, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ hashes: input.hashes, taskId: input.taskId, title: input.title })
-  });
-}
-
-export function getTorraSummary(options?: RequestOptions): Promise<TorraSummary> {
-  return readJson<TorraSummary>('/api/torra/summary', options);
-}
-
-export function getSymediaSummary(options?: RequestOptions): Promise<SymediaSummary> {
-  return readJson<SymediaSummary>('/api/symedia/summary', options);
-}
-
-export function getEmbyOverview(options?: RequestOptions): Promise<EmbyOverview> {
-  return readJson<EmbyOverview>('/api/media/emby/overview', options);
-}
-
-export function getEmbyRefreshStatus(options?: RequestOptions): Promise<EmbyRefreshStatus> {
-  return readJson<EmbyRefreshStatus>('/api/media/emby/refresh-status', options);
-}
-
-export async function triggerEmbyRefresh(): Promise<EmbyRefreshResult> {
-  return requestJson<EmbyRefreshResult>('/api/media/emby/refresh', {
-    method: 'POST',
-    headers: { Accept: 'application/json' }
-  });
-}
-
-export function getTaskChain(options?: RequestOptions): Promise<TaskChainResponse> {
-  return readJson<TaskChainResponse>('/api/tasks/chain', options);
-}
-
-export function getTaskSummaryV2(options?: RequestOptions): Promise<TaskChainSummaryResponse> {
-  return readConditionalJson<TaskChainSummaryResponse>('/api/v2/tasks/summary', options);
-}
-
-export function getTaskChainV2(query: TaskChainQuery | TaskChainHealthState = {}, options?: RequestOptions): Promise<TaskChainResponse> {
-  const input = typeof query === 'string' ? { healthState: query } : query;
-  const params = new URLSearchParams();
-  if (input.healthState) params.set('healthState', input.healthState);
-  if (input.identityState) params.set('identityState', input.identityState);
-  input.identityStates?.forEach((value) => params.append('identityState', value));
-  if (input.executionState) params.set('executionState', input.executionState);
-  input.outcomeStates?.forEach((value) => params.append('outcomeState', value));
-  if (input.userState) params.set('userState', input.userState);
-  if (input.completedDate) params.set('completedDate', input.completedDate);
-  if (input.archivedDate) params.set('archivedDate', input.archivedDate);
-  if (input.qbActive) params.set('qbActive', '1');
-  if (input.chainId) params.set('chainId', input.chainId);
-  if (input.targetKey) params.set('targetKey', input.targetKey);
-  if (input.subscriptionId) params.set('subscriptionId', input.subscriptionId);
-  if (input.tmdbId) params.set('tmdbId', input.tmdbId);
-  if (input.title) params.set('title', input.title);
-  if (input.seasonNumber != null) params.set('seasonNumber', String(input.seasonNumber));
-  if (input.updatedAfter) params.set('updatedAfter', input.updatedAfter);
-  if (input.offset != null) params.set('offset', String(input.offset));
-  if (input.limit != null) params.set('limit', String(input.limit));
-  if (input.refresh) params.set('refresh', '1');
-  const suffix = params.size ? `?${params.toString()}` : '';
-  return readConditionalJson<TaskChainResponse>(`/api/v2/tasks/chains${suffix}`, options);
-}
-
-export function getTaskChainDetailV2(chainId: string, options?: RequestOptions): Promise<TaskChainDetailResponse> {
-  return readConditionalJson<TaskChainDetailResponse>(`/api/v2/tasks/chains/${encodeURIComponent(chainId)}`, options);
-}
-
-export function resolveTaskWarning(chainId: string, snapshotVersion: string): Promise<TaskManualResolutionResponse> {
-  return requestJson<TaskManualResolutionResponse>(
-    `/api/v2/tasks/chains/${encodeURIComponent(chainId)}/manual-resolution`,
-    {
+export const api = {
+  getSession: () => requestJson<AuthSession>('/api/auth/session'),
+  setupAdmin: (username: string, password: string) =>
+    requestJson<{ ok: boolean; username: string }>('/api/auth/setup', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ confirm: true, snapshotVersion })
-    },
-    { timeoutMs: 45_000 }
-  );
-}
+      body: JSON.stringify({ username, password }),
+    }),
+  login: (username: string, password: string) =>
+    requestJson<{ ok: boolean; username: string }>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }),
+  logout: () => requestJson<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
 
-export function restoreTaskWarning(chainId: string, snapshotVersion: string): Promise<TaskManualResolutionResponse> {
-  return requestJson<TaskManualResolutionResponse>(
-    `/api/v2/tasks/chains/${encodeURIComponent(chainId)}/manual-resolution`,
-    {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ confirm: true, snapshotVersion })
-    },
-    { timeoutMs: 45_000 }
-  );
-}
-
-export function getSystemMetrics(options?: RequestOptions): Promise<SystemMetricsResponse> {
-  return readJson<SystemMetricsResponse>('/api/v2/system/metrics', options);
-}
-
-export async function getActivityLogs(
-  category = '',
-  options?: RequestOptions & { view?: 'important' | 'raw'; limit?: number }
-): Promise<ActivityLogResponse> {
-  const requestedLimit = Number.isFinite(options?.limit) ? Math.trunc(options?.limit as number) : 20;
-  const limit = Math.max(1, Math.min(requestedLimit, 999));
-  const query = new URLSearchParams({ limit: String(limit + 1) });
-  if (category) query.set('category', category);
-  if (options?.view === 'important') query.set('view', 'important');
-  const payload = await readJson<Omit<ActivityLogResponse, 'hasMore'>>(
-    `/api/v2/activity/logs?${query.toString()}`,
-    options
-  );
-  return {
-    ...payload,
-    logs: payload.logs.slice(0, limit),
-    hasMore: payload.logs.length > limit
-  };
-}
-
-export function getSubscriptionCalendar(
-  year: number,
-  month: number,
-  mediaType: 'all' | 'movie' | 'tv' = 'all',
-  options?: RequestOptions
-): Promise<SubscriptionCalendarResponse> {
-  return readJson<SubscriptionCalendarResponse>(
-    `/api/subscriptions/calendar?year=${year}&month=${month}&type=${mediaType}`,
-    options
-  );
-}
-
-export function getSubscriptionCalendarTimeline(
-  year: number,
-  month: number,
-  mediaType: 'all' | 'movie' | 'tv' = 'all',
-  options?: RequestOptions,
-  includeUnlinked = false
-): Promise<SubscriptionCalendarTimelineResponse> {
-  const query = new URLSearchParams({ year: String(year), month: String(month), type: mediaType });
-  if (includeUnlinked) query.set('includeUnlinked', '1');
-  return readConditionalJson<SubscriptionCalendarTimelineResponse>(
-    `/api/v2/calendar?${query.toString()}`,
-    options
-  );
-}
-
-export function getSubscriptionCalendarSummary(
-  year: number,
-  month: number,
-  mediaType: 'all' | 'movie' | 'tv' = 'all',
-  options?: RequestOptions,
-  includeUnlinked = false
-): Promise<SubscriptionCalendarTimelineResponse> {
-  const query = new URLSearchParams({
-    year: String(year), month: String(month), type: mediaType, view: 'summary'
-  });
-  if (includeUnlinked) query.set('includeUnlinked', '1');
-  return readConditionalJson<SubscriptionCalendarTimelineResponse>(
-    `/api/v2/calendar?${query.toString()}`,
-    options
-  );
-}
-
-export function getSubscriptionCalendarRangeSummary(
-  from: string,
-  to: string,
-  mediaType: 'all' | 'movie' | 'tv' = 'all',
-  options?: RequestOptions,
-  includeUnlinked = false
-): Promise<SubscriptionCalendarTimelineResponse> {
-  const [year = '', month = ''] = from.split('-');
-  const query = new URLSearchParams({
-    year,
-    month: String(Number(month)),
-    type: mediaType,
-    view: 'summary',
-    from,
-    to
-  });
-  if (includeUnlinked) query.set('includeUnlinked', '1');
-  return readConditionalJson<SubscriptionCalendarTimelineResponse>(
-    `/api/v2/calendar?${query.toString()}`,
-    options
-  );
-}
-
-export function getSubscriptionCalendarDateDetail(
-  date: string,
-  mediaType: 'all' | 'movie' | 'tv' = 'all',
-  options?: RequestOptions,
-  includeUnlinked = false
-): Promise<SubscriptionCalendarTimelineResponse> {
-  const query = new URLSearchParams({ date, type: mediaType, view: 'detail' });
-  if (includeUnlinked) query.set('includeUnlinked', '1');
-  return readConditionalJson<SubscriptionCalendarTimelineResponse>(
-    `/api/v2/calendar?${query.toString()}`,
-    options
-  );
-}
-
-export function requestSubscriptionCalendarRefresh(input: {
-  year: number;
-  month: number;
-  mediaType?: 'all' | 'movie' | 'tv';
-  includeUnlinked?: boolean;
-  idempotencyKey: string;
-}): Promise<{
-  ok: boolean;
-  refresh: { status: string; scopeKey: string };
-}> {
-  return postJson('/api/v2/calendar/refresh-requests', {
-    year: input.year,
-    month: input.month,
-    mediaType: input.mediaType ?? 'all',
-    includeUnlinked: Boolean(input.includeUnlinked),
-    idempotencyKey: input.idempotencyKey
-  });
-}
-
-export function getSubscriptionItems(includeProgress = false, options?: RequestOptions): Promise<SubscriptionListResponse> {
-  return readJson<SubscriptionListResponse>(
-    includeProgress ? '/api/subscriptions/items?include_progress=1' : '/api/subscriptions/items',
-    options
-  );
-}
-
-export function getSubscriptionWorkbench(input: {
-  limit?: number;
-  offset?: number;
-  mediaType?: 'movie' | 'tv';
-  query?: string;
-} = {}, options?: RequestOptions): Promise<SubscriptionWorkbenchResponse> {
-  const query = new URLSearchParams({
-    limit: String(input.limit ?? 24),
-    offset: String(input.offset ?? 0)
-  });
-  if (input.mediaType) query.set('mediaType', input.mediaType);
-  if (input.query) query.set('query', input.query);
-  return readJson<SubscriptionWorkbenchResponse>(`/api/v2/subscriptions/workbench?${query.toString()}`, options);
-}
-
-export function requestSubscriptionWorkbenchRefresh(): Promise<{
-  ok: boolean;
-  refresh: { status: string };
-}> {
-  return postJson('/api/v2/subscriptions/workbench/refresh-requests', {});
-}
-
-export function backfillSubscriptionVisuals(ids: string[]): Promise<SubscriptionVisualBackfillResponse> {
-  return postJson<SubscriptionVisualBackfillResponse>('/api/v2/subscriptions/visual-backfills', { ids }, { timeoutMs: 60_000 });
-}
-
-export function getSubscriptionCapabilities(options?: RequestOptions): Promise<SubscriptionCapabilitiesResponse> {
-  return readJson<SubscriptionCapabilitiesResponse>('/api/v2/subscriptions/capabilities', options);
-}
-
-export function getSubscriptionReconciliation(options?: RequestOptions): Promise<SubscriptionReconciliationResponse> {
-  return readJson<SubscriptionReconciliationResponse>('/api/v2/subscriptions/reconciliation', options);
-}
-
-export function getDiscoverTrending(type: 'movie' | 'tv'): Promise<DiscoverResponse> {
-  return readJson<DiscoverResponse>(`/api/discover/trending?type=${type}`);
-}
-
-export function browseDiscover(params: DiscoverBrowseParams): Promise<DiscoverResponse> {
-  const query = new URLSearchParams({
-    source: params.source,
-    type: params.type,
-    trend: params.trend,
-    sort: params.sort,
-    language: params.language,
-    year: params.year,
-    genre: params.genre,
-    page: String(params.page),
-    limit: String(params.limit ?? 16)
-  });
-  if (params.provider) {
-    query.set('provider', params.provider);
-  }
-  if (params.source === 'douban') {
-    query.set('doubanCategory', params.doubanCategory);
-  }
-  return readJson<DiscoverResponse>(`/api/discover/browse?${query.toString()}`);
-}
-
-export function getDiscoverCandidates(input: {
-  mediaType?: 'movie' | 'tv';
-  query?: string;
-  limit?: number;
-  offset?: number;
-} = {}, options?: RequestOptions): Promise<DiscoverCandidateListResponse> {
-  const query = new URLSearchParams();
-  if (input.mediaType) query.set('mediaType', input.mediaType);
-  if (input.query) query.set('query', input.query);
-  query.set('limit', String(input.limit ?? 24));
-  query.set('offset', String(input.offset ?? 0));
-  return readJson<DiscoverCandidateListResponse>(`/api/v2/discover/candidates?${query.toString()}`, options);
-}
-
-export function previewDiscoverCandidateFollow(
-  candidateId: string,
-  options?: RequestOptions
-): Promise<DiscoverCandidateFollowPreview> {
-  return postJson<DiscoverCandidateFollowPreview>(
-    `/api/v2/discover/candidates/${encodeURIComponent(candidateId)}/follow-previews`,
-    {},
-    options
-  );
-}
-
-export function followDiscoverCandidate(
-  candidateId: string,
-  idempotencyKey: string,
-  options?: RequestOptions
-): Promise<DiscoverCandidateFollowResponse> {
-  return postJson<DiscoverCandidateFollowResponse>(
-    `/api/v2/discover/candidates/${encodeURIComponent(candidateId)}/follows`,
-    { confirm: true, idempotencyKey },
-    options
-  );
-}
-
-export function previewCandidateMigration(
-  input: { limit?: number; offset?: number } = {},
-  options?: RequestOptions
-): Promise<CandidateMigrationPreview> {
-  const query = new URLSearchParams({
-    limit: String(input.limit ?? 100),
-    offset: String(input.offset ?? 0)
-  });
-  return readJson<CandidateMigrationPreview>(
-    `/api/v2/subscriptions/candidate-migrations/preview?${query.toString()}`,
-    options
-  );
-}
-
-export function executeCandidateMigration(
-  input: { confirm: true; idempotencyKey: string; previewFingerprint: string },
-  options?: RequestOptions
-): Promise<CandidateMigrationResult> {
-  return postJson<CandidateMigrationResult>('/api/v2/subscriptions/candidate-migrations', input, options);
-}
-
-export function getCandidateMigrationRun(
-  runId: string,
-  options?: RequestOptions
-): Promise<CandidateMigrationResult> {
-  return readJson<CandidateMigrationResult>(
-    `/api/v2/subscriptions/candidate-migrations/${encodeURIComponent(runId)}`,
-    options
-  );
-}
-
-export function searchDiscover(query: string, page = 1): Promise<DiscoverResponse> {
-  return readJson<DiscoverResponse>(`/api/discover/search?query=${encodeURIComponent(query)}&page=${page}`);
-}
-
-export function searchDiscoverResources(result: DiscoverResult): Promise<DiscoverResourceResponse> {
-  const query = new URLSearchParams({
-    title: result.title,
-    type: result.mediaType
-  });
-  if (/^\d{4}$/.test(result.year)) query.set('year', result.year);
-  if (result.tmdbId && /^\d+$/.test(result.tmdbId)) query.set('tmdb_id', result.tmdbId);
-  if (result.source && /^[a-z0-9_-]{1,40}$/i.test(result.source)) query.set('source', result.source);
-  return readJson<DiscoverResourceResponse>(`/api/discover/resources/search?${query.toString()}`);
-}
-
-async function postJson<T>(path: string, body: unknown, options?: RequestOptions): Promise<T> {
-  return requestJson<T>(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  }, options);
-}
-
-async function patchJson<T>(path: string, body: unknown, options?: RequestOptions): Promise<T> {
-  return requestJson<T>(path, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  }, options);
-}
-
-async function deleteRequest(path: string): Promise<void> {
-  return requestJson<void>(path, {
-    method: 'DELETE',
-    headers: { Accept: 'application/json' }
-  });
-}
-
-export function getRssSources(): Promise<RssSourceListResponse> {
-  return readJson<RssSourceListResponse>('/api/v2/rss-sources');
-}
-
-export function saveRssSource(input: RssSourceInput, id?: string): Promise<RssSource> {
-  return id
-    ? patchJson<RssSource>(`/api/v2/rss-sources/${encodeURIComponent(id)}`, input)
-    : postJson<RssSource>('/api/v2/rss-sources', input);
-}
-
-export function deleteRssSource(id: string): Promise<void> {
-  return deleteRequest(`/api/v2/rss-sources/${encodeURIComponent(id)}`);
-}
-
-export function testRssSource(id: string): Promise<AutomationAction> {
-  return postJson<AutomationAction>(`/api/v2/rss-sources/${encodeURIComponent(id)}/tests`, {});
-}
-
-export function getRssSeedItems(input: {
-  query?: string;
-  sourceId?: string;
-  window?: '' | '1h' | '24h' | '7d';
-  identityStatus?: '' | 'identified' | 'conflict' | 'unidentified';
-  reviewState?: '' | 'needs_review' | 'follow_needs_review' | 'unlinked';
-  followState?: '' | 'linked' | 'unlinked';
-  publishedDate?: string;
-  subscriptionId?: string;
-  tmdbId?: string;
-  mediaType?: 'movie' | 'tv';
-  seasonNumber?: number;
-  episodeNumber?: number;
-  resourceType?: 'movie' | 'tv' | 'unknown';
-  year?: string;
-  limit?: number;
-  offset?: number;
-} = {}, options?: RequestOptions): Promise<RssSeedListResponse> {
-  const query = new URLSearchParams();
-  if (input.query) query.set('query', input.query);
-  if (input.sourceId) query.set('sourceId', input.sourceId);
-  if (input.window) query.set('window', input.window);
-  if (input.identityStatus) query.set('identityStatus', input.identityStatus);
-  if (input.reviewState) query.set('reviewState', input.reviewState);
-  if (input.followState) query.set('followState', input.followState);
-  if (input.publishedDate) query.set('publishedDate', input.publishedDate);
-  if (input.subscriptionId) query.set('subscriptionId', input.subscriptionId);
-  if (input.tmdbId) query.set('tmdbId', input.tmdbId);
-  if (input.mediaType) query.set('mediaType', input.mediaType);
-  if (input.seasonNumber != null) query.set('seasonNumber', String(input.seasonNumber));
-  if (input.episodeNumber != null) query.set('episodeNumber', String(input.episodeNumber));
-  if (input.resourceType) query.set('resourceType', input.resourceType);
-  if (input.year) query.set('year', input.year);
-  query.set('limit', String(input.limit ?? 50));
-  query.set('offset', String(input.offset ?? 0));
-  return readJson<RssSeedListResponse>(`/api/v2/rss-items?${query.toString()}`, options);
-}
-
-export function getRssSeedItem(id: string, options?: RequestOptions): Promise<RssSeedItem> {
-  return readJson<RssSeedItem>(`/api/v2/rss-items/${encodeURIComponent(id)}`, options);
-}
-
-export function backfillRssIdentities(limit = 50): Promise<RssIdentityBackfillResponse> {
-  return postJson<RssIdentityBackfillResponse>('/api/v2/rss-items/identity-backfills', { limit });
-}
-
-export function runRssMatcher(limit = 200): Promise<RssMatchRunResponse> {
-  return postJson<RssMatchRunResponse>('/api/v2/rss-items/match-runs', { limit });
-}
-
-export function getRssMatches(input: { status?: string; limit?: number; offset?: number } = {}, options?: RequestOptions): Promise<RssMatchListResponse> {
-  const query = new URLSearchParams();
-  if (input.status) query.set('status', input.status);
-  query.set('limit', String(input.limit ?? 20));
-  query.set('offset', String(input.offset ?? 0));
-  return readJson<RssMatchListResponse>(`/api/v2/rss-matches?${query.toString()}`, options);
-}
-
-export function getRssMatchGroups(input: {
-  status?: string;
-  groupState?: RssMatchGroup['state'];
-  groupScope?: 'scoreable' | 'cleanup' | 'decision';
-  subscriptionId?: string;
-  mediaType?: 'movie' | 'tv';
-  seasonNumber?: number;
-  episodeNumber?: number;
-  matchId?: string;
-  limit?: number;
-  offset?: number;
-} = {}, options?: RequestOptions): Promise<RssMatchGroupListResponse> {
-  const query = new URLSearchParams({ view: 'groups' });
-  if (input.status) query.set('status', input.status);
-  if (input.groupState) query.set('groupState', input.groupState);
-  if (input.groupScope) query.set('groupScope', input.groupScope);
-  if (input.subscriptionId) query.set('subscriptionId', input.subscriptionId);
-  if (input.mediaType) query.set('mediaType', input.mediaType);
-  if (input.seasonNumber != null) query.set('seasonNumber', String(input.seasonNumber));
-  if (input.episodeNumber != null) query.set('episodeNumber', String(input.episodeNumber));
-  if (input.matchId) query.set('matchId', input.matchId);
-  query.set('limit', String(input.limit ?? 20));
-  query.set('offset', String(input.offset ?? 0));
-  return readJson<RssMatchGroupListResponse>(`/api/v2/rss-matches?${query.toString()}`, options);
-}
-
-export function getRssArtifactGroups(input: {
-  status?: string;
-  groupState?: RssMatchGroup['state'];
-  groupScope?: 'scoreable' | 'cleanup' | 'decision';
-  query?: string;
-  blockerCode?: string;
-  sort?: 'recent' | 'score' | 'gain';
-  subscriptionId?: string;
-  mediaType?: 'movie' | 'tv';
-  seasonNumber?: number;
-  episodeNumber?: number;
-  matchId?: string;
-  itemId?: string;
-  limit?: number;
-  offset?: number;
-} = {}, options?: RequestOptions): Promise<RssMatchGroupListResponse> {
-  const query = new URLSearchParams({ view: 'artifact-groups' });
-  if (input.status) query.set('status', input.status);
-  if (input.groupState) query.set('groupState', input.groupState);
-  if (input.groupScope) query.set('groupScope', input.groupScope);
-  if (input.query) query.set('q', input.query);
-  if (input.blockerCode) query.set('blockerCode', input.blockerCode);
-  if (input.sort) query.set('sort', input.sort);
-  if (input.subscriptionId) query.set('subscriptionId', input.subscriptionId);
-  if (input.mediaType) query.set('mediaType', input.mediaType);
-  if (input.seasonNumber != null) query.set('seasonNumber', String(input.seasonNumber));
-  if (input.episodeNumber != null) query.set('episodeNumber', String(input.episodeNumber));
-  if (input.matchId) query.set('matchId', input.matchId);
-  if (input.itemId) query.set('itemId', input.itemId);
-  query.set('limit', String(input.limit ?? 20));
-  query.set('offset', String(input.offset ?? 0));
-  return readJson<RssMatchGroupListResponse>(`/api/v2/rss-matches?${query.toString()}`, options);
-}
-
-export function createRssMatch(
-  input: CreateRssMatchInput,
-  options?: RequestOptions
-): Promise<RssMatch> {
-  return postJson<RssMatch>('/api/v2/rss-matches', input, options);
-}
-
-export function previewRssMatchCleanup(
-  matchIds: string[],
-  options?: RequestOptions
-): Promise<RssMatchCleanupPreview> {
-  return postJson<RssMatchCleanupPreview>(
-    '/api/v2/rss-match-cleanups/previews',
-    { matchIds },
-    options
-  );
-}
-
-export function applyRssMatchCleanup(
-  input: {
-    previewId: string;
-    fingerprint: string;
-    matchIds: string[];
-    idempotencyKey: string;
+  getDashboard: (days = 7, startDate = '') => {
+    const qs = new URLSearchParams({ days: String(days) });
+    if (startDate) qs.set('startDate', startDate);
+    return requestJson<DashboardResponse>(`/api/dashboard?${qs.toString()}`);
   },
-  options?: RequestOptions
-): Promise<RssMatchCleanupResult> {
-  return postJson<RssMatchCleanupResult>('/api/v2/rss-match-cleanups', input, options);
-}
 
-export function startRssMatchAnalysis(
-  matchId: string,
-  idempotencyKey: string,
-  options?: RequestOptions
-): Promise<AutomationAction> {
-  return postJson<AutomationAction>(
-    `/api/v2/rss-matches/${encodeURIComponent(matchId)}/torra-rewash-analyses`,
-    { idempotencyKey },
-    options
-  );
-}
+  getMediaPipeline: (mediaType: MediaType, tmdbId: string) =>
+    requestJson<MediaPipelineResponse>(`/api/media/${mediaType}/${tmdbId}`),
 
-export function previewRssExactDownload(
-  matchId: string,
-  options?: RequestOptions
-): Promise<RssExactDownloadPreview> {
-  return postJson<RssExactDownloadPreview>(
-    `/api/v2/rss-matches/${encodeURIComponent(matchId)}/exact-download-previews`,
-    {},
-    options
-  );
-}
+  updateMediaPreference: (
+    mediaType: MediaType,
+    tmdbId: string,
+    patch: { intent?: IntentMode; notes?: string; preferredTarget?: string }
+  ) =>
+    requestJson<{ ok: boolean }>(`/api/media/${mediaType}/${tmdbId}/preference`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
 
-export function previewRssResourceDownload(
-  itemId: string,
-  options?: RequestOptions
-): Promise<RssResourceDownloadPreview> {
-  return postJson<RssResourceDownloadPreview>(
-    `/api/v2/rss-items/${encodeURIComponent(itemId)}/download-previews`,
-    {},
-    options
-  );
-}
+  muteIssue: (issueKey: string) =>
+    requestJson<{ ok: boolean }>('/api/issues/mute', {
+      method: 'POST',
+      body: JSON.stringify({ issueKey }),
+    }),
 
-export function startRssResourceDownload(
-  itemId: string,
-  input: { confirm: true; previewToken: string; idempotencyKey: string },
-  options?: RequestOptions
-): Promise<AutomationAction> {
-  return postJson<AutomationAction>(
-    `/api/v2/rss-items/${encodeURIComponent(itemId)}/downloads`,
-    input,
-    options
-  );
-}
+  search: (q: string) => requestJson<{ items: DiscoverItem[] }>(`/api/search?q=${encodeURIComponent(q)}`),
 
-export function previewRssArtifactExactDownload(
-  groupId: string,
-  options?: RequestOptions
-): Promise<RssExactDownloadPreview> {
-  return postJson<RssExactDownloadPreview>(
-    `/api/v2/rss-artifact-groups/${encodeURIComponent(groupId)}/exact-download-previews`,
-    {},
-    options
-  );
-}
+  getSubscriptions: () =>
+    requestJson<{
+      generatedAt: string;
+      items: UnifiedSubscription[];
+      decisionLogs: DecisionLog[];
+      guardrails: AppSettings['guardrails'];
+    }>('/api/subscriptions'),
 
-export function startRssArtifactExactDownload(
-  groupId: string,
-  input: { confirm: true; previewToken: string; idempotencyKey: string },
-  options?: RequestOptions
-): Promise<AutomationAction> {
-  return postJson<AutomationAction>(
-    `/api/v2/rss-artifact-groups/${encodeURIComponent(groupId)}/exact-downloads`,
-    input,
-    options
-  );
-}
+  checkReleaseGroup: (payload: { siteId?: string; siteName?: string; title: string }) =>
+    requestJson<ReleaseGroupCheck>('/api/guardrails/check-release', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 
-export function startRssMatchDownload(
-  matchId: string,
-  input: { confirm: true; idempotencyKey: string; analysisActionId: string },
-  options?: RequestOptions
-): Promise<AutomationAction> {
-  return postJson<AutomationAction>(
-    `/api/v2/rss-matches/${encodeURIComponent(matchId)}/torra-rewashes`,
-    input,
-    options
-  );
-}
+  getRssPreview: () =>
+    requestJson<{ items: RssPreviewItem[]; errors: string[]; sourceCount: number }>('/api/rss/preview'),
+  getRssSources: () => requestJson<{ items: RssSource[] }>('/api/rss/sources'),
+  saveRssSource: (source: Partial<RssSource> & { name: string; url: string }) =>
+    requestJson<{ ok: boolean; item: RssSource }>('/api/rss/sources', {
+      method: 'POST',
+      body: JSON.stringify(source),
+    }),
+  deleteRssSource: (id: string) =>
+    requestJson<{ ok: boolean }>(`/api/rss/sources/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
-export function saveSubscription(input: {
-  title: string;
-  mediaType: 'movie' | 'tv';
-  tmdbId: string;
-  posterUrl?: string;
-  year?: string;
-  originalLanguage?: string;
-  genreIds?: number[];
-  originCountry?: string[];
-}): Promise<SubscriptionSaveResponse> {
-  return postJson('/api/subscriptions/save', input);
-}
+  discover: (category: string) =>
+    requestJson<{ configured: boolean; category: string; message?: string; items: DiscoverItem[] }>(
+      `/api/discover?category=${encodeURIComponent(category)}`
+    ),
 
-export function deleteSubscription(id: string): Promise<{ success: boolean }> {
-  return postJson('/api/subscriptions/delete', { id });
-}
+  subscribe: (payload: {
+    mediaType: MediaType;
+    tmdbId: string;
+    title: string;
+    year?: string;
+    seasonNumber?: number | null;
+    intent: IntentMode;
+    target: 'moviepilot' | 'torra';
+    sourceLabel?: string;
+    fromChart?: boolean;
+    overrideGuardrail?: boolean;
+  }) =>
+    requestJson<{ ok: boolean; message: string; decisionLog?: DecisionLog }>('/api/subscribe', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 
-export function runSubscriptionSweep(): Promise<{
-  added: number;
-  updated: number;
-  skipped: number;
-  skippedCount?: number;
-  errorCount?: number;
-  pushed: 0;
-  errors: string[];
-  candidates: { scanned: number; added: number; updated: number; skipped: number; expired: number };
-}> {
-  return postJson('/api/subscriptions/run', {});
-}
+  previewAction: (actionType: string, payload: Record<string, unknown>) =>
+    requestJson<ActionImpactPreview>('/api/actions/preview', {
+      method: 'POST',
+      body: JSON.stringify({ actionType, payload }),
+    }),
 
-export function getSubscriptionConfig(): Promise<SubscriptionConfigResponse> {
-  return readJson<SubscriptionConfigResponse>('/api/subscriptions/config');
-}
+  executeAction: (actionType: string, payload: Record<string, unknown>, confirmed = false) =>
+    requestJson<{ ok: boolean; message?: string; requiresConfirm?: boolean; preview?: ActionImpactPreview }>(
+      '/api/actions/execute',
+      {
+        method: 'POST',
+        body: JSON.stringify({ actionType, payload, confirmed }),
+      }
+    ),
 
-export function saveSubscriptionConfig(config: SubscriptionHubConfig): Promise<SubscriptionConfigResponse> {
-  return postJson('/api/subscriptions/config', config);
-}
-
-export function blockSubscription(input: { id?: string; title?: string }): Promise<{ success: boolean; blocked_titles: string[] }> {
-  return postJson('/api/subscriptions/block', input);
-}
-
-export function unblockSubscription(title: string): Promise<{ success: boolean; blocked_titles: string[] }> {
-  return postJson('/api/subscriptions/unblock', { title });
-}
-
-export function clearSubscriptions(): Promise<{ success: boolean }> {
-  return postJson('/api/subscriptions/clear', {});
-}
-
-export function getSubscriptionDetail(id: string, season?: number, options?: RequestOptions): Promise<SubscriptionDetailResponse> {
-  const query = season ? `&season=${season}` : '';
-  return readJson<SubscriptionDetailResponse>(`/api/subscriptions/detail?id=${encodeURIComponent(id)}${query}`, options);
-}
-
-export function getSubscriptionQualityWatch(id: string, options?: RequestOptions): Promise<QualityWatchResponse> {
-  return readJson<QualityWatchResponse>(`/api/v2/subscriptions/${encodeURIComponent(id)}/quality-watch`, options);
-}
-
-export function updateSubscriptionQualityWatch(
-  id: string,
-  input: {
-    paused?: boolean;
-    lifecycleMode?: 'follow_rss' | 'fixed_window';
-    windowHours?: 24 | 48;
-    scheduleMinutes?: number[];
-  },
-  options?: RequestOptions
-): Promise<QualityWatchResponse> {
-  return patchJson<QualityWatchResponse>(`/api/v2/subscriptions/${encodeURIComponent(id)}/quality-watch`, input, options);
-}
-
-export function getSubscriptionAutomationSettings(options?: RequestOptions): Promise<SubscriptionAutomationSettings> {
-  return readJson<SubscriptionAutomationSettings>('/api/v2/subscription-automation/settings', options);
-}
-
-export function updateSubscriptionAutomationSettings(
-  input: Partial<Pick<SubscriptionAutomationSettings,
-    'enabled' | 'missingFallbackEnabled' | 'lifecycleMode' | 'defaultWindowHours' | 'scheduleMinutes'
-    | 'minIntervalMinutes' | 'hourlyLimit' | 'dailyLimit' | 'batchSize'>> & {
-      bridgeMode?: QualityWatchBridgeMode;
-      bridgeModeConfirm?: true;
-      executionMode?: 'disabled' | 'manual';
-      executionModeConfirm?: true;
-    },
-  options?: RequestOptions
-): Promise<SubscriptionAutomationSettings> {
-  return patchJson<SubscriptionAutomationSettings>('/api/v2/subscription-automation/settings', input, options);
-}
-
-export function getQualityWatchBridgeSummary(options?: RequestOptions): Promise<QualityWatchBridgeSummary> {
-  return readJson<QualityWatchBridgeSummary>('/api/v2/subscription-automation/bridge-summary', options);
-}
-
-export function previewBaselineInitialization(options?: RequestOptions): Promise<BaselineInitializationPreview> {
-  return postJson<BaselineInitializationPreview>(
-    '/api/v2/subscription-automation/baseline-initialization-previews',
-    {},
-    options
-  );
-}
-
-export function executeBaselineInitialization(
-  input: {
-    confirm: true;
-    runId: string;
-    previewFingerprint: string;
-    selectedTargetIds: string[];
-    idempotencyKey: string;
-  },
-  options?: RequestOptions
-): Promise<BaselineInitializationResult> {
-  return postJson<BaselineInitializationResult>(
-    '/api/v2/subscription-automation/baseline-initializations',
-    input,
-    options
-  );
-}
-
-export function getBaselineInitialization(
-  runId: string,
-  options?: RequestOptions
-): Promise<BaselineInitializationResult | BaselineInitializationPreview> {
-  return readJson<BaselineInitializationResult | BaselineInitializationPreview>(
-    `/api/v2/subscription-automation/baseline-initializations/${encodeURIComponent(runId)}`,
-    options
-  );
-}
-
-export function getAutomationAction(id: string, options?: RequestOptions): Promise<AutomationAction> {
-  return readJson<AutomationAction>(`/api/v2/automation-actions/${encodeURIComponent(id)}`, options);
-}
-
-export function startTorraRewashAnalysis(
-  id: string,
-  input: { idempotencyKey: string; unitId?: string },
-  options?: RequestOptions
-): Promise<AutomationAction> {
-  return postJson<AutomationAction>(`/api/v2/subscriptions/${encodeURIComponent(id)}/torra-rewash-analyses`, input, options);
-}
-
-export function startTorraRewashDownload(
-  id: string,
-  input: { confirm: true; idempotencyKey: string; analysisActionId: string; unitId?: string },
-  options?: RequestOptions
-): Promise<AutomationAction> {
-  return postJson<AutomationAction>(`/api/v2/subscriptions/${encodeURIComponent(id)}/torra-rewashes`, input, options);
-}
-
-export function getMoviePilotPreview(id: string, options?: RequestOptions): Promise<MoviePilotPreview> {
-  return postJson<MoviePilotPreview>(`/api/v2/subscriptions/${encodeURIComponent(id)}/moviepilot-previews`, {}, options);
-}
-
-export function pushToMoviePilot(
-  id: string,
-  idempotencyKey: string,
-  options?: RequestOptions
-): Promise<MoviePilotPushResult> {
-  return postJson<MoviePilotPushResult>(
-    `/api/v2/subscriptions/${encodeURIComponent(id)}/moviepilot-pushes`,
-    { confirm: true, idempotencyKey },
-    options
-  );
-}
-
-export function setSubscriptionSeason(id: string, seasonNumber: number, seasonName?: string): Promise<{ success: boolean }> {
-  return postJson('/api/subscriptions/season', { id, seasonNumber, seasonName });
-}
-
-export function setSubscriptionCategory(
-  id: string,
-  category: MediaCategory | null
-): Promise<{ success: boolean; item: SubscriptionItem }> {
-  return patchJson(`/api/subscriptions/${encodeURIComponent(id)}/category`, { category });
-}
-
-export function getSubscriptionPushPreview(id: string): Promise<{ success: boolean; preview: SubscriptionPushPreview }> {
-  return readJson<{ success: boolean; preview: SubscriptionPushPreview }>(
-    `/api/subscriptions/push-preview?id=${encodeURIComponent(id)}`
-  );
-}
-
-export function getTorraPushPreview(id: string, startEpisode?: number): Promise<TorraPushPreviewResponse> {
-  const query = new URLSearchParams();
-  if (startEpisode != null) query.set('startEpisode', String(startEpisode));
-  return readJson<TorraPushPreviewResponse>(
-    `/api/v2/subscriptions/${encodeURIComponent(id)}/torra-push-preview${query.size ? `?${query.toString()}` : ''}`
-  );
-}
-
-export function pushSubscriptionToTorra(
-  id: string,
-  idempotencyKey: string,
-  startEpisode?: number
-): Promise<TorraPushResult> {
-  return postJson<TorraPushResult>(
-    `/api/v2/subscriptions/${encodeURIComponent(id)}/torra-pushes`,
-    { confirm: true, idempotencyKey, ...(startEpisode != null ? { startEpisode } : {}) }
-  );
-}
-
-export function getTorraSubscriptionSyncStatus(options?: RequestOptions): Promise<TorraSubscriptionSyncStatus> {
-  return readJson<TorraSubscriptionSyncStatus>('/api/v2/torra/subscription-sync/status', options);
-}
-
-export function previewTorraSubscriptionSync(options?: RequestOptions): Promise<TorraSubscriptionSyncPreview> {
-  return readJson<TorraSubscriptionSyncPreview>('/api/v2/torra/subscription-sync/preview', options);
-}
-
-export function importTorraSubscriptions(
-  idempotencyKey: string,
-  options?: RequestOptions
-): Promise<TorraSubscriptionSyncResult> {
-  return postJson<TorraSubscriptionSyncResult>(
-    '/api/v2/torra/subscription-sync/imports',
-    { confirm: true, idempotencyKey },
-    options
-  );
-}
-
-export function runTorraSubscriptionSync(options?: RequestOptions): Promise<TorraSubscriptionSyncResult> {
-  return postJson<TorraSubscriptionSyncResult>('/api/v2/torra/subscription-sync/runs', {}, options);
-}
+  getAudit: () => requestJson<{ items: AuditRecord[] }>('/api/audit'),
+  getSettings: () => requestJson<AppSettings>('/api/settings'),
+  saveSettings: (patch: Partial<AppSettings>) =>
+    requestJson<{ ok: boolean; settings: AppSettings }>('/api/settings', {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+  testService: (service: string) =>
+    requestJson<{ ok: boolean; message: string }>(`/api/settings/test/${encodeURIComponent(service)}`, {
+      method: 'POST',
+    }),
+};

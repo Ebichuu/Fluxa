@@ -1,0 +1,501 @@
+from __future__ import annotations
+
+import uuid
+from datetime import date
+from typing import Any
+
+from flask import Blueprint, current_app, jsonify, make_response, request
+
+from app.adapters.http_utils import sanitize_text
+from app.adapters.rss import fetch_and_parse_rss
+from app.auth import SESSION_COOKIE, SESSION_TTL_SECONDS
+from app.config import redact_settings
+from app.domain.actions import execute_bounded_action, preview_action_impact, send_telegram_test
+from app.domain.calendar import build_following_calendar
+from app.domain.pipeline import (
+    build_actionable_issues,
+    build_adapters,
+    build_media_pipeline,
+    collect_upstream_snapshot,
+    merge_subscriptions,
+)
+from app.domain.release_rules import evaluate_release_group, evaluate_subscription_guardrail
+
+api = Blueprint("fluxa_api", __name__, url_prefix="/api")
+
+
+def _store():
+    return current_app.config["FLUXA_STORE"]
+
+
+def _auth():
+    return current_app.config["FLUXA_AUTH"]
+
+
+# -- Auth -----------------------------------------------------------------
+
+@api.get("/auth/session")
+def auth_session():
+    auth = _auth()
+    initialized = auth.is_initialized()
+    token = request.cookies.get(SESSION_COOKIE, "")
+    user = auth.verify_token(token) if initialized else None
+    return jsonify({
+        "initialized": initialized,
+        "authenticated": bool(user),
+        "username": user["username"] if user else "",
+    })
+
+
+@api.post("/auth/setup")
+def auth_setup():
+    body = request.get_json(silent=True) or {}
+    try:
+        admin = _auth().setup(body.get("username", ""), body.get("password", ""))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    token = _auth().create_token(admin)
+    resp = make_response(jsonify({"ok": True, "username": admin["username"]}))
+    resp.set_cookie(SESSION_COOKIE, token, max_age=SESSION_TTL_SECONDS, httponly=True, samesite="Lax")
+    return resp
+
+
+@api.post("/auth/login")
+def auth_login():
+    body = request.get_json(silent=True) or {}
+    admin = _auth().verify_login(body.get("username", ""), body.get("password", ""))
+    if not admin:
+        return jsonify({"ok": False, "error": "账号或密码错误"}), 401
+    token = _auth().create_token(admin)
+    resp = make_response(jsonify({"ok": True, "username": admin["username"]}))
+    resp.set_cookie(SESSION_COOKIE, token, max_age=SESSION_TTL_SECONDS, httponly=True, samesite="Lax")
+    return resp
+
+
+@api.post("/auth/logout")
+def auth_logout():
+    resp = make_response(jsonify({"ok": True}))
+    resp.delete_cookie(SESSION_COOKIE, samesite="Lax")
+    return resp
+
+
+# -- Homepage: Following Calendar + Progress Panel ------------------------
+
+@api.get("/dashboard")
+def get_dashboard():
+    store = _store()
+    settings = store.get_settings()
+    adapters = build_adapters(settings)
+    snapshot = collect_upstream_snapshot(adapters)
+    prefs = store.list_preferences()
+
+    issues = build_actionable_issues(snapshot, prefs)
+    subs = merge_subscriptions(snapshot, prefs)
+
+    # Parse optional calendar range
+    days = int(request.args.get("days") or 7)
+    start_raw = str(request.args.get("startDate") or "").strip()
+    start_date = None
+    if start_raw:
+        try:
+            start_date = date.fromisoformat(start_raw)
+        except ValueError:
+            start_date = None
+    calendar = build_following_calendar(
+        snapshot=snapshot,
+        tmdb_adapter=adapters["tmdb"],
+        prefs=prefs,
+        start_date=start_date,
+        days=days,
+    )
+
+    active_qb = [
+        t for t in (snapshot.get("qbTasks") or [])
+        if t["status"] in {"downloading", "stalled", "paused", "checking", "queued", "missing_files", "error"}
+    ]
+    sec = snapshot.get("torraSecupload") or {}
+    emby = snapshot.get("emby") or {}
+
+    return jsonify({
+        "generatedAt": snapshot["generatedAt"],
+        "services": snapshot["services"],
+        "counts": {
+            "todayUpdates": len(calendar["todayItems"]),
+            "inEmbyToday": len(emby.get("recentToday") or []),
+            "activeDownloads": len(active_qb),
+            "activeUploads": len(sec.get("activeRuns") or []),
+            "issues": len(issues),
+            "subscriptions": len(subs),
+        },
+        "issues": issues,
+        "calendar": calendar,
+        "activeDownloads": active_qb[:20],
+        "activeUploads": (sec.get("activeRuns") or [])[:10],
+        "recentEmby": (emby.get("recentToday") or [])[:20],
+    })
+
+
+# -- Single-Media 5-Step Pipeline -----------------------------------------
+
+@api.get("/media/<media_type>/<tmdb_id>")
+def get_media_pipeline(media_type: str, tmdb_id: str):
+    if media_type not in {"movie", "tv"} or not tmdb_id.isdigit():
+        return jsonify({"error": "无效的作品标识"}), 400
+    store = _store()
+    settings = store.get_settings()
+    adapters = build_adapters(settings)
+    snapshot = collect_upstream_snapshot(adapters)
+    data = build_media_pipeline(
+        media_type=media_type,
+        tmdb_id=tmdb_id,
+        snapshot=snapshot,
+        adapters=adapters,
+        store=store,
+    )
+    return jsonify(data)
+
+
+@api.patch("/media/<media_type>/<tmdb_id>/preference")
+def update_media_preference(media_type: str, tmdb_id: str):
+    if media_type not in {"movie", "tv"} or not tmdb_id.isdigit():
+        return jsonify({"error": "无效的作品标识"}), 400
+    body = request.get_json(silent=True) or {}
+    pref = _store().set_preference(
+        f"{media_type}:{tmdb_id}",
+        intent=body.get("intent"),
+        preferred_target=body.get("preferredTarget"),
+        notes=body.get("notes"),
+        mute_issue_key=body.get("muteIssueKey"),
+        unmute_issue_key=body.get("unmuteIssueKey"),
+    )
+    return jsonify({"ok": True, "preference": pref})
+
+
+@api.post("/issues/mute")
+def mute_issue():
+    body = request.get_json(silent=True) or {}
+    issue_key = str(body.get("issueKey") or "").strip()
+    if not issue_key:
+        return jsonify({"error": "缺少 issueKey"}), 400
+    _store().set_preference("_global", mute_issue_key=issue_key)
+    return jsonify({"ok": True})
+
+
+# -- Global Search --------------------------------------------------------
+
+@api.get("/search")
+def global_search():
+    query = str(request.args.get("q") or "").strip()
+    if not query:
+        return jsonify({"items": []})
+    store = _store()
+    settings = store.get_settings()
+    adapters = build_adapters(settings)
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    # Check direct mediaKey like "tv:12345" or "movie:678"
+    if ":" in query:
+        parts = query.lower().split(":", 1)
+        if parts[0] in {"movie", "tv"} and parts[1].isdigit():
+            detail = adapters["tmdb"].get_details(parts[0], parts[1])
+            if detail:
+                results.append(detail)
+                seen.add(detail["mediaKey"])
+
+    # Search TMDB
+    for item in adapters["tmdb"].search(query):
+        if item["mediaKey"] not in seen:
+            results.append(item)
+            seen.add(item["mediaKey"])
+
+    # Also match existing MP Neo / Torra subscriptions if TMDB is not configured
+    if not results:
+        snapshot = collect_upstream_snapshot(adapters)
+        q_low = query.casefold()
+        for sub in merge_subscriptions(snapshot, store.list_preferences()):
+            if q_low in sub["title"].casefold() and sub["mediaKey"] and sub["mediaKey"] not in seen:
+                results.append({
+                    "mediaKey": sub["mediaKey"],
+                    "mediaType": sub["mediaType"],
+                    "tmdbId": sub["tmdbId"],
+                    "title": sub["title"],
+                    "year": sub["year"],
+                    "posterUrl": sub["posterUrl"],
+                    "overview": sub["ruleSummary"],
+                })
+                seen.add(sub["mediaKey"])
+
+    return jsonify({"items": results[:16]})
+
+
+# -- Subscriptions & Selection Guardrails (Pain Point 2) ------------------
+
+@api.get("/subscriptions")
+def list_subscriptions_view():
+    store = _store()
+    settings = store.get_settings()
+    adapters = build_adapters(settings)
+    snapshot = collect_upstream_snapshot(adapters)
+    prefs = store.list_preferences()
+    items = merge_subscriptions(snapshot, prefs)
+    logs = store.list_decision_logs(limit=40)
+    return jsonify({
+        "generatedAt": snapshot["generatedAt"],
+        "items": items,
+        "decisionLogs": logs,
+        "guardrails": settings["guardrails"],
+    })
+
+
+@api.post("/guardrails/check-release")
+def check_release_group():
+    """Test or evaluate any torrent title against (source_site + site official groups)."""
+    body = request.get_json(silent=True) or {}
+    settings = _store().get_settings()
+    g = settings["guardrails"]
+    result = evaluate_release_group(
+        title=str(body.get("title") or ""),
+        site_official_groups=g.get("siteOfficialGroups") or [],
+        site_id=str(body.get("siteId") or ""),
+        site_name=str(body.get("siteName") or ""),
+        site_domain=str(body.get("siteDomain") or ""),
+        release_group=str(body.get("releaseGroup") or ""),
+        require_site_official=bool(g.get("requireSiteOfficialGroup", False)),
+        block_cross_site_repost=bool(g.get("blockCrossSiteRepost", True)),
+    )
+    return jsonify(result)
+
+
+@api.get("/rss/preview")
+def rss_preview():
+    """Fetch enabled RSS sources on demand and annotate each torrent with site×official-group check."""
+    store = _store()
+    settings = store.get_settings()
+    g = settings["guardrails"]
+    sources = [s for s in store.list_rss_sources() if s["enabled"]]
+    all_items: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for src in sources[:5]:
+        try:
+            parsed = fetch_and_parse_rss(src["url"], site_id=src["siteId"], site_name=src["name"])
+            for row in parsed[:25]:
+                check = evaluate_release_group(
+                    title=row["title"],
+                    site_official_groups=g.get("siteOfficialGroups") or [],
+                    site_id=src["siteId"],
+                    site_name=src["name"],
+                    site_domain=row["siteDomain"],
+                    release_group=row["releaseGroup"],
+                    require_site_official=bool(g.get("requireSiteOfficialGroup", False)),
+                    block_cross_site_repost=bool(g.get("blockCrossSiteRepost", True)),
+                )
+                all_items.append({**row, "sourceName": src["name"], "groupCheck": check})
+        except Exception as exc:
+            errors.append(f"{src['name']}：{sanitize_text(exc)}")
+    all_items.sort(key=lambda x: x.get("publishedAt") or "", reverse=True)
+    return jsonify({"items": all_items[:60], "errors": errors, "sourceCount": len(sources)})
+
+
+@api.get("/rss/sources")
+def list_rss_sources():
+    return jsonify({"items": _store().list_rss_sources()})
+
+
+@api.post("/rss/sources")
+def save_rss_source():
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name") or "").strip()
+    url = str(body.get("url") or "").strip()
+    site_id = str(body.get("siteId") or "").strip()
+    if not name or not url.startswith(("http://", "https://")):
+        return jsonify({"error": "请填写有效的来源名称和 HTTP(S) RSS 地址"}), 400
+    source_id = str(body.get("id") or uuid.uuid4().hex[:12])
+    saved = _store().save_rss_source(source_id, name, site_id, url, bool(body.get("enabled", True)))
+    return jsonify({"ok": True, "item": saved})
+
+
+@api.delete("/rss/sources/<source_id>")
+def delete_rss_source(source_id: str):
+    _store().delete_rss_source(source_id)
+    return jsonify({"ok": True})
+
+
+# -- Discover & Controllable Subscribe ------------------------------------
+
+@api.get("/discover")
+def discover_media():
+    category = str(request.args.get("category") or "trending_tv").strip()
+    store = _store()
+    settings = store.get_settings()
+    adapters = build_adapters(settings)
+    if not adapters["tmdb"].configured:
+        return jsonify({"configured": False, "items": [], "message": "请先在设置页配置 TMDB API Key 或 Bearer Token"})
+
+    raw_items = adapters["tmdb"].discover(category)
+    guardrails = settings["guardrails"]
+    annotated: list[dict[str, Any]] = []
+    for item in raw_items:
+        # Enrich TV details only for items with older first_air_date so we accurately detect returning new seasons!
+        enriched = item
+        if item["mediaType"] == "tv":
+            g_quick = evaluate_subscription_guardrail(item, guardrails, from_chart=True)
+            if g_quick["category"] == "old_finished_series":
+                detail = adapters["tmdb"].get_details("tv", item["tmdbId"])
+                if detail:
+                    enriched = detail
+        guardrail = evaluate_subscription_guardrail(enriched, guardrails, from_chart=True)
+        annotated.append({**enriched, "guardrail": guardrail})
+    return jsonify({"configured": True, "category": category, "items": annotated})
+
+
+@api.post("/subscribe")
+def create_subscription():
+    """Push a subscription to MoviePilot Neo or Torra with transparent guardrail evaluation & decision log."""
+    body = request.get_json(silent=True) or {}
+    media_type = str(body.get("mediaType") or "movie")
+    tmdb_id = str(body.get("tmdbId") or "").strip()
+    title = str(body.get("title") or "").strip()
+    year = str(body.get("year") or "").strip()
+    season = body.get("seasonNumber")
+    intent = "collect" if body.get("intent") == "collect" else "follow"
+    target = str(body.get("target") or "").strip()
+    source_label = str(body.get("sourceLabel") or "Fluxa 手动订阅").strip()
+    from_chart = bool(body.get("fromChart", False))
+    override_guardrail = bool(body.get("overrideGuardrail", False))
+
+    if media_type not in {"movie", "tv"} or not tmdb_id.isdigit() or not title:
+        return jsonify({"error": "缺少必要的媒体类型、TMDB ID 或片名"}), 400
+
+    store = _store()
+    settings = store.get_settings()
+    adapters = build_adapters(settings)
+    target = target or settings["guardrails"].get("defaultSubscribeTarget") or "moviepilot"
+
+    detail = adapters["tmdb"].get_details(media_type, tmdb_id) if adapters["tmdb"].configured else None
+    eval_item = detail or {"mediaType": media_type, "tmdbId": tmdb_id, "title": title, "releaseDate": f"{year}-01-01" if year else ""}
+    guardrail = evaluate_subscription_guardrail(eval_item, settings["guardrails"], intent=intent, from_chart=from_chart)
+
+    if not guardrail["allowed"] and not override_guardrail:
+        store.add_decision_log(
+            media_key=f"{media_type}:{tmdb_id}",
+            title=title,
+            decision_type="subscribe",
+            outcome="blocked",
+            source_label=source_label,
+            rule_name=guardrail["ruleName"],
+            reason_text=guardrail["reasonText"],
+            details={"guardrail": guardrail, "intent": intent},
+        )
+        return jsonify({
+            "ok": False,
+            "blocked": True,
+            "guardrail": guardrail,
+            "message": guardrail["reasonText"],
+        }), 409
+
+    final_season = int(season) if season else guardrail.get("recommendedSeason")
+    try:
+        if target == "torra":
+            res = adapters["torra"].add_subscription(
+                title=title,
+                media_type=media_type,
+                tmdb_id=int(tmdb_id),
+                year=year,
+                season=final_season if media_type == "tv" else None,
+            )
+            target_label = "Torra"
+        else:
+            res = adapters["moviepilot"].add_subscription(
+                title=title,
+                media_type=media_type,
+                tmdb_id=int(tmdb_id),
+                year=year,
+                season=final_season if media_type == "tv" else None,
+                best_version=(intent == "collect"),
+            )
+            target_label = "MoviePilot Neo"
+    except Exception as exc:
+        return jsonify({"ok": False, "error": sanitize_text(exc)}), 502
+
+    media_key = f"{media_type}:{tmdb_id}"
+    store.set_preference(media_key, intent=intent, preferred_target=target)
+    log_entry = store.add_decision_log(
+        media_key=media_key,
+        title=title,
+        decision_type="subscribe",
+        outcome="subscribed",
+        source_label=source_label,
+        rule_name=guardrail["ruleName"],
+        reason_text=f"已提交至 {target_label}（{'收藏' if intent == 'collect' else '追更'}）：{guardrail['reasonText']}",
+        details={"target": target, "season": final_season, "intent": intent, "guardrail": guardrail},
+    )
+    return jsonify({"ok": True, "message": res["message"], "decisionLog": log_entry})
+
+
+# -- Bounded Single-Task Actions (Pain Point 3) ---------------------------
+
+@api.post("/actions/preview")
+def action_preview():
+    body = request.get_json(silent=True) or {}
+    try:
+        preview = preview_action_impact(
+            action_type=str(body.get("actionType") or ""),
+            payload=body.get("payload") or {},
+            settings=_store().get_settings(),
+        )
+        return jsonify(preview)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@api.post("/actions/execute")
+def action_execute():
+    body = request.get_json(silent=True) or {}
+    try:
+        res = execute_bounded_action(
+            action_type=str(body.get("actionType") or ""),
+            payload=body.get("payload") or {},
+            confirmed=bool(body.get("confirmed", False)),
+            settings=_store().get_settings(),
+            store=_store(),
+        )
+        return jsonify(res)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
+
+
+@api.get("/audit")
+def list_audit():
+    return jsonify({"items": _store().list_audit(limit=50)})
+
+
+# -- Settings & Connectivity Test -----------------------------------------
+
+@api.get("/settings")
+def get_settings():
+    return jsonify(redact_settings(_store().get_settings()))
+
+
+@api.put("/settings")
+def save_settings():
+    body = request.get_json(silent=True) or {}
+    updated = _store().save_settings(body)
+    return jsonify({"ok": True, "settings": redact_settings(updated)})
+
+
+@api.post("/settings/test/<service>")
+def test_service(service: str):
+    settings = _store().get_settings()
+    if service == "telegram":
+        try:
+            return jsonify(send_telegram_test(settings))
+        except Exception as exc:
+            return jsonify({"ok": False, "message": sanitize_text(exc)}), 400
+    adapters = build_adapters(settings)
+    if service not in adapters:
+        return jsonify({"ok": False, "message": f"未知服务：{service}"}), 404
+    health = adapters[service].check_health()
+    return jsonify({"ok": health["connected"], **health})
