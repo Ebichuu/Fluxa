@@ -64,7 +64,9 @@ export interface ActionableIssue {
 export interface SaExistingVersionInfo {
   exists: boolean;
   noRecoveryNeeded: boolean;
+  needsComparison?: boolean;
   badgeLabel: string;
+  shortBanner?: string;
   source: string;
   existingSourceTag: string;
   failedSourceTag: string;

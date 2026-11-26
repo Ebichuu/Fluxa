@@ -301,6 +301,136 @@ def _sa_record_matches_target_episode(
     )
 
 
+def _parse_sa_dt(value: str) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(raw[:19], fmt).replace(tzinfo=BEIJING_TZ)
+        except ValueError:
+            continue
+    return _parse_iso_dt(raw)
+
+
+def _parent_dir(path_str: str) -> str:
+    clean = str(path_str or "").strip().replace("\\", "/")
+    return clean.rsplit("/", 1)[0] if "/" in clean else ""
+
+
+def _release_group_tail(file_name: str) -> str:
+    stem = re.sub(r"\.(?:mkv|mp4|ts|iso)$", "", _basename(file_name), flags=re.I)
+    m = re.search(r"[-@]([A-Za-z0-9][A-Za-z0-9_]{1,20})$", stem)
+    return m.group(1).casefold() if m else ""
+
+
+def _record_season_episode(rec: dict[str, Any]) -> tuple[int | None, int | None]:
+    blob = f"{rec.get('seasonEpisode', '')} {rec.get('seasons', '')}{rec.get('episodes', '')} {rec.get('dest', '')} {rec.get('fileName', '')}"
+    m = re.search(r"(?i)S(\d{1,2})\s*E(\d{1,4})", blob)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    return None, None
+
+
+def find_corroborated_sa_sibling_archive(
+    *,
+    record: dict[str, Any],
+    parsed: dict[str, Any],
+    sa_history: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Find a corroborated SA archived sibling of the SAME episode under an alternate Romaji/alias title.
+
+    Example:
+      Failed:  Kuroka.de.Seijo.ni.Hyou.S02E09...Baha...-ADWeb.mp4 (00:30:18)
+      Archived: Kizu.darake.Seijo.yori.Houfuku.wo.Komete.S02E09...LINETV...-ADWeb.mp4 (00:31:37, TMDB #293124 S02E09)
+    Requires exact SxxEyy match + valid TMDB ID + concrete corroborating evidence (shared distinctive Romaji/CJK token
+    OR same release group + same source folder within 30 minutes). Never matches unrelated shows!
+    """
+    src_s = parsed.get("sourceSeason")
+    src_e = parsed.get("sourceEpisode")
+    if not src_s or not src_e:
+        return None
+
+    fail_base = _basename(record.get("fileName") or record.get("src") or "").casefold()
+    fail_dt = _parse_sa_dt(str(record.get("date") or ""))
+    fail_group = _release_group_tail(fail_base)
+    fail_dir = _parent_dir(str(record.get("src") or "")).casefold()
+    fail_lat, fail_cjk = _distinctive_tokens(parsed.get("cleanedTitle") or parsed.get("arcTitle") or "")
+    fail_distinct_lat = {t for t in fail_lat if len(t) >= 4}
+
+    best: dict[str, Any] | None = None
+    best_score = 0
+
+    for rec in sa_history or []:
+        if rec.get("outcome") not in {"archived", "replaced"}:
+            continue
+        tmdb_id = str(rec.get("tmdbId") or "").strip()
+        if not tmdb_id.isdigit():
+            continue
+        sib_base = _basename(rec.get("fileName") or rec.get("src") or "").casefold()
+        if fail_base and sib_base == fail_base:
+            continue
+
+        rec_s, rec_e = _record_season_episode(rec)
+        if rec_s != int(src_s) or rec_e != int(src_e):
+            continue
+
+        sib_parsed = parse_media_filename(rec.get("fileName") or _basename(rec.get("src") or ""))
+        sib_lat, sib_cjk = _distinctive_tokens(
+            f"{sib_parsed.get('cleanedTitle', '')} {rec.get('title', '')}"
+        )
+        shared_lat = sorted(fail_distinct_lat & {t for t in sib_lat if len(t) >= 4})
+        shared_cjk = [sc for sc in fail_cjk for cc in sib_cjk if sc in cc or cc in sc]
+
+        sib_group = _release_group_tail(sib_base)
+        same_group = bool(fail_group and sib_group and fail_group == sib_group)
+        sib_dir = _parent_dir(str(rec.get("src") or "")).casefold()
+        same_dir = bool(fail_dir and sib_dir and fail_dir == sib_dir)
+
+        sib_dt = _parse_sa_dt(str(rec.get("date") or ""))
+        delta_min: float | None = None
+        if fail_dt and sib_dt:
+            delta_min = abs((sib_dt - fail_dt).total_seconds()) / 60.0
+
+        # Strict corroboration gate:
+        # 1) Shared distinctive title token (e.g. 'seijo') within 48h (or undated), OR
+        # 2) Same release group + same folder + exact SxxEyy archived within 30 minutes!
+        corroborated = False
+        reasons: list[str] = []
+        score = 0
+        if (shared_lat or shared_cjk) and (delta_min is None or delta_min <= 48 * 60):
+            corroborated = True
+            score += 45 + len(shared_lat) * 10
+            toks = shared_cjk[:2] or shared_lat[:3]
+            reasons.append(f"同集 S{src_s:02d}E{src_e:02d} 别名包含共同特征词「{'/'.join(toks)}」")
+        if same_group and delta_min is not None and delta_min <= 30:
+            if same_dir or shared_lat or shared_cjk:
+                corroborated = True
+                score += 35
+                mins_text = f"{max(1, round(delta_min))} 分钟" if delta_min >= 0.5 else "1 分钟内"
+                reasons.append(f"相隔 {mins_text} 的同发布组（{fail_group.upper()}）同目录归档记录")
+        elif same_group and corroborated:
+            score += 15
+            reasons.append(f"同发布组（{fail_group.upper()}）")
+        if delta_min is not None and delta_min <= 60 and corroborated and not any("相隔" in r for r in reasons):
+            score += 15
+            reasons.append(f"归档时间仅差 {max(1, round(delta_min))} 分钟")
+
+        if corroborated and score > best_score:
+            best_score = score
+            best = {
+                "record": rec,
+                "mediaType": rec.get("mediaType") or "tv",
+                "tmdbId": tmdb_id,
+                "targetSeason": rec_s,
+                "targetEpisode": rec_e,
+                "score": score,
+                "reason": f"同集 SA 归档关联命中（TMDB #{tmdb_id} S{rec_s:02d}E{rec_e:02d}）：{'，'.join(reasons)}",
+            }
+
+    return best
+
+
 def detect_existing_version_for_target(
     *,
     media_type: str,
@@ -313,8 +443,11 @@ def detect_existing_version_for_target(
 ) -> dict[str, Any]:
     """Check BOTH Emby AND SA successful archive history for an existing version of the target movie/episode.
 
-    When the same episode already has a preferred version (e.g. CR版) while the failed file is LINETV版,
-    returns `noRecoveryNeeded=True` with explicit message「已有版本，无需补库」.
+    Distinguishes:
+      - `covered_preferred` (`noRecoveryNeeded=True`): existing is BD/BDRip over WEB-DL, OR existing CR over fallback LINETV.
+      - `existing_needs_compare` (`exists=True, noRecoveryNeeded=False, needsComparison=True`): same episode IS already
+        in library (e.g. failed Baha vs archived LINETV), so it is NOT missing — but Fluxa refuses to declare which
+        streaming platform is better by platform name alone!
     """
     failed_base = _basename(failed_file_name).casefold()
     failed_src_tag, failed_rank = detect_release_source_preference(failed_file_name)
@@ -395,7 +528,9 @@ def detect_existing_version_for_target(
         return {
             "exists": False,
             "noRecoveryNeeded": False,
+            "needsComparison": False,
             "badgeLabel": "",
+            "shortBanner": "",
             "source": "",
             "existingSourceTag": "",
             "failedSourceTag": failed_src_tag,
@@ -404,28 +539,42 @@ def detect_existing_version_for_target(
             "summary": "",
         }
 
-    # Prefer the item with richest source metadata / highest preference rank
+    # Prefer the item with richest source metadata / highest clear tier
     best = max(found_items, key=lambda x: (x["rank"], bool(x["sourceTag"]), bool(x["fileName"])))
     existing_tag = best["sourceTag"]
-    existing_rank = best["rank"]
     src_origin = "+".join(sorted(sources_seen))
     scope_text = f"TMDB #{tmdb_id} S{int(target_season):02d}E{int(target_episode):02d}" if (media_type == "tv" and target_season and target_episode) else f"TMDB #{tmdb_id}"
-
-    # Determine whether existing version already satisfies preference (e.g. CR >= LINETV, or any existing Emby/SA version when failed isn't strictly higher)
-    preferred_match = bool(existing_rank >= failed_rank) if (existing_rank > 0 and failed_rank > 0) else True
-    ver_desc = f"符合偏好的 {existing_tag} 版" if (existing_tag and existing_rank >= 3) else (f"{existing_tag} 版" if existing_tag else "已有入库版本")
-    failed_desc = f"{failed_src_tag} 版" if failed_src_tag else "当前失败版本"
+    failed_desc = f"{failed_src_tag}版" if failed_src_tag else "当前版本"
+    existing_desc = f"{existing_tag}版" if existing_tag else "其他版本"
     file_hint = f"（{best['fileName']}）" if best["fileName"] else ""
 
-    if preferred_match:
-        summary = f"已有版本，无需补库：{scope_text} 已存在{ver_desc}{file_hint}，无需继续恢复 {failed_desc}。"
+    # Only auto-declare "已有版本，无需补库" when existing clearly covers preference:
+    #   - BD/BDRip already covers WEB-DL/streaming/HDTV, OR
+    #   - Explicit user-preferred CR already covers fallback LINETV!
+    # For other streaming platform pairs (e.g. failed Baha vs existing LINETV), DO NOT judge better/worse by platform name alone!
+    clearly_covered = (
+        (existing_tag == "BD/BDRip" and failed_src_tag != "BD/BDRip")
+        or (existing_tag == "CR" and failed_src_tag == "LINETV")
+    )
+
+    if clearly_covered:
+        short_banner = f"已有版本，无需补库（同集已有{existing_desc}入库）"
+        summary = f"已有版本，无需补库：{scope_text} 已存在符合偏好的 {existing_desc}{file_hint}，无需继续恢复 {failed_desc}。"
+        badge_label = "已有版本，无需补库"
     else:
-        summary = f"库内已有版本：{scope_text} 已存在 {ver_desc}{file_hint}（当前失败文件为 {failed_desc}），按安全边界不自动覆盖。"
+        short_banner = f"{failed_desc}识别失败；同集已有{existing_desc}入库"
+        summary = (
+            f"{failed_desc}识别失败；同集（{scope_text}）已有{existing_desc}入库{file_hint}，"
+            "该集未缺库；两版谁更好需比较实际码率/字幕/音轨，不能仅凭平台名判断。"
+        )
+        badge_label = f"同集已有{existing_desc}入库（非缺库）"
 
     return {
         "exists": True,
-        "noRecoveryNeeded": preferred_match,
-        "badgeLabel": "已有版本，无需补库" if preferred_match else "库内已有版本（禁覆盖）",
+        "noRecoveryNeeded": clearly_covered,
+        "needsComparison": not clearly_covered,
+        "badgeLabel": badge_label,
+        "shortBanner": short_banner,
         "source": src_origin,
         "existingSourceTag": existing_tag,
         "failedSourceTag": failed_src_tag,
@@ -725,20 +874,35 @@ def diagnose_sa_failure(
     tmdb = adapters["tmdb"]
     candidate_meta: dict[tuple[str, str], dict[str, Any]] = {}
 
-    def _add_cand(mt: str, cid: str, *, query: str = "", trusted: bool = False):
+    def _add_cand(mt: str, cid: str, *, query: str = "", trusted: bool = False, corroborated_reason: str = ""):
         c = str(cid or "").strip()
         if mt not in {"movie", "tv"} or not c.isdigit():
             return
-        entry = candidate_meta.setdefault((mt, c), {"queries": [], "trusted": False})
+        entry = candidate_meta.setdefault((mt, c), {"queries": [], "trusted": False, "corroboratedReason": ""})
         if query and query not in entry["queries"]:
             entry["queries"].append(query)
         if trusted:
             entry["trusted"] = True
+        if corroborated_reason and not entry["corroboratedReason"]:
+            entry["corroboratedReason"] = corroborated_reason
 
     if manual_tmdb_id and str(manual_tmdb_id).isdigit():
         _add_cand(target_type, manual_tmdb_id, trusted=True)
     if saved_mapping:
         _add_cand(saved_mapping["mediaType"], saved_mapping["tmdbId"], trusted=True)
+
+    # Check corroborated SA sibling archived record (e.g. same S02E09 archived 1 min later under alternate Romaji alias!)
+    sa_history = snapshot.get("saHistory") or (
+        adapters["symedia"].list_transfer_history(count=150) if adapters["symedia"].configured else []
+    )
+    sibling_match = find_corroborated_sa_sibling_archive(record=record, parsed=parsed, sa_history=sa_history)
+    if sibling_match and not manual_tmdb_id:
+        _add_cand(
+            sibling_match["mediaType"],
+            sibling_match["tmdbId"],
+            query=f"同集SA归档:{sibling_match['record'].get('fileName') or sibling_match['tmdbId']}",
+            corroborated_reason=sibling_match["reason"],
+        )
 
     # Run ALL meaningful progressive title queries (never break prematurely on raw unverified hit count!)
     searched_queries: list[dict[str, Any]] = []
@@ -772,6 +936,8 @@ def diagnose_sa_failure(
             matched_queries=meta["queries"],
             trusted_source=meta["trusted"],
         )
+        if not identity["relevant"] and meta.get("corroboratedReason"):
+            identity = {"relevant": True, "score": 45, "reason": meta["corroboratedReason"]}
         if not identity["relevant"]:
             filtered_out_count += 1
             continue
@@ -785,9 +951,6 @@ def diagnose_sa_failure(
     proposals.sort(key=lambda x: x["score"], reverse=True)
 
     emby = snapshot.get("emby") or {}
-    sa_history = snapshot.get("saHistory") or (
-        adapters["symedia"].list_transfer_history(count=150) if adapters["symedia"].configured else []
-    )
     for prop in proposals:
         existing_ver = detect_existing_version_for_target(
             media_type=prop["mediaType"],
@@ -835,6 +998,8 @@ def diagnose_sa_failure(
                 "existingFileName": top_existing.get("existingFileName") or "",
                 "summary": status_message,
             })
+    elif top_existing.get("needsComparison"):
+        status_message = str(top_existing.get("summary") or "")
     else:
         status_message = ""
 

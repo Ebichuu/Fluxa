@@ -733,10 +733,16 @@ def build_actionable_issues(
         issue_key = f"sa:{rec['id'] or rec['fileName']}"
         if issue_key in muted_keys:
             continue
-        # Auto-ignore SA identify_failed items already covered by a preferred existing version (e.g. CR版 over LINETV版)
-        if rec["outcome"] == "identify_failed" and store is not None:
+        # Auto-ignore or annotate SA identify_failed items when same episode ALREADY exists in library!
+        issue_severity = "error"
+        issue_stage_label = "SA 识别失败" if rec["outcome"] == "identify_failed" else "SA 故障"
+        issue_error_text = f"{rec['outcomeLabel']}：{rec['reasonText']}"
+        issue_media_key = rec.get("mediaKey") or ""
+        ep_label = f"{rec['seasons']}{rec['episodes']}".strip()
+
+        if rec["outcome"] == "identify_failed":
             rec_id = str(rec.get("id") or "")
-            if rec_id:
+            if store is not None and rec_id:
                 covered = store.get_cache(f"sa_covered:{rec_id}")
                 if covered and isinstance(covered.get("payload"), dict) and covered["payload"].get("noRecoveryNeeded"):
                     continue
@@ -744,37 +750,70 @@ def build_actionable_issues(
                 if latest_job and latest_job.get("status") in {"resolved", "skipped_existing"}:
                     continue
             if rec.get("fileName"):
-                from app.domain.sa_recovery import detect_existing_version_for_target, parse_media_filename
+                from app.domain.sa_recovery import (
+                    detect_existing_version_for_target,
+                    find_corroborated_sa_sibling_archive,
+                    parse_media_filename,
+                )
                 p_fail = parse_media_filename(rec["fileName"])
+                resolved_mt = ""
+                resolved_tmdb = ""
+                resolved_ts: int | None = None
+                resolved_te: int | None = None
+
                 mapping = (
                     store.find_sa_mapping(p_fail["arcKey"], p_fail["sourceSeason"])
-                    if p_fail.get("arcKey") and p_fail.get("sourceSeason")
+                    if store is not None and p_fail.get("arcKey") and p_fail.get("sourceSeason")
                     else None
                 )
                 if mapping and p_fail.get("sourceEpisode"):
-                    target_ep = int(p_fail["sourceEpisode"]) + int(mapping.get("episodeOffset") or 0)
+                    resolved_mt = mapping["mediaType"]
+                    resolved_tmdb = mapping["tmdbId"]
+                    resolved_ts = int(mapping["targetSeason"])
+                    resolved_te = int(p_fail["sourceEpisode"]) + int(mapping.get("episodeOffset") or 0)
+                else:
+                    sibling = find_corroborated_sa_sibling_archive(
+                        record=rec,
+                        parsed=p_fail,
+                        sa_history=sa_history,
+                    )
+                    if sibling:
+                        resolved_mt = sibling["mediaType"]
+                        resolved_tmdb = sibling["tmdbId"]
+                        resolved_ts = sibling["targetSeason"]
+                        resolved_te = sibling["targetEpisode"]
+
+                if resolved_tmdb:
                     ev = detect_existing_version_for_target(
-                        media_type=mapping["mediaType"],
-                        tmdb_id=mapping["tmdbId"],
-                        target_season=mapping["targetSeason"],
-                        target_episode=target_ep,
+                        media_type=resolved_mt or "tv",
+                        tmdb_id=resolved_tmdb,
+                        target_season=resolved_ts,
+                        target_episode=resolved_te,
                         failed_file_name=rec["fileName"],
                         emby=snapshot.get("emby") or {},
                         sa_history=sa_history,
                     )
                     if ev.get("noRecoveryNeeded"):
                         continue
-        ep_label = f"{rec['seasons']}{rec['episodes']}".strip()
+                    if ev.get("exists") and ev.get("needsComparison"):
+                        # Episode is NOT missing — show honest non-missing warning without judging platform quality!
+                        issue_severity = "warn"
+                        issue_stage_label = ev.get("badgeLabel") or "同集已有入库（非缺库）"
+                        issue_error_text = ev.get("summary") or issue_error_text
+                        issue_media_key = f"{resolved_mt or 'tv'}:{resolved_tmdb}"
+                        if resolved_ts and resolved_te and not ep_label:
+                            ep_label = f"S{resolved_ts:02d}E{resolved_te:02d}"
+
         issues.append({
             "issueKey": issue_key,
-            "severity": "error",
+            "severity": issue_severity,
             "stage": "symedia",
-            "stageLabel": "SA 识别失败" if rec["outcome"] == "identify_failed" else "SA 故障",
+            "stageLabel": issue_stage_label,
             "title": rec["title"],
             "subtitle": rec["fileName"],
-            "mediaKey": rec.get("mediaKey") or "",
+            "mediaKey": issue_media_key,
             "episodeLabel": ep_label,
-            "errorText": f"{rec['outcomeLabel']}：{rec['reasonText']}",
+            "errorText": issue_error_text,
             "retryAction": None,
             "saRecord": rec if rec["outcome"] == "identify_failed" else None,
             "appUrl": rec.get("webUrl") or "",

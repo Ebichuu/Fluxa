@@ -266,10 +266,17 @@ export function SaRecoveryModal({ record, onClose, onUpdated }: SaRecoveryModalP
               )}
             </div>
 
-            {/* 3.5 Existing preferred version callout (e.g. CR already exists vs failed LINETV) */}
+            {/* 3.5 Existing version callout (clearly separates '已有版本，无需补库' vs '同集已有入库，两版需比较') */}
             {activeExisting && (
-              <div className="banner ok" style={{ borderColor: 'var(--accent)' }}>
-                <ShieldCheck size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+              <div
+                className={`banner ${activeExisting.noRecoveryNeeded ? 'ok' : 'warn'}`}
+                style={activeExisting.noRecoveryNeeded ? { borderColor: 'var(--accent)' } : undefined}
+              >
+                {activeExisting.noRecoveryNeeded ? (
+                  <ShieldCheck size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+                ) : (
+                  <AlertTriangle size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+                )}
                 {activeExisting.summary}
                 {activeExisting.noRecoveryNeeded ? '（已自动从首页异常待办默认忽略）' : ''}
               </div>
@@ -361,9 +368,11 @@ export function SaRecoveryModal({ record, onClose, onUpdated }: SaRecoveryModalP
                 <CheckCircle2 size={14} />{' '}
                 {activeExisting?.noRecoveryNeeded
                   ? '已有版本，无需补库'
-                  : busy
-                    ? '提交中…'
-                    : '确认方案并提交单文件恢复'}
+                  : activeExisting?.needsComparison
+                    ? '同集已有入库（需人工比较，不自动覆盖）'
+                    : busy
+                      ? '提交中…'
+                      : '确认方案并提交单文件恢复'}
               </button>
             </div>
           </div>

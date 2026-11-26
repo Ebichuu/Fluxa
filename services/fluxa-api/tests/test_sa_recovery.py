@@ -710,6 +710,125 @@ class SaRecoveryAcceptanceTests(unittest.TestCase):
             self.assertEqual(ver_wrong["status"], "failed")
             self.assertIn("指定映射未生效", ver_wrong["message"])
 
+    def test_kuroka_baha_failed_with_linetv_archived_shows_non_missing_and_needs_compare(self):
+        """真实样本 #88706：Baha版识别失败（罗马音搜 TMDB 为空），1 分钟后别名 LINETV 版已入 TMDB 293124 S02E09。
+        首页异常待办与诊断必须显示「Baha版识别失败；同集已有LINETV版入库」，不误导为缺库，也不凭平台名直接判优劣。
+        """
+        baha_file = "Kuroka.de.Seijo.ni.Hyou.S02E09.2026.1080p.Baha.WEB-DL.x264.AAC-ADWeb.mp4"
+        linetv_file = "Kizu.darake.Seijo.yori.Houfuku.wo.Komete.S02E09.2026.1080p.LINETV.WEB-DL.H264.AAC-ADWeb.mkv"
+
+        class _KurokaTmdb:
+            configured = True
+            def search(self, query: str):
+                # Romaji search returns empty, matching real TMDB behavior!
+                return []
+            def get_details(self, mt: str, tid: str):
+                if mt == "tv" and tid == "293124":
+                    return {
+                        "mediaKey": "tv:293124",
+                        "mediaType": "tv",
+                        "tmdbId": "293124",
+                        "title": "黑化吧！圣女大人",
+                        "originalTitle": "傷だらけ聖女より報復をこめて",
+                        "alternativeTitles": [],
+                        "year": "2025",
+                        "posterUrl": "",
+                        "seasons": [
+                            {"seasonNumber": 1, "name": "第 1 季", "airDate": "2025-07-01", "episodeCount": 12},
+                            {"seasonNumber": 2, "name": "第 2 季", "airDate": "2026-10-02", "episodeCount": 12},
+                        ],
+                    }
+                return None
+            def get_season_episodes(self, tid: str, snum: int):
+                if tid == "293124" and snum == 2:
+                    return [{"seasonNumber": 2, "episodeNumber": 9, "episodeLabel": "S02E09", "name": "第 9 集", "airDate": "2026-11-27"}]
+                return []
+
+        sa_history = [
+            {
+                "id": "88709",
+                "mediaKey": "tv:293124",
+                "mediaType": "tv",
+                "tmdbId": "293124",
+                "title": "黑化吧！圣女大人",
+                "seasons": "S02",
+                "episodes": "E09",
+                "seasonEpisode": "S02E09",
+                "src": f"/CloudNAS/CloudDrive/115/00-待整理/00-日漫/{linetv_file}",
+                "dest": f"/CloudNAS/CloudDrive/115/媒体库/日漫/黑化吧！圣女大人/Season 2/{linetv_file}",
+                "fileName": linetv_file,
+                "outcome": "archived",
+                "outcomeLabel": "归档成功",
+                "reasonText": "已完成整理归档",
+                "date": "2026-11-27 00:31:37",
+                "webUrl": "",
+            },
+            {
+                "id": "88706",
+                "mediaKey": "",
+                "mediaType": "tv",
+                "tmdbId": "",
+                "title": "Kuroka de Seijo ni Hyou",
+                "seasons": "S02",
+                "episodes": "E09",
+                "seasonEpisode": "S02E09",
+                "src": f"/CloudNAS/CloudDrive/115/00-待整理/00-日漫/{baha_file}",
+                "dest": "",
+                "fileName": baha_file,
+                "fileSize": 466328147,
+                "outcome": "identify_failed",
+                "outcomeLabel": "SA 识别失败",
+                "reasonText": f"文件转移错误: /CloudNAS/CloudDrive/115/00-待整理/00-日漫/{baha_file},没有查询到媒体信息",
+                "date": "2026-11-27 00:30:18",
+                "webUrl": "",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FluxaStore(Path(tmp) / "test.sqlite3")
+            settings = store.get_settings()
+            emby = _FakeEmby(episodes={"293124": [(2, 9)]})
+            sa = _FakeSymedia()
+            sa.history = sa_history
+            snapshot = {
+                "services": [],
+                "serviceMap": {},
+                "mpSubs": [],
+                "mpHistory": [],
+                "torraSubs": [],
+                "qbTasks": [],
+                "torraSecupload": {},
+                "saHistory": sa_history,
+                "emby": emby.fetch_library_snapshot(),
+            }
+
+            # 1. Homepage actionable issue MUST show non-missing warning (Baha失败 + 同集已有LINETV入库), NOT red missing error!
+            issues = build_actionable_issues(snapshot, {}, store=store)
+            self.assertEqual(len(issues), 1)
+            issue = issues[0]
+            self.assertEqual(issue["severity"], "warn")
+            self.assertEqual(issue["mediaKey"], "tv:293124")
+            self.assertEqual(issue["episodeLabel"], "S02E09")
+            self.assertIn("Baha版识别失败", issue["errorText"])
+            self.assertIn("同集", issue["errorText"])
+            self.assertIn("LINETV版入库", issue["errorText"])
+            self.assertIn("不能仅凭平台名判断", issue["errorText"])
+
+            # 2. Diagnosis recalls TMDB 293124 S02E09 via corroborated SA sibling even though TMDB Romaji search is empty!
+            adapters = {"tmdb": _KurokaTmdb(), "symedia": sa, "emby": emby, "moviepilot": _Noop(), "torra": _Noop(), "qbittorrent": _Noop()}
+            diag = diagnose_sa_failure(record=sa_history[1], settings=settings, store=store, adapters=adapters, snapshot=snapshot)
+            self.assertEqual(diag["recognitionStatus"], "matched")
+            self.assertEqual(diag["proposals"][0]["tmdbId"], "293124")
+            self.assertEqual(diag["proposals"][0]["targetSeason"], 2)
+            self.assertEqual(diag["proposals"][0]["targetEpisode"], 9)
+            self.assertFalse(diag["noRecoveryNeeded"])
+            ev = diag["proposals"][0]["existingVersion"]
+            self.assertTrue(ev["exists"])
+            self.assertTrue(ev["needsComparison"])
+            self.assertEqual(ev["failedSourceTag"], "Baha")
+            self.assertEqual(ev["existingSourceTag"], "LINETV")
+            self.assertIn("Baha版识别失败；同集已有LINETV版入库", ev["shortBanner"])
+
 
 if __name__ == "__main__":
     unittest.main()
