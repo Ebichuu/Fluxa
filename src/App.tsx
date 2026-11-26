@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bookmark, CalendarDays, Compass, LogOut, Moon, Search, Settings, Sun, Tv } from 'lucide-react';
+import { Bookmark, CalendarDays, Compass, LogOut, Moon, Search, Settings, Sun, Tv, X } from 'lucide-react';
 import { api } from './services/api';
 import type { AuthSession, DiscoverItem, MediaType } from './types/api';
 import { DiscoverPage } from './pages/DiscoverPage';
@@ -40,11 +40,12 @@ export function App() {
     return saved === 'light' || saved === 'dark' ? saved : 'dark';
   });
 
-  // Global search
+  // Spotlight-style Global Media Search (borrowed from v1)
+  const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<DiscoverItem[]>([]);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const searchRef = useRef<HTMLDivElement>(null);
+  const [searching, setSearching] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const loadSession = async () => {
     try {
@@ -70,25 +71,44 @@ export function App() {
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
+  // Keyboard shortcut: Ctrl+K or '/' opens Spotlight search; Escape closes
   useEffect(() => {
-    const close = (e: PointerEvent) => {
-      if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setSearchOpen(true);
+      } else if (e.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
+        e.preventDefault();
+        setSearchOpen(true);
+      } else if (e.key === 'Escape') {
         setSearchOpen(false);
       }
     };
-    document.addEventListener('pointerdown', close);
-    return () => document.removeEventListener('pointerdown', close);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  useEffect(() => {
+    if (searchOpen) {
+      window.setTimeout(() => searchInputRef.current?.focus(), 20);
+    }
+  }, [searchOpen]);
 
   useEffect(() => {
     const q = searchQuery.trim();
     if (!q || !session?.authenticated) {
       setSearchResults([]);
+      setSearching(false);
       return;
     }
+    setSearching(true);
     const timer = window.setTimeout(() => {
-      api.search(q).then((r) => setSearchResults(r.items)).catch(() => setSearchResults([]));
-    }, 260);
+      api
+        .search(q)
+        .then((r) => setSearchResults(r.items))
+        .catch(() => setSearchResults([]))
+        .finally(() => setSearching(false));
+    }, 240);
     return () => window.clearTimeout(timer);
   }, [searchQuery, session?.authenticated]);
 
@@ -103,6 +123,7 @@ export function App() {
   };
 
   const openMedia = (mediaType: MediaType, tmdbId: string) => {
+    setSearchQuery('');
     navigate({ page: 'media', mediaType, tmdbId });
   };
 
@@ -131,7 +152,7 @@ export function App() {
       <header className="topbar">
         <div className="topbar-inner">
           <div className="brand" onClick={() => navigate({ page: 'home' })}>
-            <Tv size={19} color="var(--accent)" />
+            <span className="brand-mark"><Tv size={16} /></span>
             <span className="brand-text">Fluxa</span>
             <span className="brand-badge">v2</span>
           </div>
@@ -144,50 +165,16 @@ export function App() {
                 className={`nav-btn ${route.page === page ? 'active' : ''}`}
                 onClick={() => navigate({ page })}
               >
-                <Icon size={15} /> {label}
+                <Icon size={14} /> {label}
               </button>
             ))}
           </nav>
 
-          <div className="search-box" ref={searchRef}>
-            <Search size={15} className="search-icon" />
-            <input
-              className="search-input"
-              type="text"
-              placeholder="搜片名或 tv:12345 查卡在哪…"
-              value={searchQuery}
-              onFocus={() => setSearchOpen(true)}
-              onChange={(e) => {
-                setSearchQuery(e.target.value);
-                setSearchOpen(true);
-              }}
-            />
-            {searchOpen && searchQuery.trim().length > 0 && (
-              <div className="search-dropdown">
-                {!searchResults.length ? (
-                  <div className="muted" style={{ padding: 12 }}>未找到匹配作品</div>
-                ) : (
-                  searchResults.map((item) => (
-                    <button
-                      key={item.mediaKey}
-                      type="button"
-                      className="search-item"
-                      onClick={() => {
-                        setSearchQuery('');
-                        openMedia(item.mediaType, item.tmdbId);
-                      }}
-                    >
-                      <span className="pill idle">{item.mediaType === 'tv' ? '剧' : '影'}</span>
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                        <div style={{ fontWeight: 600 }}>{item.title}</div>
-                        <div className="muted">{item.year || ''} · TMDB {item.tmdbId}</div>
-                      </div>
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
-          </div>
+          <button className="search-trigger" type="button" onClick={() => setSearchOpen(true)}>
+            <Search size={14} />
+            <span>搜片名或 tv:12345 查卡在哪…</span>
+            <span className="search-kbd">Ctrl K</span>
+          </button>
 
           <div className="topbar-actions">
             <button
@@ -236,6 +223,64 @@ export function App() {
           </button>
         ))}
       </nav>
+
+      {/* Spotlight Global Search Modal */}
+      {searchOpen && (
+        <div className="spotlight-backdrop" onClick={() => setSearchOpen(false)}>
+          <div className="spotlight-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="spotlight-input-row">
+              <Search size={17} className="muted" />
+              <input
+                ref={searchInputRef}
+                className="spotlight-input"
+                type="text"
+                placeholder="输入片名、剧名或 tv:12345 / movie:678，直达 5 步全链路页…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+              <button className="icon-btn" type="button" onClick={() => setSearchOpen(false)}>
+                <X size={15} />
+              </button>
+            </div>
+            <div className="spotlight-results">
+              {!searchQuery.trim() ? (
+                <div className="muted" style={{ padding: 16 }}>
+                  支持全局搜索 TMDB 及你当前 MoviePilot Neo / Torra 订阅作品。
+                </div>
+              ) : searching ? (
+                <div className="muted" style={{ padding: 16 }}>正在搜索…</div>
+              ) : !searchResults.length ? (
+                <div className="muted" style={{ padding: 16 }}>未找到匹配作品</div>
+              ) : (
+                searchResults.map((item) => (
+                  <button
+                    key={item.mediaKey}
+                    type="button"
+                    className="spotlight-item"
+                    onClick={() => openMedia(item.mediaType, item.tmdbId)}
+                  >
+                    {item.posterUrl ? (
+                      <img className="poster-thumb" src={item.posterUrl} alt={item.title} />
+                    ) : (
+                      <div className="poster-thumb" style={{ display: 'grid', placeItems: 'center' }}>
+                        <Tv size={16} className="muted" />
+                      </div>
+                    )}
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div className="row-title">
+                        <span>{item.title}</span>
+                        <span className="pill idle">{item.mediaType === 'tv' ? '剧集' : '电影'}</span>
+                      </div>
+                      <div className="muted">{item.year || '年份未知'} · TMDB #{item.tmdbId}</div>
+                    </div>
+                    <span className="btn btn-sm">查全链路</span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

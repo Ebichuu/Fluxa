@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   CalendarDays,
   CheckCircle2,
+  Clock3,
   CloudUpload,
   Download,
   ExternalLink,
@@ -117,12 +118,43 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
 
   const activeDay = data?.calendar.days.find((d) => d.date === selectedDate) || data?.calendar.days.find((d) => d.isToday);
   const anyServiceConfigured = data?.services.some((s) => s.configured);
+  const issueCount = data?.counts.issues || 0;
+  const activeCount = (data?.counts.activeDownloads || 0) + (data?.counts.activeUploads || 0);
+
+  const heroTone = issueCount > 0 ? 'is-error' : activeCount > 0 ? 'is-active' : '';
+  const heroHeadline = !data
+    ? '正在汇总影音链路状态…'
+    : !anyServiceConfigured
+      ? '先连接你的 NAS 影音服务'
+      : issueCount > 0
+        ? `有 ${issueCount} 项任务卡住或报错，建议处理`
+        : activeCount > 0
+          ? `当前 ${activeCount} 个任务处理中，无阻塞异常`
+          : '链路运转顺畅，当前无阻塞异常';
 
   return (
     <div className="stack">
-      {/* Compact 1-row Service Health Strip */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-        <div className="service-strip">
+      {/* Compact v1-style Glass Hero + Inline Service Strip */}
+      <section className="hero-bar">
+        <div className="hero-left">
+          <div className={`hero-icon-ring ${heroTone}`}>
+            {issueCount > 0 ? <AlertTriangle size={20} /> : activeCount > 0 ? <Clock3 size={20} /> : <CheckCircle2 size={20} />}
+          </div>
+          <div>
+            <p className="hero-eyebrow">首页 · 追更日历与链路进度</p>
+            <h1 className="hero-title">{heroHeadline}</h1>
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {data && !anyServiceConfigured && (
+            <button className="btn btn-primary" type="button" onClick={onGoSettings}>配置服务连接</button>
+          )}
+          <button className="btn" type="button" onClick={() => void load(calDays)} disabled={loading}>
+            <RefreshCw size={14} /> {loading ? '刷新中…' : '刷新'}
+          </button>
+        </div>
+
+        <div className="service-strip" style={{ width: '100%', paddingTop: 10, borderTop: '1px solid var(--border)' }}>
           {(data?.services || []).map((svc) => (
             <a
               key={svc.service}
@@ -145,23 +177,10 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
             </a>
           ))}
         </div>
-        <button className="btn btn-sm" type="button" onClick={() => void load(calDays)} disabled={loading}>
-          <RefreshCw size={14} /> {loading ? '刷新中…' : '刷新'}
-        </button>
-      </div>
+      </section>
 
       {toast && <div className={`banner ${toast.tone}`}>{toast.text}</div>}
       {error && <div className="banner error">{error}</div>}
-
-      {data && !anyServiceConfigured && (
-        <div className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-          <div>
-            <strong>先连接你的 NAS 影音服务</strong>
-            <div className="muted">配置 MoviePilot Neo、Torra、qBittorrent、Symedia (SA)、Emby 和 TMDB 后，首页即可实时汇聚全链路状态。</div>
-          </div>
-          <button className="btn btn-primary" type="button" onClick={onGoSettings}>前往设置连接</button>
-        </div>
-      )}
 
       {/* 4 Core KPI Chips */}
       <div className="grid-4">
@@ -177,15 +196,15 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
         </div>
         <div className="kpi-card">
           <span className="muted">下载 / 上传中</span>
-          <span className="kpi-value" style={{ color: 'var(--accent)' }}>
+          <span className="kpi-value" style={{ color: 'var(--active)' }}>
             {data ? `${data.counts.activeDownloads} / ${data.counts.activeUploads}` : '-'}
           </span>
           <span className="muted">qB 活动 / 115 上传</span>
         </div>
         <div className="kpi-card">
           <span className="muted">需要处理</span>
-          <span className="kpi-value" style={{ color: (data?.counts.issues || 0) > 0 ? 'var(--err)' : 'var(--ok)' }}>
-            {data ? data.counts.issues : '-'}
+          <span className="kpi-value" style={{ color: issueCount > 0 ? 'var(--err)' : 'var(--ok)' }}>
+            {data ? issueCount : '-'}
           </span>
           <span className="muted">项卡住或失败任务</span>
         </div>
@@ -195,7 +214,7 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
       <section className="card">
         <div className="card-header">
           <h2 className="card-title">
-            {(data?.issues.length || 0) > 0 ? <AlertTriangle size={17} color="var(--err)" /> : <CheckCircle2 size={17} color="var(--ok)" />}
+            {issueCount > 0 ? <AlertTriangle size={17} color="var(--err)" /> : <CheckCircle2 size={17} color="var(--ok)" />}
             异常待办
           </h2>
           <span className="muted">仅展示真实报错与卡顿；SA 权重规则拒绝不误报为异常</span>
@@ -212,7 +231,7 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
                     <span>{issue.title}</span>
                     {issue.episodeLabel && <span className="pill idle">{issue.episodeLabel}</span>}
                   </div>
-                  <div style={{ marginTop: 4, fontSize: 13 }}>{issue.errorText}</div>
+                  <div style={{ marginTop: 4, fontSize: 13.5 }}>{issue.errorText}</div>
                   {issue.subtitle && issue.subtitle !== issue.title && (
                     <div className="muted" style={{ marginTop: 2, wordBreak: 'break-all' }}>{issue.subtitle}</div>
                   )}
@@ -248,20 +267,20 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
         )}
       </section>
 
-      {/* Following Calendar Strip + Selected Day Items */}
+      {/* Poster-Rich Following Calendar */}
       <section className="card">
         <div className="card-header">
-          <h2 className="card-title"><CalendarDays size={17} /> 追更日历</h2>
-          <div style={{ display: 'flex', gap: 6 }}>
+          <h2 className="card-title"><CalendarDays size={17} color="var(--accent)" /> 追更日历</h2>
+          <div className="tabs" style={{ marginBottom: 0 }}>
             <button
-              className={`btn btn-sm ${calDays === 7 ? 'btn-primary' : ''}`}
+              className={`tab-btn ${calDays === 7 ? 'active' : ''}`}
               type="button"
               onClick={() => setCalDays(7)}
             >
               近 7 天
             </button>
             <button
-              className={`btn btn-sm ${calDays === 28 ? 'btn-primary' : ''}`}
+              className={`tab-btn ${calDays === 28 ? 'active' : ''}`}
               type="button"
               onClick={() => setCalDays(28)}
             >
@@ -279,9 +298,33 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
               onClick={() => setSelectedDate(day.date)}
             >
               <span className="cal-date">
-                {day.date.slice(5)} {day.isToday ? '· 今天' : weekdayLabel(day.date)}
+                <span>{day.date.slice(5)}</span>
+                <span>{day.isToday ? '今天' : weekdayLabel(day.date)}</span>
               </span>
-              <span className="cal-count">{day.items.length > 0 ? `${day.items.length} 集` : '无更新'}</span>
+              {day.items.length > 0 && (
+                <div className="cal-mini-posters">
+                  {day.items.slice(0, 3).map((ep) =>
+                    ep.posterUrl ? (
+                      <img
+                        key={`${ep.mediaKey}-${ep.episodeLabel}`}
+                        className={`cal-mini-poster state-${ep.state}`}
+                        src={ep.posterUrl}
+                        alt={ep.title}
+                        title={`${ep.title} ${ep.episodeLabel}`}
+                      />
+                    ) : (
+                      <span
+                        key={`${ep.mediaKey}-${ep.episodeLabel}`}
+                        className={`cal-mini-poster state-${ep.state}`}
+                        title={`${ep.title} ${ep.episodeLabel}`}
+                      >
+                        {ep.title.slice(0, 1)}
+                      </span>
+                    )
+                  )}
+                </div>
+              )}
+              <span className="cal-count">{day.items.length > 0 ? `${day.items.length} 集更新` : '无更新'}</span>
             </button>
           ))}
         </div>
@@ -297,17 +340,19 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
               {activeDay.items.map((ep) => (
                 <div
                   key={`${ep.mediaKey}-${ep.episodeLabel}`}
-                  className="list-row"
-                  style={{ cursor: 'pointer' }}
+                  className="list-row list-row--clickable"
                   onClick={() => onOpenMedia(ep.mediaType, ep.tmdbId)}
                 >
-                  <div className="row-main">
-                    <div className="row-title">
-                      <span>{ep.title}</span>
-                      <span className="pill idle">{ep.episodeLabel}</span>
-                      <StatusPill status={ep.state} label={ep.stateLabel} />
+                  <div style={{ display: 'flex', gap: 12, flex: 1, minWidth: 0, alignItems: 'center' }}>
+                    {ep.posterUrl && <img className="poster-thumb" src={ep.posterUrl} alt={ep.title} />}
+                    <div className="row-main">
+                      <div className="row-title">
+                        <span>{ep.title}</span>
+                        <span className="pill idle">{ep.episodeLabel}</span>
+                        <StatusPill status={ep.state} label={ep.stateLabel} />
+                      </div>
+                      {ep.episodeName && <div className="muted" style={{ marginTop: 2 }}>{ep.episodeName}</div>}
                     </div>
-                    {ep.episodeName && <div className="muted">{ep.episodeName}</div>}
                   </div>
                   <button className="btn btn-sm" type="button">查看 5 步状态</button>
                 </div>
@@ -321,7 +366,7 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
       <div className="grid-2">
         <section className="card">
           <div className="card-header">
-            <h2 className="card-title"><Download size={17} /> 下载与 115 上传进度</h2>
+            <h2 className="card-title"><Download size={17} color="var(--active)" /> 下载与 115 上传进度</h2>
           </div>
           {!data?.activeDownloads.length && !data?.activeUploads.length ? (
             <div className="muted">当前没有进行中的 qB 下载或 Torra 115 上传任务。</div>
@@ -374,7 +419,7 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
                 <div key={u.runId} className="list-row">
                   <div className="row-main">
                     <div className="row-title">
-                      <CloudUpload size={14} color="var(--accent)" />
+                      <CloudUpload size={14} color="var(--active)" />
                       <StatusPill status="active" label="115 上传中" />
                       <span>{u.taskKey || u.runId}</span>
                     </div>
@@ -388,7 +433,7 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
 
         <section className="card">
           <div className="card-header">
-            <h2 className="card-title"><Tv size={17} /> 今日已入 Emby</h2>
+            <h2 className="card-title"><Tv size={17} color="var(--ok)" /> 今日已入 Emby</h2>
             <span className="muted">核对 Emby 条目存在（播放以客户端为准）</span>
           </div>
           {!data?.recentEmby.length ? (
@@ -396,8 +441,12 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
           ) : (
             <div className="list">
               {data.recentEmby.map((item, idx) => (
-                <div key={`${item.mediaKey}-${item.episodeLabel}-${idx}`} className="list-row">
-                  <div className="row-main" style={{ cursor: 'pointer' }} onClick={() => onOpenMedia(item.mediaType, item.tmdbId)}>
+                <div
+                  key={`${item.mediaKey}-${item.episodeLabel}-${idx}`}
+                  className="list-row list-row--clickable"
+                  onClick={() => onOpenMedia(item.mediaType, item.tmdbId)}
+                >
+                  <div className="row-main">
                     <div className="row-title">
                       <span>{item.title}</span>
                       <span className="pill ok">{item.episodeLabel}</span>
@@ -406,7 +455,13 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
                     <div className="muted">Emby 已有条目 · 点击查看完整链路</div>
                   </div>
                   {item.webUrl && (
-                    <a className="btn btn-sm" href={item.webUrl} target="_blank" rel="noreferrer">
+                    <a
+                      className="btn btn-sm"
+                      href={item.webUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       Emby <ExternalLink size={12} />
                     </a>
                   )}
