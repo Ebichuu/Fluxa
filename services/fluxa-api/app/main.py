@@ -8,13 +8,19 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from app.auth import AuthManager, SESSION_COOKIE
 from app.config import REPO_ROOT, resolve_data_dirs
+from app.domain.rss_auto_download import RssAutoPoller
 from app.routes import api
 from app.storage import FluxaStore
 
 PUBLIC_API_PATHS = {"/api/auth/session", "/api/auth/setup", "/api/auth/login", "/api/auth/logout"}
 
 
-def create_app(*, db_path: str | Path | None = None, frontend_dist: str | Path | None = None) -> Flask:
+def create_app(
+    *,
+    db_path: str | Path | None = None,
+    frontend_dist: str | Path | None = None,
+    enable_poller: bool = True,
+) -> Flask:
     app = Flask(__name__)
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)  # type: ignore[assignment]
 
@@ -25,6 +31,10 @@ def create_app(*, db_path: str | Path | None = None, frontend_dist: str | Path |
 
     app.config["FLUXA_STORE"] = store
     app.config["FLUXA_AUTH"] = auth
+    if enable_poller:
+        poller = RssAutoPoller(store)
+        poller.start()
+        app.config["FLUXA_RSS_POLLER"] = poller
 
     dist_dir = Path(
         frontend_dist

@@ -10,6 +10,8 @@ import type {
   MediaPipelineResponse,
   MediaType,
   ReleaseGroupCheck,
+  RssAutoOverviewResponse,
+  RssAutoRule,
   RssPreviewItem,
   RssSource,
   SaDiagnoseResponse,
@@ -176,4 +178,33 @@ export const api = {
     requestJson<{ mappings: SaIdentifyMapping[]; jobs: SaRecoveryJob[] }>('/api/sa-recovery/mappings'),
   deleteSaMapping: (mappingId: number) =>
     requestJson<{ ok: boolean }>(`/api/sa-recovery/mappings/${mappingId}`, { method: 'DELETE' }),
+
+  getRssAutoOverview: () => requestJson<RssAutoOverviewResponse>('/api/rss-auto/rules'),
+  saveRssAutoRule: (payload: {
+    id?: string;
+    siteId: string;
+    siteName?: string;
+    officialGroup: string;
+    url: string;
+    savePath: string;
+    category: string;
+    enabled: boolean;
+    pollIntervalMinutes: number;
+  }) =>
+    requestJson<{ ok: boolean; rule: RssAutoRule; message: string }>('/api/rss-auto/rules', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  toggleRssAutoRule: (ruleId: string, enabled: boolean) =>
+    requestJson<{ ok: boolean; rule: RssAutoRule }>(`/api/rss-auto/rules/${encodeURIComponent(ruleId)}/toggle`, {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    }),
+  runRssAutoRuleNow: (ruleId: string) =>
+    requestJson<{ ok: boolean; message: string; rule: RssAutoRule }>(
+      `/api/rss-auto/rules/${encodeURIComponent(ruleId)}/run`,
+      { method: 'POST' }
+    ),
+  deleteRssAutoRule: (ruleId: string) =>
+    requestJson<{ ok: boolean }>(`/api/rss-auto/rules/${encodeURIComponent(ruleId)}`, { method: 'DELETE' }),
 };

@@ -482,3 +482,41 @@ export interface AuditRecord {
   errorText: string;
   createdAt: string;
 }
+
+export interface RssAutoRule {
+  id: string;
+  siteId: string;
+  siteName: string;
+  officialGroup: string;
+  urlMasked: string;
+  hasUrl: boolean;
+  savePath: string;
+  category: string;
+  enabled: boolean;
+  pollIntervalMinutes: number;
+  baselineInitialized: boolean;
+  lastCheckedAt: string;
+  lastStatus: 'idle' | 'ok' | 'warn' | 'error';
+  lastMessage: string;
+  addedCount: number;
+}
+
+export interface RssAutoItemLog {
+  id: number;
+  ruleId: string;
+  torrentHash: string;
+  title: string;
+  status: 'baseline_skipped' | 'duplicate_in_qb' | 'duplicate_seen' | 'confirmed_in_qb' | 'submitted_unconfirmed' | 'failed';
+  errorText: string;
+  qbCategory: string;
+  qbSavePath: string;
+  createdAt: string;
+}
+
+export interface RssAutoOverviewResponse {
+  rules: RssAutoRule[];
+  items: RssAutoItemLog[];
+  qbCategories: Array<{ name: string; savePath: string }>;
+  qbConfigured: boolean;
+  sites: SiteOfficialGroup[];
+}

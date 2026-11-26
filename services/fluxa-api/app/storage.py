@@ -152,6 +152,44 @@ class FluxaStore:
                     );
                     CREATE INDEX IF NOT EXISTS idx_sa_recovery_record
                         ON sa_recovery_jobs(sa_record_id, id DESC);
+
+                    CREATE TABLE IF NOT EXISTS rss_auto_rules (
+                        id TEXT PRIMARY KEY,
+                        site_id TEXT NOT NULL,
+                        site_name TEXT NOT NULL,
+                        official_group TEXT NOT NULL,
+                        url TEXT NOT NULL,
+                        save_path TEXT NOT NULL DEFAULT '',
+                        category TEXT NOT NULL DEFAULT '',
+                        enabled INTEGER NOT NULL DEFAULT 1,
+                        poll_interval_minutes INTEGER NOT NULL DEFAULT 5,
+                        baseline_initialized INTEGER NOT NULL DEFAULT 0,
+                        last_checked_at TEXT NOT NULL DEFAULT '',
+                        last_status TEXT NOT NULL DEFAULT 'idle',
+                        last_message TEXT NOT NULL DEFAULT '',
+                        added_count INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS rss_auto_items (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        rule_id TEXT NOT NULL,
+                        item_key TEXT NOT NULL,
+                        torrent_hash TEXT NOT NULL DEFAULT '',
+                        title TEXT NOT NULL,
+                        download_url TEXT NOT NULL DEFAULT '',
+                        status TEXT NOT NULL,
+                        error_text TEXT NOT NULL DEFAULT '',
+                        qb_category TEXT NOT NULL DEFAULT '',
+                        qb_save_path TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        UNIQUE(rule_id, item_key)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_rss_auto_items_hash
+                        ON rss_auto_items(torrent_hash);
+                    CREATE INDEX IF NOT EXISTS idx_rss_auto_items_rule
+                        ON rss_auto_items(rule_id, id DESC);
                     """
                 )
                 conn.commit()
@@ -769,6 +807,268 @@ class FluxaStore:
             "verification": verification,
             "submittedAt": str(row["submitted_at"]),
             "resolvedAt": str(row["resolved_at"]),
+            "createdAt": str(row["created_at"]),
+            "updatedAt": str(row["updated_at"]),
+        }
+
+    # -- Site + Official-Group RSS Auto-Download Rules & Items ------------
+
+    def list_rss_auto_rules(self) -> list[dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute("SELECT * FROM rss_auto_rules ORDER BY created_at DESC").fetchall()
+                return [self._row_to_rss_auto_rule(r) for r in rows]
+            finally:
+                conn.close()
+
+    def get_rss_auto_rule(self, rule_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute("SELECT * FROM rss_auto_rules WHERE id = ?", (str(rule_id),)).fetchone()
+                return self._row_to_rss_auto_rule(row) if row else None
+            finally:
+                conn.close()
+
+    def save_rss_auto_rule(self, data: dict[str, Any]) -> dict[str, Any]:
+        now = _now_iso()
+        rule_id = str(data["id"]).strip()
+        with self._lock:
+            existing = self.get_rss_auto_rule(rule_id)
+            url_changed = bool(existing and existing["url"] != str(data["url"]).strip())
+            baseline = 0 if (not existing or url_changed) else (1 if existing["baselineInitialized"] else 0)
+            if "baselineInitialized" in data and data["baselineInitialized"] is not None:
+                baseline = 1 if data["baselineInitialized"] else 0
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO rss_auto_rules (
+                        id, site_id, site_name, official_group, url, save_path, category,
+                        enabled, poll_interval_minutes, baseline_initialized,
+                        last_checked_at, last_status, last_message, added_count, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        site_id = excluded.site_id,
+                        site_name = excluded.site_name,
+                        official_group = excluded.official_group,
+                        url = excluded.url,
+                        save_path = excluded.save_path,
+                        category = excluded.category,
+                        enabled = excluded.enabled,
+                        poll_interval_minutes = excluded.poll_interval_minutes,
+                        baseline_initialized = excluded.baseline_initialized,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        rule_id,
+                        str(data.get("siteId") or "").strip(),
+                        str(data.get("siteName") or "").strip(),
+                        str(data.get("officialGroup") or "").strip(),
+                        str(data.get("url") or "").strip(),
+                        str(data.get("savePath") or "").strip(),
+                        str(data.get("category") or "").strip(),
+                        1 if data.get("enabled", True) else 0,
+                        max(1, min(1440, int(data.get("pollIntervalMinutes") or 5))),
+                        baseline,
+                        existing["lastCheckedAt"] if existing else "",
+                        existing["lastStatus"] if existing else "idle",
+                        existing["lastMessage"] if existing else "",
+                        existing["addedCount"] if existing else 0,
+                        existing["createdAt"] if existing else now,
+                        now,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return self.get_rss_auto_rule(rule_id) or {}
+
+    def update_rss_auto_rule_status(
+        self,
+        rule_id: str,
+        *,
+        baseline_initialized: bool,
+        last_checked_at: str,
+        last_status: str,
+        last_message: str,
+        added_delta: int = 0,
+    ) -> dict[str, Any] | None:
+        now = _now_iso()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    UPDATE rss_auto_rules SET
+                        baseline_initialized = ?,
+                        last_checked_at = ?,
+                        last_status = ?,
+                        last_message = ?,
+                        added_count = added_count + ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        1 if baseline_initialized else 0,
+                        last_checked_at,
+                        last_status,
+                        last_message,
+                        max(0, int(added_delta)),
+                        now,
+                        str(rule_id),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return self.get_rss_auto_rule(rule_id)
+
+    def delete_rss_auto_rule(self, rule_id: str) -> bool:
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("DELETE FROM rss_auto_items WHERE rule_id = ?", (str(rule_id),))
+                cur = conn.execute("DELETE FROM rss_auto_rules WHERE id = ?", (str(rule_id),))
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    def seen_rss_auto_item_keys(self, rule_id: str) -> set[str]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute("SELECT item_key FROM rss_auto_items WHERE rule_id = ?", (str(rule_id),)).fetchall()
+                return {str(r["item_key"]) for r in rows}
+            finally:
+                conn.close()
+
+    def has_rss_auto_hash(self, torrent_hash: str) -> bool:
+        h = str(torrent_hash or "").strip().lower()
+        if not h:
+            return False
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM rss_auto_items WHERE torrent_hash = ? AND status IN ('confirmed_in_qb', 'submitted_unconfirmed', 'duplicate_in_qb', 'baseline_skipped') LIMIT 1",
+                    (h,),
+                ).fetchone()
+                return row is not None
+            finally:
+                conn.close()
+
+    def record_rss_auto_item(
+        self,
+        *,
+        rule_id: str,
+        item_key: str,
+        torrent_hash: str,
+        title: str,
+        download_url: str,
+        status: str,
+        error_text: str = "",
+        qb_category: str = "",
+        qb_save_path: str = "",
+    ) -> dict[str, Any]:
+        now = _now_iso()
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO rss_auto_items (
+                        rule_id, item_key, torrent_hash, title, download_url,
+                        status, error_text, qb_category, qb_save_path, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(rule_id, item_key) DO UPDATE SET
+                        torrent_hash = excluded.torrent_hash,
+                        status = excluded.status,
+                        error_text = excluded.error_text,
+                        qb_category = excluded.qb_category,
+                        qb_save_path = excluded.qb_save_path,
+                        created_at = excluded.created_at
+                    """,
+                    (
+                        str(rule_id),
+                        str(item_key),
+                        str(torrent_hash or "").strip().lower(),
+                        str(title or ""),
+                        str(download_url or ""),
+                        str(status),
+                        str(error_text or ""),
+                        str(qb_category or ""),
+                        str(qb_save_path or ""),
+                        now,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return {
+            "ruleId": str(rule_id),
+            "itemKey": str(item_key),
+            "torrentHash": str(torrent_hash or "").strip().lower(),
+            "title": str(title or ""),
+            "status": str(status),
+            "errorText": str(error_text or ""),
+            "qbCategory": str(qb_category or ""),
+            "qbSavePath": str(qb_save_path or ""),
+            "createdAt": now,
+        }
+
+    def list_rss_auto_items(self, *, rule_id: str = "", limit: int = 60) -> list[dict[str, Any]]:
+        limit = max(1, min(200, int(limit)))
+        with self._lock:
+            conn = self._connect()
+            try:
+                if rule_id:
+                    rows = conn.execute(
+                        "SELECT * FROM rss_auto_items WHERE rule_id = ? ORDER BY id DESC LIMIT ?",
+                        (str(rule_id), limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM rss_auto_items ORDER BY id DESC LIMIT ?",
+                        (limit,),
+                    ).fetchall()
+                return [
+                    {
+                        "id": int(r["id"]),
+                        "ruleId": str(r["rule_id"]),
+                        "itemKey": str(r["item_key"]),
+                        "torrentHash": str(r["torrent_hash"]),
+                        "title": str(r["title"]),
+                        "status": str(r["status"]),
+                        "errorText": str(r["error_text"]),
+                        "qbCategory": str(r["qb_category"]),
+                        "qbSavePath": str(r["qb_save_path"]),
+                        "createdAt": str(r["created_at"]),
+                    }
+                    for r in rows
+                ]
+            finally:
+                conn.close()
+
+    @staticmethod
+    def _row_to_rss_auto_rule(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "siteId": str(row["site_id"]),
+            "siteName": str(row["site_name"]),
+            "officialGroup": str(row["official_group"]),
+            "url": str(row["url"]),
+            "savePath": str(row["save_path"]),
+            "category": str(row["category"]),
+            "enabled": bool(row["enabled"]),
+            "pollIntervalMinutes": int(row["poll_interval_minutes"]),
+            "baselineInitialized": bool(row["baseline_initialized"]),
+            "lastCheckedAt": str(row["last_checked_at"]),
+            "lastStatus": str(row["last_status"]),
+            "lastMessage": str(row["last_message"]),
+            "addedCount": int(row["added_count"]),
             "createdAt": str(row["created_at"]),
             "updatedAt": str(row["updated_at"]),
         }

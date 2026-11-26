@@ -13,7 +13,7 @@ class AuthAndApiTests(unittest.TestCase):
     def test_healthz_includes_build_revision(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"FLUXA_BUILD_REVISION": "abc1234"}):
-                app = create_app(db_path=Path(tmp) / "fluxa.sqlite3")
+                app = create_app(db_path=Path(tmp) / "fluxa.sqlite3", enable_poller=False)
                 client = app.test_client()
                 res = client.get("/healthz").get_json()
                 self.assertTrue(res["ok"])
@@ -22,7 +22,7 @@ class AuthAndApiTests(unittest.TestCase):
 
     def test_first_run_setup_settings_dashboard_and_guardrails(self):
         with tempfile.TemporaryDirectory() as tmp:
-            app = create_app(db_path=Path(tmp) / "fluxa.sqlite3")
+            app = create_app(db_path=Path(tmp) / "fluxa.sqlite3", enable_poller=False)
             client = app.test_client()
 
             # Uninitialized state

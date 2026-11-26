@@ -12,6 +12,7 @@ import type {
   SaRecoveryJob,
   UnifiedSubscription,
 } from '../types/api';
+import { RssAutoDownloadPanel } from '../components/RssAutoDownloadPanel';
 import { StatusPill } from '../components/StatusPill';
 
 interface SubscriptionsPageProps {
@@ -19,7 +20,7 @@ interface SubscriptionsPageProps {
 }
 
 export function SubscriptionsPage({ onOpenMedia }: SubscriptionsPageProps) {
-  const [tab, setTab] = useState<'list' | 'checker' | 'mappings' | 'logs'>('list');
+  const [tab, setTab] = useState<'list' | 'rss-auto' | 'checker' | 'mappings' | 'logs'>('list');
   const [items, setItems] = useState<UnifiedSubscription[]>([]);
   const [logs, setLogs] = useState<DecisionLog[]>([]);
   const [saMappings, setSaMappings] = useState<SaIdentifyMapping[]>([]);
@@ -112,6 +113,9 @@ export function SubscriptionsPage({ onOpenMedia }: SubscriptionsPageProps) {
           <button className={`tab-btn ${tab === 'list' ? 'active' : ''}`} type="button" onClick={() => setTab('list')}>
             统一订阅（{items.length}）
           </button>
+          <button className={`tab-btn ${tab === 'rss-auto' ? 'active' : ''}`} type="button" onClick={() => setTab('rss-auto')}>
+            官组 RSS 自动下载
+          </button>
           <button className={`tab-btn ${tab === 'checker' ? 'active' : ''}`} type="button" onClick={() => setTab('checker')}>
             站点官组校验 & RSS 透视
           </button>
@@ -201,6 +205,8 @@ export function SubscriptionsPage({ onOpenMedia }: SubscriptionsPageProps) {
           )}
         </section>
       )}
+
+      {tab === 'rss-auto' && <RssAutoDownloadPanel />}
 
       {tab === 'checker' && (
         <div className="stack">

@@ -69,16 +69,24 @@ class QbittorrentAdapter:
             raise RuntimeError("qBittorrent 认证失败，请检查用户名和密码")
         self._logged_in = True
 
-    def _request(self, method: str, path: str, *, data: dict[str, Any] | None = None) -> requests.Response:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+        files: Any = None,
+    ) -> requests.Response:
         if not self.configured:
             raise RuntimeError("qBittorrent 未配置")
         self._login()
         url = f"{self.base_url}/{path.lstrip('/')}"
-        resp = self.http.request(method, url, data=data, timeout=TIMEOUT)
+        resp = self.http.request(method, url, params=params, data=data, files=files, timeout=TIMEOUT)
         if resp.status_code in {401, 403}:
             self._logged_in = False
             self._login()
-            resp = self.http.request(method, url, data=data, timeout=TIMEOUT)
+            resp = self.http.request(method, url, params=params, data=data, files=files, timeout=TIMEOUT)
         return resp
 
     def check_health(self) -> dict[str, Any]:
@@ -160,6 +168,86 @@ class QbittorrentAdapter:
                 "webUrl": self.app_url(),
             })
         return items
+
+    def list_categories(self) -> list[dict[str, str]]:
+        """Read existing qBittorrent categories & save paths so RSS rules reuse existing paths cleanly."""
+        if not self.configured:
+            return []
+        try:
+            resp = self._request("GET", "/api/v2/torrents/categories")
+            if resp.status_code >= 400:
+                return []
+            body = resp.json() if resp.content else {}
+            if not isinstance(body, dict):
+                return []
+            items: list[dict[str, str]] = []
+            for name, info in body.items():
+                save_path = str(info.get("savePath") or "") if isinstance(info, dict) else ""
+                items.append({"name": str(name), "savePath": save_path})
+            items.sort(key=lambda x: x["name"])
+            return items
+        except Exception:
+            return []
+
+    def get_torrent_by_hash(self, torrent_hash: str) -> dict[str, Any] | None:
+        h = str(torrent_hash or "").strip().lower()
+        if not self.configured or not h:
+            return None
+        resp = self._request("GET", "/api/v2/torrents/info", params={"hashes": h})
+        if resp.status_code >= 400:
+            return None
+        rows = resp.json() if resp.content else []
+        if not isinstance(rows, list) or not rows:
+            return None
+        row = rows[0]
+        if not isinstance(row, dict):
+            return None
+        return {
+            "hash": str(row.get("hash") or "").strip().lower(),
+            "name": str(row.get("name") or "").strip(),
+            "state": str(row.get("state") or ""),
+            "category": str(row.get("category") or ""),
+            "savePath": str(row.get("save_path") or ""),
+        }
+
+    def add_torrent(
+        self,
+        *,
+        torrent_bytes: bytes | None = None,
+        torrent_url: str = "",
+        filename: str = "fluxa.torrent",
+        save_path: str = "",
+        category: str = "",
+        tags: str = "fluxa-rss",
+    ) -> dict[str, Any]:
+        """Add a single torrent to qBittorrent preserving existing save path & category.
+
+        Never deletes old tasks or modifies seeding tasks.
+        """
+        if not self.configured:
+            raise RuntimeError("qBittorrent 未配置")
+        form: dict[str, str] = {}
+        if save_path.strip():
+            form["savepath"] = save_path.strip()
+        if category.strip():
+            form["category"] = category.strip()
+        if tags.strip():
+            form["tags"] = tags.strip()
+
+        files = None
+        if torrent_bytes:
+            safe_name = filename if filename.endswith(".torrent") else f"{filename}.torrent"
+            files = {"torrents": (safe_name, torrent_bytes, "application/x-bittorrent")}
+        elif torrent_url.strip():
+            form["urls"] = torrent_url.strip()
+        else:
+            raise ValueError("缺少种子文件或下载链接")
+
+        resp = self._request("POST", "/api/v2/torrents/add", data=form, files=files)
+        text = (resp.text or "").strip()
+        if resp.status_code >= 400 or text.lower() == "fails.":
+            raise RuntimeError(f"qBittorrent 添加任务失败 ({resp.status_code} {text})")
+        return {"ok": True, "message": "已提交至 qBittorrent"}
 
     def pause_or_resume(self, torrent_hash: str, action: str) -> dict[str, Any]:
         """Support both qBittorrent v4 (pause/resume) and v5 (stop/start) APIs."""

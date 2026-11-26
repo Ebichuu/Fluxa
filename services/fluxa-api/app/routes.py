@@ -20,6 +20,7 @@ from app.domain.pipeline import (
     merge_subscriptions,
 )
 from app.domain.release_rules import evaluate_release_group, evaluate_subscription_guardrail
+from app.domain.rss_auto_download import run_rss_auto_rule
 from app.domain.sa_recovery import diagnose_sa_failure, execute_sa_recovery, verify_sa_recovery
 
 api = Blueprint("fluxa_api", __name__, url_prefix="/api")
@@ -536,6 +537,108 @@ def list_sa_mappings():
 @api.delete("/sa-recovery/mappings/<int:mapping_id>")
 def delete_sa_mapping(mapping_id: int):
     _store().delete_sa_mapping(mapping_id)
+    return jsonify({"ok": True})
+
+
+# -- Site + Official-Group RSS Auto-Download -> qB ------------------------
+
+def _redact_rule(rule: dict[str, Any]) -> dict[str, Any]:
+    copy = dict(rule)
+    raw_url = str(copy.get("url") or "")
+    copy["urlMasked"] = sanitize_text(raw_url.split("?", 1)[0] + ("?***" if "?" in raw_url else ""), 160)
+    copy["hasUrl"] = bool(raw_url)
+    copy["url"] = ""
+    return copy
+
+
+@api.get("/rss-auto/rules")
+def list_rss_auto():
+    store = _store()
+    settings = store.get_settings()
+    adapters = build_adapters(settings)
+    qb_categories = adapters["qbittorrent"].list_categories() if adapters["qbittorrent"].configured else []
+    rules = [_redact_rule(r) for r in store.list_rss_auto_rules()]
+    items = store.list_rss_auto_items(limit=60)
+    return jsonify({
+        "rules": rules,
+        "items": items,
+        "qbCategories": qb_categories,
+        "qbConfigured": adapters["qbittorrent"].configured,
+        "sites": settings["guardrails"].get("siteOfficialGroups") or [],
+    })
+
+
+@api.post("/rss-auto/rules")
+def save_rss_auto():
+    body = request.get_json(silent=True) or {}
+    store = _store()
+    settings = store.get_settings()
+    rule_id = str(body.get("id") or uuid.uuid4().hex[:12]).strip()
+    existing = store.get_rss_auto_rule(rule_id)
+
+    site_id = str(body.get("siteId") or "").strip()
+    site_cfg = next(
+        (s for s in (settings["guardrails"].get("siteOfficialGroups") or []) if s.get("siteId") == site_id),
+        None,
+    )
+    site_name = str(body.get("siteName") or (site_cfg or {}).get("siteName") or site_id).strip()
+    official_group = str(body.get("officialGroup") or "").strip()
+    raw_url = str(body.get("url") or "").strip()
+    final_url = raw_url or (existing["url"] if existing else "")
+
+    if not site_name or not official_group:
+        return jsonify({"error": "请选择站点并填写本站官组名称"}), 400
+    if not final_url.startswith(("http://", "https://")):
+        return jsonify({"error": "请填写有效的 HTTP(S) 官组 RSS 地址"}), 400
+
+    saved = store.save_rss_auto_rule({
+        "id": rule_id,
+        "siteId": site_id or site_name.lower(),
+        "siteName": site_name,
+        "officialGroup": official_group,
+        "url": final_url,
+        "savePath": str(body.get("savePath") or "").strip(),
+        "category": str(body.get("category") or "").strip(),
+        "enabled": bool(body.get("enabled", True)),
+        "pollIntervalMinutes": int(body.get("pollIntervalMinutes") or 5),
+    })
+
+    # If newly created and enabled, immediately initialize baseline (without downloading history!)
+    init_message = "已保存规则"
+    if saved.get("enabled") and not saved.get("baselineInitialized"):
+        res = run_rss_auto_rule(rule_id, store=store, settings=settings)
+        saved = res.get("rule") or saved
+        init_message = res.get("message") or init_message
+
+    return jsonify({"ok": True, "rule": _redact_rule(saved), "message": init_message})
+
+
+@api.patch("/rss-auto/rules/<rule_id>/toggle")
+def toggle_rss_auto(rule_id: str):
+    store = _store()
+    rule = store.get_rss_auto_rule(rule_id)
+    if not rule:
+        return jsonify({"error": "规则不存在"}), 404
+    body = request.get_json(silent=True) or {}
+    enabled = bool(body.get("enabled", not rule["enabled"]))
+    saved = store.save_rss_auto_rule({**rule, "enabled": enabled})
+    return jsonify({"ok": True, "rule": _redact_rule(saved)})
+
+
+@api.post("/rss-auto/rules/<rule_id>/run")
+def run_rss_auto_now(rule_id: str):
+    try:
+        res = run_rss_auto_rule(rule_id, store=_store(), settings=_store().get_settings())
+        if res.get("rule"):
+            res["rule"] = _redact_rule(res["rule"])
+        return jsonify(res)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 404
+
+
+@api.delete("/rss-auto/rules/<rule_id>")
+def delete_rss_auto(rule_id: str):
+    _store().delete_rss_auto_rule(rule_id)
     return jsonify({"ok": True})
 
 
