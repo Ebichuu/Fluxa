@@ -5,7 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.adapters.symedia import classify_symedia_record
+from app.adapters.symedia import SymediaAdapter, classify_symedia_record
 from app.domain.pipeline import build_actionable_issues
 from app.domain.sa_recovery import (
     build_spec_preserving_filename,
@@ -391,6 +391,324 @@ class SaRecoveryAcceptanceTests(unittest.TestCase):
         }
         issues = build_actionable_issues(snapshot, {})
         self.assertEqual(len(issues), 0)
+
+    def test_sa_openapi_ref_param_verification_and_refusal_when_unsupported(self):
+        """1. 必须核对 SA 真实 OpenAPI $ref 接口参数：不支持 TMDB/季集覆盖时不得静默原样提交。"""
+        class _FakeResp:
+            def __init__(self, status_code, body):
+                self.status_code = status_code
+                self._body = body
+                self.content = b"1"
+            def json(self):
+                return self._body
+
+        class _MockSessionNoOverride:
+            def __init__(self):
+                self.requests = []
+            def get(self, url, **kwargs):
+                if url.endswith("/openapi.json"):
+                    return _FakeResp(200, {
+                        "paths": {
+                            "/api/v1/transfer/manual": {
+                                "post": {
+                                    "requestBody": {
+                                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManualReq"}}}
+                                    }
+                                }
+                            }
+                        },
+                        "components": {
+                            "schemas": {
+                                "ManualItem": {
+                                    "type": "object",
+                                    "properties": {"type": {"type": "string"}, "path": {"type": "string"}},
+                                },
+                                "ManualReq": {
+                                    "type": "object",
+                                    "properties": {
+                                        "items": {"type": "array", "items": {"$ref": "#/components/schemas/ManualItem"}},
+                                        "transfer_task_id": {"type": "string"},
+                                    },
+                                },
+                            }
+                        },
+                    })
+                return _FakeResp(404, {})
+            def request(self, method, url, **kwargs):
+                self.requests.append((method, url, kwargs))
+                return _FakeResp(200, {"success": True})
+
+        sess = _MockSessionNoOverride()
+        adapter = SymediaAdapter({"baseUrl": "http://sa.local", "token": "tok"}, session=sess)
+        caps = adapter.probe_recovery_capabilities()
+        self.assertTrue(caps["openapiChecked"])
+        self.assertTrue(caps["transferManual"])
+        self.assertFalse(caps["supportsTmdbParam"])
+        self.assertFalse(caps["supportsSeasonEpisodeParam"])
+        self.assertFalse(caps["supportsExplicitIdentify"])
+        self.assertEqual(set(caps["manualBodyFields"]), {"items", "transfer_task_id"})
+
+        with self.assertRaises(RuntimeError) as ctx:
+            adapter.submit_manual_transfer(
+                file_path=f"/09-归档失败/{E09_FILE}",
+                transfer_task_id="task-1",
+                tmdb_id="205493",
+                media_type="tv",
+                season=3,
+                episode=9,
+                capabilities=caps,
+                require_explicit_identify=True,
+            )
+        self.assertIn("不支持直接传入 TMDB ID", str(ctx.exception))
+        self.assertEqual(len(sess.requests), 0)
+
+        # Also verify exact parameter binding when SA OpenAPI DOES declare query/item params
+        class _MockSessionWithParams(_MockSessionNoOverride):
+            def get(self, url, **kwargs):
+                if url.endswith("/openapi.json"):
+                    return _FakeResp(200, {
+                        "paths": {
+                            "/api/v1/transfer/manual": {
+                                "post": {
+                                    "parameters": [{"name": "tmdb_id", "in": "query"}],
+                                    "requestBody": {
+                                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManualReq2"}}}
+                                    },
+                                }
+                            }
+                        },
+                        "components": {
+                            "schemas": {
+                                "ManualItem2": {
+                                    "type": "object",
+                                    "properties": {
+                                        "type": {"type": "string"},
+                                        "path": {"type": "string"},
+                                        "season_num": {"type": "integer"},
+                                        "episode_num": {"type": "integer"},
+                                    },
+                                },
+                                "ManualReq2": {
+                                    "type": "object",
+                                    "properties": {
+                                        "items": {"type": "array", "items": {"$ref": "#/components/schemas/ManualItem2"}},
+                                        "transfer_task_id": {"type": "string"},
+                                    },
+                                },
+                            }
+                        },
+                    })
+                return _FakeResp(404, {})
+
+        sess2 = _MockSessionWithParams()
+        adapter2 = SymediaAdapter({"baseUrl": "http://sa.local", "token": "tok"}, session=sess2)
+        caps2 = adapter2.probe_recovery_capabilities()
+        self.assertTrue(caps2["supportsExplicitIdentify"])
+        res2 = adapter2.submit_manual_transfer(
+            file_path=f"/09-归档失败/{E09_FILE}",
+            transfer_task_id="task-1",
+            tmdb_id="205493",
+            media_type="tv",
+            season=3,
+            episode=9,
+            capabilities=caps2,
+            require_explicit_identify=True,
+        )
+        self.assertEqual(res2["overrideMode"], "openapi_params")
+        self.assertEqual(sess2.requests[0][2]["params"], {"tmdb_id": 205493})
+        self.assertEqual(sess2.requests[0][2]["json"]["items"][0]["season_num"], 3)
+        self.assertEqual(sess2.requests[0][2]["json"]["items"][0]["episode_num"], 9)
+
+    def test_existing_preferred_cr_version_prompts_no_recovery_needed_over_linetv(self):
+        """2a. 同集已有符合偏好的 CR 版时，诊断提示「已有版本，无需补库」，并阻止继续恢复 LINETV 版。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FluxaStore(Path(tmp) / "test.sqlite3")
+            settings = store.get_settings()
+            sa = _FakeSymedia()
+            cr_file = "The.Prince.of.Tennis.II.U-17.World.Cup.S03E09.1080p.CR.WEB-DL.AAC2.0.H.264-VARYG.mkv"
+            sa.history = [
+                {
+                    "id": "88910",
+                    "mediaKey": "tv:205493",
+                    "mediaType": "tv",
+                    "tmdbId": "205493",
+                    "title": "新网球王子 U-17世界杯篇",
+                    "seasons": "S03",
+                    "episodes": "E09",
+                    "seasonEpisode": "S03E09",
+                    "src": f"/CloudNAS/CloudDrive/115/00-待整理/00-日漫/{cr_file}",
+                    "dest": f"/CloudNAS/CloudDrive/115/媒体库/日漫/新网球王子/Season 3/S03E09.CR.WEB-DL.mkv",
+                    "fileName": cr_file,
+                    "outcome": "archived",
+                    "outcomeLabel": "归档成功",
+                    "reasonText": "已完成整理归档",
+                    "date": "2026-11-26 02:10:00",
+                }
+            ]
+            emby = _FakeEmby(episodes={"205493": [(3, 9)]})
+            adapters = {"tmdb": _FakeTmdb(), "symedia": sa, "emby": emby, "moviepilot": _Noop(), "torra": _Noop(), "qbittorrent": _Noop()}
+            snapshot = {
+                "services": [],
+                "serviceMap": {},
+                "mpSubs": [],
+                "torraSubs": [],
+                "saHistory": sa.history,
+                "emby": {
+                    **emby.fetch_library_snapshot(),
+                    "episodeDetails": {
+                        "205493": {
+                            "S03E09": [{"fileName": cr_file, "path": f"/emby/S03E09/{cr_file}", "isStrm": True}]
+                        }
+                    },
+                },
+            }
+            e09_record = {
+                "id": "88638",
+                "fileName": E09_FILE,
+                "src": f"/CloudNAS/CloudDrive/115/09-归档失败/{E09_FILE}",
+                "date": "2026-11-26 01:17:04",
+                "outcome": "identify_failed",
+                "reasonText": "没有查询到媒体信息",
+            }
+            diag = diagnose_sa_failure(record=e09_record, settings=settings, store=store, adapters=adapters, snapshot=snapshot)
+            self.assertTrue(diag["noRecoveryNeeded"])
+            self.assertIn("已有版本，无需补库", diag["statusMessage"])
+            self.assertIn("CR", diag["statusMessage"])
+            self.assertIn("LINETV", diag["statusMessage"])
+            self.assertFalse(diag["canAutoApply"])
+            self.assertEqual(diag["proposals"][0]["existingVersion"]["existingSourceTag"], "CR")
+            self.assertEqual(diag["proposals"][0]["existingVersion"]["failedSourceTag"], "LINETV")
+
+            # Attempting to execute recovery of LINETV MUST be blocked with「已有版本，无需补库」
+            with self.assertRaises(ValueError) as ctx:
+                execute_sa_recovery(
+                    payload={
+                        "saRecordId": "88638",
+                        "fileName": E09_FILE,
+                        "srcPath": e09_record["src"],
+                        "failedDate": e09_record["date"],
+                        "mediaType": "tv",
+                        "tmdbId": "205493",
+                        "canonicalTitle": "新网球王子 U-17世界杯篇",
+                        "sourceSeason": 1,
+                        "sourceEpisode": 9,
+                        "targetSeason": 3,
+                        "targetEpisode": 9,
+                        "transferTaskId": "task-anime",
+                        "confirmed": True,
+                    },
+                    settings=settings,
+                    store=store,
+                    adapters=adapters,
+                )
+            self.assertIn("已有版本，无需补库", str(ctx.exception))
+            self.assertEqual(len(sa.submitted), 0)
+
+    def test_verify_tracks_moved_file_new_failure_and_ignores_unrelated_cr_success(self):
+        """2b. 核验必须追踪文件移动后的新失败记录，绝不能误拿同集 CR 版的成功记录当作 LINETV 恢复成功；若指定季集未生效也必须判失败。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FluxaStore(Path(tmp) / "test.sqlite3")
+            settings = store.get_settings()
+            sa = _FakeSymedia()
+            emby = _FakeEmby()
+            adapters = {"tmdb": _FakeTmdb(), "symedia": sa, "emby": emby, "moviepilot": _Noop(), "torra": _Noop(), "qbittorrent": _Noop()}
+
+            # Submit LINETV E09 recovery while Emby/SA don't yet have it
+            exec_res = execute_sa_recovery(
+                payload={
+                    "saRecordId": "88638",
+                    "fileName": E09_FILE,
+                    "srcPath": f"/CloudNAS/CloudDrive/115/00-待整理/00-日漫/{E09_FILE}",
+                    "failedDate": "2026-11-26 01:17:04",
+                    "mediaType": "tv",
+                    "tmdbId": "205493",
+                    "canonicalTitle": "新网球王子 U-17世界杯篇",
+                    "sourceSeason": 1,
+                    "sourceEpisode": 9,
+                    "targetSeason": 3,
+                    "targetEpisode": 9,
+                    "transferTaskId": "task-anime",
+                    "confirmed": True,
+                },
+                settings=settings,
+                store=store,
+                adapters=adapters,
+            )
+            job_id = exec_res["job"]["id"]
+
+            # Now SA history has:
+            # 1) A DIFFERENT CR release archived for 205493 S03E09 (#88910)
+            # 2) Our LINETV file moved to /09-归档失败/ and FAILED AGAIN (#88950) because SA ignored tmdbid/season!
+            cr_file = "The.Prince.of.Tennis.II.U-17.World.Cup.S03E09.1080p.CR.WEB-DL-VARYG.mkv"
+            sa.history = [
+                {
+                    "id": "88950",
+                    "mediaKey": "",
+                    "mediaType": "tv",
+                    "tmdbId": "",
+                    "title": E09_FILE,
+                    "seasons": "",
+                    "episodes": "",
+                    "seasonEpisode": "",
+                    "src": f"/CloudNAS/CloudDrive/115/09-归档失败/{E09_FILE}",
+                    "dest": "",
+                    "fileName": E09_FILE,
+                    "outcome": "identify_failed",
+                    "outcomeLabel": "SA 识别失败",
+                    "reasonText": "没有查询到媒体信息",
+                    "date": "2026-11-26 22:45:00",
+                },
+                {
+                    "id": "88910",
+                    "mediaKey": "tv:205493",
+                    "mediaType": "tv",
+                    "tmdbId": "205493",
+                    "title": "新网球王子 U-17世界杯篇",
+                    "seasons": "S03",
+                    "episodes": "E09",
+                    "seasonEpisode": "S03E09",
+                    "src": f"/CloudNAS/CloudDrive/115/00-待整理/00-日漫/{cr_file}",
+                    "dest": "/CloudNAS/CloudDrive/115/媒体库/日漫/Season 3/S03E09.CR.strm",
+                    "fileName": cr_file,
+                    "outcome": "archived",
+                    "outcomeLabel": "归档成功",
+                    "reasonText": "已完成整理归档",
+                    "date": "2026-11-26 02:10:00",
+                },
+            ]
+            ver = verify_sa_recovery(job_id=job_id, settings=settings, store=store, adapters=adapters)
+            self.assertFalse(ver["resolved"])
+            self.assertEqual(ver["status"], "failed")
+            self.assertEqual(ver["job"]["verification"]["newFailureRecordId"], "88950")
+            self.assertIn("/09-归档失败/", ver["job"]["verification"]["movedSrcPath"])
+            self.assertIn("未在 SA 实际处理结果中生效", ver["message"])
+            self.assertIn("已有版本，无需补库", ver["message"])
+            self.assertIn("CR", ver["message"])
+
+            # Case B: SA processed THIS LINETV file, but archived it to WRONG season S01E09 (specified S03E09 did NOT take effect!)
+            sa.history = [
+                {
+                    "id": "88960",
+                    "mediaKey": "tv:205493",
+                    "mediaType": "tv",
+                    "tmdbId": "205493",
+                    "title": "新网球王子 U-17世界杯篇",
+                    "seasons": "S01",
+                    "episodes": "E09",
+                    "seasonEpisode": "S01E09",
+                    "src": f"/CloudNAS/CloudDrive/115/09-归档失败/{E09_FILE}",
+                    "dest": "/CloudNAS/CloudDrive/115/媒体库/日漫/Season 1/S01E09.strm",
+                    "fileName": E09_FILE,
+                    "outcome": "archived",
+                    "outcomeLabel": "归档成功",
+                    "reasonText": "已完成整理归档",
+                    "date": "2026-11-26 22:50:00",
+                }
+            ]
+            ver_wrong = verify_sa_recovery(job_id=job_id, settings=settings, store=store, adapters=adapters)
+            self.assertFalse(ver_wrong["resolved"])
+            self.assertEqual(ver_wrong["status"], "failed")
+            self.assertIn("指定映射未生效", ver_wrong["message"])
 
 
 if __name__ == "__main__":

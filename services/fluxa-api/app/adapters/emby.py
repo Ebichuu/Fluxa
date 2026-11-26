@@ -132,6 +132,7 @@ class EmbyAdapter:
             "movies": {},
             "series": {},
             "episodes": {},
+            "episodeDetails": {},
             "recentToday": [],
             "error": "",
         }
@@ -154,6 +155,7 @@ class EmbyAdapter:
             series: dict[str, dict[str, Any]] = {}
             series_id_to_tmdb: dict[str, str] = {}
             episodes: dict[str, set[tuple[int, int]]] = {}
+            episode_details: dict[str, dict[str, list[dict[str, Any]]]] = {}
             recent_today: list[dict[str, Any]] = []
             today_str = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
 
@@ -163,6 +165,7 @@ class EmbyAdapter:
                 itype = item.get("Type")
                 item_id = str(item.get("Id") or "")
                 path = str(item.get("Path") or "")
+                file_name = path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if path else ""
                 is_strm = path.casefold().endswith(".strm")
                 created = str(item.get("DateCreated") or "")
                 tmdb = _tmdb_id(item)
@@ -171,6 +174,8 @@ class EmbyAdapter:
                     movies[tmdb] = {
                         "itemId": item_id,
                         "title": str(item.get("Name") or ""),
+                        "path": path,
+                        "fileName": file_name,
                         "isStrm": is_strm,
                         "dateCreated": created,
                         "webUrl": self.app_url(item_id),
@@ -205,16 +210,27 @@ class EmbyAdapter:
                 if not tmdb or not isinstance(s_num, int) or not isinstance(e_num, int):
                     continue
                 episodes.setdefault(tmdb, set()).add((s_num, e_num))
+                item_id = str(item.get("Id") or "")
+                path = str(item.get("Path") or "")
+                file_name = path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if path else ""
                 created = str(item.get("DateCreated") or "")
+                ep_label = f"S{s_num:02d}E{e_num:02d}"
+                episode_details.setdefault(tmdb, {}).setdefault(ep_label, []).append({
+                    "itemId": item_id,
+                    "title": str(item.get("Name") or ""),
+                    "path": path,
+                    "fileName": file_name,
+                    "isStrm": path.casefold().endswith(".strm"),
+                    "dateCreated": created,
+                    "webUrl": self.app_url(item_id),
+                })
                 if created.startswith(today_str):
-                    item_id = str(item.get("Id") or "")
-                    path = str(item.get("Path") or "")
                     recent_today.append({
                         "mediaKey": f"tv:{tmdb}",
                         "mediaType": "tv",
                         "tmdbId": tmdb,
                         "title": str(item.get("SeriesName") or series.get(tmdb, {}).get("title") or ""),
-                        "episodeLabel": f"S{s_num:02d}E{e_num:02d}",
+                        "episodeLabel": ep_label,
                         "seasonNumber": s_num,
                         "episodeNumber": e_num,
                         "isStrm": path.casefold().endswith(".strm"),
@@ -227,6 +243,7 @@ class EmbyAdapter:
                 "movies": movies,
                 "series": series,
                 "episodes": {k: sorted(v) for k, v in episodes.items()},
+                "episodeDetails": episode_details,
                 "recentToday": recent_today[:40],
                 "error": "",
             }

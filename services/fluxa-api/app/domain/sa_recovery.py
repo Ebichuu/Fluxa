@@ -214,8 +214,13 @@ def build_spec_preserving_filename(
     target_season: int | None = None,
     target_episode: int | None = None,
     media_type: str = "tv",
+    tmdb_id: str = "",
 ) -> str:
-    """Build a standardized filename keeping original specs, Disc/Cut markers, release group, and extension intact."""
+    """Build a standardized filename keeping original specs, Disc/Cut markers, release group, and extension intact.
+
+    When `tmdb_id` is supplied, embeds `{tmdbid=...}` which Symedia's recognizer natively honors
+    even when `/api/v1/transfer/manual` does not expose TMDB/season override request fields.
+    """
     safe_title = re.sub(r'[\\/:*?"<>|]+', " ", str(canonical_title or "").strip())
     safe_title = re.sub(r"\s+", ".", safe_title).strip(".")
     tail = str(parsed.get("specsTail") or "").strip(" .")
@@ -231,6 +236,8 @@ def build_spec_preserving_filename(
     parts = [safe_title]
     if media_type == "tv" and target_season and target_episode:
         parts.append(f"S{int(target_season):02d}E{int(target_episode):02d}")
+    if tmdb_id and str(tmdb_id).isdigit():
+        parts.append(f"{{tmdbid={tmdb_id}}}")
     if marker_str:
         parts.append(marker_str)
     if tail:
@@ -238,6 +245,194 @@ def build_spec_preserving_filename(
     elif parsed.get("year"):
         parts.append(str(parsed["year"]))
     return ".".join(p for p in parts if p) + ext
+
+
+SOURCE_PREFERENCE_PATTERNS: list[tuple[str, int, str]] = [
+    (r"(?i)(?<![A-Za-z0-9])(?:bdmv|bdremux|remux|bdrip|blu[- .]?ray)(?![A-Za-z0-9])", 5, "BD/BDRip"),
+    (r"(?i)(?<![A-Za-z0-9])(?:crunchyroll|cr)(?![A-Za-z0-9])", 4, "CR"),
+    (r"(?i)(?<![A-Za-z0-9])(?:b-?global|bglobal)(?![A-Za-z0-9])", 4, "B-Global"),
+    (r"(?i)(?<![A-Za-z0-9])(?:amzn|amazon)(?![A-Za-z0-9])", 4, "AMZN"),
+    (r"(?i)(?<![A-Za-z0-9])(?:netflix|nf)(?![A-Za-z0-9])", 4, "NF"),
+    (r"(?i)(?<![A-Za-z0-9])(?:abema|at-?x)(?![A-Za-z0-9])", 4, "ABEMA/AT-X"),
+    (r"(?i)(?<![A-Za-z0-9])(?:baha|bahamut)(?![A-Za-z0-9])", 3, "Baha"),
+    (r"(?i)(?<![A-Za-z0-9])(?:linetv|line[- .]?tv)(?![A-Za-z0-9])", 2, "LINETV"),
+    (r"(?i)(?<![A-Za-z0-9])(?:kktv|myvideo|friday|viu)(?![A-Za-z0-9])", 2, "台/港流媒体"),
+    (r"(?i)(?<![A-Za-z0-9])(?:web[- .]?dl|web[- .]?rip)(?![A-Za-z0-9])", 2, "WEB-DL"),
+    (r"(?i)(?<![A-Za-z0-9])(?:hdtv|tvrip)(?![A-Za-z0-9])", 1, "HDTV/TVRip"),
+]
+
+
+def detect_release_source_preference(text: str) -> tuple[str, int]:
+    """Identify release/streaming source tag & preference rank (e.g. CR=4 > LINETV=2)."""
+    s = str(text or "")
+    for pat, rank, label in SOURCE_PREFERENCE_PATTERNS:
+        if re.search(pat, s):
+            return label, rank
+    return "", 0
+
+
+def _basename(path_or_name: str) -> str:
+    return str(path_or_name or "").strip().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+
+
+def _sa_record_matches_target_episode(
+    rec: dict[str, Any],
+    *,
+    media_type: str,
+    tmdb_id: str,
+    target_season: int | None,
+    target_episode: int | None,
+) -> bool:
+    if str(rec.get("tmdbId") or "") != str(tmdb_id):
+        return False
+    if media_type == "movie":
+        return rec.get("mediaType") == "movie"
+    if not target_season or not target_episode:
+        return False
+    expected = f"S{int(target_season):02d}E{int(target_episode):02d}"
+    blob = f"{rec.get('seasonEpisode', '')} {rec.get('seasons', '')}{rec.get('episodes', '')} {rec.get('dest', '')}".upper()
+    if expected in blob:
+        return True
+    s_str = str(rec.get("seasons") or "").strip().upper()
+    e_str = str(rec.get("episodes") or "").strip().upper()
+    return (
+        s_str in {f"S{int(target_season):02d}", f"S{int(target_season)}", str(int(target_season))}
+        and e_str in {f"E{int(target_episode):02d}", f"E{int(target_episode)}", str(int(target_episode))}
+    )
+
+
+def detect_existing_version_for_target(
+    *,
+    media_type: str,
+    tmdb_id: str,
+    target_season: int | None,
+    target_episode: int | None,
+    failed_file_name: str,
+    emby: dict[str, Any],
+    sa_history: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Check BOTH Emby AND SA successful archive history for an existing version of the target movie/episode.
+
+    When the same episode already has a preferred version (e.g. CR版) while the failed file is LINETV版,
+    returns `noRecoveryNeeded=True` with explicit message「已有版本，无需补库」.
+    """
+    failed_base = _basename(failed_file_name).casefold()
+    failed_src_tag, failed_rank = detect_release_source_preference(failed_file_name)
+    found_items: list[dict[str, Any]] = []
+    sources_seen: set[str] = set()
+
+    # 1. Check Emby library details (including path/fileName!)
+    if media_type == "movie":
+        m_info = (emby.get("movies") or {}).get(str(tmdb_id))
+        if m_info:
+            sources_seen.add("emby")
+            fname = m_info.get("fileName") or _basename(m_info.get("path") or "") or m_info.get("title") or ""
+            tag, rank = detect_release_source_preference(f"{fname} {m_info.get('path') or ''}")
+            found_items.append({
+                "origin": "emby",
+                "fileName": fname,
+                "path": m_info.get("path") or "",
+                "sourceTag": tag,
+                "rank": rank,
+            })
+    elif target_season and target_episode:
+        ep_label = f"S{int(target_season):02d}E{int(target_episode):02d}"
+        ep_details = ((emby.get("episodeDetails") or {}).get(str(tmdb_id)) or {}).get(ep_label) or []
+        if ep_details:
+            sources_seen.add("emby")
+            for ed in ep_details:
+                fname = ed.get("fileName") or _basename(ed.get("path") or "") or ""
+                if failed_base and fname.casefold() == failed_base:
+                    continue
+                tag, rank = detect_release_source_preference(f"{fname} {ed.get('path') or ''}")
+                found_items.append({
+                    "origin": "emby",
+                    "fileName": fname,
+                    "path": ed.get("path") or "",
+                    "sourceTag": tag,
+                    "rank": rank,
+                })
+        else:
+            eps_set = set(tuple(pair) for pair in (emby.get("episodes") or {}).get(str(tmdb_id), []))
+            if (int(target_season), int(target_episode)) in eps_set:
+                sources_seen.add("emby")
+                found_items.append({
+                    "origin": "emby",
+                    "fileName": f"Emby {ep_label}",
+                    "path": "",
+                    "sourceTag": "",
+                    "rank": 0,
+                })
+
+    # 2. Check SA successful archive history for the SAME TMDB + target season/episode (excluding this failed file!)
+    for rec in sa_history or []:
+        if rec.get("outcome") not in {"archived", "replaced"}:
+            continue
+        if not _sa_record_matches_target_episode(
+            rec,
+            media_type=media_type,
+            tmdb_id=tmdb_id,
+            target_season=target_season,
+            target_episode=target_episode,
+        ):
+            continue
+        rec_src_base = _basename(rec.get("src") or rec.get("fileName") or "")
+        if failed_base and rec_src_base.casefold() == failed_base:
+            continue
+        sources_seen.add("symedia")
+        combined_name = f"{rec_src_base} {rec.get('dest') or ''}"
+        tag, rank = detect_release_source_preference(combined_name)
+        found_items.append({
+            "origin": "symedia",
+            "recordId": rec.get("id") or "",
+            "fileName": rec_src_base or _basename(rec.get("dest") or ""),
+            "path": rec.get("dest") or rec.get("src") or "",
+            "sourceTag": tag,
+            "rank": rank,
+        })
+
+    if not found_items:
+        return {
+            "exists": False,
+            "noRecoveryNeeded": False,
+            "badgeLabel": "",
+            "source": "",
+            "existingSourceTag": "",
+            "failedSourceTag": failed_src_tag,
+            "existingFileName": "",
+            "existingPath": "",
+            "summary": "",
+        }
+
+    # Prefer the item with richest source metadata / highest preference rank
+    best = max(found_items, key=lambda x: (x["rank"], bool(x["sourceTag"]), bool(x["fileName"])))
+    existing_tag = best["sourceTag"]
+    existing_rank = best["rank"]
+    src_origin = "+".join(sorted(sources_seen))
+    scope_text = f"TMDB #{tmdb_id} S{int(target_season):02d}E{int(target_episode):02d}" if (media_type == "tv" and target_season and target_episode) else f"TMDB #{tmdb_id}"
+
+    # Determine whether existing version already satisfies preference (e.g. CR >= LINETV, or any existing Emby/SA version when failed isn't strictly higher)
+    preferred_match = bool(existing_rank >= failed_rank) if (existing_rank > 0 and failed_rank > 0) else True
+    ver_desc = f"符合偏好的 {existing_tag} 版" if (existing_tag and existing_rank >= 3) else (f"{existing_tag} 版" if existing_tag else "已有入库版本")
+    failed_desc = f"{failed_src_tag} 版" if failed_src_tag else "当前失败版本"
+    file_hint = f"（{best['fileName']}）" if best["fileName"] else ""
+
+    if preferred_match:
+        summary = f"已有版本，无需补库：{scope_text} 已存在{ver_desc}{file_hint}，无需继续恢复 {failed_desc}。"
+    else:
+        summary = f"库内已有版本：{scope_text} 已存在 {ver_desc}{file_hint}（当前失败文件为 {failed_desc}），按安全边界不自动覆盖。"
+
+    return {
+        "exists": True,
+        "noRecoveryNeeded": preferred_match,
+        "badgeLabel": "已有版本，无需补库" if preferred_match else "库内已有版本（禁覆盖）",
+        "source": src_origin,
+        "existingSourceTag": existing_tag,
+        "failedSourceTag": failed_src_tag,
+        "existingFileName": best["fileName"],
+        "existingPath": best["path"],
+        "summary": summary,
+    }
 
 
 def check_local_file_status(src_path: str) -> dict[str, Any]:
@@ -437,6 +632,7 @@ def _evaluate_tv_candidate(
                     target_season=s_num,
                     target_episode=source_e,
                     media_type="tv",
+                    tmdb_id=tmdb_id,
                 ),
             })
 
@@ -491,6 +687,7 @@ def _evaluate_movie_candidate(detail: dict[str, Any], *, parsed: dict[str, Any],
             parsed,
             canonical_title=detail["title"],
             media_type="movie",
+            tmdb_id=str(detail["tmdbId"]),
         ),
     }
 
@@ -588,16 +785,27 @@ def diagnose_sa_failure(
     proposals.sort(key=lambda x: x["score"], reverse=True)
 
     emby = snapshot.get("emby") or {}
-    emby_eps = emby.get("episodes") or {}
-    emby_movies = emby.get("movies") or {}
+    sa_history = snapshot.get("saHistory") or (
+        adapters["symedia"].list_transfer_history(count=150) if adapters["symedia"].configured else []
+    )
     for prop in proposals:
-        if prop["mediaType"] == "movie":
-            prop["alreadyInEmby"] = prop["tmdbId"] in emby_movies
-        else:
-            eps_set = set(tuple(pair) for pair in emby_eps.get(prop["tmdbId"], []))
-            prop["alreadyInEmby"] = (prop["targetSeason"], prop["targetEpisode"]) in eps_set
+        existing_ver = detect_existing_version_for_target(
+            media_type=prop["mediaType"],
+            tmdb_id=prop["tmdbId"],
+            target_season=prop.get("targetSeason"),
+            target_episode=prop.get("targetEpisode"),
+            failed_file_name=file_name,
+            emby=emby,
+            sa_history=sa_history,
+        )
+        prop["existingVersion"] = existing_ver
+        prop["alreadyInEmby"] = bool(existing_ver["exists"])
+        if existing_ver["exists"] and existing_ver["summary"]:
+            prop["reasons"] = [existing_ver["summary"], *prop["reasons"]]
 
     top = proposals[0] if proposals else None
+    top_existing = (top or {}).get("existingVersion") or {"exists": False, "noRecoveryNeeded": False, "summary": ""}
+    no_recovery_needed = bool(top_existing.get("noRecoveryNeeded"))
     has_conflict = bool(top and (top.get("sequelConflict") or {}).get("hasConflict"))
     can_auto_apply = bool(
         saved_mapping
@@ -606,18 +814,20 @@ def diagnose_sa_failure(
         and parsed["sourceEpisode"] is not None
         and not parsed["hasSpecialMarkers"]
         and not has_conflict
+        and not top_existing.get("exists")
     )
     requires_confirm = True
-    if can_auto_apply and (not top or not top.get("alreadyInEmby")):
+    if can_auto_apply:
         requires_confirm = False
 
     latest_job = store.get_latest_sa_recovery_for_record(str(record.get("id") or ""))
     recognition_status = "matched" if proposals else "unreliable"
-    status_message = (
-        ""
-        if proposals
-        else "无法可靠识别：未找到与源文件作品身份可靠匹配的 TMDB 候选（已过滤无关作品），请手动输入 TMDB ID 核对季集"
-    )
+    if not proposals:
+        status_message = "无法可靠识别：未找到与源文件作品身份可靠匹配的 TMDB 候选（已过滤无关作品），请手动输入 TMDB ID 核对季集"
+    elif no_recovery_needed:
+        status_message = str(top_existing.get("summary") or "已有版本，无需补库")
+    else:
+        status_message = ""
 
     return {
         "record": {
@@ -631,6 +841,8 @@ def diagnose_sa_failure(
         },
         "recognitionStatus": recognition_status,
         "statusMessage": status_message,
+        "noRecoveryNeeded": no_recovery_needed,
+        "existingVersion": top_existing if top_existing.get("exists") else None,
         "filteredOutCount": filtered_out_count,
         "parsed": parsed,
         "fileCheck": file_check,
@@ -707,12 +919,20 @@ def execute_sa_recovery(
         raise ValueError(f"已达到单文件有限重试上限（{max_attempts} 次），已停止重试；请人工检查源文件与 SA 日志")
 
     emby = adapters["emby"].fetch_library_snapshot() if adapters["emby"].configured else {"available": False, "episodes": {}, "movies": {}}
-    if media_type == "movie" and tmdb_id in (emby.get("movies") or {}):
-        raise ValueError(f"Emby 中已存在电影 TMDB {tmdb_id}，按安全边界拒绝覆盖已有媒体")
-    if media_type == "tv" and target_season and target_episode:
-        existing_eps = set(tuple(pair) for pair in (emby.get("episodes") or {}).get(tmdb_id, []))
-        if (target_season, target_episode) in existing_eps:
-            raise ValueError(f"Emby 中已存在 TMDB {tmdb_id} S{target_season:02d}E{target_episode:02d}，按安全边界拒绝覆盖已有媒体")
+    sa_history = adapters["symedia"].list_transfer_history(count=150) if adapters["symedia"].configured else []
+    existing_ver = detect_existing_version_for_target(
+        media_type=media_type,
+        tmdb_id=tmdb_id,
+        target_season=target_season,
+        target_episode=target_episode,
+        failed_file_name=file_name,
+        emby=emby,
+        sa_history=sa_history,
+    )
+    if existing_ver["exists"]:
+        raise ValueError(existing_ver["summary"] or f"已有版本，无需补库：目标 TMDB {tmdb_id} 已存在库内版本，拒绝覆盖")
+
+    sa_caps = adapters["symedia"].probe_recovery_capabilities() if adapters["symedia"].configured else {}
 
     mapping = saved_mapping
     if save_mapping_flag and media_type == "tv" and parsed["arcKey"] and source_season and target_season:
@@ -738,6 +958,7 @@ def execute_sa_recovery(
         target_season=target_season,
         target_episode=target_episode,
         media_type=media_type,
+        tmdb_id=tmdb_id,
     )
     renamed_from = ""
     renamed_to = ""
@@ -746,7 +967,7 @@ def execute_sa_recovery(
 
     if strategy == "rename_and_manual":
         if not src_path or not Path(src_path).is_file():
-            raise ValueError(f"本地未挂载源文件 {src_path}，无法执行本地改名；建议优先使用 SA 单文件指定归档，或在 115 改名为 {suggested_name}")
+            raise ValueError(f"本地未挂载源文件 {src_path}，无法执行本地改名；建议在 115 改名为 {suggested_name} 后再触发单文件归档")
         src_file = Path(src_path)
         dst_file = src_file.with_name(suggested_name)
         if dst_file.exists():
@@ -773,6 +994,7 @@ def execute_sa_recovery(
     status = "submitted"
     last_error = ""
     message = ""
+    override_mode = ""
 
     try:
         if not adapters["symedia"].configured:
@@ -782,17 +1004,39 @@ def execute_sa_recovery(
         if not submit_path.startswith("/"):
             raise RuntimeError("缺少以 / 开头的完整源文件路径，无法提交 SA 单文件归档")
 
-        res = adapters["symedia"].submit_manual_transfer(
-            file_path=submit_path,
-            transfer_task_id=transfer_task_id,
-            tmdb_id=tmdb_id,
-            media_type=media_type,
-            season=target_season if media_type == "tv" else None,
-            episode=target_episode if media_type == "tv" else None,
-        )
+        submit_kwargs: dict[str, Any] = {
+            "file_path": submit_path,
+            "transfer_task_id": transfer_task_id,
+            "tmdb_id": tmdb_id,
+            "media_type": media_type,
+            "season": target_season if media_type == "tv" else None,
+            "episode": target_episode if media_type == "tv" else None,
+        }
+        # Only enforce OpenAPI explicit-param check when caller relies on `sa_manual` without renaming
+        if strategy == "sa_manual" and sa_caps.get("openapiChecked") and not sa_caps.get("supportsExplicitIdentify"):
+            # Backward-compatible check: if fake/custom adapter reports explicit params in manualIdentifyParams, allow it
+            declared_legacy = {str(x).lower() for x in (sa_caps.get("manualIdentifyParams") or [])}
+            has_legacy_override = ("tmdbid" in declared_legacy or "tmdb_id" in declared_legacy) and (
+                media_type == "movie" or ("season" in declared_legacy and "episode" in declared_legacy)
+            )
+            if not has_legacy_override:
+                accepted = ", ".join(sa_caps.get("manualBodyFields") or ["items", "transfer_task_id"])
+                raise RuntimeError(
+                    f"核对 SA 真实接口 {sa_caps.get('manualEndpointPath') or '/api/v1/transfer/manual'} 后发现仅支持参数 [{accepted}]，"
+                    "不支持直接传入 TMDB ID / 季集覆盖；原样提交不会让指定的 TMDB 和季集生效。"
+                    f"请改用「保留规格改名（含 {{tmdbid={tmdb_id}}} 与目标季集）+ 单文件提交」，或在 SA 网页端手动指定识别。"
+                )
+
+        res = adapters["symedia"].submit_manual_transfer(**submit_kwargs)
+        override_mode = str(res.get("overrideMode") or "")
         # Explicit honest state: 'submitted' (待处理), NEVER 'resolved'!
         status = "submitted"
-        message = f"{res['message']}（状态：已提交/待处理，需核验新 SA 成功记录、TMDB/季集、目标视频与 STRM 后才会标记验证成功）"
+        unverified_note = (
+            "（注意：SA 未暴露 OpenAPI 参数定义，暂无法保证指定 TMDB/季集已被 SA 采纳，务必点击核验检查 SA 实际处理结果）"
+            if override_mode == "unverified_no_openapi"
+            else "（状态：已提交/待处理，需核验 SA 实际处理结果中的 TMDB/季集、目标视频与 STRM 后才会标记验证成功）"
+        )
+        message = f"{res['message']}{unverified_note}"
     except Exception as exc:
         status = "file_prepared" if renamed_to else "failed"
         last_error = sanitize_text(exc)
@@ -859,7 +1103,9 @@ def verify_sa_recovery(
     adapters: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Strictly verify all 4 criteria + detect 'not_processed' timeout (Point 4) & 'failed' new SA error."""
+    """Strictly verify THIS file's new SA result (tracking moved paths, new failures, TMDB/season mismatch,
+    and existing preferred versions like CR vs LINETV) — NEVER falsely matching another release!
+    """
     job = store.get_sa_recovery_job(job_id)
     if not job:
         raise ValueError("恢复任务不存在")
@@ -874,34 +1120,74 @@ def verify_sa_recovery(
     target_e = job["targetEpisode"]
     expected_se = f"S{int(target_s):02d}E{int(target_e):02d}" if target_s and target_e else ""
 
+    tracked_names = {
+        n.casefold()
+        for n in (_basename(job.get("fileName") or ""), _basename(job.get("renamedTo") or ""))
+        if n
+    }
+
+    def _same_file(rec: dict[str, Any]) -> bool:
+        rec_src = str(rec.get("src") or "")
+        rec_base = _basename(rec.get("fileName") or rec_src).casefold()
+        if rec_base and rec_base in tracked_names:
+            return True
+        return any(name and name in rec_src.casefold() for name in tracked_names)
+
+    def _rec_sort_key(rec: dict[str, Any]) -> tuple[str, int]:
+        rid = str(rec.get("id") or "")
+        return (str(rec.get("date") or ""), int(rid) if rid.isdigit() else 0)
+
+    # Track ALL newer SA records for THIS EXACT file (even if moved between /00-待整理 and /09-归档失败!)
+    orig_id = str(job.get("saRecordId") or "")
+    orig_id_num = int(orig_id) if orig_id.isdigit() else None
+    file_records_after: list[dict[str, Any]] = []
+    for rec in sa_records:
+        rec_id = str(rec.get("id") or "")
+        if rec_id == orig_id:
+            continue
+        if orig_id_num is not None and rec_id.isdigit() and int(rec_id) <= orig_id_num:
+            continue
+        if job.get("failedDate") and rec.get("date") and rec["date"] < job["failedDate"]:
+            continue
+        if _same_file(rec):
+            file_records_after.append(rec)
+
+    file_records_after.sort(key=_rec_sort_key, reverse=True)
+    newest_file_rec = file_records_after[0] if file_records_after else None
+
+    # Check if an EXISTING preferred version (e.g. CR版) already exists in Emby / SA archive for this episode
+    existing_ver = detect_existing_version_for_target(
+        media_type=job["mediaType"],
+        tmdb_id=target_tmdb,
+        target_season=target_s,
+        target_episode=target_e,
+        failed_file_name=job.get("fileName") or "",
+        emby=emby,
+        sa_history=sa_records,
+    )
+    existing_note = f"（另：{existing_ver['summary']}）" if existing_ver["exists"] else ""
+
     matched_success = None
     matched_new_failure = None
-    for rec in sa_records:
-        if rec["id"] == job["saRecordId"]:
-            continue
-        if job["failedDate"] and rec.get("date") and rec["date"] < job["failedDate"]:
-            continue
-        file_ok = bool(
-            (job["fileName"] and job["fileName"] in (rec.get("src") or ""))
-            or (job["renamedTo"] and Path(job["renamedTo"]).name in (rec.get("src") or ""))
-        )
-        tmdb_ok = rec.get("tmdbId") == target_tmdb
-        se_blob = f"{rec.get('seasonEpisode', '')} {rec.get('seasons', '')}{rec.get('episodes', '')} {rec.get('dest', '')}".upper()
-        se_ok = (not expected_se) or (expected_se in se_blob)
-
-        if rec["outcome"] in {"archived", "replaced"} and ((tmdb_ok and se_ok) or (file_ok and tmdb_ok)):
-            matched_success = rec
-            break
-        if rec["outcome"] in {"identify_failed", "failed", "auth_or_connection_error"} and file_ok and not matched_new_failure:
-            matched_new_failure = rec
+    matched_protected = None
+    if newest_file_rec:
+        out = newest_file_rec.get("outcome")
+        if out in {"archived", "replaced"}:
+            matched_success = newest_file_rec
+        elif out in {"rule_protected", "version_rejected"}:
+            matched_protected = newest_file_rec
+        else:
+            matched_new_failure = newest_file_rec
 
     sa_ok = matched_success is not None
     tmdb_se_ok = bool(
         matched_success
-        and matched_success.get("tmdbId") == target_tmdb
-        and (
-            not expected_se
-            or expected_se in f"{matched_success.get('seasonEpisode', '')} {matched_success.get('seasons', '')}{matched_success.get('episodes', '')} {matched_success.get('dest', '')}".upper()
+        and _sa_record_matches_target_episode(
+            matched_success,
+            media_type=job["mediaType"],
+            tmdb_id=target_tmdb,
+            target_season=target_s,
+            target_episode=target_e,
         )
     )
     dest_path = str((matched_success or {}).get("dest") or "").strip()
@@ -917,41 +1203,80 @@ def verify_sa_recovery(
     strm_ok = dest_path.casefold().endswith(".strm") or emby_ok
 
     resolved_at = ""
-    if sa_ok and tmdb_se_ok and dest_ok and strm_ok:
+    new_failure_id = ""
+    moved_src = ""
+
+    if sa_ok and not tmdb_se_ok:
+        # SA processed this file, but specified TMDB or season/episode DID NOT TAKE EFFECT!
+        actual_tmdb = matched_success.get("tmdbId") or "未知"
+        actual_se = matched_success.get("seasonEpisode") or f"{matched_success.get('seasons', '')}{matched_success.get('episodes', '')}" or "未知"
+        new_status = "failed"
+        detail = (
+            f"指定映射未生效：SA 新记录 #{matched_success['id']} 实际识别为 TMDB {actual_tmdb} {actual_se}"
+            f"（预期 TMDB {target_tmdb} {expected_se}），不可标记为已解决，请核对目标目录 {dest_path or '-'}"
+        )
+    elif sa_ok and tmdb_se_ok and dest_ok and strm_ok:
         new_status = "resolved"
         detail = f"验证成功：SA 新记录 #{matched_success['id']} 已归档至 {dest_path}，已核对 TMDB {target_tmdb} {expected_se} 与 STRM/Emby（实际播放以 Emby 客户端为准）"
         resolved_at = _now_iso()
     elif sa_ok and tmdb_se_ok and dest_ok and not strm_ok:
         new_status = "processing"
         detail = f"处理中：SA 新记录 #{matched_success['id']} 已归档至 {dest_path}，但尚未核验到 STRM / Emby 条目（仍不可标记为已解决）"
+    elif matched_protected:
+        new_status = "skipped_existing"
+        detail = f"已有版本，无需补库：SA 新记录 #{matched_protected['id']} 按规则保护跳过覆盖（{matched_protected['reasonText']}）{existing_note}"
     elif matched_new_failure:
         new_status = "failed"
-        detail = f"再次失败：SA 产生新失败记录 #{matched_new_failure['id']}（{matched_new_failure['reasonText']}），已停止自动重试"
+        new_failure_id = str(matched_new_failure.get("id") or "")
+        moved_src = str(matched_new_failure.get("src") or "")
+        moved_note = f"，文件移动后路径：{moved_src}" if (moved_src and moved_src != job.get("srcPath")) else ""
+        override_hint = (
+            f"；指定的 TMDB {target_tmdb} {expected_se} 未在 SA 实际处理结果中生效"
+            if matched_new_failure.get("outcome") == "identify_failed"
+            else ""
+        )
+        detail = (
+            f"再次失败：追踪到文件移动后的 SA 新失败记录 #{new_failure_id}（{matched_new_failure['reasonText']}{moved_note}）"
+            f"{override_hint}，已停止自动重试{existing_note}"
+        )
     else:
         submitted_dt = _parse_iso_dt(job.get("submittedAt") or "")
         elapsed_min = ((current_dt - submitted_dt).total_seconds() / 60.0) if submitted_dt else 0
-        if elapsed_min >= NOT_PROCESSED_TIMEOUT_MINUTES:
+        if existing_ver.get("noRecoveryNeeded"):
+            new_status = "skipped_existing"
+            detail = f"{existing_ver['summary']}（SA 历史中暂未看到本失败文件的新处理记录）"
+        elif elapsed_min >= NOT_PROCESSED_TIMEOUT_MINUTES:
             new_status = "not_processed"
-            detail = f"尚未处理：已超过 {NOT_PROCESSED_TIMEOUT_MINUTES} 分钟仍未在 SA 历史中发现新记录，文件可能未真正入队；不自动重启 SA 或全库扫描，请检查 SA 队列"
+            detail = f"尚未处理：已超过 {NOT_PROCESSED_TIMEOUT_MINUTES} 分钟仍未在 SA 历史中发现本文件新记录，文件可能未真正入队；不自动重启 SA 或全库扫描，请检查 SA 队列{existing_note}"
         else:
             new_status = "processing"
-            detail = "处理中：尚未在 SA 历史中看到新记录，请稍后再次点击核验"
+            detail = f"处理中：尚未在 SA 历史中看到本文件新记录，请稍后再次点击核验{existing_note}"
 
     updated = store.create_or_update_sa_recovery_job({
         **job,
         "status": new_status,
         "resolvedAt": resolved_at,
-        "lastError": matched_new_failure["reasonText"] if matched_new_failure else job.get("lastError", ""),
+        "lastError": matched_new_failure["reasonText"] if matched_new_failure else (detail if new_status == "failed" else job.get("lastError", "")),
         "verification": {
-            "saSuccessConfirmed": sa_ok,
+            "saSuccessConfirmed": sa_ok and tmdb_se_ok,
             "saSuccessRecordId": (matched_success or {}).get("id") or "",
+            "newFailureRecordId": new_failure_id,
+            "movedSrcPath": moved_src,
             "tmdbAndEpisodeMatched": tmdb_se_ok,
             "destVideoConfirmed": dest_ok,
             "destPath": dest_path,
             "strmOrEmbyConfirmed": strm_ok,
             "embyEntryConfirmed": emby_ok,
+            "existingVersion": existing_ver if existing_ver["exists"] else None,
             "detail": detail,
             "checkedAt": _now_iso(),
         },
     })
-    return {"ok": True, "resolved": new_status == "resolved", "status": new_status, "job": updated, "message": detail}
+    return {
+        "ok": True,
+        "resolved": new_status == "resolved",
+        "status": new_status,
+        "existingVersion": existing_ver if existing_ver["exists"] else None,
+        "job": updated,
+        "message": detail,
+    }

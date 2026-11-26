@@ -349,8 +349,28 @@ export function SubscriptionsPage({ onOpenMedia }: SubscriptionsPageProps) {
                     <div className="row-main">
                       <div className="row-title">
                         <StatusPill
-                          status={j.status === 'resolved' ? 'ok' : j.status === 'failed' ? 'error' : j.status === 'not_processed' ? 'warn' : 'active'}
-                          label={j.status === 'resolved' ? '验证成功' : j.status === 'failed' ? '再次失败' : j.status === 'not_processed' ? '尚未处理' : '待处理 / 核验中'}
+                          status={
+                            j.status === 'resolved'
+                              ? 'ok'
+                              : j.status === 'failed'
+                                ? 'error'
+                                : j.status === 'skipped_existing'
+                                  ? 'protected'
+                                  : j.status === 'not_processed'
+                                    ? 'warn'
+                                    : 'active'
+                          }
+                          label={
+                            j.status === 'resolved'
+                              ? '验证成功'
+                              : j.status === 'failed'
+                                ? '再次失败'
+                                : j.status === 'skipped_existing'
+                                  ? '已有版本，无需补库'
+                                  : j.status === 'not_processed'
+                                    ? '尚未处理'
+                                    : '待处理 / 核验中'
+                          }
                         />
                         <span>{j.canonicalTitle}</span>
                         {j.targetSeason && j.targetEpisode && (

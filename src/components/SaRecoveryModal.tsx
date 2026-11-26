@@ -16,6 +16,7 @@ const JOB_STATUS_LABELS: Record<string, { tone: string; label: string }> = {
   submitted: { tone: 'active', label: '已提交（待处理）' },
   processing: { tone: 'active', label: '处理中（待核验）' },
   not_processed: { tone: 'warn', label: '超时尚未处理' },
+  skipped_existing: { tone: 'protected', label: '已有版本，无需补库' },
   resolved: { tone: 'ok', label: '验证成功' },
   failed: { tone: 'error', label: '再次失败（已停止）' },
 };
@@ -46,6 +47,9 @@ export function SaRecoveryModal({ record, onClose, onUpdated }: SaRecoveryModalP
       } else if (res.saTransferTasks.length > 0) {
         setTransferTaskId((cur) => cur || res.saTransferTasks[0].id);
       }
+      if (res.saCapabilities?.openapiChecked && !res.saCapabilities?.supportsExplicitIdentify && res.fileCheck?.exists) {
+        setStrategy('rename_and_manual');
+      }
     } catch (err) {
       setFeedback({ tone: 'error', text: err instanceof Error ? err.message : '诊断失败' });
     } finally {
@@ -58,6 +62,10 @@ export function SaRecoveryModal({ record, onClose, onUpdated }: SaRecoveryModalP
   }, [runDiagnose]);
 
   const activeProposal: SaRecoveryProposal | null = diag?.proposals[selectedIdx] || null;
+  const activeExisting = activeProposal?.existingVersion?.exists ? activeProposal.existingVersion : null;
+  const saMissingExplicitParams = Boolean(
+    diag?.saCapabilities?.openapiChecked && !diag.saCapabilities.supportsExplicitIdentify
+  );
 
   const submitRecovery = async () => {
     if (!diag || !activeProposal) return;
@@ -232,7 +240,14 @@ export function SaRecoveryModal({ record, onClose, onUpdated }: SaRecoveryModalP
                             />
                           )}
                           {p.seasonName && <span className="muted">「{p.seasonName}」</span>}
-                          {p.alreadyInEmby && <StatusPill status="error" label="Emby 已有（禁覆盖）" />}
+                          {p.existingVersion?.exists ? (
+                            <StatusPill
+                              status={p.existingVersion.noRecoveryNeeded ? 'protected' : 'error'}
+                              label={p.existingVersion.badgeLabel || '已有版本，无需补库'}
+                            />
+                          ) : p.alreadyInEmby ? (
+                            <StatusPill status="error" label="Emby 已有（禁覆盖）" />
+                          ) : null}
                           {p.sequelConflict?.hasConflict && <StatusPill status="error" label="疑似续集串片冲突" />}
                         </div>
                         <div style={{ marginTop: 4, fontSize: 12.5 }}>
@@ -247,6 +262,26 @@ export function SaRecoveryModal({ record, onClose, onUpdated }: SaRecoveryModalP
                 </div>
               )}
             </div>
+
+            {/* 3.5 Existing preferred version callout (e.g. CR already exists vs failed LINETV) */}
+            {activeExisting && (
+              <div className="banner ok" style={{ borderColor: 'var(--accent)' }}>
+                <ShieldCheck size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+                <strong>{activeExisting.badgeLabel || '已有版本，无需补库'}：</strong>
+                {activeExisting.summary}
+              </div>
+            )}
+
+            {/* 3.6 Real SA OpenAPI parameter check warning */}
+            {saMissingExplicitParams && activeProposal && !activeExisting && (
+              <div className="banner warn">
+                <AlertTriangle size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+                <strong>SA 真实接口参数核对提示：</strong>
+                SA 的 <code>{diag.saCapabilities.manualEndpointPath || '/api/v1/transfer/manual'}</code> 仅声明参数 [
+                {(diag.saCapabilities.manualBodyFields || ['items', 'transfer_task_id']).join(', ')}
+                ]，不支持直接传 TMDB ID / 季集覆盖。原样提交不会让指定映射生效，请使用「保留规格改名（含 {'{tmdbid=...}'} 与目标季集）+ 单文件提交」或在 SA 网页端手动指定识别。
+              </div>
+            )}
 
             {/* 4. Execution options & boundaries */}
             {activeProposal && (
@@ -317,10 +352,15 @@ export function SaRecoveryModal({ record, onClose, onUpdated }: SaRecoveryModalP
               <button
                 className="btn btn-primary"
                 type="button"
-                disabled={busy || !activeProposal || Boolean(activeProposal.alreadyInEmby) || job?.status === 'resolved'}
+                disabled={busy || !activeProposal || Boolean(activeProposal.alreadyInEmby) || Boolean(activeExisting?.exists) || job?.status === 'resolved'}
                 onClick={() => void submitRecovery()}
               >
-                <CheckCircle2 size={14} /> {busy ? '提交中…' : '确认方案并提交单文件恢复'}
+                <CheckCircle2 size={14} />{' '}
+                {activeExisting?.noRecoveryNeeded
+                  ? '已有版本，无需补库'
+                  : busy
+                    ? '提交中…'
+                    : '确认方案并提交单文件恢复'}
               </button>
             </div>
           </div>

@@ -61,6 +61,18 @@ export interface ActionableIssue {
   appLabel: string;
 }
 
+export interface SaExistingVersionInfo {
+  exists: boolean;
+  noRecoveryNeeded: boolean;
+  badgeLabel: string;
+  source: string;
+  existingSourceTag: string;
+  failedSourceTag: string;
+  existingFileName: string;
+  existingPath: string;
+  summary: string;
+}
+
 export interface SaRecoveryProposal {
   mediaType: MediaType;
   tmdbId: string;
@@ -79,6 +91,7 @@ export interface SaRecoveryProposal {
   seasonChanged: boolean;
   sequelConflict: { hasConflict: boolean; reasons: string[]; warningText: string };
   alreadyInEmby?: boolean;
+  existingVersion?: SaExistingVersionInfo;
   score: number;
   confidence: 'high' | 'medium' | 'low';
   reasons: string[];
@@ -118,18 +131,21 @@ export interface SaRecoveryJob {
   strategy: string;
   renamedFrom: string;
   renamedTo: string;
-  status: 'draft' | 'file_prepared' | 'submitted' | 'processing' | 'not_processed' | 'resolved' | 'failed';
+  status: 'draft' | 'file_prepared' | 'submitted' | 'processing' | 'not_processed' | 'skipped_existing' | 'resolved' | 'failed';
   attemptCount: number;
   maxAttempts: number;
   lastError: string;
   verification: {
     saSuccessConfirmed?: boolean;
     saSuccessRecordId?: string;
+    newFailureRecordId?: string;
+    movedSrcPath?: string;
     tmdbAndEpisodeMatched?: boolean;
     destVideoConfirmed?: boolean;
     destPath?: string;
     strmOrEmbyConfirmed?: boolean;
     embyEntryConfirmed?: boolean;
+    existingVersion?: SaExistingVersionInfo | null;
     detail?: string;
     checkedAt?: string;
   };
@@ -149,6 +165,8 @@ export interface SaDiagnoseResponse {
   };
   recognitionStatus?: 'matched' | 'unreliable';
   statusMessage?: string;
+  noRecoveryNeeded?: boolean;
+  existingVersion?: SaExistingVersionInfo | null;
   filteredOutCount?: number;
   parsed: {
     fileName: string;
@@ -171,7 +189,17 @@ export interface SaDiagnoseResponse {
   requiresConfirm: boolean;
   proposals: SaRecoveryProposal[];
   saTransferTasks: Array<{ id: string; name: string; sourcePath: string; targetPath: string }>;
-  saCapabilities: { transferManual?: boolean; manualIdentifyParams?: string[]; openapiChecked?: boolean };
+  saCapabilities: {
+    transferManual?: boolean;
+    manualEndpointPath?: string;
+    manualBodyFields?: string[];
+    manualItemFields?: string[];
+    manualIdentifyParams?: string[];
+    supportsTmdbParam?: boolean;
+    supportsSeasonEpisodeParam?: boolean;
+    supportsExplicitIdentify?: boolean;
+    openapiChecked?: boolean;
+  };
   latestJob: SaRecoveryJob | null;
 }
 

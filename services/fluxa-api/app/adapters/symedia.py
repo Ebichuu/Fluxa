@@ -154,18 +154,18 @@ class SymediaAdapter:
         self._access_token = tok
         return tok
 
-    def _request(self, method: str, pathname: str, *, json_body: Any = None) -> Any:
+    def _request(self, method: str, pathname: str, *, json_body: Any = None, params: dict[str, Any] | None = None) -> Any:
         if not self.configured:
             raise RuntimeError("Symedia 未配置")
         tok = self._login()
         url = f"{self.base_url}/api/v1/{pathname.lstrip('/')}"
         headers = {"Authorization": f"Bearer {tok}", "Accept": "application/json"}
-        resp = self.http.request(method, url, headers=headers, json=json_body, timeout=TIMEOUT)
+        resp = self.http.request(method, url, headers=headers, json=json_body, params=params, timeout=TIMEOUT)
         if resp.status_code in {401, 403} and not self.token and self.username:
             self._access_token = ""
             tok = self._login()
             headers["Authorization"] = f"Bearer {tok}"
-            resp = self.http.request(method, url, headers=headers, json=json_body, timeout=TIMEOUT)
+            resp = self.http.request(method, url, headers=headers, json=json_body, params=params, timeout=TIMEOUT)
         if resp.status_code >= 400:
             raise RuntimeError(f"Symedia 响应异常 ({resp.status_code})")
         return resp.json() if resp.content else {}
@@ -241,33 +241,141 @@ class SymediaAdapter:
             })
         return tasks
 
+    @staticmethod
+    def _resolve_openapi_schema(schema: Any, components: dict[str, Any], depth: int = 0) -> dict[str, Any]:
+        if depth > 6 or not isinstance(schema, dict):
+            return {}
+        if "$ref" in schema and isinstance(schema["$ref"], str):
+            ref_name = schema["$ref"].rsplit("/", 1)[-1]
+            target = (components.get("schemas") or {}).get(ref_name)
+            return SymediaAdapter._resolve_openapi_schema(target, components, depth + 1)
+        merged: dict[str, Any] = dict(schema)
+        props: dict[str, Any] = dict(schema.get("properties") or {})
+        for combiner in ("allOf", "anyOf", "oneOf"):
+            for sub in schema.get(combiner) or []:
+                res = SymediaAdapter._resolve_openapi_schema(sub, components, depth + 1)
+                if isinstance(res.get("properties"), dict):
+                    props.update(res["properties"])
+                if res.get("type") == "array" and "items" in res and "items" not in merged:
+                    merged["items"] = res["items"]
+        if props:
+            merged["properties"] = props
+        return merged
+
+    @staticmethod
+    def _bind_param(candidates: tuple[str, ...], query_params: list[str], body_fields: list[str], item_fields: list[str]) -> dict[str, str] | None:
+        q_map = {k.lower(): k for k in query_params}
+        b_map = {k.lower(): k for k in body_fields}
+        i_map = {k.lower(): k for k in item_fields}
+        for key in candidates:
+            lk = key.lower()
+            if lk in i_map:
+                return {"name": i_map[lk], "in": "item"}
+            if lk in b_map:
+                return {"name": b_map[lk], "in": "body"}
+            if lk in q_map:
+                return {"name": q_map[lk], "in": "query"}
+        return None
+
     def probe_recovery_capabilities(self) -> dict[str, Any]:
-        """Inspect SA OpenAPI spec (read-only) to verify supported single-file manual identify endpoints."""
-        caps = {
+        """Inspect SA OpenAPI spec (resolving $ref schemas) to verify REAL supported manual identify parameters.
+
+        NEVER guesses or pretends unverified fields are supported by SA!
+        """
+        caps: dict[str, Any] = {
             "transferManual": False,
+            "manualEndpointPath": "",
+            "manualQueryParams": [],
+            "manualBodyFields": [],
+            "manualItemFields": [],
             "manualIdentifyParams": [],
+            "supportsTmdbParam": False,
+            "supportsSeasonEpisodeParam": False,
+            "supportsExplicitIdentify": False,
+            "paramBindings": {},
             "historyRedo": False,
+            "discoveredIdentifyEndpoints": [],
             "openapiChecked": False,
         }
         if not self.configured:
             return caps
+        headers = {"Accept": "application/json"}
+        try:
+            tok = self._login()
+            if tok:
+                headers["Authorization"] = f"Bearer {tok}"
+        except Exception:
+            pass
+
         for spec_path in ("/openapi.json", "/api/v1/openapi.json"):
             try:
-                resp = self.http.get(f"{self.base_url}{spec_path}", timeout=6)
+                resp = self.http.get(f"{self.base_url}{spec_path}", headers=headers, timeout=6)
                 if resp.status_code != 200:
                     continue
                 spec = resp.json() if resp.content else {}
                 paths = spec.get("paths") if isinstance(spec, dict) else {}
+                components = spec.get("components") if isinstance(spec, dict) else {}
                 if not isinstance(paths, dict):
                     continue
                 caps["openapiChecked"] = True
                 for p, ops in paths.items():
-                    if p.endswith("/transfer/manual") and isinstance(ops, dict) and "post" in ops:
+                    if not isinstance(ops, dict):
+                        continue
+                    op = ops.get("post") if isinstance(ops.get("post"), dict) else None
+                    if not op:
+                        continue
+                    q_params = [
+                        str(pr.get("name") or "")
+                        for pr in (op.get("parameters") or [])
+                        if isinstance(pr, dict) and pr.get("in") == "query" and pr.get("name")
+                    ]
+                    rb = ((op.get("requestBody") or {}).get("content") or {}).get("application/json") or {}
+                    body_schema = self._resolve_openapi_schema(rb.get("schema") or {}, components)
+                    body_props = body_schema.get("properties") if isinstance(body_schema.get("properties"), dict) else {}
+                    body_fields = list(body_props.keys())
+                    item_fields: list[str] = []
+                    for nested_key in ("items", "fileitem", "file_item", "files"):
+                        if nested_key in body_props:
+                            sub = self._resolve_openapi_schema(body_props[nested_key], components)
+                            if sub.get("type") == "array" and isinstance(sub.get("items"), dict):
+                                sub = self._resolve_openapi_schema(sub["items"], components)
+                            if isinstance(sub.get("properties"), dict):
+                                item_fields.extend(k for k in sub["properties"].keys() if k not in item_fields)
+
+                    all_fields_lower = {k.lower() for k in (*q_params, *body_fields, *item_fields)}
+                    has_tmdb = any(k in all_fields_lower for k in ("tmdbid", "tmdb_id", "tmdbid_override"))
+                    has_se = any(k in all_fields_lower for k in ("season", "season_num", "begin_season", "specify_season"))
+
+                    if p.endswith("/transfer/manual"):
                         caps["transferManual"] = True
-                        body_str = str(ops["post"]).lower()
-                        for key in ("tmdbid", "tmdb_id", "season", "episode", "type", "media_type", "transfer_task_id"):
-                            if key in body_str and key not in caps["manualIdentifyParams"]:
-                                caps["manualIdentifyParams"].append(key)
+                        caps["manualEndpointPath"] = p
+                        caps["manualQueryParams"] = q_params
+                        caps["manualBodyFields"] = body_fields
+                        caps["manualItemFields"] = item_fields
+                        bindings: dict[str, dict[str, str]] = {}
+                        for role, cands in (
+                            ("tmdb", ("tmdbid", "tmdb_id", "tmdbId")),
+                            ("mediaType", ("type", "media_type", "mediaType", "type_name")),
+                            ("season", ("season", "season_num", "begin_season", "specify_season")),
+                            ("episode", ("episode", "episode_num", "begin_episode", "specify_episode", "episode_detail")),
+                        ):
+                            b = self._bind_param(cands, q_params, body_fields, item_fields)
+                            if b:
+                                bindings[role] = b
+                        caps["paramBindings"] = bindings
+                        caps["supportsTmdbParam"] = "tmdb" in bindings
+                        caps["supportsSeasonEpisodeParam"] = ("season" in bindings) and ("episode" in bindings)
+                        caps["supportsExplicitIdentify"] = caps["supportsTmdbParam"] and caps["supportsSeasonEpisodeParam"]
+                        caps["manualIdentifyParams"] = [f"{b['name']}({b['in']})" for b in bindings.values()]
+
+                    if ("transfer" in p or "history" in p) and has_tmdb:
+                        caps["discoveredIdentifyEndpoints"].append({
+                            "path": p,
+                            "queryParams": q_params,
+                            "bodyFields": body_fields,
+                            "itemFields": item_fields,
+                            "hasSeason": has_se,
+                        })
                     if "history/transfer" in p and ("redo" in p or "retry" in p or "manual" in p):
                         caps["historyRedo"] = True
                 break
@@ -284,32 +392,77 @@ class SymediaAdapter:
         media_type: str = "",
         season: int | None = None,
         episode: int | None = None,
+        capabilities: dict[str, Any] | None = None,
+        require_explicit_identify: bool = False,
     ) -> dict[str, Any]:
-        """Submit strictly ONE file to SA's verified /api/v1/transfer/manual endpoint."""
+        """Submit strictly ONE file to SA's verified /api/v1/transfer/manual endpoint.
+
+        Checks SA's real OpenAPI schema before sending TMDB/season/episode parameters:
+        never silently sends unverified fields and pretends the override took effect.
+        """
         clean_path = str(file_path or "").strip()
         tid = str(transfer_task_id or "").strip()
         if not clean_path.startswith("/") or not tid:
             raise ValueError("单文件归档需要完整的云盘/源文件路径与 SA 归档任务 ID")
+
+        caps = capabilities if isinstance(capabilities, dict) else self.probe_recovery_capabilities()
+        bindings = caps.get("paramBindings") if isinstance(caps.get("paramBindings"), dict) else {}
+        needs_tmdb = bool(tmdb_id and str(tmdb_id).isdigit())
+        needs_se = bool(media_type == "tv" and season is not None and int(season) > 0)
+
+        if require_explicit_identify and caps.get("openapiChecked"):
+            if (needs_tmdb and not caps.get("supportsTmdbParam")) or (needs_se and not caps.get("supportsSeasonEpisodeParam")):
+                accepted = ", ".join(caps.get("manualBodyFields") or ["items", "transfer_task_id"])
+                item_acc = ", ".join(caps.get("manualItemFields") or [])
+                item_note = f"（items 字段：{item_acc}）" if item_acc else ""
+                raise RuntimeError(
+                    f"SA 真实接口 {caps.get('manualEndpointPath') or '/api/v1/transfer/manual'} 仅声明参数 [{accepted}]{item_note}，"
+                    "不支持直接传入 TMDB ID / 季集覆盖；直接提交原文件名不会让指定映射生效。"
+                    "请改用「保留规格规范改名（含 {tmdbid=...} 与目标季集）+ 单文件提交」，或在 SA 网页端手动指定识别。"
+                )
+
+        item_obj: dict[str, Any] = {"type": "file", "path": clean_path}
         payload: dict[str, Any] = {
-            "items": [{"type": "file", "path": clean_path}],
+            "items": [item_obj],
             "transfer_task_id": tid,
         }
-        # Pass explicit TMDB / season / episode hints when provided
-        if tmdb_id and str(tmdb_id).isdigit():
-            payload["tmdbid"] = int(tmdb_id)
-        if media_type in {"movie", "tv"}:
-            payload["type"] = "电视剧" if media_type == "tv" else "电影"
-        if season is not None and int(season) > 0:
-            payload["season"] = int(season)
-        if episode is not None and int(episode) > 0:
-            payload["episode"] = int(episode)
+        query_params: dict[str, Any] = {}
+        applied_params: list[str] = []
 
-        data = self._request("POST", "transfer/manual", json_body=payload)
+        def _assign(role: str, value: Any) -> None:
+            b = bindings.get(role)
+            if not b:
+                return
+            loc, name = b.get("in"), b.get("name")
+            if not name:
+                return
+            if loc == "item":
+                item_obj[name] = value
+            elif loc == "body":
+                payload[name] = value
+            elif loc == "query":
+                query_params[name] = value
+            applied_params.append(f"{name}={value}({loc})")
+
+        if needs_tmdb:
+            _assign("tmdb", int(tmdb_id))
+        if media_type in {"movie", "tv"}:
+            _assign("mediaType", "电视剧" if media_type == "tv" else "电影")
+        if season is not None and int(season) > 0:
+            _assign("season", int(season))
+        if episode is not None and int(episode) > 0:
+            _assign("episode", int(episode))
+
+        data = self._request("POST", "transfer/manual", json_body=payload, params=query_params or None)
         if isinstance(data, dict) and data.get("success") is False:
             raise RuntimeError(sanitize_text(data.get("message") or "Symedia 拒绝了单文件归档请求"))
+
+        override_mode = "openapi_params" if applied_params else ("filename_tag" if "{tmdbid=" in clean_path.lower() else "unverified_no_openapi")
         return {
             "ok": True,
-            "message": sanitize_text((data.get("message") if isinstance(data, dict) else "") or "已向 SA 提交单文件归档请求（待核验结果）"),
+            "message": sanitize_text((data.get("message") if isinstance(data, dict) else "") or "已向 SA 提交单文件归档请求（待核验实际结果）"),
+            "appliedParams": applied_params,
+            "overrideMode": override_mode,
             "raw": data,
         }
 
