@@ -402,9 +402,11 @@ def create_subscription():
         }), 409
 
     final_season = int(season) if season else guardrail.get("recommendedSeason")
+    media_key = f"{media_type}:{tmdb_id}"
     try:
         if target == "torra":
-            res = adapters["torra"].add_subscription(
+            adapter = adapters["torra"]
+            res = adapter.add_subscription(
                 title=title,
                 media_type=media_type,
                 tmdb_id=int(tmdb_id),
@@ -413,7 +415,8 @@ def create_subscription():
             )
             target_label = "Torra"
         else:
-            res = adapters["moviepilot"].add_subscription(
+            adapter = adapters["moviepilot"]
+            res = adapter.add_subscription(
                 title=title,
                 media_type=media_type,
                 tmdb_id=int(tmdb_id),
@@ -423,9 +426,68 @@ def create_subscription():
             )
             target_label = "MoviePilot Neo"
     except Exception as exc:
-        return jsonify({"ok": False, "error": sanitize_text(exc)}), 502
+        err_msg = sanitize_text(exc)
+        store.add_decision_log(
+            media_key=media_key,
+            title=title,
+            decision_type="subscribe",
+            outcome="failed",
+            source_label=source_label,
+            rule_name=f"{target_label} 请求异常",
+            reason_text=err_msg,
+            details={"target": target, "season": final_season, "intent": intent},
+        )
+        return jsonify({"ok": False, "error": err_msg}), 502
 
-    media_key = f"{media_type}:{tmdb_id}"
+    # 1. Check upstream business outcome (never treat HTTP 200 + success=false as subscribed!)
+    if not res.get("ok"):
+        err_msg = sanitize_text(res.get("message") or f"{target_label} 拒绝了该订阅请求")
+        store.add_decision_log(
+            media_key=media_key,
+            title=title,
+            decision_type="subscribe",
+            outcome="failed",
+            source_label=source_label,
+            rule_name=f"{target_label} 拒绝订阅",
+            reason_text=err_msg,
+            details={"target": target, "season": final_season, "intent": intent},
+        )
+        return jsonify({"ok": False, "error": err_msg}), 502
+
+    # 2. Read back upstream subscription list to verify it actually exists!
+    readback_confirmed = False
+    readback_err = ""
+    try:
+        live_subs = adapter.list_subscriptions()
+        for sub in live_subs:
+            if sub.get("mediaType") != media_type or str(sub.get("tmdbId") or "") != tmdb_id:
+                continue
+            if media_type == "tv" and final_season and sub.get("seasonNumber") is not None:
+                if int(sub["seasonNumber"]) != int(final_season):
+                    continue
+            readback_confirmed = True
+            break
+    except Exception as exc:
+        readback_err = sanitize_text(exc)
+
+    if not readback_confirmed:
+        unconfirmed_msg = (
+            f"{target_label} 虽返回请求响应，但读回订阅列表失败（{readback_err}），无法确认《{title}》已生效"
+            if readback_err
+            else f"{target_label} 虽返回请求响应，但读回订阅列表未查到《{title}》（TMDB #{tmdb_id}），未确认订阅成功"
+        )
+        store.add_decision_log(
+            media_key=media_key,
+            title=title,
+            decision_type="subscribe",
+            outcome="unconfirmed",
+            source_label=source_label,
+            rule_name=f"{target_label} 读回未确认",
+            reason_text=unconfirmed_msg,
+            details={"target": target, "season": final_season, "intent": intent},
+        )
+        return jsonify({"ok": False, "unconfirmed": True, "error": unconfirmed_msg}), 502
+
     store.set_preference(media_key, intent=intent, preferred_target=target)
     log_entry = store.add_decision_log(
         media_key=media_key,
@@ -434,10 +496,10 @@ def create_subscription():
         outcome="subscribed",
         source_label=source_label,
         rule_name=guardrail["ruleName"],
-        reason_text=f"已提交至 {target_label}（{'收藏' if intent == 'collect' else '追更'}）：{guardrail['reasonText']}",
-        details={"target": target, "season": final_season, "intent": intent, "guardrail": guardrail},
+        reason_text=f"已提交至 {target_label} 并读回确认生效（{'收藏' if intent == 'collect' else '追更'}）：{guardrail['reasonText']}",
+        details={"target": target, "season": final_season, "intent": intent, "guardrail": guardrail, "verified": True},
     )
-    return jsonify({"ok": True, "message": res["message"], "decisionLog": log_entry})
+    return jsonify({"ok": True, "verified": True, "message": res["message"], "decisionLog": log_entry})
 
 
 # -- Bounded Single-Task Actions (Pain Point 3) ---------------------------

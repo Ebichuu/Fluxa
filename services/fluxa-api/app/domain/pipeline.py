@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -130,14 +131,97 @@ def merge_subscriptions(snapshot: dict[str, Any], prefs: dict[str, dict[str, Any
     return items
 
 
-def _title_matches(target_title: str, candidate_text: str, extra_titles: list[str] | None = None) -> bool:
-    cand = compact_title(candidate_text)
-    if not cand:
+_TITLE_CUT_RE = re.compile(
+    r"(?i)(?:"
+    r"(?<![A-Za-z0-9])S\d{1,2}(?:E\d{1,4})?(?![A-Za-z0-9])|"
+    r"(?<![A-Za-z0-9])EP\d{1,4}(?![A-Za-z0-9])|"
+    r"第\s*\d{1,4}\s*[集话話季]|"
+    r"(?<![A-Za-z0-9])(?:2160p|1080p|1080i|720p|480p|4k|web[- .]?dl|web[- .]?rip|bdrip|blu[- .]?ray|remux|hdtv)(?![A-Za-z0-9])|"
+    r"\{tmdb(?:id)?=\d+\}"
+    r")"
+)
+_YEAR_TOKEN_RE = re.compile(r"(?<!\d)(19[5-9]\d|20[0-3]\d)(?!\d)")
+_TMDB_TAG_RE = re.compile(r"(?i)\{?tmdb(?:[-_ ]?id)?[=:](\d{1,10})\}?")
+_LEADING_GROUP_RE = re.compile(r"^\s*(?:[\[【][^\]】]{1,28}[\]】]\s*)+")
+_TRAILING_GROUP_RE = re.compile(r"[-@][A-Za-z0-9][A-Za-z0-9_.]{1,24}\s*$")
+
+
+def _extract_candidate_stem_and_year(text: str) -> tuple[str, str, str]:
+    raw = re.sub(r"\.(?:mkv|mp4|ts|iso|strm|torrent)$", "", str(text or "").strip(), flags=re.I)
+    tmdb_m = _TMDB_TAG_RE.search(raw)
+    inline_tmdb = tmdb_m.group(1) if tmdb_m else ""
+    year_m = _YEAR_TOKEN_RE.search(raw)
+    cand_year = year_m.group(1) if year_m else ""
+
+    stem = _LEADING_GROUP_RE.sub("", raw)
+    stem = _TRAILING_GROUP_RE.sub("", stem)
+    cut_m = _TITLE_CUT_RE.search(stem)
+    if cut_m and cut_m.start() >= 2:
+        stem = stem[: cut_m.start()]
+    if year_m:
+        ym = _YEAR_TOKEN_RE.search(stem)
+        if ym and ym.start() >= 2:
+            stem = stem[: ym.start()]
+    stem = re.sub(r"[\.\-_/\[\]\(\)【】]+", " ", stem)
+    stem = re.sub(r"\s+", " ", stem).strip()
+    return stem, cand_year, inline_tmdb
+
+
+def _title_tokens(text: str) -> tuple[list[str], str]:
+    cleaned = re.sub(r"[\.\-_/\[\]\(\)【】:：!！?？,，]+", " ", str(text or "").lower())
+    latin_and_nums = re.findall(r"[a-z0-9]+", cleaned)
+    cjk = "".join(re.findall(r"[\u4e00-\u9fff]+", cleaned))
+    return latin_and_nums, cjk
+
+
+def _title_matches(
+    target_title: str,
+    candidate_text: str,
+    extra_titles: list[str] | None = None,
+    *,
+    target_year: str = "",
+    target_tmdb_id: str = "",
+    media_type: str = "",
+) -> bool:
+    """Strict work-identity title matcher that NEVER confuses 'Alien' with 'Alien 2' / 'Aliens' / 'Alien Romulus'."""
+    stem, cand_year, inline_tmdb = _extract_candidate_stem_and_year(candidate_text)
+    if target_tmdb_id and inline_tmdb and inline_tmdb != str(target_tmdb_id):
         return False
+    if media_type == "movie" and target_year and cand_year:
+        try:
+            if abs(int(target_year) - int(cand_year)) > 1:
+                return False
+        except ValueError:
+            pass
+
+    cand_latin, cand_cjk = _title_tokens(stem)
+    if not cand_latin and not cand_cjk:
+        return False
+
     for t in [target_title, *(extra_titles or [])]:
-        ct = compact_title(t)
-        if len(ct) >= 2 and ct in cand:
-            return True
+        t_clean = str(t or "").strip()
+        if not t_clean:
+            continue
+        t_stem, _, _ = _extract_candidate_stem_and_year(t_clean)
+        t_latin, t_cjk = _title_tokens(t_stem or t_clean)
+        if not t_latin and not t_cjk:
+            continue
+
+        # Exact full token match (both CJK & Latin/numbers must agree — 'alien' != 'alien 2'!)
+        if t_latin and cand_latin and t_cjk and cand_cjk:
+            if t_latin == cand_latin and t_cjk == cand_cjk:
+                return True
+            continue
+        if t_cjk and cand_cjk:
+            # Ensure numeric sequel suffix isn't silently dropped (e.g. '异形' must NOT match '异形 2')
+            t_nums = [x for x in t_latin if x.isdigit()]
+            c_nums = [x for x in cand_latin if x.isdigit()]
+            if t_cjk == cand_cjk and t_nums == c_nums:
+                return True
+        if t_latin and cand_latin:
+            # Require exact Latin/numeric token equality so 'Alien' NEVER matches 'Alien 2' or 'Alien Romulus'
+            if t_latin == cand_latin:
+                return True
     return False
 
 
@@ -348,14 +432,35 @@ def build_media_pipeline(
         or f"{media_type.upper()} #{tmdb_id}"
     )
     original_title = (tmdb_detail or {}).get("originalTitle") or ""
-    extra_titles = [t for t in [original_title] if t]
+    target_year = str((tmdb_detail or {}).get("year") or (sub_entry or {}).get("year") or "")
+    alt_titles = list((tmdb_detail or {}).get("alternativeTitles") or [])
+    extra_titles = [t for t in [original_title, *alt_titles[:8]] if t]
+
+    def _matches_this_work(text: str, record_media_key: str = "") -> bool:
+        """If record carries an explicit DIFFERENT mediaKey/TMDB ID, NEVER fall back to title matching!"""
+        if record_media_key:
+            return record_media_key == media_key
+        return _title_matches(
+            title,
+            text,
+            extra_titles,
+            target_year=target_year,
+            target_tmdb_id=tmdb_id,
+            media_type=media_type,
+        )
 
     # Step 1: Subscription & Torrent Selection (MP Neo + Torra)
+    all_mp_hist = snapshot.get("mpHistory") or []
     mp_hist_matches = [
-        h for h in (snapshot.get("mpHistory") or [])
-        if h.get("mediaKey") == media_key or _title_matches(title, h.get("title", ""), extra_titles)
+        h for h in all_mp_hist
+        if _matches_this_work(h.get("title", "") or h.get("torrentName", ""), h.get("mediaKey") or "")
     ]
     mp_hashes = {h["downloadHash"] for h in mp_hist_matches if h.get("downloadHash")}
+    other_mp_hashes = {
+        h["downloadHash"]
+        for h in all_mp_hist
+        if h.get("downloadHash") and h.get("mediaKey") and h.get("mediaKey") != media_key
+    }
 
     if sub_entry:
         providers = " + ".join(sorted({s["sourceLabel"] for s in sub_entry["sources"]}))
@@ -391,7 +496,8 @@ def build_media_pipeline(
     qb_svc = snapshot["serviceMap"].get("qbittorrent") or {}
     matched_qb = [
         t for t in (snapshot.get("qbTasks") or [])
-        if (t["hash"] and t["hash"] in mp_hashes) or _title_matches(title, t["name"], extra_titles)
+        if (t["hash"] and t["hash"] in mp_hashes)
+        or (t["hash"] not in other_mp_hashes and _matches_this_work(t["name"]))
     ]
     if not qb_svc.get("connected"):
         qb_status, qb_label, qb_summary = "unconfirmed", "未确认", qb_svc.get("message") or "qBittorrent 未连接"
@@ -423,8 +529,13 @@ def build_media_pipeline(
 
     # Step 3: 115 Upload / Secupload (Torra)
     sec = snapshot.get("torraSecupload") or {}
-    matched_sec_fail = [f for f in (sec.get("failedFiles") or []) if _title_matches(title, f.get("fileName", ""), extra_titles)]
-    matched_sec_ok = [f for f in (sec.get("successFiles") or []) if _title_matches(title, f.get("fileName", ""), extra_titles)]
+    matched_sec_fail = [f for f in (sec.get("failedFiles") or []) if _matches_this_work(f.get("fileName", ""))]
+    matched_sec_ok = [f for f in (sec.get("successFiles") or []) if _matches_this_work(f.get("fileName", ""))]
+    active_runs = sec.get("activeRuns") or []
+    matched_active_runs = [
+        run for run in active_runs
+        if _matches_this_work(f"{run.get('message', '')} {run.get('taskKey', '')} {run.get('targetItemId', '')}")
+    ]
     if not sec.get("available"):
         c115_status, c115_label, c115_summary = "unconfirmed", "未确认", sec.get("error") or "未获取到 Torra 115 上传回执"
     elif matched_sec_fail:
@@ -433,9 +544,13 @@ def build_media_pipeline(
     elif matched_sec_ok:
         c115_status, c115_label = "ok", f"已确认上传 115（{len(matched_sec_ok)} 个文件）"
         c115_summary = f"最近上传：{matched_sec_ok[0]['fileName']}"
-    elif sec.get("activeRuns"):
+    elif matched_active_runs:
         c115_status, c115_label = "active", "115 上传任务运行中"
-        c115_summary = "Torra 正在执行秒传/上传队列（逐文件结果待回执）"
+        c115_summary = "Torra 正在执行与本作品关联的 115 上传任务（逐文件结果待回执）"
+    elif active_runs:
+        # Other works uploading MUST NOT make this unrelated work show "uploading"!
+        c115_status, c115_label = "unconfirmed", "未确认"
+        c115_summary = f"Torra 近期记录中未找到本作品的逐文件 115 上传证据（当前队列另有 {len(active_runs)} 个其他/未归属上传任务运行中）"
     else:
         # Strict honesty: never infer 115 upload success from qB completion!
         c115_status, c115_label = "unconfirmed", "未确认"
@@ -456,7 +571,7 @@ def build_media_pipeline(
     sa_svc = snapshot["serviceMap"].get("symedia") or {}
     matched_sa = [
         r for r in (snapshot.get("saHistory") or [])
-        if r.get("mediaKey") == media_key or _title_matches(title, r.get("title", "") + " " + r.get("fileName", ""), extra_titles)
+        if _matches_this_work(f"{r.get('title', '')} {r.get('fileName', '')}", r.get("mediaKey") or "")
     ]
     if not sa_svc.get("connected"):
         sa_status, sa_label, sa_summary = "unconfirmed", "未确认", sa_svc.get("message") or "Symedia (SA) 未连接"
@@ -498,6 +613,10 @@ def build_media_pipeline(
             emby_label = "Emby 已有条目" + ("（STRM）" if m_item.get("isStrm") else "")
             emby_summary = "媒体库中已存在对应电影条目（实际播放以 Emby 客户端为准）"
             emby_url = m_item.get("webUrl") or adapters["emby"].app_url()
+        elif emby.get("truncated"):
+            emby_status, emby_label = "unconfirmed", "未确认（库存快照截断）"
+            emby_summary = emby.get("truncationWarning") or "Emby 媒体库过大且快照未完整覆盖，不能确认未入库"
+            emby_url = adapters["emby"].app_url()
         else:
             emby_status, emby_label = "idle", "尚未进入 Emby"
             emby_summary = "Emby 媒体库中暂未查到该电影"
@@ -507,8 +626,16 @@ def build_media_pipeline(
         if s_item or emby_episodes:
             emby_status = "ok"
             emby_label = f"Emby 已有 {len(emby_episodes)} 集" if emby_episodes else "Emby 已有剧集条目"
-            emby_summary = "已核对 Emby 分集条目（实际播放以 Emby 客户端为准）"
+            emby_summary = (
+                "已核对 Emby 分集条目（注意：库存快照存在截断，未列出的分集请以 Emby 为准）"
+                if emby.get("truncated")
+                else "已核对 Emby 分集条目（实际播放以 Emby 客户端为准）"
+            )
             emby_url = (s_item or {}).get("webUrl") or adapters["emby"].app_url()
+        elif emby.get("truncated"):
+            emby_status, emby_label = "unconfirmed", "未确认（库存快照截断）"
+            emby_summary = emby.get("truncationWarning") or "Emby 媒体库过大且快照未完整覆盖，不能确认未入库"
+            emby_url = adapters["emby"].app_url()
         else:
             emby_status, emby_label = "idle", "尚未进入 Emby"
             emby_summary = "Emby 媒体库中暂未查到该剧集"

@@ -272,6 +272,13 @@ export interface DashboardResponse {
     endDate: string;
     todayItems: CalendarEpisodeItem[];
     days: CalendarDay[];
+    totalTvSubscriptions?: number;
+    checkedTvSubscriptions?: number;
+    truncated?: boolean;
+    omittedCount?: number;
+    truncationWarning?: string;
+    embyTruncated?: boolean;
+    embyTruncationWarning?: string;
   };
   activeDownloads: QbTask[];
   activeUploads: Array<{

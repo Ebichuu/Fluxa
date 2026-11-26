@@ -23,8 +23,21 @@ from app.storage import FluxaStore
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 MAX_TORRENT_BYTES = 5 * 1024 * 1024
+MAX_FAILED_RETRIES = 2
 MAGNET_HEX_RE = re.compile(r"(?i)urn:btih:([0-9a-f]{40})\b")
 MAGNET_B32_RE = re.compile(r"(?i)urn:btih:([a-z2-7]{32})\b")
+
+_RULE_LOCKS_GUARD = threading.Lock()
+_RULE_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _get_rule_lock(rule_id: str) -> threading.Lock:
+    with _RULE_LOCKS_GUARD:
+        lock = _RULE_LOCKS.get(rule_id)
+        if lock is None:
+            lock = threading.Lock()
+            _RULE_LOCKS[rule_id] = lock
+        return lock
 
 
 def _now_dt() -> datetime:
@@ -139,6 +152,47 @@ def run_rss_auto_rule(
     if not rule:
         raise ValueError("RSS 自动下载规则不存在")
 
+    # Per-rule non-blocking concurrency lock prevents manual check vs background poller double submission!
+    rule_lock = _get_rule_lock(rule_id)
+    if not rule_lock.acquire(blocking=False):
+        return {
+            "ok": True,
+            "busy": True,
+            "rule": rule,
+            "message": "该规则正在执行检查，已跳过并发重复运行",
+            "added": 0,
+            "unconfirmed": 0,
+            "skipped": 0,
+            "qualitySkipped": 0,
+            "insufficientSkipped": 0,
+            "failed": 0,
+        }
+
+    try:
+        return _run_rss_auto_rule_locked(
+            rule=rule,
+            store=store,
+            settings=settings,
+            adapters=adapters,
+            feed_fetcher=feed_fetcher,
+            torrent_downloader=torrent_downloader,
+            sleep_fn=sleep_fn,
+        )
+    finally:
+        rule_lock.release()
+
+
+def _run_rss_auto_rule_locked(
+    *,
+    rule: dict[str, Any],
+    store: FluxaStore,
+    settings: dict[str, Any],
+    adapters: dict[str, Any] | None = None,
+    feed_fetcher=None,
+    torrent_downloader=None,
+    sleep_fn=time.sleep,
+) -> dict[str, Any]:
+    rule_id = rule["id"]
     adapters = adapters or build_adapters(settings)
     qb = adapters["qbittorrent"]
     fetch_feed = feed_fetcher or (lambda url, sid, sname: fetch_and_parse_rss(url, site_id=sid, site_name=sname))
@@ -210,9 +264,10 @@ def run_rss_auto_rule(
         )
         return {"ok": False, "rule": updated, "message": msg, "added": 0, "skipped": 0, "failed": 0}
 
-    seen_keys = store.seen_rss_auto_item_keys(rule_id)
+    existing_items = store.get_rss_auto_item_map(rule_id)
     policy_id = str(rule.get("qualityPolicyId") or "none").strip() or "none"
     added = 0
+    reconfirmed = 0
     unconfirmed = 0
     skipped = 0
     quality_skipped = 0
@@ -220,8 +275,62 @@ def run_rss_auto_rule(
     failed = 0
     last_err = ""
 
-    # Process oldest-new first so qB receives chronological order
-    new_entries = [e for e in reversed(entries) if _item_key(e) not in seen_keys]
+    # Step 0: Re-verify previously `submitted_unconfirmed` items against live qB so they are NEVER silently dropped!
+    for prev in existing_items.values():
+        if prev.get("status") != "submitted_unconfirmed":
+            continue
+        prev_hash = str(prev.get("torrentHash") or "").strip().lower()
+        found_in_qb = False
+        if prev_hash:
+            if prev_hash in existing_qb_hashes:
+                found_in_qb = True
+            else:
+                found = qb.get_torrent_by_hash(prev_hash)
+                if found:
+                    found_in_qb = True
+                    existing_qb_hashes.add(prev_hash)
+        if found_in_qb:
+            reconfirmed += 1
+            added += 1
+            prev_meta = prev.get("qualityMeta") if isinstance(prev.get("qualityMeta"), dict) else {}
+            prev_reason = str((prev_meta.get("eval") or {}).get("reason") or "")
+            store.record_rss_auto_item(
+                rule_id=rule_id,
+                item_key=prev["itemKey"],
+                torrent_hash=prev_hash,
+                title=prev["title"],
+                download_url="",
+                status="confirmed_in_qb",
+                error_text=prev_reason or "复核确认该任务已存在于 qB",
+                qb_category=prev.get("qbCategory") or rule["category"],
+                qb_save_path=prev.get("qbSavePath") or rule["savePath"],
+                work_episode_key=prev.get("workEpisodeKey") or "",
+                quality_policy_id=prev.get("qualityPolicyId") or policy_id,
+                quality_meta=prev_meta,
+            )
+            store.add_audit(
+                action_type="rss_auto_reconfirm_qb",
+                target_service="qbittorrent",
+                target_id=prev_hash,
+                summary=f"[{rule['siteName']}·{rule['officialGroup']}] 复核确认入 qB：{prev['title'][:80]}",
+                status="success",
+            )
+
+    # Process oldest-new first; ALSO re-attempt previously `failed` entries up to MAX_FAILED_RETRIES!
+    new_entries: list[dict[str, Any]] = []
+    retry_counts: dict[str, int] = {}
+    for e in reversed(entries):
+        ekey = _item_key(e)
+        prev = existing_items.get(ekey)
+        if not prev:
+            new_entries.append(e)
+            continue
+        if prev.get("status") == "failed":
+            prev_meta = prev.get("qualityMeta") if isinstance(prev.get("qualityMeta"), dict) else {}
+            rc = int(prev_meta.get("retryCount") or 1)
+            if rc < MAX_FAILED_RETRIES:
+                retry_counts[ekey] = rc + 1
+                new_entries.append(e)
 
     # Step 1: Evaluate quality policy BEFORE downloading .torrent or pushing to qB
     grouped_qualified: dict[str, list[dict[str, Any]]] = {}
@@ -358,6 +467,8 @@ def run_rss_auto_rule(
         title = cand["title"]
         specs = cand["specs"]
         eval_res = cand["eval"]
+        retry_n = retry_counts.get(key, 1)
+        item_meta = {"specs": specs, "eval": eval_res, "retryCount": retry_n}
         dl_url = str(entry.get("downloadUrl") or "").strip()
         if not dl_url:
             failed += 1
@@ -366,7 +477,7 @@ def run_rss_auto_rule(
                 rule_id=rule_id, item_key=key, torrent_hash="", title=title, download_url="",
                 status="failed", error_text=last_err, qb_category=rule["category"], qb_save_path=rule["savePath"],
                 work_episode_key=specs["workEpisodeKey"], quality_policy_id=policy_id,
-                quality_meta={"specs": specs, "eval": eval_res},
+                quality_meta=item_meta,
             )
             continue
 
@@ -383,7 +494,7 @@ def run_rss_auto_rule(
                     rule_id=rule_id, item_key=key, torrent_hash="", title=title, download_url="",
                     status="failed", error_text=last_err, qb_category=rule["category"], qb_save_path=rule["savePath"],
                     work_episode_key=specs["workEpisodeKey"], quality_policy_id=policy_id,
-                    quality_meta={"specs": specs, "eval": eval_res},
+                    quality_meta=item_meta,
                 )
                 continue
 
@@ -396,8 +507,24 @@ def run_rss_auto_rule(
                 rule_id=rule_id, item_key=key, torrent_hash=info_hash, title=title, download_url="",
                 status=dup_status, error_text=dup_msg, qb_category=rule["category"], qb_save_path=rule["savePath"],
                 work_episode_key=specs["workEpisodeKey"], quality_policy_id=policy_id,
-                quality_meta={"specs": specs, "eval": eval_res},
+                quality_meta=item_meta,
             )
+            continue
+
+        # Atomic SQLite claim prevents cross-worker / cross-thread duplicate submissions!
+        claimed, claim_reason = store.claim_rss_auto_item_for_submit(
+            rule_id=rule_id,
+            item_key=key,
+            torrent_hash=info_hash,
+            title=title,
+            qb_category=rule["category"],
+            qb_save_path=rule["savePath"],
+            work_episode_key=specs["workEpisodeKey"],
+            quality_policy_id=policy_id,
+            quality_meta=item_meta,
+        )
+        if not claimed:
+            skipped += 1
             continue
 
         # Submit to qBittorrent with configured save_path & category
@@ -417,7 +544,7 @@ def run_rss_auto_rule(
                 rule_id=rule_id, item_key=key, torrent_hash=info_hash, title=title, download_url="",
                 status="failed", error_text=last_err, qb_category=rule["category"], qb_save_path=rule["savePath"],
                 work_episode_key=specs["workEpisodeKey"], quality_policy_id=policy_id,
-                quality_meta={"specs": specs, "eval": eval_res},
+                quality_meta=item_meta,
             )
             continue
 
@@ -440,7 +567,7 @@ def run_rss_auto_rule(
                 rule_id=rule_id, item_key=key, torrent_hash=info_hash, title=title, download_url="",
                 status="confirmed_in_qb", error_text=reason_note, qb_category=rule["category"], qb_save_path=rule["savePath"],
                 work_episode_key=specs["workEpisodeKey"], quality_policy_id=policy_id,
-                quality_meta={"specs": specs, "eval": eval_res},
+                quality_meta=item_meta,
             )
             policy_label = get_quality_policy(policy_id)["shortName"]
             store.add_audit(
@@ -455,13 +582,17 @@ def run_rss_auto_rule(
             store.record_rss_auto_item(
                 rule_id=rule_id, item_key=key, torrent_hash=info_hash, title=title, download_url="",
                 status="submitted_unconfirmed",
-                error_text="已提交至 qB，但读回暂未查到该 Hash 任务（请检查 qB 是否已接收或重复）",
+                error_text="已提交至 qB，但读回暂未查到该 Hash 任务（下轮将继续复核，请检查 qB 是否已接收）",
                 qb_category=rule["category"], qb_save_path=rule["savePath"],
                 work_episode_key=specs["workEpisodeKey"], quality_policy_id=policy_id,
-                quality_meta={"specs": specs, "eval": eval_res},
+                quality_meta=item_meta,
             )
 
-    if not new_entries:
+    unresolved = store.count_rss_unresolved(rule_id)
+    unresolved_fail = unresolved["failed"]
+    unresolved_unconf = unresolved["unconfirmed"]
+
+    if not new_entries and reconfirmed == 0:
         msg = "检查完成，暂无新条目"
         status_code = "ok"
     elif failed > 0 and added == 0:
@@ -470,7 +601,7 @@ def run_rss_auto_rule(
     else:
         parts = []
         if added:
-            parts.append(f"已确认入 qB {added} 条")
+            parts.append(f"已确认入 qB {added} 条" + (f"（含复核确认 {reconfirmed} 条）" if reconfirmed else ""))
         if unconfirmed:
             parts.append(f"待确认 {unconfirmed} 条")
         if quality_skipped:
@@ -481,8 +612,21 @@ def run_rss_auto_rule(
             parts.append(f"Hash 去重跳过 {skipped} 条")
         if failed:
             parts.append(f"失败 {failed} 条")
-        msg = "检查完成：" + "，".join(parts)
+        msg = "检查完成：" + ("，".join(parts) if parts else "已复核")
         status_code = "warn" if (failed or unconfirmed) else "ok"
+
+    # NEVER silently downgrade status to 'ok' while unresolved failed / unconfirmed items remain!
+    if unresolved_fail > 0 or unresolved_unconf > 0:
+        pending_parts = []
+        if unresolved_fail > 0:
+            pending_parts.append(f"{unresolved_fail} 条未解决失败")
+        if unresolved_unconf > 0:
+            pending_parts.append(f"{unresolved_unconf} 条待确认")
+        msg = f"{msg}（仍有 {'、'.join(pending_parts)}）"
+        if unresolved_fail > 0:
+            status_code = "error"
+        elif status_code == "ok":
+            status_code = "warn"
 
     updated = store.update_rss_auto_rule_status(
         rule_id,
@@ -497,7 +641,10 @@ def run_rss_auto_rule(
         "rule": updated,
         "message": msg,
         "added": added,
+        "reconfirmed": reconfirmed,
         "unconfirmed": unconfirmed,
+        "unresolvedFailed": unresolved_fail,
+        "unresolvedUnconfirmed": unresolved_unconf,
         "skipped": skipped,
         "qualitySkipped": quality_skipped,
         "insufficientSkipped": insufficient_skipped,

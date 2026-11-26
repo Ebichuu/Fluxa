@@ -62,6 +62,24 @@ def _parse_secupload_files(result: Any, *, key: str) -> list[dict[str, Any]]:
     return parsed
 
 
+def _torra_business_result(data: Any, *, default_ok_msg: str, default_err_msg: str) -> tuple[bool, str]:
+    if isinstance(data, dict):
+        status_str = str(data.get("status") or "").strip().lower()
+        code = data.get("code")
+        explicit_fail = (
+            data.get("success") is False
+            or data.get("ok") is False
+            or status_str in {"error", "failed", "fail", "rejected", "false"}
+            or (isinstance(code, int) and code not in {0, 200, 201})
+            or (bool(data.get("error") or data.get("detail")) and data.get("success") is not True and not data.get("id"))
+        )
+        msg = str(data.get("message") or data.get("msg") or data.get("error") or data.get("detail") or "").strip()
+        if explicit_fail:
+            return False, sanitize_text(msg or default_err_msg)
+        return True, sanitize_text(msg or default_ok_msg)
+    return True, default_ok_msg
+
+
 class TorraAdapter:
     """Clean Torra adapter for subscriptions + 115 secupload evidence + targeted actions."""
 
@@ -270,9 +288,12 @@ class TorraAdapter:
         if target_item_id:
             body["target_item_id"] = target_item_id
         data = self._request("POST", f"/api/v1/plugins/{SECUPLOAD_PLUGIN_KEY}/tasks/{task_key}/run", json_body=body)
-        ok = bool(data.get("success", True)) if isinstance(data, dict) else True
-        msg = str(data.get("message") or ("已提交单个 115 上传任务重试" if ok else "提交重试失败")) if isinstance(data, dict) else "已提交重试"
-        return {"ok": ok, "message": sanitize_text(msg)}
+        ok, msg = _torra_business_result(
+            data,
+            default_ok_msg="已提交单个 115 上传任务重试",
+            default_err_msg="Torra 拒绝提交 115 上传重试",
+        )
+        return {"ok": ok, "message": msg}
 
     def add_subscription(
         self,
@@ -293,6 +314,9 @@ class TorraAdapter:
         if media_type == "tv" and season:
             payload["season_number"] = int(season)
         data = self._request("POST", "/api/v1/subscriptions", json_body=payload)
-        ok = bool(data.get("success", True)) if isinstance(data, dict) else True
-        msg = str(data.get("message") or ("已添加到 Torra 订阅" if ok else "Torra 添加订阅失败")) if isinstance(data, dict) else "已添加订阅"
-        return {"ok": ok, "message": sanitize_text(msg), "raw": data}
+        ok, msg = _torra_business_result(
+            data,
+            default_ok_msg="已添加到 Torra 订阅",
+            default_err_msg="Torra 拒绝添加订阅",
+        )
+        return {"ok": ok, "message": msg, "raw": data}

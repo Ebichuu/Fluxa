@@ -35,6 +35,25 @@ def normalize_api_root(base_url: str) -> str:
     return f"{cleaned}/api/v1"
 
 
+def _upstream_business_result(data: Any, *, default_ok_msg: str, default_err_msg: str) -> tuple[bool, str]:
+    """Strictly verify upstream business outcome rather than trusting HTTP 200 alone."""
+    if isinstance(data, dict):
+        status_str = str(data.get("status") or "").strip().lower()
+        code = data.get("code")
+        explicit_fail = (
+            data.get("success") is False
+            or data.get("ok") is False
+            or status_str in {"error", "failed", "fail", "rejected", "false"}
+            or (isinstance(code, int) and code not in {0, 200, 201})
+            or (bool(data.get("error") or data.get("detail")) and data.get("success") is not True and not data.get("id"))
+        )
+        msg = str(data.get("message") or data.get("msg") or data.get("error") or data.get("detail") or "").strip()
+        if explicit_fail:
+            return False, sanitize_text(msg or default_err_msg)
+        return True, sanitize_text(msg or default_ok_msg)
+    return True, default_ok_msg
+
+
 class MoviePilotAdapter:
     """MoviePilot Neo v2 REST adapter verified against v2.16.12.
 
@@ -213,9 +232,12 @@ class MoviePilotAdapter:
         if not sub_id:
             raise ValueError("缺少 MoviePilot Neo 订阅 ID")
         data = self._request("GET", f"subscribe/search/{sub_id}")
-        ok = bool(data.get("success", True)) if isinstance(data, dict) else True
-        msg = str(data.get("message") or ("已触发 MoviePilot Neo 单条订阅搜索" if ok else "触发失败")) if isinstance(data, dict) else "已触发搜索"
-        return {"ok": ok, "message": sanitize_text(msg)}
+        ok, msg = _upstream_business_result(
+            data,
+            default_ok_msg="已触发 MoviePilot Neo 单条订阅搜索",
+            default_err_msg="MoviePilot Neo 拒绝触发订阅搜索",
+        )
+        return {"ok": ok, "message": msg}
 
     def add_subscription(
         self,
@@ -244,6 +266,9 @@ class MoviePilotAdapter:
         if exclude:
             payload["exclude"] = exclude
         data = self._request("POST", "subscribe/", json_body=payload)
-        ok = bool(data.get("success", True)) if isinstance(data, dict) else True
-        msg = str(data.get("message") or ("已交由 MoviePilot Neo 订阅并按 Neo 规则选种" if ok else "添加订阅失败")) if isinstance(data, dict) else "已添加订阅"
-        return {"ok": ok, "message": sanitize_text(msg), "raw": data}
+        ok, msg = _upstream_business_result(
+            data,
+            default_ok_msg="已交由 MoviePilot Neo 订阅并按 Neo 规则选种",
+            default_err_msg="MoviePilot Neo 拒绝添加订阅",
+        )
+        return {"ok": ok, "message": msg, "raw": data}

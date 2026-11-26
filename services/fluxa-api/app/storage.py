@@ -919,6 +919,7 @@ class FluxaStore:
         with self._lock:
             conn = self._connect()
             try:
+                # Authoritative deduplicated confirmed count directly from rss_auto_items (never drifts or double-counts!)
                 conn.execute(
                     """
                     UPDATE rss_auto_rules SET
@@ -926,7 +927,10 @@ class FluxaStore:
                         last_checked_at = ?,
                         last_status = ?,
                         last_message = ?,
-                        added_count = added_count + ?,
+                        added_count = (
+                            SELECT COUNT(*) FROM rss_auto_items
+                            WHERE rule_id = ? AND status = 'confirmed_in_qb'
+                        ),
                         updated_at = ?
                     WHERE id = ?
                     """,
@@ -935,7 +939,7 @@ class FluxaStore:
                         last_checked_at,
                         last_status,
                         last_message,
-                        max(0, int(added_delta)),
+                        str(rule_id),
                         now,
                         str(rule_id),
                     ),
@@ -956,11 +960,120 @@ class FluxaStore:
             finally:
                 conn.close()
 
+    def get_rss_auto_item_map(self, rule_id: str) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute("SELECT * FROM rss_auto_items WHERE rule_id = ?", (str(rule_id),)).fetchall()
+                return {str(r["item_key"]): self._row_to_rss_auto_item(r) for r in rows}
+            finally:
+                conn.close()
+
+    def count_rss_unresolved(self, rule_id: str) -> dict[str, int]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT status, COUNT(*) AS cnt FROM rss_auto_items WHERE rule_id = ? AND status IN ('failed', 'submitted_unconfirmed') GROUP BY status",
+                    (str(rule_id),),
+                ).fetchall()
+                counts = {"failed": 0, "unconfirmed": 0}
+                for r in rows:
+                    if r["status"] == "failed":
+                        counts["failed"] = int(r["cnt"])
+                    elif r["status"] == "submitted_unconfirmed":
+                        counts["unconfirmed"] = int(r["cnt"])
+                return counts
+            finally:
+                conn.close()
+
+    def claim_rss_auto_item_for_submit(
+        self,
+        *,
+        rule_id: str,
+        item_key: str,
+        torrent_hash: str,
+        title: str,
+        qb_category: str = "",
+        qb_save_path: str = "",
+        work_episode_key: str = "",
+        quality_policy_id: str = "none",
+        quality_meta: dict[str, Any] | None = None,
+    ) -> tuple[bool, str]:
+        """Atomically claim (rule_id, item_key, torrent_hash) inside BEGIN IMMEDIATE so concurrent threads
+        or multi-worker Gunicorn processes can NEVER submit the same torrent twice.
+        """
+        now = _now_iso()
+        h = str(torrent_hash or "").strip().lower()
+        meta_json = json.dumps(quality_meta or {}, ensure_ascii=False)
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                existing_row = conn.execute(
+                    "SELECT status FROM rss_auto_items WHERE rule_id = ? AND item_key = ?",
+                    (str(rule_id), str(item_key)),
+                ).fetchone()
+                if existing_row and str(existing_row["status"]) in {
+                    "submitting", "confirmed_in_qb", "submitted_unconfirmed",
+                    "duplicate_in_qb", "duplicate_seen", "baseline_skipped",
+                }:
+                    conn.rollback()
+                    return False, "already_claimed"
+                if h:
+                    dup_hash = conn.execute(
+                        """
+                        SELECT 1 FROM rss_auto_items
+                        WHERE torrent_hash = ?
+                          AND status IN ('submitting', 'confirmed_in_qb', 'submitted_unconfirmed', 'duplicate_in_qb', 'baseline_skipped')
+                        LIMIT 1
+                        """,
+                        (h,),
+                    ).fetchone()
+                    if dup_hash:
+                        conn.rollback()
+                        return False, "duplicate_seen"
+                conn.execute(
+                    """
+                    INSERT INTO rss_auto_items (
+                        rule_id, item_key, torrent_hash, title, download_url,
+                        status, error_text, qb_category, qb_save_path,
+                        work_episode_key, quality_policy_id, quality_meta_json, created_at
+                    ) VALUES (?, ?, ?, ?, '', 'submitting', '正在提交至 qBittorrent…', ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(rule_id, item_key) DO UPDATE SET
+                        torrent_hash = excluded.torrent_hash,
+                        status = 'submitting',
+                        error_text = excluded.error_text,
+                        qb_category = excluded.qb_category,
+                        qb_save_path = excluded.qb_save_path,
+                        work_episode_key = excluded.work_episode_key,
+                        quality_policy_id = excluded.quality_policy_id,
+                        quality_meta_json = excluded.quality_meta_json,
+                        created_at = excluded.created_at
+                    """,
+                    (
+                        str(rule_id), str(item_key), h, str(title or ""),
+                        str(qb_category or ""), str(qb_save_path or ""),
+                        str(work_episode_key or ""), str(quality_policy_id or "none"),
+                        meta_json, now,
+                    ),
+                )
+                conn.commit()
+                return True, ""
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
     def seen_rss_auto_item_keys(self, rule_id: str) -> set[str]:
         with self._lock:
             conn = self._connect()
             try:
-                rows = conn.execute("SELECT item_key FROM rss_auto_items WHERE rule_id = ?", (str(rule_id),)).fetchall()
+                rows = conn.execute(
+                    "SELECT item_key FROM rss_auto_items WHERE rule_id = ? AND status NOT IN ('failed', 'submitted_unconfirmed', 'submitting')",
+                    (str(rule_id),),
+                ).fetchall()
                 return {str(r["item_key"]) for r in rows}
             finally:
                 conn.close()
@@ -973,7 +1086,7 @@ class FluxaStore:
             conn = self._connect()
             try:
                 row = conn.execute(
-                    "SELECT 1 FROM rss_auto_items WHERE torrent_hash = ? AND status IN ('confirmed_in_qb', 'submitted_unconfirmed', 'duplicate_in_qb', 'baseline_skipped') LIMIT 1",
+                    "SELECT 1 FROM rss_auto_items WHERE torrent_hash = ? AND status IN ('submitting', 'confirmed_in_qb', 'submitted_unconfirmed', 'duplicate_in_qb', 'baseline_skipped') LIMIT 1",
                     (h,),
                 ).fetchone()
                 return row is not None

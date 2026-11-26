@@ -300,6 +300,19 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
           </div>
         </div>
 
+        {data?.calendar.truncated && data.calendar.truncationWarning && (
+          <div className="banner warn" style={{ marginBottom: 10 }}>
+            <AlertTriangle size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+            {data.calendar.truncationWarning}
+          </div>
+        )}
+        {data?.calendar.embyTruncated && data.calendar.embyTruncationWarning && (
+          <div className="banner warn" style={{ marginBottom: 10 }}>
+            <AlertTriangle size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+            {data.calendar.embyTruncationWarning}
+          </div>
+        )}
+
         <div className="cal-strip">
           {(data?.calendar.days || []).map((day) => (
             <button

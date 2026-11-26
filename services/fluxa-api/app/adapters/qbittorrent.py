@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 import requests
@@ -8,6 +9,12 @@ import requests
 from app.adapters.http_utils import safe_web_url, sanitize_text
 
 TIMEOUT = 10
+SINGLE_HASH_RE = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+
+
+def is_valid_single_torrent_hash(value: str) -> bool:
+    """Strictly allow a single 40-char (v1) or 64-char (v2) hex info_hash — NEVER 'all', '|', or wildcards."""
+    return bool(SINGLE_HASH_RE.fullmatch(str(value or "").strip().lower()))
 
 
 def _num(val: object) -> float:
@@ -191,7 +198,7 @@ class QbittorrentAdapter:
 
     def get_torrent_by_hash(self, torrent_hash: str) -> dict[str, Any] | None:
         h = str(torrent_hash or "").strip().lower()
-        if not self.configured or not h:
+        if not self.configured or not is_valid_single_torrent_hash(h):
             return None
         resp = self._request("GET", "/api/v2/torrents/info", params={"hashes": h})
         if resp.status_code >= 400:
@@ -199,7 +206,7 @@ class QbittorrentAdapter:
         rows = resp.json() if resp.content else []
         if not isinstance(rows, list) or not rows:
             return None
-        row = rows[0]
+        row = next((r for r in rows if isinstance(r, dict) and str(r.get("hash") or "").strip().lower() == h), None)
         if not isinstance(row, dict):
             return None
         return {
@@ -250,10 +257,19 @@ class QbittorrentAdapter:
         return {"ok": True, "message": "已提交至 qBittorrent"}
 
     def pause_or_resume(self, torrent_hash: str, action: str) -> dict[str, Any]:
-        """Support both qBittorrent v4 (pause/resume) and v5 (stop/start) APIs."""
+        """Support both qBittorrent v4 (pause/resume) and v5 (stop/start) APIs.
+
+        Security boundary: ONLY accepts a single existing 40/64-char hex torrent hash.
+        Rejects 'all', multi-hash ('a|b'), and non-existent hashes so one call can NEVER affect all torrents.
+        """
         h = str(torrent_hash or "").strip().lower()
-        if not h or action not in {"pause", "resume"}:
-            raise ValueError("无效的 qBittorrent 操作参数")
+        if action not in {"pause", "resume"}:
+            raise ValueError("无效的 qBittorrent 操作类型")
+        if not is_valid_single_torrent_hash(h):
+            raise ValueError("仅允许操作单个合法的 40/64 位十六进制种子 Hash，禁止传入 all 或多任务选择器")
+        existing = self.get_torrent_by_hash(h)
+        if not existing:
+            raise ValueError(f"qBittorrent 中未找到 Hash 为 {h} 的单个真实任务，已拒绝操作")
         v5_path = "/api/v2/torrents/stop" if action == "pause" else "/api/v2/torrents/start"
         v4_path = "/api/v2/torrents/pause" if action == "pause" else "/api/v2/torrents/resume"
         resp = self._request("POST", v5_path, data={"hashes": h})
@@ -261,4 +277,4 @@ class QbittorrentAdapter:
             resp = self._request("POST", v4_path, data={"hashes": h})
         if resp.status_code >= 400:
             raise RuntimeError(f"qBittorrent 操作失败 ({resp.status_code})")
-        return {"ok": True, "message": "已暂停下载任务" if action == "pause" else "已恢复下载任务"}
+        return {"ok": True, "message": f"已暂停单个任务「{existing['name']}」" if action == "pause" else f"已恢复单个任务「{existing['name']}」"}

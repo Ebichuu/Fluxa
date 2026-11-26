@@ -125,10 +125,64 @@ class EmbyAdapter:
                 "webUrl": self.app_url(),
             }
 
-    def fetch_library_snapshot(self) -> dict[str, Any]:
-        """Build an exact TMDB-indexed snapshot of movies, series, episodes, and today's additions."""
+    def _fetch_paged_items(
+        self,
+        *,
+        include_types: str,
+        fields: str,
+        page_size: int = 2000,
+        max_items: int = 200000,
+    ) -> tuple[list[dict[str, Any]], int, bool]:
+        """Paginate Emby Users/{userId}/Items cleanly via StartIndex + Limit so large libraries never truncate."""
+        collected: list[dict[str, Any]] = []
+        start_index = 0
+        total_records = 0
+        while len(collected) < max_items:
+            limit = min(page_size, max_items - len(collected))
+            data = self._get(
+                "Users/{userId}/Items",
+                {
+                    "Recursive": "true",
+                    "IncludeItemTypes": include_types,
+                    "Fields": fields,
+                    "SortBy": "DateCreated",
+                    "SortOrder": "Descending",
+                    "StartIndex": start_index,
+                    "Limit": limit,
+                },
+            )
+            batch = data.get("Items") if isinstance(data, dict) and isinstance(data.get("Items"), list) else []
+            raw_total = data.get("TotalRecordCount") if isinstance(data, dict) else None
+            if isinstance(raw_total, int) and raw_total >= 0:
+                total_records = max(total_records, raw_total)
+            if not batch:
+                break
+            collected.extend(r for r in batch if isinstance(r, dict))
+            start_index += len(batch)
+            if total_records > 0 and start_index >= total_records:
+                break
+            if len(batch) < limit:
+                break
+        if total_records == 0:
+            total_records = len(collected)
+        truncated = total_records > len(collected)
+        return collected, total_records, truncated
+
+    def fetch_library_snapshot(self, *, page_size: int = 2000, max_movies_series: int = 100000, max_episodes: int = 200000) -> dict[str, Any]:
+        """Build a complete, paginated TMDB-indexed snapshot of movies, series, episodes, and today's additions.
+
+        Loads ALL Movies & Series FIRST (paginated), then ALL Episodes (paginated), so parent Series IDs
+        are never missed and large libraries (>8000 items) never silently lose episodes.
+        """
         empty = {
             "available": False,
+            "complete": False,
+            "truncated": False,
+            "truncationWarning": "",
+            "totalMoviesAndSeries": 0,
+            "totalEpisodes": 0,
+            "fetchedEpisodes": 0,
+            "orphanEpisodeCount": 0,
             "movies": {},
             "series": {},
             "episodes": {},
@@ -139,18 +193,18 @@ class EmbyAdapter:
         if not self.configured:
             return empty
         try:
-            data = self._get(
-                "Users/{userId}/Items",
-                {
-                    "Recursive": "true",
-                    "IncludeItemTypes": "Movie,Series,Episode",
-                    "Fields": "ProviderIds,Path,DateCreated,ProductionYear",
-                    "SortBy": "DateCreated",
-                    "SortOrder": "Descending",
-                    "Limit": 8000,
-                },
+            parent_rows, total_parents, parents_truncated = self._fetch_paged_items(
+                include_types="Movie,Series",
+                fields="ProviderIds,Path,DateCreated,ProductionYear",
+                page_size=page_size,
+                max_items=max_movies_series,
             )
-            rows = data.get("Items") if isinstance(data, dict) and isinstance(data.get("Items"), list) else []
+            ep_rows, total_eps, eps_truncated = self._fetch_paged_items(
+                include_types="Episode",
+                fields="Path,DateCreated",
+                page_size=page_size,
+                max_items=max_episodes,
+            )
             movies: dict[str, dict[str, Any]] = {}
             series: dict[str, dict[str, Any]] = {}
             series_id_to_tmdb: dict[str, str] = {}
@@ -159,9 +213,7 @@ class EmbyAdapter:
             recent_today: list[dict[str, Any]] = []
             today_str = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
 
-            for item in rows:
-                if not isinstance(item, dict):
-                    continue
+            for item in parent_rows:
                 itype = item.get("Type")
                 item_id = str(item.get("Id") or "")
                 path = str(item.get("Path") or "")
@@ -200,14 +252,18 @@ class EmbyAdapter:
                         "webUrl": self.app_url(item_id),
                     }
 
-            for item in rows:
-                if not isinstance(item, dict) or item.get("Type") != "Episode":
+            orphan_eps = 0
+            for item in ep_rows:
+                if item.get("Type") != "Episode":
                     continue
                 sid = str(item.get("SeriesId") or "")
                 tmdb = series_id_to_tmdb.get(sid, "")
                 s_num = item.get("ParentIndexNumber")
                 e_num = item.get("IndexNumber")
-                if not tmdb or not isinstance(s_num, int) or not isinstance(e_num, int):
+                if not tmdb:
+                    orphan_eps += 1
+                    continue
+                if not isinstance(s_num, int) or not isinstance(e_num, int):
                     continue
                 episodes.setdefault(tmdb, set()).add((s_num, e_num))
                 item_id = str(item.get("Id") or "")
@@ -238,8 +294,23 @@ class EmbyAdapter:
                         "webUrl": self.app_url(item_id),
                     })
 
+            truncated = parents_truncated or eps_truncated
+            warn_parts = []
+            if parents_truncated:
+                warn_parts.append(f"电影/剧集仅拉取 {len(parent_rows)}/{total_parents} 项")
+            if eps_truncated:
+                warn_parts.append(f"分集仅拉取 {len(ep_rows)}/{total_eps} 项")
+            trunc_warn = f"Emby 库存快照未完整覆盖（{'，'.join(warn_parts)}），未查到的作品不能断言未入库" if truncated else ""
+
             return {
                 "available": True,
+                "complete": not truncated,
+                "truncated": truncated,
+                "truncationWarning": trunc_warn,
+                "totalMoviesAndSeries": total_parents,
+                "totalEpisodes": total_eps,
+                "fetchedEpisodes": len(ep_rows),
+                "orphanEpisodeCount": orphan_eps,
                 "movies": movies,
                 "series": series,
                 "episodes": {k: sorted(v) for k, v in episodes.items()},
