@@ -431,6 +431,77 @@ def find_corroborated_sa_sibling_archive(
     return best
 
 
+EXCLUSIVE_CUT_PATTERNS: list[tuple[str, str]] = [
+    (r"(?i)(?<![A-Za-z0-9])(?:director'?s?[ ._-]?cut|extended(?:[ ._-]?cut)?|unrated|uncensored|remastered|imax|open[ ._-]?matte|theatrical)(?![A-Za-z0-9])", "特殊剪辑版"),
+    (r"(?i)(?<![A-Za-z0-9])at-?x(?![A-Za-z0-9])|无修|未删减|导演剪辑|加长版|重制版", "无修/特殊版"),
+    (r"(?i)(?<![A-Za-z0-9])(?:disc\s*\d+|cd\s*\d+|ova|oad|sp\d*|specials?|bonus|extras?)(?![A-Za-z0-9])|特典|花絮|多碟", "多碟/特典"),
+]
+EFFECTS_SUB_RE = re.compile(
+    r"特效字幕|简繁特效|繁简特效|内封特效|外挂特效|内嵌特效|(?<![A-Za-z])(?:ass|styled[ ._-]?sub)(?![A-Za-z])",
+    flags=re.I,
+)
+LOSSLESS_MULTI_AUDIO_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9])(?:flac|lpcm|truehd|dts[ ._-]?hd(?:\s*ma)?|dual[ ._-]?audio|2audio|multi[ ._-]?audio)(?![A-Za-z0-9])|无损音轨|多音轨|国日|国粤|双语音轨",
+)
+
+
+def detect_upgrade_or_special_exception(
+    failed_file_name: str,
+    existing_file_name: str = "",
+    *,
+    media_intent: str = "",
+) -> dict[str, Any]:
+    """Detect exceptions that MUST NOT be swallowed by generic redundant-version auto-ignore:
+      1. Collection upgrade (intent=='collect' OR failed file is BD/BDRip while existing is WEB-DL/HDTV)
+      2. Exclusive cut / uncensored / special disc/extras markers absent from existing version
+      3. Special subtitle (特效字幕/ASS) or lossless/multi-audio track absent from existing version
+    """
+    fail_s = str(failed_file_name or "")
+    exist_s = str(existing_file_name or "")
+
+    if str(media_intent or "").strip().lower() == "collect":
+        return {
+            "isException": True,
+            "exceptionType": "collection_upgrade",
+            "reason": "该作品已设为「收藏」模式，收藏升级不走通用冗余自动忽略",
+        }
+
+    fail_tag, _ = detect_release_source_preference(fail_s)
+    exist_tag, _ = detect_release_source_preference(exist_s)
+    if fail_tag == "BD/BDRip" and exist_tag != "BD/BDRip":
+        return {
+            "isException": True,
+            "exceptionType": "collection_upgrade",
+            "reason": "失败文件为 BD/BDRip 收藏升级源（库内非 BD 源），不走通用自动忽略",
+        }
+
+    for pat, label in EXCLUSIVE_CUT_PATTERNS:
+        m = re.search(pat, fail_s)
+        if m and not re.search(pat, exist_s):
+            return {
+                "isException": True,
+                "exceptionType": "exclusive_cut",
+                "reason": f"失败文件含{label}标记（{m.group(0)}），库内版本未检出同类标记，不走通用自动忽略",
+            }
+
+    if EFFECTS_SUB_RE.search(fail_s) and not EFFECTS_SUB_RE.search(exist_s):
+        return {
+            "isException": True,
+            "exceptionType": "subtitle_audio_exception",
+            "reason": "失败文件含特效字幕/ASS，库内版本未检出特效字幕，不走通用自动忽略",
+        }
+
+    m_aud = LOSSLESS_MULTI_AUDIO_RE.search(fail_s)
+    if m_aud and not LOSSLESS_MULTI_AUDIO_RE.search(exist_s):
+        return {
+            "isException": True,
+            "exceptionType": "subtitle_audio_exception",
+            "reason": f"失败文件含高规/多音轨标记（{m_aud.group(0)}），库内版本未检出同类音轨，不走通用自动忽略",
+        }
+
+    return {"isException": False, "exceptionType": "", "reason": ""}
+
+
 def detect_existing_version_for_target(
     *,
     media_type: str,
@@ -440,64 +511,71 @@ def detect_existing_version_for_target(
     failed_file_name: str,
     emby: dict[str, Any],
     sa_history: list[dict[str, Any]],
+    media_intent: str = "",
 ) -> dict[str, Any]:
-    """Check BOTH Emby AND SA successful archive history for an existing version of the target movie/episode.
+    """Check BOTH Emby (current live inventory) AND SA archive history for an existing version.
 
-    Distinguishes:
-      - `covered_preferred` (`noRecoveryNeeded=True`): existing is BD/BDRip over WEB-DL, OR existing CR over fallback LINETV.
-      - `existing_needs_compare` (`exists=True, noRecoveryNeeded=False, needsComparison=True`): same episode IS already
-        in library (e.g. failed Baha vs archived LINETV), so it is NOT missing — but Fluxa refuses to declare which
-        streaming platform is better by platform name alone!
+    Strict auto-ignore rules:
+      - `confirmedInLibrary` is True ONLY when Emby is available and confirms the episode currently exists in library.
+        If Emby query failed/unavailable, or ONLY old SA history exists without Emby confirmation -> NEVER auto-ignore!
+      - Collection upgrades, exclusive cuts, and effects-sub / lossless-audio exceptions -> NEVER auto-ignore!
+      - Auto-ignore does NOT mean "repaired" and does NOT mean the existing version has better quality.
     """
     failed_base = _basename(failed_file_name).casefold()
-    failed_src_tag, failed_rank = detect_release_source_preference(failed_file_name)
+    failed_src_tag, _ = detect_release_source_preference(failed_file_name)
     found_items: list[dict[str, Any]] = []
     sources_seen: set[str] = set()
+    confirmed_in_emby = False
+    emby_available = bool(emby.get("available"))
 
-    # 1. Check Emby library details (including path/fileName!)
-    if media_type == "movie":
-        m_info = (emby.get("movies") or {}).get(str(tmdb_id))
-        if m_info:
-            sources_seen.add("emby")
-            fname = m_info.get("fileName") or _basename(m_info.get("path") or "") or m_info.get("title") or ""
-            tag, rank = detect_release_source_preference(f"{fname} {m_info.get('path') or ''}")
-            found_items.append({
-                "origin": "emby",
-                "fileName": fname,
-                "path": m_info.get("path") or "",
-                "sourceTag": tag,
-                "rank": rank,
-            })
-    elif target_season and target_episode:
-        ep_label = f"S{int(target_season):02d}E{int(target_episode):02d}"
-        ep_details = ((emby.get("episodeDetails") or {}).get(str(tmdb_id)) or {}).get(ep_label) or []
-        if ep_details:
-            sources_seen.add("emby")
-            for ed in ep_details:
-                fname = ed.get("fileName") or _basename(ed.get("path") or "") or ""
-                if failed_base and fname.casefold() == failed_base:
-                    continue
-                tag, rank = detect_release_source_preference(f"{fname} {ed.get('path') or ''}")
+    # 1. Check Emby live library details (authoritative proof the episode is CURRENTLY in library!)
+    if emby_available:
+        if media_type == "movie":
+            m_info = (emby.get("movies") or {}).get(str(tmdb_id))
+            if m_info:
+                confirmed_in_emby = True
+                sources_seen.add("emby")
+                fname = m_info.get("fileName") or _basename(m_info.get("path") or "") or m_info.get("title") or ""
+                tag, rank = detect_release_source_preference(f"{fname} {m_info.get('path') or ''}")
                 found_items.append({
                     "origin": "emby",
                     "fileName": fname,
-                    "path": ed.get("path") or "",
+                    "path": m_info.get("path") or "",
                     "sourceTag": tag,
                     "rank": rank,
                 })
-        else:
-            eps_set = set(tuple(pair) for pair in (emby.get("episodes") or {}).get(str(tmdb_id), []))
-            if (int(target_season), int(target_episode)) in eps_set:
-                sources_seen.add("emby")
-                found_items.append({
-                    "origin": "emby",
-                    "fileName": f"Emby {ep_label}",
-                    "path": "",
-                    "sourceTag": "",
-                    "rank": 0,
-                })
+        elif target_season and target_episode:
+            ep_label = f"S{int(target_season):02d}E{int(target_episode):02d}"
+            ep_details = ((emby.get("episodeDetails") or {}).get(str(tmdb_id)) or {}).get(ep_label) or []
+            if ep_details:
+                for ed in ep_details:
+                    fname = ed.get("fileName") or _basename(ed.get("path") or "") or ""
+                    if failed_base and fname.casefold() == failed_base:
+                        continue
+                    confirmed_in_emby = True
+                    sources_seen.add("emby")
+                    tag, rank = detect_release_source_preference(f"{fname} {ed.get('path') or ''}")
+                    found_items.append({
+                        "origin": "emby",
+                        "fileName": fname,
+                        "path": ed.get("path") or "",
+                        "sourceTag": tag,
+                        "rank": rank,
+                    })
+            else:
+                eps_set = set(tuple(pair) for pair in (emby.get("episodes") or {}).get(str(tmdb_id), []))
+                if (int(target_season), int(target_episode)) in eps_set:
+                    confirmed_in_emby = True
+                    sources_seen.add("emby")
+                    found_items.append({
+                        "origin": "emby",
+                        "fileName": f"Emby {ep_label}",
+                        "path": "",
+                        "sourceTag": "",
+                        "rank": 0,
+                    })
 
-    # 2. Check SA successful archive history for the SAME TMDB + target season/episode (excluding this failed file!)
+    # 2. Check SA successful archive history for the SAME TMDB + target season/episode (for richer filename/source metadata)
     for rec in sa_history or []:
         if rec.get("outcome") not in {"archived", "replaced"}:
             continue
@@ -527,10 +605,14 @@ def detect_existing_version_for_target(
     if not found_items:
         return {
             "exists": False,
+            "confirmedInLibrary": False,
+            "autoIgnoreEligible": False,
             "noRecoveryNeeded": False,
             "needsComparison": False,
+            "exception": {"isException": False, "exceptionType": "", "reason": ""},
             "badgeLabel": "",
             "shortBanner": "",
+            "autoIgnoreSummary": "",
             "source": "",
             "existingSourceTag": "",
             "failedSourceTag": failed_src_tag,
@@ -539,7 +621,6 @@ def detect_existing_version_for_target(
             "summary": "",
         }
 
-    # Prefer the item with richest source metadata / highest clear tier
     best = max(found_items, key=lambda x: (x["rank"], bool(x["sourceTag"]), bool(x["fileName"])))
     existing_tag = best["sourceTag"]
     src_origin = "+".join(sorted(sources_seen))
@@ -548,33 +629,66 @@ def detect_existing_version_for_target(
     existing_desc = f"{existing_tag}版" if existing_tag else "其他版本"
     file_hint = f"（{best['fileName']}）" if best["fileName"] else ""
 
-    # Only auto-declare "已有版本，无需补库" when existing clearly covers preference:
-    #   - BD/BDRip already covers WEB-DL/streaming/HDTV, OR
-    #   - Explicit user-preferred CR already covers fallback LINETV!
-    # For other streaming platform pairs (e.g. failed Baha vs existing LINETV), DO NOT judge better/worse by platform name alone!
-    clearly_covered = (
-        (existing_tag == "BD/BDRip" and failed_src_tag != "BD/BDRip")
-        or (existing_tag == "CR" and failed_src_tag == "LINETV")
+    exception = detect_upgrade_or_special_exception(
+        failed_file_name,
+        best["fileName"],
+        media_intent=media_intent,
     )
 
-    if clearly_covered:
-        short_banner = f"已有版本，无需补库（同集已有{existing_desc}入库）"
+    # Auto-ignore ONLY when Emby confirms current library presence AND no upgrade/cut/sub/audio exception applies!
+    auto_ignore_eligible = bool(confirmed_in_emby and not exception["isException"])
+
+    clearly_covered = bool(
+        confirmed_in_emby
+        and not exception["isException"]
+        and (
+            (existing_tag == "BD/BDRip" and failed_src_tag != "BD/BDRip")
+            or (existing_tag == "CR" and failed_src_tag == "LINETV")
+        )
+    )
+
+    auto_ignore_summary = (
+        f"已有版本，已忽略：{failed_desc}识别失败；已确认 {scope_text} 当前已有{existing_desc}在库{file_hint}，非缺集，"
+        "已自动移出异常待办（忽略不等于修复成功，也不代表已有版本画质更好）。"
+    )
+
+    if not confirmed_in_emby:
+        unverified_note = "当前 Emby 库存查询不可用" if not emby_available else "当前 Emby 库内未查到该集"
+        short_banner = f"{failed_desc}识别失败；仅见旧 SA 归档记录（未确认当前在库）"
+        summary = (
+            f"{failed_desc}识别失败；SA 历史虽有 {scope_text} 的{existing_desc}记录{file_hint}，但{unverified_note}，"
+            "不能确认当前仍在库，未自动忽略。"
+        )
+        badge_label = "仅见旧历史（未确认在库）"
+    elif exception["isException"]:
+        short_banner = f"{failed_desc}识别失败；同集已有{existing_desc}（命中例外，未自动忽略）"
+        summary = (
+            f"{failed_desc}识别失败；同集（{scope_text}）虽已有{existing_desc}在库{file_hint}，但{exception['reason']}，"
+            "保留在异常待办待你另行判断。"
+        )
+        badge_label = "同集已有入库（命中例外）"
+    elif clearly_covered:
+        short_banner = f"已有版本，已忽略（同集已有{existing_desc}入库）"
         summary = f"已有版本，无需补库：{scope_text} 已存在符合偏好的 {existing_desc}{file_hint}，无需继续恢复 {failed_desc}。"
-        badge_label = "已有版本，无需补库"
+        badge_label = "已有版本，已忽略"
     else:
         short_banner = f"{failed_desc}识别失败；同集已有{existing_desc}入库"
         summary = (
             f"{failed_desc}识别失败；同集（{scope_text}）已有{existing_desc}入库{file_hint}，"
-            "该集未缺库；两版谁更好需比较实际码率/字幕/音轨，不能仅凭平台名判断。"
+            "该集未缺库；已归类为「已有版本，已忽略」（忽略不等于修复成功，也不代表已有版本画质更好，两版优劣需实测比较）。"
         )
-        badge_label = f"同集已有{existing_desc}入库（非缺库）"
+        badge_label = "已有版本，已忽略"
 
     return {
         "exists": True,
+        "confirmedInLibrary": confirmed_in_emby,
+        "autoIgnoreEligible": auto_ignore_eligible,
         "noRecoveryNeeded": clearly_covered,
         "needsComparison": not clearly_covered,
+        "exception": exception,
         "badgeLabel": badge_label,
         "shortBanner": short_banner,
+        "autoIgnoreSummary": auto_ignore_summary if auto_ignore_eligible else "",
         "source": src_origin,
         "existingSourceTag": existing_tag,
         "failedSourceTag": failed_src_tag,
@@ -952,6 +1066,8 @@ def diagnose_sa_failure(
 
     emby = snapshot.get("emby") or {}
     for prop in proposals:
+        prop_mkey = f"{prop['mediaType']}:{prop['tmdbId']}"
+        prop_intent = (prefs.get(prop_mkey) or {}).get("intent") or "follow"
         existing_ver = detect_existing_version_for_target(
             media_type=prop["mediaType"],
             tmdb_id=prop["tmdbId"],
@@ -960,15 +1076,23 @@ def diagnose_sa_failure(
             failed_file_name=file_name,
             emby=emby,
             sa_history=sa_history,
+            media_intent=prop_intent,
         )
         prop["existingVersion"] = existing_ver
-        prop["alreadyInEmby"] = bool(existing_ver["exists"])
+        prop["alreadyInEmby"] = bool(existing_ver["confirmedInLibrary"])
         if existing_ver["exists"] and existing_ver["summary"]:
             prop["reasons"] = [existing_ver["summary"], *prop["reasons"]]
 
     top = proposals[0] if proposals else None
-    top_existing = (top or {}).get("existingVersion") or {"exists": False, "noRecoveryNeeded": False, "summary": ""}
+    top_existing = (top or {}).get("existingVersion") or {
+        "exists": False,
+        "confirmedInLibrary": False,
+        "autoIgnoreEligible": False,
+        "noRecoveryNeeded": False,
+        "summary": "",
+    }
     no_recovery_needed = bool(top_existing.get("noRecoveryNeeded"))
+    auto_ignored = bool(top_existing.get("autoIgnoreEligible"))
     has_conflict = bool(top and (top.get("sequelConflict") or {}).get("hasConflict"))
     can_auto_apply = bool(
         saved_mapping
@@ -987,18 +1111,23 @@ def diagnose_sa_failure(
     recognition_status = "matched" if proposals else "unreliable"
     if not proposals:
         status_message = "无法可靠识别：未找到与源文件作品身份可靠匹配的 TMDB 候选（已过滤无关作品），请手动输入 TMDB ID 核对季集"
-    elif no_recovery_needed:
-        status_message = str(top_existing.get("summary") or "已有版本，无需补库")
-        # Auto-mark this stale failure record as covered by existing preferred version so Home 「异常待办」 ignores it by default
+    elif auto_ignored:
+        status_message = str(top_existing.get("autoIgnoreSummary") or top_existing.get("summary") or "已有版本，已忽略")
+        # Record local auto-ignore metadata (ONLY when confirmed in Emby and no exception applies; zero file/SA writes!)
         rec_id_str = str(record.get("id") or "").strip()
-        if rec_id_str:
+        if rec_id_str and top:
             store.set_cache(f"sa_covered:{rec_id_str}", {
-                "noRecoveryNeeded": True,
+                "autoIgnoreEligible": True,
+                "noRecoveryNeeded": no_recovery_needed,
+                "mediaType": top["mediaType"],
+                "tmdbId": top["tmdbId"],
+                "targetSeason": top.get("targetSeason"),
+                "targetEpisode": top.get("targetEpisode"),
                 "existingSourceTag": top_existing.get("existingSourceTag") or "",
                 "existingFileName": top_existing.get("existingFileName") or "",
                 "summary": status_message,
             })
-    elif top_existing.get("needsComparison"):
+    elif top_existing.get("exists"):
         status_message = str(top_existing.get("summary") or "")
     else:
         status_message = ""

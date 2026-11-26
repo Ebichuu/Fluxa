@@ -85,7 +85,7 @@ export function MediaPipelinePage({ mediaType, tmdbId, onBack }: MediaPipelinePa
   };
 
   if (loading && !data) {
-    return <div className="card muted">正在实时汇总 5 步链路状态…</div>;
+    return <div className="card muted">正在加载处理进度…</div>;
   }
 
   if (error || !data) {
@@ -110,7 +110,7 @@ export function MediaPipelinePage({ mediaType, tmdbId, onBack }: MediaPipelinePa
           <ArrowLeft size={14} /> 返回
         </button>
         <button className="btn btn-sm" type="button" onClick={() => void load()} disabled={loading}>
-          <RefreshCw size={14} /> 刷新链路
+          <RefreshCw size={14} /> 刷新进度
         </button>
       </div>
 

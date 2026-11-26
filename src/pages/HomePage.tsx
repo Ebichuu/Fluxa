@@ -50,6 +50,7 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
   } | null>(null);
   const [saRecoveryRecord, setSaRecoveryRecord] = useState<SaRecordRef | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
+  const [showIgnored, setShowIgnored] = useState(false);
 
   const load = useCallback(async (days = calDays, refresh = false) => {
     setLoading(true);
@@ -115,10 +116,20 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
   const handleMuteIssue = async (issue: ActionableIssue) => {
     try {
       await api.muteIssue(issue.issueKey);
-      setToast({ tone: 'ok', text: '已忽略该条异常提醒' });
-      await load(calDays);
+      setToast({ tone: 'ok', text: '已移入「已忽略」（原记录保留，可随时恢复）' });
+      await load(calDays, false);
     } catch (err) {
       setToast({ tone: 'error', text: err instanceof Error ? err.message : '忽略失败' });
+    }
+  };
+
+  const handleRestoreIssue = async (issue: ActionableIssue) => {
+    try {
+      await api.restoreIssue(issue.issueKey);
+      setToast({ tone: 'ok', text: '已恢复到异常待办' });
+      await load(calDays, false);
+    } catch (err) {
+      setToast({ tone: 'error', text: err instanceof Error ? err.message : '恢复失败' });
     }
   };
 
@@ -232,7 +243,18 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
             {issueCount > 0 ? <AlertTriangle size={17} color="var(--err)" /> : <CheckCircle2 size={17} color="var(--ok)" />}
             异常待办
           </h2>
-          <span className="muted">仅展示真实报错与卡顿；SA 权重规则拒绝不误报为异常</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span className="muted">仅展示真实报错与卡顿；同集已有入库的冗余识别失败自动移入「已忽略」</span>
+            {(data?.ignoredIssues?.length || 0) > 0 && (
+              <button
+                className="btn btn-sm"
+                type="button"
+                onClick={() => setShowIgnored((v) => !v)}
+              >
+                {showIgnored ? '收起已忽略' : `已忽略（${data?.ignoredIssues?.length || 0}）`}
+              </button>
+            )}
+          </div>
         </div>
         {!data?.issues.length ? (
           <div className="muted">当前没有需要人工处理的阻塞异常。</div>
@@ -263,7 +285,7 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
                   )}
                   {issue.mediaKey && (
                     <button className="btn btn-sm" type="button" onClick={() => openMediaKey(issue.mediaKey)}>
-                      查全链路
+                      查看处理进度
                     </button>
                   )}
                   {issue.retryAction && (
@@ -287,6 +309,53 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {showIgnored && (data?.ignoredIssues?.length || 0) > 0 && (
+          <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+            <div className="muted" style={{ marginBottom: 8 }}>
+              已忽略记录（原失败记录保留；自动忽略不等于修复成功，也不代表已有版本画质更好，可随时恢复到异常待办）
+            </div>
+            <div className="list">
+              {(data?.ignoredIssues || []).map((issue) => (
+                <div key={issue.issueKey} className="list-row">
+                  <div className="row-main">
+                    <div className="row-title">
+                      <StatusPill
+                        status={issue.ignoredKind === 'auto_existing_version' ? 'protected' : 'idle'}
+                        label={issue.ignoredLabel || '已有版本，已忽略'}
+                      />
+                      <span>{issue.title}</span>
+                      {issue.episodeLabel && <span className="pill idle">{issue.episodeLabel}</span>}
+                    </div>
+                    <div style={{ marginTop: 4, fontSize: 13 }}>{issue.ignoredReason || issue.errorText}</div>
+                    {issue.subtitle && issue.subtitle !== issue.title && (
+                      <div className="muted" style={{ marginTop: 2, wordBreak: 'break-all' }}>{issue.subtitle}</div>
+                    )}
+                  </div>
+                  <div className="row-actions">
+                    {issue.saRecord && (
+                      <button
+                        className="btn btn-sm"
+                        type="button"
+                        onClick={() => setSaRecoveryRecord(issue.saRecord || null)}
+                      >
+                        查看诊断
+                      </button>
+                    )}
+                    {issue.mediaKey && (
+                      <button className="btn btn-sm" type="button" onClick={() => openMediaKey(issue.mediaKey)}>
+                        查看处理进度
+                      </button>
+                    )}
+                    <button className="btn btn-sm" type="button" onClick={() => void handleRestoreIssue(issue)}>
+                      恢复到待办
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </section>
@@ -368,7 +437,7 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
 
         <div style={{ marginTop: 14 }}>
           <div className="muted" style={{ marginBottom: 8 }}>
-            {activeDay ? `${activeDay.date} 追更清单（点击任意条目进入 5 步全链路透视）` : '暂无日历数据'}
+            {activeDay ? `${activeDay.date} 追更清单（点击任意条目查看处理进度）` : '暂无日历数据'}
           </div>
           {!activeDay?.items.length ? (
             <div className="muted">该日暂无订阅剧集播出（需配置 TMDB 与 MoviePilot Neo / Torra 订阅）。</div>
@@ -391,7 +460,7 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
                       {ep.episodeName && <div className="muted" style={{ marginTop: 2 }}>{ep.episodeName}</div>}
                     </div>
                   </div>
-                  <button className="btn btn-sm" type="button">查看 5 步状态</button>
+                  <button className="btn btn-sm" type="button">查看处理进度</button>
                 </div>
               ))}
             </div>
@@ -489,7 +558,7 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
                       <span className="pill ok">{item.episodeLabel}</span>
                       {item.isStrm && <span className="pill protected">STRM</span>}
                     </div>
-                    <div className="muted">Emby 已有条目 · 点击查看完整链路</div>
+                    <div className="muted">Emby 已有条目 · 点击查看处理进度</div>
                   </div>
                   {item.webUrl && (
                     <a

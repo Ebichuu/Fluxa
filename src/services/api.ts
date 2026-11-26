@@ -80,6 +80,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ issueKey }),
     }),
+  restoreIssue: (issueKey: string) =>
+    requestJson<{ ok: boolean }>('/api/issues/restore', {
+      method: 'POST',
+      body: JSON.stringify({ issueKey }),
+    }),
 
   search: (q: string) => requestJson<{ items: DiscoverItem[] }>(`/api/search?q=${encodeURIComponent(q)}`),
 

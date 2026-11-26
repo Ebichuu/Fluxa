@@ -490,9 +490,18 @@ class AuditSecurityAndAccuracyTests(unittest.TestCase):
                 canonical_title="新网球王子 U-17世界杯篇",
                 target_season=3,
             )
-            store.set_cache("sa_covered:88638", {"noRecoveryNeeded": True, "existingSourceTag": "CR"})
+            store.set_cache("sa_covered:88638", {
+                "autoIgnoreEligible": True,
+                "noRecoveryNeeded": True,
+                "mediaType": "tv",
+                "tmdbId": "205493",
+                "targetSeason": 3,
+                "targetEpisode": 9,
+                "existingSourceTag": "CR",
+            })
             snap_with_cr = {
                 **cached_snap,
+                "emby": {"available": True, "movies": {}, "series": {}, "episodes": {"205493": [(3, 9)]}, "recentToday": []},
                 "saHistory": [
                     {
                         "id": "88638",

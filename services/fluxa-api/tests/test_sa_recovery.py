@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.adapters.symedia import SymediaAdapter, classify_symedia_record
-from app.domain.pipeline import build_actionable_issues
+from app.domain.pipeline import build_actionable_issues, partition_actionable_issues
 from app.domain.sa_recovery import (
     build_spec_preserving_filename,
     check_sequel_identity_conflict,
@@ -572,7 +572,8 @@ class SaRecoveryAcceptanceTests(unittest.TestCase):
             }
             diag = diagnose_sa_failure(record=e09_record, settings=settings, store=store, adapters=adapters, snapshot=snapshot)
             self.assertTrue(diag["noRecoveryNeeded"])
-            self.assertIn("已有版本，无需补库", diag["statusMessage"])
+            self.assertIn("已有版本，已忽略", diag["statusMessage"])
+            self.assertIn("已有版本，无需补库", diag["proposals"][0]["existingVersion"]["summary"])
             self.assertIn("CR", diag["statusMessage"])
             self.assertIn("LINETV", diag["statusMessage"])
             self.assertFalse(diag["canAutoApply"])
@@ -637,8 +638,9 @@ class SaRecoveryAcceptanceTests(unittest.TestCase):
             job_id = exec_res["job"]["id"]
 
             # Now SA history has:
-            # 1) A DIFFERENT CR release archived for 205493 S03E09 (#88910)
+            # 1) A DIFFERENT CR release archived for 205493 S03E09 (#88910) AND present in Emby
             # 2) Our LINETV file moved to /09-归档失败/ and FAILED AGAIN (#88950) because SA ignored tmdbid/season!
+            emby.episodes["205493"] = [(3, 9)]
             cr_file = "The.Prince.of.Tennis.II.U-17.World.Cup.S03E09.1080p.CR.WEB-DL-VARYG.mkv"
             sa.history = [
                 {
@@ -802,29 +804,74 @@ class SaRecoveryAcceptanceTests(unittest.TestCase):
                 "emby": emby.fetch_library_snapshot(),
             }
 
-            # 1. Homepage actionable issue MUST show non-missing warning (Baha失败 + 同集已有LINETV入库), NOT red missing error!
-            issues = build_actionable_issues(snapshot, {}, store=store)
-            self.assertEqual(len(issues), 1)
-            issue = issues[0]
-            self.assertEqual(issue["severity"], "warn")
-            self.assertEqual(issue["mediaKey"], "tv:293124")
-            self.assertEqual(issue["episodeLabel"], "S02E09")
-            self.assertIn("Baha版识别失败", issue["errorText"])
-            self.assertIn("同集", issue["errorText"])
-            self.assertIn("LINETV版入库", issue["errorText"])
-            self.assertIn("不能仅凭平台名判断", issue["errorText"])
+            # 1. With Emby confirming 293124 S02E09 is CURRENTLY in library (and no exception),
+            #    #88706 MUST be auto-ignored as 「已有版本，已忽略」: removed from active_issues, preserved in ignored_issues!
+            active, ignored = partition_actionable_issues(snapshot, {}, store=store)
+            self.assertEqual(active, [])
+            self.assertEqual(len(ignored), 1)
+            ig = ignored[0]
+            self.assertEqual(ig["ignoredKind"], "auto_existing_version")
+            self.assertEqual(ig["ignoredLabel"], "已有版本，已忽略")
+            self.assertEqual(ig["mediaKey"], "tv:293124")
+            self.assertEqual(ig["episodeLabel"], "S02E09")
+            self.assertTrue(ig["canRestore"])
+            self.assertIsNotNone(ig["saRecord"])
+            self.assertIn("已有版本，已忽略", ig["ignoredReason"])
+            self.assertIn("忽略不等于修复成功", ig["ignoredReason"])
+            self.assertIn("Baha版识别失败", ig["ignoredReason"])
+            self.assertIn("LINETV版", ig["ignoredReason"])
+            self.assertEqual(len(sa.submitted), 0)  # Zero retry / rename / delete side effects!
 
-            # 2. Diagnosis recalls TMDB 293124 S02E09 via corroborated SA sibling even though TMDB Romaji search is empty!
+            # 2. Restoring from 「已忽略」 moves #88706 right back into active_issues!
+            store.set_cache("issues:restored", [ig["issueKey"]])
+            active_restored, ignored_restored = partition_actionable_issues(snapshot, {}, store=store)
+            self.assertEqual(len(active_restored), 1)
+            self.assertEqual(ignored_restored, [])
+            store.set_cache("issues:restored", [])
+
+            # 3. Safety boundary: Emby unavailable OR only old SA history without current Emby entry -> MUST NOT auto-ignore!
+            snap_no_emby = {**snapshot, "emby": {"available": False, "movies": {}, "series": {}, "episodes": {}}}
+            active_no_emby, ignored_no_emby = partition_actionable_issues(snap_no_emby, {}, store=store)
+            self.assertEqual(len(active_no_emby), 1)
+            self.assertEqual(ignored_no_emby, [])
+            self.assertIn("未自动忽略", active_no_emby[0]["errorText"])
+
+            snap_old_hist_only = {**snapshot, "emby": {"available": True, "movies": {}, "series": {}, "episodes": {}}}
+            active_old, ignored_old = partition_actionable_issues(snap_old_hist_only, {}, store=store)
+            self.assertEqual(len(active_old), 1)
+            self.assertEqual(ignored_old, [])
+            self.assertIn("未自动忽略", active_old[0]["errorText"])
+
+            # 4. Exception guards: collection intent, exclusive cut (AT-X/无修), or effects-sub (特效字幕/ASS) -> MUST NOT auto-ignore!
+            active_collect, ignored_collect = partition_actionable_issues(snapshot, {"tv:293124": {"intent": "collect"}}, store=store)
+            self.assertEqual(len(active_collect), 1)
+            self.assertEqual(ignored_collect, [])
+            self.assertIn("收藏", active_collect[0]["errorText"])
+
+            special_baha = "Kuroka.de.Seijo.ni.Hyou.S02E09.2026.1080p.AT-X.特效字幕.ASS.Baha.WEB-DL.x264.AAC-ADWeb.mp4"
+            snap_special = {
+                **snapshot,
+                "saHistory": [
+                    sa_history[0],
+                    {**sa_history[1], "fileName": special_baha, "src": f"/CloudNAS/CloudDrive/115/00-待整理/00-日漫/{special_baha}"},
+                ],
+            }
+            active_sp, ignored_sp = partition_actionable_issues(snap_special, {}, store=store)
+            self.assertEqual(len(active_sp), 1)
+            self.assertEqual(ignored_sp, [])
+            self.assertIn("不走通用自动忽略", active_sp[0]["errorText"])
+
+            # 5. Diagnosis recalls TMDB 293124 S02E09 via corroborated SA sibling even though TMDB Romaji search is empty!
             adapters = {"tmdb": _KurokaTmdb(), "symedia": sa, "emby": emby, "moviepilot": _Noop(), "torra": _Noop(), "qbittorrent": _Noop()}
             diag = diagnose_sa_failure(record=sa_history[1], settings=settings, store=store, adapters=adapters, snapshot=snapshot)
             self.assertEqual(diag["recognitionStatus"], "matched")
             self.assertEqual(diag["proposals"][0]["tmdbId"], "293124")
             self.assertEqual(diag["proposals"][0]["targetSeason"], 2)
             self.assertEqual(diag["proposals"][0]["targetEpisode"], 9)
-            self.assertFalse(diag["noRecoveryNeeded"])
             ev = diag["proposals"][0]["existingVersion"]
             self.assertTrue(ev["exists"])
-            self.assertTrue(ev["needsComparison"])
+            self.assertTrue(ev["confirmedInLibrary"])
+            self.assertTrue(ev["autoIgnoreEligible"])
             self.assertEqual(ev["failedSourceTag"], "Baha")
             self.assertEqual(ev["existingSourceTag"], "LINETV")
             self.assertIn("Baha版识别失败；同集已有LINETV版入库", ev["shortBanner"])

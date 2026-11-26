@@ -266,19 +266,18 @@ export function SaRecoveryModal({ record, onClose, onUpdated }: SaRecoveryModalP
               )}
             </div>
 
-            {/* 3.5 Existing version callout (clearly separates '已有版本，无需补库' vs '同集已有入库，两版需比较') */}
+            {/* 3.5 Existing version callout */}
             {activeExisting && (
               <div
-                className={`banner ${activeExisting.noRecoveryNeeded ? 'ok' : 'warn'}`}
-                style={activeExisting.noRecoveryNeeded ? { borderColor: 'var(--accent)' } : undefined}
+                className={`banner ${activeExisting.autoIgnoreEligible ? 'ok' : 'warn'}`}
+                style={activeExisting.autoIgnoreEligible ? { borderColor: 'var(--accent)' } : undefined}
               >
-                {activeExisting.noRecoveryNeeded ? (
+                {activeExisting.autoIgnoreEligible ? (
                   <ShieldCheck size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
                 ) : (
                   <AlertTriangle size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
                 )}
-                {activeExisting.summary}
-                {activeExisting.noRecoveryNeeded ? '（已自动从首页异常待办默认忽略）' : ''}
+                {activeExisting.autoIgnoreEligible ? activeExisting.autoIgnoreSummary || activeExisting.summary : activeExisting.summary}
               </div>
             )}
 
@@ -366,8 +365,8 @@ export function SaRecoveryModal({ record, onClose, onUpdated }: SaRecoveryModalP
                 onClick={() => void submitRecovery()}
               >
                 <CheckCircle2 size={14} />{' '}
-                {activeExisting?.noRecoveryNeeded
-                  ? '已有版本，无需补库'
+                {activeExisting?.autoIgnoreEligible
+                  ? '已有版本，已忽略'
                   : activeExisting?.needsComparison
                     ? '同集已有入库（需人工比较，不自动覆盖）'
                     : busy

@@ -59,14 +59,22 @@ export interface ActionableIssue {
   saRecord?: SaRecordRef | null;
   appUrl: string;
   appLabel: string;
+  ignoredKind?: 'manual' | 'auto_existing_version';
+  ignoredLabel?: string;
+  ignoredReason?: string;
+  canRestore?: boolean;
 }
 
 export interface SaExistingVersionInfo {
   exists: boolean;
+  confirmedInLibrary?: boolean;
+  autoIgnoreEligible?: boolean;
   noRecoveryNeeded: boolean;
   needsComparison?: boolean;
+  exception?: { isException: boolean; exceptionType: string; reason: string };
   badgeLabel: string;
   shortBanner?: string;
+  autoIgnoreSummary?: string;
   source: string;
   existingSourceTag: string;
   failedSourceTag: string;
@@ -274,9 +282,11 @@ export interface DashboardResponse {
     activeDownloads: number;
     activeUploads: number;
     issues: number;
+    ignoredIssues?: number;
     subscriptions: number;
   };
   issues: ActionableIssue[];
+  ignoredIssues?: ActionableIssue[];
   calendar: {
     today: string;
     startDate: string;

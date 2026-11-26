@@ -18,6 +18,7 @@ from app.domain.pipeline import (
     build_media_pipeline,
     collect_upstream_snapshot,
     merge_subscriptions,
+    partition_actionable_issues,
 )
 from app.domain.release_rules import evaluate_release_group, evaluate_subscription_guardrail
 from app.domain.quality_policies import get_quality_policy, list_quality_policies
@@ -98,7 +99,7 @@ def get_dashboard():
     adapters = build_adapters(settings, store=store)
     prefs = store.list_preferences()
 
-    issues = build_actionable_issues(snapshot, prefs, store=store)
+    issues, ignored_issues = partition_actionable_issues(snapshot, prefs, store=store)
     subs = merge_subscriptions(snapshot, prefs)
 
     # Parse optional calendar range
@@ -135,9 +136,11 @@ def get_dashboard():
             "activeDownloads": len(active_qb),
             "activeUploads": len(sec.get("activeRuns") or []),
             "issues": len(issues),
+            "ignoredIssues": len(ignored_issues),
             "subscriptions": len(subs),
         },
         "issues": issues,
+        "ignoredIssues": ignored_issues,
         "calendar": calendar,
         "activeDownloads": active_qb[:20],
         "activeUploads": (sec.get("activeRuns") or [])[:10],
@@ -188,7 +191,28 @@ def mute_issue():
     issue_key = str(body.get("issueKey") or "").strip()
     if not issue_key:
         return jsonify({"error": "缺少 issueKey"}), 400
-    _store().set_preference("_global", mute_issue_key=issue_key)
+    store = _store()
+    store.set_preference("_global", mute_issue_key=issue_key)
+    r_cache = store.get_cache("issues:restored")
+    restored = [str(x) for x in (r_cache["payload"] if r_cache and isinstance(r_cache.get("payload"), list) else []) if str(x) != issue_key]
+    store.set_cache("issues:restored", restored)
+    return jsonify({"ok": True})
+
+
+@api.post("/issues/restore")
+def restore_issue():
+    """Restore either a manually muted or auto-ignored ('已有版本，已忽略') issue back to the inbox."""
+    body = request.get_json(silent=True) or {}
+    issue_key = str(body.get("issueKey") or "").strip()
+    if not issue_key:
+        return jsonify({"error": "缺少 issueKey"}), 400
+    store = _store()
+    store.set_preference("_global", unmute_issue_key=issue_key)
+    r_cache = store.get_cache("issues:restored")
+    restored = [str(x) for x in (r_cache["payload"] if r_cache and isinstance(r_cache.get("payload"), list) else [])]
+    if issue_key not in restored:
+        restored.append(issue_key)
+    store.set_cache("issues:restored", restored)
     return jsonify({"ok": True})
 
 

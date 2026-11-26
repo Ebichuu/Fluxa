@@ -562,21 +562,61 @@ def _title_matches(
     return False
 
 
-def build_actionable_issues(
+def partition_actionable_issues(
     snapshot: dict[str, Any],
     prefs: dict[str, dict[str, Any]],
     *,
     store: FluxaStore | None = None,
-) -> list[dict[str, Any]]:
-    """Extract only real, actionable problems — never false-alarming on SA rule_protected skips
-    or identify failures already covered by an existing preferred library version (e.g. CR版 over LINETV版).
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return `(active_issues, ignored_issues)`.
+
+    - Never false-alarms on SA rule_protected / version_rejected skips.
+    - Auto-classifies redundant SA identify failures as 「已有版本，已忽略」 ONLY when:
+      1) same work + same season + same episode is reliably verified,
+      2) current Emby inventory confirms the episode is currently in library (NOT old history alone or failed Emby query),
+      3) no collection upgrade / exclusive cut / effects-sub / lossless-audio exception applies,
+      4) the user has not explicitly restored this issue back to the inbox.
+    - Preserves original failure records in `ignored_issues` so users can inspect or restore anytime.
     """
     muted_keys: set[str] = set()
     for p in prefs.values():
         for mk in p.get("mutedIssueKeys") or []:
             muted_keys.add(str(mk))
 
+    restored_keys: set[str] = set()
+    if store is not None:
+        r_cache = store.get_cache("issues:restored")
+        if r_cache and isinstance(r_cache.get("payload"), list):
+            restored_keys = {str(x) for x in r_cache["payload"]}
+
     issues: list[dict[str, Any]] = []
+    ignored_issues: list[dict[str, Any]] = []
+
+    def _emit(item: dict[str, Any], *, auto_ignored: bool = False, ignored_label: str = "", ignored_reason: str = "") -> None:
+        ikey = item["issueKey"]
+        if ikey in muted_keys:
+            ignored_issues.append({
+                **item,
+                "ignoredKind": "manual",
+                "ignoredLabel": "已手动忽略",
+                "ignoredReason": "已由你手动忽略（原记录保留，可随时恢复到待办）",
+                "canRestore": True,
+            })
+            return
+        if auto_ignored and ikey not in restored_keys:
+            ignored_issues.append({
+                **item,
+                "severity": "warn",
+                "stageLabel": ignored_label or "已有版本，已忽略",
+                "errorText": ignored_reason or item["errorText"],
+                "ignoredKind": "auto_existing_version",
+                "ignoredLabel": ignored_label or "已有版本，已忽略",
+                "ignoredReason": ignored_reason or item["errorText"],
+                "canRestore": True,
+            })
+            return
+        issues.append(item)
+
     subs = merge_subscriptions(snapshot, prefs)
     sub_by_hash = {h["downloadHash"]: h for h in (snapshot.get("mpHistory") or []) if h.get("downloadHash")}
 
@@ -584,9 +624,7 @@ def build_actionable_issues(
     for svc in snapshot.get("services") or []:
         if svc.get("configured") and not svc.get("connected"):
             issue_key = f"service:{svc['service']}"
-            if issue_key in muted_keys:
-                continue
-            issues.append({
+            _emit({
                 "issueKey": issue_key,
                 "severity": "error",
                 "stage": svc["service"],
@@ -605,8 +643,6 @@ def build_actionable_issues(
         if task["status"] not in {"missing_files", "error", "stalled"}:
             continue
         issue_key = f"qb:{task['hash']}"
-        if issue_key in muted_keys:
-            continue
         hist = sub_by_hash.get(task["hash"])
         mkey = hist["mediaKey"] if hist else ""
         if not mkey:
@@ -622,7 +658,7 @@ def build_actionable_issues(
             if task["status"] == "stalled"
             else f"qB 任务报错：{task['rawState']}"
         )
-        issues.append({
+        _emit({
             "issueKey": issue_key,
             "severity": "error" if task["status"] in {"missing_files", "error"} else "warn",
             "stage": "qbittorrent",
@@ -650,12 +686,10 @@ def build_actionable_issues(
     for fail in sec.get("failedFiles") or []:
         fname = fail.get("fileName") or fail.get("path") or "未知文件"
         issue_key = f"torra115:{fail.get('runId')}:{fname}"
-        if issue_key in muted_keys:
-            continue
         matched_sub = next((s for s in subs if _title_matches(s["title"], fname)), None)
         s_num, e_num = extract_season_episode(fname)
         ep_label = f"S{s_num:02d}E{e_num:02d}" if s_num and e_num else ""
-        issues.append({
+        _emit({
             "issueKey": issue_key,
             "severity": "error",
             "stage": "cloud115",
@@ -683,8 +717,8 @@ def build_actionable_issues(
         })
 
     # 4. Symedia (SA) real failures or identify failures ONLY (never rule_protected / version_rejected!)
-    # Chain same-file records so a file that later succeeded no longer surfaces stale failure alarms.
     sa_history = snapshot.get("saHistory") or []
+    emby = snapshot.get("emby") or {}
     succeeded_files = {
         (rec.get("fileName") or "").casefold()
         for rec in sa_history
@@ -693,11 +727,11 @@ def build_actionable_issues(
     seen_failed_files: set[str] = set()
     for rec in sa_history:
         fname_key = (rec.get("fileName") or "").casefold()
-        # Post-archive sequel/year sanity audit on "archived" movie records (Point 3: Hostel Part II -> 1690)
+        # Post-archive sequel/year sanity audit on "archived" movie records (Hostel Part II -> 1690)
         if rec["outcome"] in {"archived", "replaced"} and rec.get("mediaType") == "movie" and rec.get("fileName"):
             from app.domain.sa_recovery import check_sequel_identity_conflict, parse_media_filename
             p_src = parse_media_filename(rec["fileName"])
-            dest_year_m = __import__("re").search(r"\b((?:19|20)\d{2})\b", rec.get("dest") or "")
+            dest_year_m = re.search(r"\b((?:19|20)\d{2})\b", rec.get("dest") or "")
             conflict = check_sequel_identity_conflict(
                 source_name=p_src["arcTitle"],
                 source_year=p_src["year"],
@@ -706,22 +740,21 @@ def build_actionable_issues(
             )
             if conflict["hasConflict"]:
                 issue_key = f"sa_conflict:{rec['id'] or rec['fileName']}"
-                if issue_key not in muted_keys:
-                    issues.append({
-                        "issueKey": issue_key,
-                        "severity": "warn",
-                        "stage": "symedia",
-                        "stageLabel": "SA 疑似串片",
-                        "title": rec["title"],
-                        "subtitle": rec["fileName"],
-                        "mediaKey": rec.get("mediaKey") or "",
-                        "episodeLabel": "",
-                        "errorText": f"SA 显示归档成功但疑似认错作品：{conflict['warningText']}",
-                        "retryAction": None,
-                        "saRecord": rec,
-                        "appUrl": rec.get("webUrl") or "",
-                        "appLabel": "打开 SA 核对",
-                    })
+                _emit({
+                    "issueKey": issue_key,
+                    "severity": "warn",
+                    "stage": "symedia",
+                    "stageLabel": "SA 疑似串片",
+                    "title": rec["title"],
+                    "subtitle": rec["fileName"],
+                    "mediaKey": rec.get("mediaKey") or "",
+                    "episodeLabel": "",
+                    "errorText": f"SA 显示归档成功但疑似认错作品：{conflict['warningText']}",
+                    "retryAction": None,
+                    "saRecord": rec,
+                    "appUrl": rec.get("webUrl") or "",
+                    "appLabel": "打开 SA 核对",
+                })
             continue
 
         if rec["outcome"] not in {"failed", "identify_failed", "auth_or_connection_error"}:
@@ -731,24 +764,42 @@ def build_actionable_issues(
         if fname_key:
             seen_failed_files.add(fname_key)
         issue_key = f"sa:{rec['id'] or rec['fileName']}"
-        if issue_key in muted_keys:
-            continue
-        # Auto-ignore or annotate SA identify_failed items when same episode ALREADY exists in library!
+
         issue_severity = "error"
         issue_stage_label = "SA 识别失败" if rec["outcome"] == "identify_failed" else "SA 故障"
         issue_error_text = f"{rec['outcomeLabel']}：{rec['reasonText']}"
         issue_media_key = rec.get("mediaKey") or ""
         ep_label = f"{rec['seasons']}{rec['episodes']}".strip()
+        should_auto_ignore = False
+        auto_ignore_reason = ""
 
         if rec["outcome"] == "identify_failed":
             rec_id = str(rec.get("id") or "")
+            resolved_mt = ""
+            resolved_tmdb = ""
+            resolved_ts: int | None = None
+            resolved_te: int | None = None
+
             if store is not None and rec_id:
-                covered = store.get_cache(f"sa_covered:{rec_id}")
-                if covered and isinstance(covered.get("payload"), dict) and covered["payload"].get("noRecoveryNeeded"):
-                    continue
                 latest_job = store.get_latest_sa_recovery_for_record(rec_id)
-                if latest_job and latest_job.get("status") in {"resolved", "skipped_existing"}:
+                if latest_job and latest_job.get("status") == "resolved":
                     continue
+                if latest_job and latest_job.get("status") == "skipped_existing" and emby.get("available"):
+                    resolved_mt = latest_job.get("mediaType") or "tv"
+                    resolved_tmdb = str(latest_job.get("tmdbId") or "")
+                    resolved_ts = latest_job.get("targetSeason")
+                    resolved_te = latest_job.get("targetEpisode")
+
+                if not resolved_tmdb:
+                    covered = store.get_cache(f"sa_covered:{rec_id}")
+                    if covered and isinstance(covered.get("payload"), dict):
+                        cp = covered["payload"]
+                        if cp.get("tmdbId"):
+                            resolved_mt = str(cp.get("mediaType") or "tv")
+                            resolved_tmdb = str(cp.get("tmdbId") or "")
+                            resolved_ts = cp.get("targetSeason")
+                            resolved_te = cp.get("targetEpisode")
+
             if rec.get("fileName"):
                 from app.domain.sa_recovery import (
                     detect_existing_version_for_target,
@@ -756,71 +807,88 @@ def build_actionable_issues(
                     parse_media_filename,
                 )
                 p_fail = parse_media_filename(rec["fileName"])
-                resolved_mt = ""
-                resolved_tmdb = ""
-                resolved_ts: int | None = None
-                resolved_te: int | None = None
-
-                mapping = (
-                    store.find_sa_mapping(p_fail["arcKey"], p_fail["sourceSeason"])
-                    if store is not None and p_fail.get("arcKey") and p_fail.get("sourceSeason")
-                    else None
-                )
-                if mapping and p_fail.get("sourceEpisode"):
-                    resolved_mt = mapping["mediaType"]
-                    resolved_tmdb = mapping["tmdbId"]
-                    resolved_ts = int(mapping["targetSeason"])
-                    resolved_te = int(p_fail["sourceEpisode"]) + int(mapping.get("episodeOffset") or 0)
-                else:
-                    sibling = find_corroborated_sa_sibling_archive(
-                        record=rec,
-                        parsed=p_fail,
-                        sa_history=sa_history,
+                if not resolved_tmdb:
+                    mapping = (
+                        store.find_sa_mapping(p_fail["arcKey"], p_fail["sourceSeason"])
+                        if store is not None and p_fail.get("arcKey") and p_fail.get("sourceSeason")
+                        else None
                     )
-                    if sibling:
-                        resolved_mt = sibling["mediaType"]
-                        resolved_tmdb = sibling["tmdbId"]
-                        resolved_ts = sibling["targetSeason"]
-                        resolved_te = sibling["targetEpisode"]
+                    if mapping and p_fail.get("sourceEpisode"):
+                        resolved_mt = mapping["mediaType"]
+                        resolved_tmdb = mapping["tmdbId"]
+                        resolved_ts = int(mapping["targetSeason"])
+                        resolved_te = int(p_fail["sourceEpisode"]) + int(mapping.get("episodeOffset") or 0)
+                    else:
+                        sibling = find_corroborated_sa_sibling_archive(
+                            record=rec,
+                            parsed=p_fail,
+                            sa_history=sa_history,
+                        )
+                        if sibling:
+                            resolved_mt = sibling["mediaType"]
+                            resolved_tmdb = sibling["tmdbId"]
+                            resolved_ts = sibling["targetSeason"]
+                            resolved_te = sibling["targetEpisode"]
 
                 if resolved_tmdb:
+                    target_mkey = f"{resolved_mt or 'tv'}:{resolved_tmdb}"
+                    target_intent = (prefs.get(target_mkey) or {}).get("intent") or "follow"
                     ev = detect_existing_version_for_target(
                         media_type=resolved_mt or "tv",
                         tmdb_id=resolved_tmdb,
                         target_season=resolved_ts,
                         target_episode=resolved_te,
                         failed_file_name=rec["fileName"],
-                        emby=snapshot.get("emby") or {},
+                        emby=emby,
                         sa_history=sa_history,
+                        media_intent=target_intent,
                     )
-                    if ev.get("noRecoveryNeeded"):
-                        continue
-                    if ev.get("exists") and ev.get("needsComparison"):
-                        # Episode is NOT missing — show honest non-missing warning without judging platform quality!
+                    issue_media_key = target_mkey
+                    if resolved_ts and resolved_te and not ep_label:
+                        ep_label = f"S{resolved_ts:02d}E{resolved_te:02d}"
+
+                    if ev.get("autoIgnoreEligible"):
+                        should_auto_ignore = True
+                        auto_ignore_reason = ev.get("autoIgnoreSummary") or ev.get("summary") or ""
+                    elif ev.get("exists"):
+                        # Either Emby could not confirm current library presence, OR an upgrade/cut/sub/audio exception matched!
                         issue_severity = "warn"
-                        issue_stage_label = ev.get("badgeLabel") or "同集已有入库（非缺库）"
+                        issue_stage_label = ev.get("badgeLabel") or "同集已有入库（未自动忽略）"
                         issue_error_text = ev.get("summary") or issue_error_text
-                        issue_media_key = f"{resolved_mt or 'tv'}:{resolved_tmdb}"
-                        if resolved_ts and resolved_te and not ep_label:
-                            ep_label = f"S{resolved_ts:02d}E{resolved_te:02d}"
 
-        issues.append({
-            "issueKey": issue_key,
-            "severity": issue_severity,
-            "stage": "symedia",
-            "stageLabel": issue_stage_label,
-            "title": rec["title"],
-            "subtitle": rec["fileName"],
-            "mediaKey": issue_media_key,
-            "episodeLabel": ep_label,
-            "errorText": issue_error_text,
-            "retryAction": None,
-            "saRecord": rec if rec["outcome"] == "identify_failed" else None,
-            "appUrl": rec.get("webUrl") or "",
-            "appLabel": "打开 SA 处理",
-        })
+        _emit(
+            {
+                "issueKey": issue_key,
+                "severity": issue_severity,
+                "stage": "symedia",
+                "stageLabel": issue_stage_label,
+                "title": rec["title"],
+                "subtitle": rec["fileName"],
+                "mediaKey": issue_media_key,
+                "episodeLabel": ep_label,
+                "errorText": issue_error_text,
+                "retryAction": None,
+                "saRecord": rec if rec["outcome"] == "identify_failed" else None,
+                "appUrl": rec.get("webUrl") or "",
+                "appLabel": "打开 SA 处理",
+            },
+            auto_ignored=should_auto_ignore,
+            ignored_label="已有版本，已忽略",
+            ignored_reason=auto_ignore_reason,
+        )
 
-    return issues
+    return issues, ignored_issues
+
+
+def build_actionable_issues(
+    snapshot: dict[str, Any],
+    prefs: dict[str, dict[str, Any]],
+    *,
+    store: FluxaStore | None = None,
+) -> list[dict[str, Any]]:
+    """Return active actionable issues (auto-ignored redundant versions are placed in ignored_issues)."""
+    active, _ = partition_actionable_issues(snapshot, prefs, store=store)
+    return active
 
 
 def build_media_pipeline(

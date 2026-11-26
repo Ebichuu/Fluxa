@@ -181,7 +181,7 @@ export function SubscriptionsPage({ onOpenMedia }: SubscriptionsPageProps) {
                   <div className="row-actions">
                     {sub.tmdbId && (
                       <button className="btn btn-sm btn-primary" type="button" onClick={() => onOpenMedia(sub.mediaType, sub.tmdbId)}>
-                        看 5 步链路
+                        查看处理进度
                       </button>
                     )}
                     {sub.tmdbId && (
