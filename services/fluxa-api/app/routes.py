@@ -20,6 +20,7 @@ from app.domain.pipeline import (
     merge_subscriptions,
 )
 from app.domain.release_rules import evaluate_release_group, evaluate_subscription_guardrail
+from app.domain.quality_policies import get_quality_policy, list_quality_policies
 from app.domain.rss_auto_download import run_rss_auto_rule
 from app.domain.sa_recovery import diagnose_sa_failure, execute_sa_recovery, verify_sa_recovery
 
@@ -548,6 +549,9 @@ def _redact_rule(rule: dict[str, Any]) -> dict[str, Any]:
     copy["urlMasked"] = sanitize_text(raw_url.split("?", 1)[0] + ("?***" if "?" in raw_url else ""), 160)
     copy["hasUrl"] = bool(raw_url)
     copy["url"] = ""
+    policy = get_quality_policy(str(copy.get("qualityPolicyId") or "none"))
+    copy["qualityPolicyId"] = policy["id"]
+    copy["qualityPolicyName"] = policy["shortName"]
     return copy
 
 
@@ -565,6 +569,7 @@ def list_rss_auto():
         "qbCategories": qb_categories,
         "qbConfigured": adapters["qbittorrent"].configured,
         "sites": settings["guardrails"].get("siteOfficialGroups") or [],
+        "qualityPolicies": list_quality_policies(),
     })
 
 
@@ -585,6 +590,7 @@ def save_rss_auto():
     official_group = str(body.get("officialGroup") or "").strip()
     raw_url = str(body.get("url") or "").strip()
     final_url = raw_url or (existing["url"] if existing else "")
+    policy = get_quality_policy(str(body.get("qualityPolicyId") or (existing["qualityPolicyId"] if existing else "general_hq")))
 
     if not site_name or not official_group:
         return jsonify({"error": "请选择站点并填写本站官组名称"}), 400
@@ -599,6 +605,7 @@ def save_rss_auto():
         "url": final_url,
         "savePath": str(body.get("savePath") or "").strip(),
         "category": str(body.get("category") or "").strip(),
+        "qualityPolicyId": policy["id"],
         "enabled": bool(body.get("enabled", True)),
         "pollIntervalMinutes": int(body.get("pollIntervalMinutes") or 5),
     })
@@ -621,7 +628,10 @@ def toggle_rss_auto(rule_id: str):
         return jsonify({"error": "规则不存在"}), 404
     body = request.get_json(silent=True) or {}
     enabled = bool(body.get("enabled", not rule["enabled"]))
-    saved = store.save_rss_auto_rule({**rule, "enabled": enabled})
+    next_policy = rule.get("qualityPolicyId") or "none"
+    if "qualityPolicyId" in body:
+        next_policy = get_quality_policy(str(body.get("qualityPolicyId") or "none"))["id"]
+    saved = store.save_rss_auto_rule({**rule, "enabled": enabled, "qualityPolicyId": next_policy})
     return jsonify({"ok": True, "rule": _redact_rule(saved)})
 
 

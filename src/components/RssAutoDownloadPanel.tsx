@@ -7,6 +7,10 @@ import { StatusPill } from './StatusPill';
 const ITEM_STATUS_MAP: Record<string, { tone: string; label: string }> = {
   confirmed_in_qb: { tone: 'ok', label: '已确认入 qB' },
   submitted_unconfirmed: { tone: 'warn', label: '已提交待确认' },
+  quality_rejected: { tone: 'warn', label: '质量不达标跳过' },
+  insufficient_evidence: { tone: 'warn', label: '依据不足跳过' },
+  quality_outperformed: { tone: 'idle', label: '同集择优落选' },
+  quality_existing_sufficient: { tone: 'protected', label: '已有同档/更优版本' },
   duplicate_in_qb: { tone: 'idle', label: 'qB 已有（Hash 去重）' },
   duplicate_seen: { tone: 'idle', label: '已处理过（Hash 去重）' },
   baseline_skipped: { tone: 'idle', label: '首启基线跳过' },
@@ -22,6 +26,7 @@ export function RssAutoDownloadPanel() {
   // Add form
   const [siteId, setSiteId] = useState('audiences');
   const [officialGroup, setOfficialGroup] = useState('ADWeb');
+  const [qualityPolicyId, setQualityPolicyId] = useState('anime_web');
   const [url, setUrl] = useState('');
   const [category, setCategory] = useState('');
   const [savePath, setSavePath] = useState('');
@@ -74,6 +79,7 @@ export function RssAutoDownloadPanel() {
         siteId,
         siteName: selectedSite?.siteName || siteId,
         officialGroup,
+        qualityPolicyId,
         url,
         category,
         savePath,
@@ -125,7 +131,21 @@ export function RssAutoDownloadPanel() {
     }
   };
 
+  const changeRulePolicy = async (rule: RssAutoRule, nextPolicyId: string) => {
+    setBusyId(rule.id);
+    try {
+      await api.toggleRssAutoRule(rule.id, rule.enabled, nextPolicyId);
+      setToast({ tone: 'ok', text: `已更新「${rule.siteName} · ${rule.officialGroup}」的质量策略` });
+      await load();
+    } catch (err) {
+      setToast({ tone: 'error', text: err instanceof Error ? err.message : '切换质量策略失败' });
+    } finally {
+      setBusyId('');
+    }
+  };
+
   const ruleMap = new Map((data?.rules || []).map((r) => [r.id, r]));
+  const selectedPolicy = data?.qualityPolicies?.find((p) => p.id === qualityPolicyId);
 
   return (
     <div className="stack">
@@ -138,7 +158,7 @@ export function RssAutoDownloadPanel() {
       <section className="card stack">
         <div className="card-header" style={{ marginBottom: 0 }}>
           <h2 className="card-title"><Download size={17} color="var(--accent)" /> 新增「站点 + 本站官组」RSS 自动下载</h2>
-          <span className="muted">首次启用默认仅建立基线，不补下载历史条目；按种子 Hash 去重并读回 qB 核验</span>
+          <span className="muted">指定官组 RSS → 质量策略过滤 &amp; 同集择优 → Hash 去重 → 推给 qB 并读回核验</span>
         </div>
 
         <form className="stack" style={{ gap: 12 }} onSubmit={handleCreate}>
@@ -169,6 +189,20 @@ export function RssAutoDownloadPanel() {
                 ))}
               </datalist>
             </div>
+          </div>
+
+          <div className="field">
+            <label>绑定质量策略（不合格或依据不足的条目自动跳过，不因官组发布就全量下载）</label>
+            <select value={qualityPolicyId} onChange={(e) => setQualityPolicyId(e.target.value)}>
+              {(data?.qualityPolicies || []).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            {selectedPolicy && (
+              <div className="muted" style={{ marginTop: 4 }}>{selectedPolicy.summary}</div>
+            )}
           </div>
 
           <div className="field">
@@ -253,6 +287,10 @@ export function RssAutoDownloadPanel() {
                     <StatusPill status={rule.enabled ? 'ok' : 'idle'} label={rule.enabled ? '已启用' : '已停用'} />
                     <strong>{rule.siteName}</strong>
                     <span className="pill active">{rule.officialGroup}</span>
+                    <StatusPill
+                      status={rule.qualityPolicyId && rule.qualityPolicyId !== 'none' ? 'protected' : 'idle'}
+                      label={`策略：${rule.qualityPolicyName || rule.qualityPolicyId || '仅哈希去重'}`}
+                    />
                     {rule.category && <span className="pill idle">分类：{rule.category}</span>}
                     <span className="pill idle">每 {rule.pollIntervalMinutes} 分钟</span>
                     <span className="pill ok">已入 qB {rule.addedCount} 条</span>
@@ -265,6 +303,24 @@ export function RssAutoDownloadPanel() {
                   </div>
                 </div>
                 <div className="row-actions">
+                  <select
+                    aria-label="切换质量策略"
+                    value={rule.qualityPolicyId || 'none'}
+                    disabled={busyId === rule.id}
+                    onChange={(e) => void changeRulePolicy(rule, e.target.value)}
+                    style={{
+                      padding: '4px 8px',
+                      borderRadius: 8,
+                      border: '1px solid var(--border)',
+                      background: 'var(--surface-2)',
+                      color: 'var(--text)',
+                      fontSize: 12.5,
+                    }}
+                  >
+                    {(data?.qualityPolicies || []).map((p) => (
+                      <option key={p.id} value={p.id}>{p.shortName}</option>
+                    ))}
+                  </select>
                   <button
                     className="btn btn-sm btn-primary"
                     type="button"
@@ -309,6 +365,8 @@ export function RssAutoDownloadPanel() {
                     </div>
                     <div className="muted" style={{ marginTop: 4 }}>
                       {item.createdAt}
+                      {item.qualityMeta?.specs?.scopeLabel ? ` · 范围 ${item.qualityMeta.specs.scopeLabel}` : ''}
+                      {item.qualityMeta?.specs?.specSummary ? ` · ${item.qualityMeta.specs.specSummary}` : ''}
                       {item.torrentHash ? ` · Hash ${item.torrentHash.slice(0, 12)}…` : ''}
                       {item.qbCategory ? ` · 分类 ${item.qbCategory}` : ''}
                     </div>

@@ -200,7 +200,12 @@ export function SaRecoveryModal({ record, onClose, onUpdated }: SaRecoveryModalP
               </div>
               {!diag.proposals.length ? (
                 <div className="banner warn">
-                  自动搜索未命中候选（已尝试：{diag.searchedQueries.map((q) => q.query).slice(0, 3).join(' / ') || '无'}）。请在上方输入正确的 TMDB ID 核对季集与播出日期。
+                  <strong>无法可靠识别：</strong>
+                  {diag.statusMessage || '未找到与源文件作品身份可靠匹配的 TMDB 候选。'}
+                  {diag.filteredOutCount ? `（已过滤 ${diag.filteredOutCount} 个无关候选）` : ''}
+                  <div className="muted" style={{ marginTop: 4 }}>
+                    已尝试标题查询：{diag.searchedQueries.map((q) => q.query).slice(0, 4).join(' / ') || '无'}。请在上方手动输入 TMDB ID 核对季集，不会凑合生成无关方案。
+                  </div>
                 </div>
               ) : (
                 <div className="list">

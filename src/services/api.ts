@@ -188,6 +188,7 @@ export const api = {
     url: string;
     savePath: string;
     category: string;
+    qualityPolicyId: string;
     enabled: boolean;
     pollIntervalMinutes: number;
   }) =>
@@ -195,10 +196,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-  toggleRssAutoRule: (ruleId: string, enabled: boolean) =>
+  toggleRssAutoRule: (ruleId: string, enabled: boolean, qualityPolicyId?: string) =>
     requestJson<{ ok: boolean; rule: RssAutoRule }>(`/api/rss-auto/rules/${encodeURIComponent(ruleId)}/toggle`, {
       method: 'PATCH',
-      body: JSON.stringify({ enabled }),
+      body: JSON.stringify(qualityPolicyId ? { enabled, qualityPolicyId } : { enabled }),
     }),
   runRssAutoRuleNow: (ruleId: string) =>
     requestJson<{ ok: boolean; message: string; rule: RssAutoRule }>(

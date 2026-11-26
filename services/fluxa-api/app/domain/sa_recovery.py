@@ -147,30 +147,44 @@ def parse_media_filename(file_name: str) -> dict[str, Any]:
     sequel_num = extract_sequel_number(raw_title)
 
     # Build progressive search queries (handles full Romaji, multi-alias titles, and promo-polluted names)
+    # Strictly rejects pure-digit / meaningless fragments like "17" extracted from "U 17"!
     queries: list[str] = []
+
+    def _is_meaningful_query(text: str) -> bool:
+        c = re.sub(r"\s+", " ", str(text or "")).strip(" -_/|")
+        if not c or re.fullmatch(r"[\d\s\-_./:]+", c):
+            return False
+        has_cjk = bool(re.search(r"[\u4e00-\u9fff]", c))
+        if has_cjk:
+            return len(re.findall(r"[\u4e00-\u9fff]", c)) >= 2
+        latin_words = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9'\-]*", c) if len(w) >= 2]
+        return len(latin_words) >= 2 or (len(latin_words) == 1 and len(latin_words[0]) >= 4)
 
     def _add_q(q: str):
         c = re.sub(r"\s+", " ", str(q or "")).strip(" -_/|")
-        if len(c) >= 2 and c not in queries:
+        if _is_meaningful_query(c) and c not in queries:
             queries.append(c)
 
     _add_q(cleaned_search_title or raw_title)
     u_norm = re.sub(r"\bU\s+(\d+)\b", r"U-\1", cleaned_search_title or raw_title, flags=re.I)
     _add_q(u_norm)
 
-    # Split multi-alias titles separated by / 、 or CJK + English segments
+    # Split multi-alias titles separated by / 、 |
     for seg in re.split(r"[/、|]+", cleaned_search_title):
         _add_q(seg)
-    cjk_part = " ".join(re.findall(r"[\u4e00-\u9fff0-9]+", cleaned_search_title)).strip()
+
+    # CJK extraction MUST require actual Han characters — never extract bare digits like "17"!
+    cjk_segments = [s for s in re.findall(r"[\u4e00-\u9fff0-9]+", cleaned_search_title) if re.search(r"[\u4e00-\u9fff]", s)]
+    cjk_part = " ".join(cjk_segments).strip()
     latin_part = " ".join(re.findall(r"[A-Za-z0-9'\-]+", u_norm)).strip()
     if cjk_part:
         _add_q(cjk_part)
     if latin_part:
         _add_q(latin_part)
 
-    # Progressively trim trailing arc subtitle words (e.g. drop "Kesshou Member Ketteisen")
+    # Progressively trim trailing arc subtitle words (e.g. drop "Kesshou Member Ketteisen" -> "Shin Tennis no Oujisama U-17 World Cup")
     base_words = (latin_part or u_norm).split(" ")
-    for drop in range(1, min(7, max(1, len(base_words) - 2))):
+    for drop in range(1, max(1, len(base_words) - 1)):
         prefix = " ".join(base_words[:-drop])
         if len(prefix.split(" ")) >= 2:
             _add_q(prefix)
@@ -189,7 +203,7 @@ def parse_media_filename(file_name: str) -> dict[str, Any]:
         "hasSpecialMarkers": has_special_markers,
         "specsTail": specs_tail,
         "ext": ext,
-        "searchQueries": queries[:10],
+        "searchQueries": queries[:12],
     }
 
 
@@ -245,18 +259,107 @@ def check_local_file_status(src_path: str) -> dict[str, Any]:
     }
 
 
+IDENTITY_STOPWORDS = {
+    "the", "a", "an", "of", "no", "in", "on", "to", "for", "and", "or", "part", "season", "episode", "movie", "film",
+}
+
+
+def _distinctive_tokens(text: str) -> tuple[set[str], set[str]]:
+    """Return (latin_tokens, cjk_chunks) excluding bare numbers and stopwords."""
+    norm_u = re.sub(r"\bU\s+(\d+)\b", r"U-\1", str(text or ""), flags=re.I)
+    latin = {
+        tok.lower()
+        for tok in re.findall(r"[A-Za-z][A-Za-z0-9'\-]*", norm_u)
+        if len(tok) >= 2 and tok.lower() not in IDENTITY_STOPWORDS
+    }
+    cjk = {seg for seg in re.findall(r"[\u4e00-\u9fff]{2,}", str(text or ""))}
+    return latin, cjk
+
+
+def evaluate_candidate_identity(
+    detail: dict[str, Any],
+    *,
+    parsed: dict[str, Any],
+    matched_queries: list[str],
+    trusted_source: bool = False,
+) -> dict[str, Any]:
+    """Verify work-identity relevance BEFORE year/season/episode scoring.
+
+    Prevents unrelated shows (e.g. 'Daha 17' / '代号17' matching only a bare digit '17' or year '2026')
+    from ever entering executable recovery proposals.
+    """
+    if trusted_source:
+        return {"relevant": True, "score": 50, "reason": "由人工指定的 TMDB ID 或已确认篇章映射直接锁定"}
+
+    src_title = parsed.get("cleanedTitle") or parsed.get("arcTitle") or ""
+    src_latin, src_cjk = _distinctive_tokens(src_title)
+    src_compact = compact_title(src_title)
+
+    cand_names = [
+        str(detail.get("title") or ""),
+        str(detail.get("originalTitle") or ""),
+        *[str(a) for a in (detail.get("alternativeTitles") or [])],
+    ]
+    cand_names = [n.strip() for n in cand_names if n.strip()]
+
+    # 1. Direct CJK overlap check
+    best_overlap_tokens: set[str] = set()
+    matched_name = ""
+    for name in cand_names:
+        c_compact = compact_title(name)
+        if len(c_compact) >= 2 and len(src_compact) >= 2 and (c_compact in src_compact or src_compact in c_compact):
+            return {"relevant": True, "score": 60, "reason": f"作品名称与「{name}」直接命中"}
+        c_latin, c_cjk = _distinctive_tokens(name)
+        if src_cjk and c_cjk:
+            for sc in src_cjk:
+                for cc in c_cjk:
+                    if sc in cc or cc in sc:
+                        return {"relevant": True, "score": 55, "reason": f"中文片名片段「{cc}」与源文件匹配"}
+        overlap = src_latin & c_latin
+        if len(overlap) > len(best_overlap_tokens):
+            best_overlap_tokens = overlap
+            matched_name = name
+
+    # 2. Meaningful non-numeric Latin/Romaji token overlap (e.g. 'u-17', 'world', 'cup' in '新テニスの王子様 U-17 WORLD CUP')
+    if len(best_overlap_tokens) >= 2:
+        tokens_text = " / ".join(sorted(best_overlap_tokens)[:5])
+        return {
+            "relevant": True,
+            "score": min(55, 25 + len(best_overlap_tokens) * 10),
+            "reason": f"作品名称「{matched_name}」命中关键标识词：{tokens_text}",
+        }
+
+    # Single long distinctive token match ONLY if candidate title itself is short (1-2 Latin words) & matches exact distinctive word
+    if len(best_overlap_tokens) == 1:
+        tok = next(iter(best_overlap_tokens))
+        cand_lat, _ = _distinctive_tokens(matched_name)
+        if len(tok) >= 5 and len(cand_lat) <= 2:
+            return {
+                "relevant": True,
+                "score": 30,
+                "reason": f"作品名称「{matched_name}」命中特征词「{tok}」",
+            }
+
+    return {"relevant": False, "score": 0, "reason": "作品标题与源文件无可靠身份关联"}
+
+
 def _evaluate_tv_candidate(
     detail: dict[str, Any],
     tmdb_adapter: Any,
     *,
     parsed: dict[str, Any],
     failed_date: date | None,
+    identity: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    if not identity.get("relevant"):
+        return []
     proposals: list[dict[str, Any]] = []
     source_s = parsed.get("sourceSeason") or 1
     source_e = parsed.get("sourceEpisode") or 1
     file_year = parsed.get("year") or ""
     tmdb_id = str(detail["tmdbId"])
+    id_score = int(identity.get("score") or 0)
+    id_reason = str(identity.get("reason") or "")
 
     seasons = [s for s in (detail.get("seasons") or []) if int(s.get("seasonNumber") or 0) > 0]
     for s in seasons:
@@ -267,20 +370,20 @@ def _evaluate_tv_candidate(
         if ep_count > 0 and source_e > ep_count:
             continue
 
-        score = 0
-        reasons: list[str] = []
+        aux_score = 0
+        reasons: list[str] = [id_reason] if id_reason else []
         if file_year and s_air.startswith(file_year):
-            score += 35
+            aux_score += 35
             reasons.append(f"第 {s_num} 季首播 {s_air} 吻合文件名年份 {file_year}")
         elif file_year and s_air:
             try:
                 if abs(int(s_air[:4]) - int(file_year)) <= 1:
-                    score += 10
+                    aux_score += 10
             except ValueError:
                 pass
 
         ep_match = None
-        if len(seasons) <= 6 or score > 0 or s_num == source_s:
+        if len(seasons) <= 6 or aux_score > 0 or s_num == source_s:
             eps = tmdb_adapter.get_season_episodes(tmdb_id, s_num)
             ep_match = next((ep for ep in eps if ep["episodeNumber"] == source_e), None)
             if ep_match:
@@ -289,23 +392,24 @@ def _evaluate_tv_candidate(
                 if ep_air and failed_date:
                     delta = abs((failed_date - ep_air).days)
                     if delta == 0:
-                        score += 60
+                        aux_score += 60
                         reasons.append(f"S{s_num:02d}E{source_e:02d}《{ep_match['name']}》播出日 {ep_air_str} 与失败日期完全一致")
                     elif delta <= 3:
-                        score += 45
+                        aux_score += 45
                         reasons.append(f"S{s_num:02d}E{source_e:02d}《{ep_match['name']}》播出日 {ep_air_str} 与失败日期仅差 {delta} 天")
                     elif delta <= 14:
-                        score += 25
+                        aux_score += 25
                         reasons.append(f"S{s_num:02d}E{source_e:02d}《{ep_match['name']}》播出日 {ep_air_str} 接近失败日期")
                 elif ep_air_str and file_year and ep_air_str.startswith(file_year):
-                    score += 20
+                    aux_score += 20
                     reasons.append(f"S{s_num:02d}E{source_e:02d}《{ep_match['name']}》播出于 {ep_air_str}")
 
-        if score == 0 and s_num == source_s:
-            score = 5
+        if aux_score == 0 and s_num == source_s:
+            aux_score = 5
             reasons.append(f"同季号候选 S{s_num:02d}E{source_e:02d}")
 
-        if score > 0:
+        if aux_score > 0:
+            total_score = id_score + aux_score
             proposals.append({
                 "mediaType": "tv",
                 "tmdbId": tmdb_id,
@@ -323,8 +427,9 @@ def _evaluate_tv_candidate(
                 "episodeAirDate": (ep_match or {}).get("airDate") or "",
                 "seasonChanged": s_num != source_s,
                 "sequelConflict": {"hasConflict": False, "reasons": [], "warningText": ""},
-                "score": score,
-                "confidence": "high" if score >= 60 else "medium" if score >= 30 else "low",
+                "identityScore": id_score,
+                "score": total_score,
+                "confidence": "high" if total_score >= 90 else "medium" if total_score >= 55 else "low",
                 "reasons": reasons,
                 "suggestedFileName": build_spec_preserving_filename(
                     parsed,
@@ -339,7 +444,9 @@ def _evaluate_tv_candidate(
     return proposals
 
 
-def _evaluate_movie_candidate(detail: dict[str, Any], *, parsed: dict[str, Any]) -> dict[str, Any]:
+def _evaluate_movie_candidate(detail: dict[str, Any], *, parsed: dict[str, Any], identity: dict[str, Any]) -> dict[str, Any] | None:
+    if not identity.get("relevant"):
+        return None
     conflict = check_sequel_identity_conflict(
         source_name=parsed["arcTitle"],
         source_year=parsed.get("year") or "",
@@ -347,10 +454,11 @@ def _evaluate_movie_candidate(detail: dict[str, Any], *, parsed: dict[str, Any])
         target_original_title=detail.get("originalTitle") or "",
         target_year=detail.get("year") or "",
     )
-    score = 40
-    reasons: list[str] = []
+    id_score = int(identity.get("score") or 0)
+    score = id_score + 20
+    reasons: list[str] = [identity["reason"]] if identity.get("reason") else []
     if parsed.get("year") and detail.get("year") == parsed["year"]:
-        score += 40
+        score += 35
         reasons.append(f"电影年份 {detail['year']} 与源文件一致")
     if conflict["hasConflict"]:
         score = max(5, score - 50)
@@ -375,8 +483,9 @@ def _evaluate_movie_candidate(detail: dict[str, Any], *, parsed: dict[str, Any])
         "episodeAirDate": "",
         "seasonChanged": False,
         "sequelConflict": conflict,
+        "identityScore": id_score,
         "score": score,
-        "confidence": "low" if conflict["hasConflict"] else ("high" if score >= 70 else "medium"),
+        "confidence": "low" if conflict["hasConflict"] else ("high" if score >= 85 else "medium"),
         "reasons": reasons,
         "suggestedFileName": build_spec_preserving_filename(
             parsed,
@@ -396,6 +505,7 @@ def diagnose_sa_failure(
     adapters: dict[str, Any] | None = None,
     snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Pure read-only diagnosis: never moves files, never submits SA archive jobs."""
     adapters = adapters or build_adapters(settings)
     snapshot = snapshot or collect_upstream_snapshot(adapters)
 
@@ -416,44 +526,64 @@ def diagnose_sa_failure(
     sa_caps = adapters["symedia"].probe_recovery_capabilities() if adapters["symedia"].configured else {}
 
     tmdb = adapters["tmdb"]
-    candidate_pairs: list[tuple[str, str]] = []
+    candidate_meta: dict[tuple[str, str], dict[str, Any]] = {}
 
-    def _add_cand(mt: str, cid: str):
+    def _add_cand(mt: str, cid: str, *, query: str = "", trusted: bool = False):
         c = str(cid or "").strip()
-        if mt in {"movie", "tv"} and c.isdigit() and (mt, c) not in candidate_pairs:
-            candidate_pairs.append((mt, c))
+        if mt not in {"movie", "tv"} or not c.isdigit():
+            return
+        entry = candidate_meta.setdefault((mt, c), {"queries": [], "trusted": False})
+        if query and query not in entry["queries"]:
+            entry["queries"].append(query)
+        if trusted:
+            entry["trusted"] = True
 
     if manual_tmdb_id and str(manual_tmdb_id).isdigit():
-        _add_cand(target_type, manual_tmdb_id)
+        _add_cand(target_type, manual_tmdb_id, trusted=True)
     if saved_mapping:
-        _add_cand(saved_mapping["mediaType"], saved_mapping["tmdbId"])
+        _add_cand(saved_mapping["mediaType"], saved_mapping["tmdbId"], trusted=True)
 
+    # Run ALL meaningful progressive title queries (never break prematurely on raw unverified hit count!)
     searched_queries: list[dict[str, Any]] = []
     if tmdb.configured and not manual_tmdb_id:
         for q in parsed["searchQueries"]:
             hits = tmdb.search(q)
-            typed_hits = [h for h in hits if h["mediaType"] == target_type] or hits
+            typed_hits = [h for h in hits if h["mediaType"] == target_type]
             searched_queries.append({"query": q, "hitCount": len(typed_hits)})
-            for h in typed_hits[:3]:
-                _add_cand(h["mediaType"], h["tmdbId"])
-            if len(candidate_pairs) >= 3:
-                break
+            for h in typed_hits[:4]:
+                _add_cand(h["mediaType"], h["tmdbId"], query=q)
 
-    if len(candidate_pairs) < 2:
-        prefs = store.list_preferences()
-        for sub in merge_subscriptions(snapshot, prefs):
-            if sub["tmdbId"] and parsed["arcKey"] and parsed["arcKey"][:8] in compact_title(sub["title"]):
-                _add_cand(sub["mediaType"], sub["tmdbId"])
+    # Also cross-check user's existing MP Neo / Torra subscriptions
+    prefs = store.list_preferences()
+    src_latin, src_cjk = _distinctive_tokens(parsed["cleanedTitle"])
+    for sub in merge_subscriptions(snapshot, prefs):
+        if not sub["tmdbId"]:
+            continue
+        sub_lat, sub_cjk = _distinctive_tokens(sub["title"])
+        if (src_cjk and any(sc in cc or cc in sc for sc in src_cjk for cc in sub_cjk)) or len(src_latin & sub_lat) >= 2:
+            _add_cand(sub["mediaType"], sub["tmdbId"], query=f"已有订阅:{sub['title']}")
 
     proposals: list[dict[str, Any]] = []
-    for mt, cid in candidate_pairs[:5]:
+    filtered_out_count = 0
+    for (mt, cid), meta in list(candidate_meta.items())[:12]:
         detail = tmdb.get_details(mt, cid) if tmdb.configured else None
         if not detail:
             continue
+        identity = evaluate_candidate_identity(
+            detail,
+            parsed=parsed,
+            matched_queries=meta["queries"],
+            trusted_source=meta["trusted"],
+        )
+        if not identity["relevant"]:
+            filtered_out_count += 1
+            continue
         if mt == "tv":
-            proposals.extend(_evaluate_tv_candidate(detail, tmdb, parsed=parsed, failed_date=failed_date))
+            proposals.extend(_evaluate_tv_candidate(detail, tmdb, parsed=parsed, failed_date=failed_date, identity=identity))
         else:
-            proposals.append(_evaluate_movie_candidate(detail, parsed=parsed))
+            m_prop = _evaluate_movie_candidate(detail, parsed=parsed, identity=identity)
+            if m_prop:
+                proposals.append(m_prop)
 
     proposals.sort(key=lambda x: x["score"], reverse=True)
 
@@ -482,6 +612,12 @@ def diagnose_sa_failure(
         requires_confirm = False
 
     latest_job = store.get_latest_sa_recovery_for_record(str(record.get("id") or ""))
+    recognition_status = "matched" if proposals else "unreliable"
+    status_message = (
+        ""
+        if proposals
+        else "无法可靠识别：未找到与源文件作品身份可靠匹配的 TMDB 候选（已过滤无关作品），请手动输入 TMDB ID 核对季集"
+    )
 
     return {
         "record": {
@@ -493,6 +629,9 @@ def diagnose_sa_failure(
             "reasonText": record.get("reasonText") or "没有查询到媒体信息",
             "fileSize": record.get("fileSize"),
         },
+        "recognitionStatus": recognition_status,
+        "statusMessage": status_message,
+        "filteredOutCount": filtered_out_count,
         "parsed": parsed,
         "fileCheck": file_check,
         "searchedQueries": searched_queries,

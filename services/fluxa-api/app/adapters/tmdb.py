@@ -129,12 +129,28 @@ class TmdbAdapter:
         if not self.configured or media_type not in {"movie", "tv"} or not str(tmdb_id).isdigit():
             return None
         try:
-            raw = self._get(f"{media_type}/{tmdb_id}")
+            raw = self._get(f"{media_type}/{tmdb_id}", {"append_to_response": "alternative_titles,translations"})
         except Exception:
             return None
         base = self._normalize_item(raw, media_type)
         if not base:
             return None
+        alt_block = raw.get("alternative_titles") if isinstance(raw.get("alternative_titles"), dict) else {}
+        alt_rows = alt_block.get("results") or alt_block.get("titles") or []
+        alt_titles: list[str] = []
+        for row in alt_rows if isinstance(alt_rows, list) else []:
+            if isinstance(row, dict):
+                t = str(row.get("title") or "").strip()
+                if t and t not in alt_titles:
+                    alt_titles.append(t)
+        trans_block = raw.get("translations") if isinstance(raw.get("translations"), dict) else {}
+        for tr in (trans_block.get("translations") or []) if isinstance(trans_block.get("translations"), list) else []:
+            if isinstance(tr, dict):
+                tr_data = tr.get("data") if isinstance(tr.get("data"), dict) else {}
+                t = str(tr_data.get("title") or tr_data.get("name") or "").strip()
+                if t and t not in alt_titles:
+                    alt_titles.append(t)
+        base["alternativeTitles"] = alt_titles[:60]
         if media_type == "tv":
             seasons = []
             for s in raw.get("seasons") or []:

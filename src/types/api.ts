@@ -147,6 +147,9 @@ export interface SaDiagnoseResponse {
     reasonText: string;
     fileSize?: number | null;
   };
+  recognitionStatus?: 'matched' | 'unreliable';
+  statusMessage?: string;
+  filteredOutCount?: number;
   parsed: {
     fileName: string;
     inferredMediaType: MediaType;
@@ -483,6 +486,13 @@ export interface AuditRecord {
   createdAt: string;
 }
 
+export interface QualityPolicySpec {
+  id: string;
+  name: string;
+  shortName: string;
+  summary: string;
+}
+
 export interface RssAutoRule {
   id: string;
   siteId: string;
@@ -492,6 +502,8 @@ export interface RssAutoRule {
   hasUrl: boolean;
   savePath: string;
   category: string;
+  qualityPolicyId: string;
+  qualityPolicyName?: string;
   enabled: boolean;
   pollIntervalMinutes: number;
   baselineInitialized: boolean;
@@ -506,10 +518,38 @@ export interface RssAutoItemLog {
   ruleId: string;
   torrentHash: string;
   title: string;
-  status: 'baseline_skipped' | 'duplicate_in_qb' | 'duplicate_seen' | 'confirmed_in_qb' | 'submitted_unconfirmed' | 'failed';
+  status:
+    | 'baseline_skipped'
+    | 'duplicate_in_qb'
+    | 'duplicate_seen'
+    | 'confirmed_in_qb'
+    | 'submitted_unconfirmed'
+    | 'quality_rejected'
+    | 'insufficient_evidence'
+    | 'quality_outperformed'
+    | 'quality_existing_sufficient'
+    | 'failed';
   errorText: string;
   qbCategory: string;
   qbSavePath: string;
+  workEpisodeKey?: string;
+  qualityPolicyId?: string;
+  qualityMeta?: {
+    specs?: {
+      specSummary?: string;
+      scopeLabel?: string;
+      resolution?: string;
+      source?: string;
+      codec?: string;
+      hasEffectsSub?: boolean;
+    };
+    eval?: {
+      policyName?: string;
+      decision?: string;
+      qualityTier?: number;
+      reason?: string;
+    };
+  };
   createdAt: string;
 }
 
@@ -519,4 +559,5 @@ export interface RssAutoOverviewResponse {
   qbCategories: Array<{ name: string; savePath: string }>;
   qbConfigured: boolean;
   sites: SiteOfficialGroup[];
+  qualityPolicies: QualityPolicySpec[];
 }

@@ -288,6 +288,94 @@ class SaRecoveryAcceptanceTests(unittest.TestCase):
         self.assertIn("Disc1", renamed)
         self.assertIn("1080p.BluRay.REMUX-DIY.mkv", renamed)
 
+    def test_e09_regression_excludes_317883_35465_recalls_205493_and_readonly(self):
+        """Regression for real bug: 'U 17' must NOT generate query '17', must exclude Daha 17 (317883)
+        and 代号17 (35465), recall 205493 / S03E09, and perform zero file moves or SA submits during diagnose.
+        """
+        class _PollutedTmdb(_FakeTmdb):
+            def search(self, query: str):
+                # Even if an unrelated noisy hit appeared alongside valid hits, identity gate MUST reject them!
+                if query.strip() == "17":
+                    return [
+                        {"mediaKey": "tv:317883", "mediaType": "tv", "tmdbId": "317883", "title": "Daha 17", "originalTitle": "Daha 17", "year": "2026", "posterUrl": ""},
+                        {"mediaKey": "tv:35465", "mediaType": "tv", "tmdbId": "35465", "title": "代号17", "originalTitle": "代号17", "year": "2010", "posterUrl": ""},
+                    ]
+                hits = super().search(query)
+                if hits:
+                    return [
+                        {"mediaKey": "tv:317883", "mediaType": "tv", "tmdbId": "317883", "title": "Daha 17", "originalTitle": "Daha 17", "year": "2026", "posterUrl": ""},
+                        {"mediaKey": "tv:35465", "mediaType": "tv", "tmdbId": "35465", "title": "代号17", "originalTitle": "代号17", "year": "2010", "posterUrl": ""},
+                        *hits,
+                    ]
+                return []
+
+            def get_details(self, media_type: str, tmdb_id: str):
+                if tmdb_id == "317883":
+                    return {
+                        "mediaKey": "tv:317883", "mediaType": "tv", "tmdbId": "317883",
+                        "title": "Daha 17", "originalTitle": "Daha 17", "alternativeTitles": [], "year": "2026", "posterUrl": "",
+                        "seasons": [{"seasonNumber": 1, "name": "第 1 季", "airDate": "2026-05-31", "episodeCount": 12}],
+                    }
+                if tmdb_id == "35465":
+                    return {
+                        "mediaKey": "tv:35465", "mediaType": "tv", "tmdbId": "35465",
+                        "title": "代号17", "originalTitle": "代号17", "alternativeTitles": [], "year": "2010", "posterUrl": "",
+                        "seasons": [{"seasonNumber": 1, "name": "第 1 季", "airDate": "2010-01-01", "episodeCount": 12}],
+                    }
+                return super().get_details(media_type, tmdb_id)
+
+        class _OnlyNoiseTmdb(_PollutedTmdb):
+            def search(self, query: str):
+                return [
+                    {"mediaKey": "tv:317883", "mediaType": "tv", "tmdbId": "317883", "title": "Daha 17", "originalTitle": "Daha 17", "year": "2026", "posterUrl": ""},
+                    {"mediaKey": "tv:35465", "mediaType": "tv", "tmdbId": "35465", "title": "代号17", "originalTitle": "代号17", "year": "2010", "posterUrl": ""},
+                ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FluxaStore(Path(tmp) / "test.sqlite3")
+            settings = store.get_settings()
+            sa = _FakeSymedia()
+            emby = _FakeEmby()
+            # Create a real temp file to verify diagnosis NEVER renames or moves it
+            src_file = Path(tmp) / E09_FILE
+            src_file.write_bytes(b"fake-video")
+
+            parsed = parse_media_filename(E09_FILE)
+            # 1. Pure digit query "17" must NEVER be generated!
+            self.assertNotIn("17", parsed["searchQueries"])
+            self.assertTrue(any("U-17 World Cup" in q for q in parsed["searchQueries"]))
+
+            e09_record = {
+                "id": "88638",
+                "fileName": E09_FILE,
+                "src": str(src_file),
+                "date": "2026-11-26 01:17:04",
+                "outcome": "identify_failed",
+                "reasonText": "没有查询到媒体信息",
+            }
+            snapshot = {"services": [], "serviceMap": {}, "mpSubs": [], "torraSubs": [], "emby": emby.fetch_library_snapshot()}
+            adapters = {"tmdb": _PollutedTmdb(), "symedia": sa, "emby": emby, "moviepilot": _Noop(), "torra": _Noop(), "qbittorrent": _Noop()}
+            diag = diagnose_sa_failure(record=e09_record, settings=settings, store=store, adapters=adapters, snapshot=snapshot)
+
+            proposal_ids = {p["tmdbId"] for p in diag["proposals"]}
+            self.assertNotIn("317883", proposal_ids)
+            self.assertNotIn("35465", proposal_ids)
+            self.assertEqual(diag["proposals"][0]["tmdbId"], "205493")
+            self.assertEqual(diag["proposals"][0]["targetSeason"], 3)
+            self.assertEqual(diag["proposals"][0]["targetEpisode"], 9)
+            self.assertEqual(diag["recognitionStatus"], "matched")
+            # Read-only guarantee: file untouched & zero SA submits
+            self.assertTrue(src_file.is_file())
+            self.assertEqual(len(sa.submitted), 0)
+
+            # 2. When ONLY unrelated shows exist, must return unreliable & empty proposals (never fabricate!)
+            noise_adapters = {**adapters, "tmdb": _OnlyNoiseTmdb()}
+            diag_noise = diagnose_sa_failure(record=e09_record, settings=settings, store=store, adapters=noise_adapters, snapshot=snapshot)
+            self.assertEqual(diag_noise["proposals"], [])
+            self.assertEqual(diag_noise["recognitionStatus"], "unreliable")
+            self.assertIn("无法可靠识别", diag_noise["statusMessage"])
+            self.assertGreaterEqual(diag_noise["filteredOutCount"], 2)
+
     def test_same_file_chain_hides_old_failure_after_success(self):
         snapshot = {
             "services": [],

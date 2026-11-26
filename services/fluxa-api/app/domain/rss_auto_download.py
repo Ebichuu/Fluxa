@@ -13,6 +13,12 @@ import requests
 from app.adapters.http_utils import sanitize_text
 from app.adapters.rss import fetch_and_parse_rss
 from app.domain.pipeline import build_adapters
+from app.domain.quality_policies import (
+    compare_quality_candidates,
+    evaluate_candidate_quality,
+    get_quality_policy,
+    parse_release_quality_specs,
+)
 from app.storage import FluxaStore
 
 BEIJING_TZ = timezone(timedelta(hours=8))
@@ -205,18 +211,153 @@ def run_rss_auto_rule(
         return {"ok": False, "rule": updated, "message": msg, "added": 0, "skipped": 0, "failed": 0}
 
     seen_keys = store.seen_rss_auto_item_keys(rule_id)
+    policy_id = str(rule.get("qualityPolicyId") or "none").strip() or "none"
     added = 0
     unconfirmed = 0
     skipped = 0
+    quality_skipped = 0
+    insufficient_skipped = 0
     failed = 0
     last_err = ""
 
     # Process oldest-new first so qB receives chronological order
     new_entries = [e for e in reversed(entries) if _item_key(e) not in seen_keys]
 
+    # Step 1: Evaluate quality policy BEFORE downloading .torrent or pushing to qB
+    grouped_qualified: dict[str, list[dict[str, Any]]] = {}
+    passthrough_candidates: list[dict[str, Any]] = []
+
     for entry in new_entries:
         key = _item_key(entry)
         title = str(entry.get("title") or "未命名种子")
+        specs = parse_release_quality_specs(
+            title=title,
+            description=str(entry.get("description") or ""),
+            size_bytes=int(entry.get("sizeBytes") or 0),
+            season_number=entry.get("seasonNumber"),
+            episode_number=entry.get("episodeNumber"),
+        )
+        eval_res = evaluate_candidate_quality(specs, policy_id)
+        cand = {"entry": entry, "key": key, "title": title, "specs": specs, "eval": eval_res}
+
+        if policy_id == "none":
+            passthrough_candidates.append(cand)
+            continue
+
+        decision = eval_res["decision"]
+        if decision == "reject":
+            quality_skipped += 1
+            store.record_rss_auto_item(
+                rule_id=rule_id,
+                item_key=key,
+                torrent_hash=extract_magnet_hash(entry.get("downloadUrl") or ""),
+                title=title,
+                download_url="",
+                status="quality_rejected",
+                error_text=eval_res["reason"],
+                qb_category=rule["category"],
+                qb_save_path=rule["savePath"],
+                work_episode_key=specs["workEpisodeKey"],
+                quality_policy_id=policy_id,
+                quality_meta={"specs": specs, "eval": eval_res},
+            )
+            continue
+
+        if decision == "insufficient_evidence":
+            insufficient_skipped += 1
+            store.record_rss_auto_item(
+                rule_id=rule_id,
+                item_key=key,
+                torrent_hash=extract_magnet_hash(entry.get("downloadUrl") or ""),
+                title=title,
+                download_url="",
+                status="insufficient_evidence",
+                error_text=eval_res["reason"],
+                qb_category=rule["category"],
+                qb_save_path=rule["savePath"],
+                work_episode_key=specs["workEpisodeKey"],
+                quality_policy_id=policy_id,
+                quality_meta={"specs": specs, "eval": eval_res},
+            )
+            continue
+
+        grouped_qualified.setdefault(specs["workEpisodeKey"], []).append(cand)
+
+    # Step 2: Same-work, same-season, same-episode multi-version selection (different works/episodes NEVER compete!)
+    qualified_winners: list[dict[str, Any]] = list(passthrough_candidates)
+    for work_ep_key, group in grouped_qualified.items():
+        winner = group[0]
+        for cand in group[1:]:
+            cmp_res = compare_quality_candidates(cand, winner, policy_id)
+            if cmp_res["winner"] == "a":
+                winner = cand
+
+        for cand in group:
+            if cand is winner:
+                continue
+            cmp_res = compare_quality_candidates(winner, cand, policy_id)
+            quality_skipped += 1
+            reason = (
+                f"同作品同集（{winner['specs']['scopeLabel']}）择优落选，"
+                f"优先选择「{winner['title'][:64]}」：{cmp_res['reason']}"
+            )
+            store.record_rss_auto_item(
+                rule_id=rule_id,
+                item_key=cand["key"],
+                torrent_hash=extract_magnet_hash(cand["entry"].get("downloadUrl") or ""),
+                title=cand["title"],
+                download_url="",
+                status="quality_outperformed",
+                error_text=reason,
+                qb_category=rule["category"],
+                qb_save_path=rule["savePath"],
+                work_episode_key=work_ep_key,
+                quality_policy_id=policy_id,
+                quality_meta={"specs": cand["specs"], "eval": cand["eval"]},
+            )
+
+        # Step 3: Check against already-confirmed versions for the SAME work & episode
+        # Never download a lower-tier or non-significant-upgrade version when an acceptable/better one exists!
+        prior_rows = store.list_confirmed_rss_versions_for_scope(rule_id, work_ep_key)
+        blocked_by_existing = False
+        for prior in prior_rows:
+            p_meta = prior.get("qualityMeta") if isinstance(prior.get("qualityMeta"), dict) else {}
+            p_specs = p_meta.get("specs") if isinstance(p_meta.get("specs"), dict) else parse_release_quality_specs(title=prior["title"])
+            p_eval = p_meta.get("eval") if isinstance(p_meta.get("eval"), dict) else evaluate_candidate_quality(p_specs, policy_id)
+            cmp_res = compare_quality_candidates(winner, {"specs": p_specs, "eval": p_eval}, policy_id)
+            if cmp_res["winner"] != "a" or not cmp_res["significantUpgrade"]:
+                blocked_by_existing = True
+                quality_skipped += 1
+                reason = (
+                    f"同作品同集（{winner['specs']['scopeLabel']}）已有合格/更优版本「{prior['title'][:64]}」，"
+                    f"当前版本无明显提升或档位偏低（{cmp_res['reason']}），已跳过"
+                )
+                store.record_rss_auto_item(
+                    rule_id=rule_id,
+                    item_key=winner["key"],
+                    torrent_hash=extract_magnet_hash(winner["entry"].get("downloadUrl") or ""),
+                    title=winner["title"],
+                    download_url="",
+                    status="quality_existing_sufficient",
+                    error_text=reason,
+                    qb_category=rule["category"],
+                    qb_save_path=rule["savePath"],
+                    work_episode_key=work_ep_key,
+                    quality_policy_id=policy_id,
+                    quality_meta={"specs": winner["specs"], "eval": winner["eval"]},
+                )
+                break
+
+        if not blocked_by_existing:
+            qualified_winners.append(winner)
+
+    # Step 4: Hash dedup + Push qualified winners to qB + Read-back verify
+    for cand in qualified_winners:
+        entry = cand["entry"]
+        key = cand["key"]
+        title = cand["title"]
+        specs = cand["specs"]
+        eval_res = cand["eval"]
         dl_url = str(entry.get("downloadUrl") or "").strip()
         if not dl_url:
             failed += 1
@@ -224,6 +365,8 @@ def run_rss_auto_rule(
             store.record_rss_auto_item(
                 rule_id=rule_id, item_key=key, torrent_hash="", title=title, download_url="",
                 status="failed", error_text=last_err, qb_category=rule["category"], qb_save_path=rule["savePath"],
+                work_episode_key=specs["workEpisodeKey"], quality_policy_id=policy_id,
+                quality_meta={"specs": specs, "eval": eval_res},
             )
             continue
 
@@ -239,6 +382,8 @@ def run_rss_auto_rule(
                 store.record_rss_auto_item(
                     rule_id=rule_id, item_key=key, torrent_hash="", title=title, download_url="",
                     status="failed", error_text=last_err, qb_category=rule["category"], qb_save_path=rule["savePath"],
+                    work_episode_key=specs["workEpisodeKey"], quality_policy_id=policy_id,
+                    quality_meta={"specs": specs, "eval": eval_res},
                 )
                 continue
 
@@ -250,6 +395,8 @@ def run_rss_auto_rule(
             store.record_rss_auto_item(
                 rule_id=rule_id, item_key=key, torrent_hash=info_hash, title=title, download_url="",
                 status=dup_status, error_text=dup_msg, qb_category=rule["category"], qb_save_path=rule["savePath"],
+                work_episode_key=specs["workEpisodeKey"], quality_policy_id=policy_id,
+                quality_meta={"specs": specs, "eval": eval_res},
             )
             continue
 
@@ -269,6 +416,8 @@ def run_rss_auto_rule(
             store.record_rss_auto_item(
                 rule_id=rule_id, item_key=key, torrent_hash=info_hash, title=title, download_url="",
                 status="failed", error_text=last_err, qb_category=rule["category"], qb_save_path=rule["savePath"],
+                work_episode_key=specs["workEpisodeKey"], quality_policy_id=policy_id,
+                quality_meta={"specs": specs, "eval": eval_res},
             )
             continue
 
@@ -286,15 +435,19 @@ def run_rss_auto_rule(
 
         if confirmed:
             added += 1
+            reason_note = eval_res["reason"] if policy_id != "none" else ""
             store.record_rss_auto_item(
                 rule_id=rule_id, item_key=key, torrent_hash=info_hash, title=title, download_url="",
-                status="confirmed_in_qb", error_text="", qb_category=rule["category"], qb_save_path=rule["savePath"],
+                status="confirmed_in_qb", error_text=reason_note, qb_category=rule["category"], qb_save_path=rule["savePath"],
+                work_episode_key=specs["workEpisodeKey"], quality_policy_id=policy_id,
+                quality_meta={"specs": specs, "eval": eval_res},
             )
+            policy_label = get_quality_policy(policy_id)["shortName"]
             store.add_audit(
                 action_type="rss_auto_add_qb",
                 target_service="qbittorrent",
                 target_id=info_hash,
-                summary=f"[{rule['siteName']}·{rule['officialGroup']}] 已添加并核验入 qB：{title[:80]}",
+                summary=f"[{rule['siteName']}·{rule['officialGroup']}·{policy_label}] 已核验入 qB：{title[:80]}",
                 status="success",
             )
         else:
@@ -304,6 +457,8 @@ def run_rss_auto_rule(
                 status="submitted_unconfirmed",
                 error_text="已提交至 qB，但读回暂未查到该 Hash 任务（请检查 qB 是否已接收或重复）",
                 qb_category=rule["category"], qb_save_path=rule["savePath"],
+                work_episode_key=specs["workEpisodeKey"], quality_policy_id=policy_id,
+                quality_meta={"specs": specs, "eval": eval_res},
             )
 
     if not new_entries:
@@ -318,8 +473,12 @@ def run_rss_auto_rule(
             parts.append(f"已确认入 qB {added} 条")
         if unconfirmed:
             parts.append(f"待确认 {unconfirmed} 条")
+        if quality_skipped:
+            parts.append(f"质量策略跳过 {quality_skipped} 条")
+        if insufficient_skipped:
+            parts.append(f"依据不足跳过 {insufficient_skipped} 条")
         if skipped:
-            parts.append(f"去重跳过 {skipped} 条")
+            parts.append(f"Hash 去重跳过 {skipped} 条")
         if failed:
             parts.append(f"失败 {failed} 条")
         msg = "检查完成：" + "，".join(parts)
@@ -340,6 +499,8 @@ def run_rss_auto_rule(
         "added": added,
         "unconfirmed": unconfirmed,
         "skipped": skipped,
+        "qualitySkipped": quality_skipped,
+        "insufficientSkipped": insufficient_skipped,
         "failed": failed,
     }
 

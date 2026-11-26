@@ -161,6 +161,7 @@ class FluxaStore:
                         url TEXT NOT NULL,
                         save_path TEXT NOT NULL DEFAULT '',
                         category TEXT NOT NULL DEFAULT '',
+                        quality_policy_id TEXT NOT NULL DEFAULT 'none',
                         enabled INTEGER NOT NULL DEFAULT 1,
                         poll_interval_minutes INTEGER NOT NULL DEFAULT 5,
                         baseline_initialized INTEGER NOT NULL DEFAULT 0,
@@ -183,6 +184,9 @@ class FluxaStore:
                         error_text TEXT NOT NULL DEFAULT '',
                         qb_category TEXT NOT NULL DEFAULT '',
                         qb_save_path TEXT NOT NULL DEFAULT '',
+                        work_episode_key TEXT NOT NULL DEFAULT '',
+                        quality_policy_id TEXT NOT NULL DEFAULT 'none',
+                        quality_meta_json TEXT NOT NULL DEFAULT '{}',
                         created_at TEXT NOT NULL,
                         UNIQUE(rule_id, item_key)
                     );
@@ -191,6 +195,20 @@ class FluxaStore:
                     CREATE INDEX IF NOT EXISTS idx_rss_auto_items_rule
                         ON rss_auto_items(rule_id, id DESC);
                     """
+                )
+                # Safe online column migration for existing SQLite databases
+                rule_cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(rss_auto_rules)").fetchall()}
+                if "quality_policy_id" not in rule_cols:
+                    conn.execute("ALTER TABLE rss_auto_rules ADD COLUMN quality_policy_id TEXT NOT NULL DEFAULT 'none'")
+                item_cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(rss_auto_items)").fetchall()}
+                if "work_episode_key" not in item_cols:
+                    conn.execute("ALTER TABLE rss_auto_items ADD COLUMN work_episode_key TEXT NOT NULL DEFAULT ''")
+                if "quality_policy_id" not in item_cols:
+                    conn.execute("ALTER TABLE rss_auto_items ADD COLUMN quality_policy_id TEXT NOT NULL DEFAULT 'none'")
+                if "quality_meta_json" not in item_cols:
+                    conn.execute("ALTER TABLE rss_auto_items ADD COLUMN quality_meta_json TEXT NOT NULL DEFAULT '{}'")
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_rss_auto_items_work_ep ON rss_auto_items(rule_id, work_episode_key, id DESC)"
                 )
                 conn.commit()
             finally:
@@ -845,10 +863,10 @@ class FluxaStore:
                 conn.execute(
                     """
                     INSERT INTO rss_auto_rules (
-                        id, site_id, site_name, official_group, url, save_path, category,
+                        id, site_id, site_name, official_group, url, save_path, category, quality_policy_id,
                         enabled, poll_interval_minutes, baseline_initialized,
                         last_checked_at, last_status, last_message, added_count, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         site_id = excluded.site_id,
                         site_name = excluded.site_name,
@@ -856,6 +874,7 @@ class FluxaStore:
                         url = excluded.url,
                         save_path = excluded.save_path,
                         category = excluded.category,
+                        quality_policy_id = excluded.quality_policy_id,
                         enabled = excluded.enabled,
                         poll_interval_minutes = excluded.poll_interval_minutes,
                         baseline_initialized = excluded.baseline_initialized,
@@ -869,6 +888,7 @@ class FluxaStore:
                         str(data.get("url") or "").strip(),
                         str(data.get("savePath") or "").strip(),
                         str(data.get("category") or "").strip(),
+                        str(data.get("qualityPolicyId") or (existing["qualityPolicyId"] if existing else "none")).strip() or "none",
                         1 if data.get("enabled", True) else 0,
                         max(1, min(1440, int(data.get("pollIntervalMinutes") or 5))),
                         baseline,
@@ -960,6 +980,25 @@ class FluxaStore:
             finally:
                 conn.close()
 
+    def list_confirmed_rss_versions_for_scope(self, rule_id: str, work_episode_key: str) -> list[dict[str, Any]]:
+        if not work_episode_key:
+            return []
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM rss_auto_items
+                    WHERE rule_id = ? AND work_episode_key = ?
+                      AND status IN ('confirmed_in_qb', 'submitted_unconfirmed')
+                    ORDER BY id DESC LIMIT 10
+                    """,
+                    (str(rule_id), str(work_episode_key)),
+                ).fetchall()
+                return [self._row_to_rss_auto_item(r) for r in rows]
+            finally:
+                conn.close()
+
     def record_rss_auto_item(
         self,
         *,
@@ -972,8 +1011,12 @@ class FluxaStore:
         error_text: str = "",
         qb_category: str = "",
         qb_save_path: str = "",
+        work_episode_key: str = "",
+        quality_policy_id: str = "none",
+        quality_meta: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         now = _now_iso()
+        meta_json = json.dumps(quality_meta or {}, ensure_ascii=False)
         with self._lock:
             conn = self._connect()
             try:
@@ -981,14 +1024,18 @@ class FluxaStore:
                     """
                     INSERT INTO rss_auto_items (
                         rule_id, item_key, torrent_hash, title, download_url,
-                        status, error_text, qb_category, qb_save_path, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        status, error_text, qb_category, qb_save_path,
+                        work_episode_key, quality_policy_id, quality_meta_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(rule_id, item_key) DO UPDATE SET
                         torrent_hash = excluded.torrent_hash,
                         status = excluded.status,
                         error_text = excluded.error_text,
                         qb_category = excluded.qb_category,
                         qb_save_path = excluded.qb_save_path,
+                        work_episode_key = excluded.work_episode_key,
+                        quality_policy_id = excluded.quality_policy_id,
+                        quality_meta_json = excluded.quality_meta_json,
                         created_at = excluded.created_at
                     """,
                     (
@@ -1001,6 +1048,9 @@ class FluxaStore:
                         str(error_text or ""),
                         str(qb_category or ""),
                         str(qb_save_path or ""),
+                        str(work_episode_key or ""),
+                        str(quality_policy_id or "none"),
+                        meta_json,
                         now,
                     ),
                 )
@@ -1016,6 +1066,9 @@ class FluxaStore:
             "errorText": str(error_text or ""),
             "qbCategory": str(qb_category or ""),
             "qbSavePath": str(qb_save_path or ""),
+            "workEpisodeKey": str(work_episode_key or ""),
+            "qualityPolicyId": str(quality_policy_id or "none"),
+            "qualityMeta": quality_meta or {},
             "createdAt": now,
         }
 
@@ -1034,23 +1087,31 @@ class FluxaStore:
                         "SELECT * FROM rss_auto_items ORDER BY id DESC LIMIT ?",
                         (limit,),
                     ).fetchall()
-                return [
-                    {
-                        "id": int(r["id"]),
-                        "ruleId": str(r["rule_id"]),
-                        "itemKey": str(r["item_key"]),
-                        "torrentHash": str(r["torrent_hash"]),
-                        "title": str(r["title"]),
-                        "status": str(r["status"]),
-                        "errorText": str(r["error_text"]),
-                        "qbCategory": str(r["qb_category"]),
-                        "qbSavePath": str(r["qb_save_path"]),
-                        "createdAt": str(r["created_at"]),
-                    }
-                    for r in rows
-                ]
+                return [self._row_to_rss_auto_item(r) for r in rows]
             finally:
                 conn.close()
+
+    @staticmethod
+    def _row_to_rss_auto_item(r: sqlite3.Row) -> dict[str, Any]:
+        try:
+            meta = json.loads(r["quality_meta_json"] or "{}")
+        except Exception:
+            meta = {}
+        return {
+            "id": int(r["id"]),
+            "ruleId": str(r["rule_id"]),
+            "itemKey": str(r["item_key"]),
+            "torrentHash": str(r["torrent_hash"]),
+            "title": str(r["title"]),
+            "status": str(r["status"]),
+            "errorText": str(r["error_text"]),
+            "qbCategory": str(r["qb_category"]),
+            "qbSavePath": str(r["qb_save_path"]),
+            "workEpisodeKey": str(r["work_episode_key"]),
+            "qualityPolicyId": str(r["quality_policy_id"]),
+            "qualityMeta": meta if isinstance(meta, dict) else {},
+            "createdAt": str(r["created_at"]),
+        }
 
     @staticmethod
     def _row_to_rss_auto_rule(row: sqlite3.Row) -> dict[str, Any]:
@@ -1062,6 +1123,7 @@ class FluxaStore:
             "url": str(row["url"]),
             "savePath": str(row["save_path"]),
             "category": str(row["category"]),
+            "qualityPolicyId": str(row["quality_policy_id"] or "none"),
             "enabled": bool(row["enabled"]),
             "pollIntervalMinutes": int(row["poll_interval_minutes"]),
             "baselineInitialized": bool(row["baseline_initialized"]),

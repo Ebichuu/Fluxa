@@ -89,6 +89,7 @@ def fetch_and_parse_rss(url: str, *, site_id: str = "", site_name: str = "") -> 
         )
         items.append({
             "title": title,
+            "description": desc[:1600],
             "siteId": site_id,
             "siteName": site_name or host,
             "siteDomain": host,
