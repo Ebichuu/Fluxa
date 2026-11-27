@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from app.adapters.emby import is_emby_identity_incomplete
 from app.adapters.http_utils import extract_season_episode
 from app.domain.pipeline import _title_matches, merge_subscriptions
 
@@ -138,4 +139,10 @@ def build_following_calendar(
         "truncationWarning": trunc_warning,
         "embyTruncated": bool(emby.get("truncated")),
         "embyTruncationWarning": str(emby.get("truncationWarning") or ""),
+        "embyIdentityIncomplete": is_emby_identity_incomplete(emby),
+        "embyIdentityWarning": str(emby.get("identityWarning") or (
+            "Emby 存在未映射 TMDB 的 SeriesId/分集，不能把映射失败当作库内不存在"
+            if is_emby_identity_incomplete(emby)
+            else ""
+        )),
     }

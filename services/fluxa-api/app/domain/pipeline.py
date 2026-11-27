@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from app.adapters.emby import EmbyAdapter
+from app.adapters.emby import EmbyAdapter, is_emby_identity_incomplete
 from app.adapters.http_utils import compact_title, extract_season_episode, sanitize_text
 from app.adapters.moviepilot import MoviePilotAdapter
 from app.adapters.qbittorrent import QbittorrentAdapter
@@ -81,7 +81,7 @@ def build_adapters(settings: dict[str, Any], *, store: FluxaStore | None = None)
         "torra": TorraAdapter(svcs.get("torra") or {}),
         "qbittorrent": QbittorrentAdapter(svcs.get("qbittorrent") or {}),
         "symedia": SymediaAdapter(svcs.get("symedia") or {}),
-        "emby": EmbyAdapter(svcs.get("emby") or {}),
+        "emby": EmbyAdapter(svcs.get("emby") or {}, store=store),
         "tmdb": CachedTmdbProxy(tmdb_raw, store) if store is not None else tmdb_raw,
     }
 
@@ -237,13 +237,19 @@ def collect_upstream_snapshot(
             if store is not None:
                 store.set_cache("snapshot:emby", lib, updated_iso=now_iso)
             total = len(lib.get("movies") or {}) + len(lib.get("series") or {})
+            id_inc = is_emby_identity_incomplete(lib)
+            orphan_n = int(lib.get("orphanEpisodeCount") or 0)
             health = {
                 "service": "emby",
                 "name": "Emby",
                 "configured": True,
                 "connected": True,
-                "status": "ok",
-                "message": f"在线 · {total} 部影视",
+                "status": "warn" if (lib.get("failedSeriesLookupIds") or lib.get("truncated")) else "ok",
+                "message": (
+                    f"在线 · {total} 部影视（{orphan_n} 集身份未映射）"
+                    if id_inc
+                    else f"在线 · {total} 部影视"
+                ),
                 "count": total,
                 "webUrl": emby.app_url(),
             }
@@ -1141,18 +1147,24 @@ def build_media_pipeline(
             emby_url = adapters["emby"].app_url()
     else:
         s_item = (emby.get("series") or {}).get(tmdb_id)
+        emby_id_incomplete = is_emby_identity_incomplete(emby)
         if s_item or emby_episodes:
             emby_status = "ok"
             emby_label = f"Emby 已有 {len(emby_episodes)} 集" if emby_episodes else "Emby 已有剧集条目"
-            emby_summary = (
-                "已核对 Emby 分集条目（注意：库存快照存在截断，未列出的分集请以 Emby 为准）"
-                if emby.get("truncated")
-                else "已核对 Emby 分集条目（实际播放以 Emby 客户端为准）"
-            )
+            if emby.get("truncated"):
+                emby_summary = "已核对 Emby 分集条目（注意：库存快照存在截断，未列出的分集请以 Emby 为准）"
+            elif emby_id_incomplete:
+                emby_summary = "已核对 Emby 分集条目（注意：存在未映射 TMDB 的 SeriesId/分集，未列出的分集不能断言未入库）"
+            else:
+                emby_summary = "已核对 Emby 分集条目（实际播放以 Emby 客户端为准）"
             emby_url = (s_item or {}).get("webUrl") or adapters["emby"].app_url()
         elif emby.get("truncated"):
             emby_status, emby_label = "unconfirmed", "未确认（库存快照截断）"
             emby_summary = emby.get("truncationWarning") or "Emby 媒体库过大且快照未完整覆盖，不能确认未入库"
+            emby_url = adapters["emby"].app_url()
+        elif emby_id_incomplete:
+            emby_status, emby_label = "unconfirmed", "未确认（身份关联不完整）"
+            emby_summary = emby.get("identityWarning") or "Emby 存在 SeriesId → TMDB 映射失败或缺失，不能把映射失败当作库内不存在"
             emby_url = adapters["emby"].app_url()
         else:
             emby_status, emby_label = "idle", "尚未进入 Emby"

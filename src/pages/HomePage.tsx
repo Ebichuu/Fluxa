@@ -394,6 +394,12 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
             {data.calendar.embyTruncationWarning}
           </div>
         )}
+        {data?.calendar.embyIdentityIncomplete && data.calendar.embyIdentityWarning && (
+          <div className="banner warn" style={{ marginBottom: 10 }}>
+            <AlertTriangle size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+            {data.calendar.embyIdentityWarning}
+          </div>
+        )}
 
         <div className="cal-strip">
           {(data?.calendar.days || []).map((day) => (

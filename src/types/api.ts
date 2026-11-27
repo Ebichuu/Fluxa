@@ -300,6 +300,8 @@ export interface DashboardResponse {
     truncationWarning?: string;
     embyTruncated?: boolean;
     embyTruncationWarning?: string;
+    embyIdentityIncomplete?: boolean;
+    embyIdentityWarning?: string;
   };
   activeDownloads: QbTask[];
   activeUploads: Array<{

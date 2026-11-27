@@ -537,6 +537,212 @@ class AuditSecurityAndAccuracyTests(unittest.TestCase):
             issues = build_actionable_issues(snap_with_cr, {}, store=store)
             self.assertEqual(issues, [])
 
+    # -- 8. Emby missing SeriesId targeted lookup (454815 -> 350389 -> TMDB 295790 -> S02E18) + cache + incomplete identity honesty --
+
+    def test_8_emby_missing_series_targeted_lookup_cache_and_incomplete_identity_honesty(self):
+        """回归 454815 → 350389 → TMDB 295790 → S02E18：
+        1. Episode 的 SeriesId 未出现在 Series 列表时，定向查询剧集 ProviderIds 并持久化缓存；
+        2. 下一次快照命中缓存不再重复查询；
+        3. 若定向查询失败或缺少 TMDB ProviderId，绝不把映射失败当作库内不存在；即使快照标 complete=True 也不视作身份关联完整。
+        """
+        from app.adapters.emby import is_emby_identity_incomplete
+        from app.domain.sa_recovery import detect_existing_version_for_target
+
+        class _Resp:
+            def __init__(self, body, status_code=200):
+                self.status_code = status_code
+                self.content = b"1"
+                self._body = body
+            def json(self):
+                return self._body
+
+        targeted_queries: list[str] = []
+
+        class _MissingSeriesEmbySession:
+            def __init__(self, *, fail_series_id: str = ""):
+                self.fail_series_id = fail_series_id
+
+            def get(self, url, **kwargs):
+                from urllib.parse import parse_qs, urlsplit
+                parsed = urlsplit(url)
+                qs = parse_qs(parsed.query)
+                # Targeted single-item lookup: /Users/u1/Items/350389
+                if parsed.path.endswith("/Items/350389"):
+                    targeted_queries.append("single:350389")
+                    if self.fail_series_id == "350389":
+                        return _Resp({"error": "upstream timeout"}, status_code=500)
+                    return _Resp({
+                        "Id": "350389",
+                        "Type": "Series",
+                        "Name": "回归测试剧集",
+                        "ProviderIds": {"Tmdb": "295790"},
+                        "DateCreated": "2026-10-01",
+                    })
+                if parsed.path.endswith("/Items/999001"):
+                    targeted_queries.append("single:999001")
+                    return _Resp({"error": "not found"}, status_code=404)
+
+                # Batch targeted lookup: /Users/u1/Items?Ids=350389
+                ids_param = (qs.get("Ids") or [""])[0]
+                if ids_param:
+                    targeted_queries.append(f"batch:{ids_param}")
+                    wanted = [x for x in ids_param.split(",") if x]
+                    items = []
+                    for sid in wanted:
+                        if sid == "350389" and self.fail_series_id != "350389":
+                            items.append({
+                                "Id": "350389",
+                                "Type": "Series",
+                                "Name": "回归测试剧集",
+                                "ProviderIds": {"Tmdb": "295790"},
+                                "DateCreated": "2026-10-01",
+                            })
+                    return _Resp({"Items": items, "TotalRecordCount": len(items)})
+
+                itypes = (qs.get("IncludeItemTypes") or [""])[0]
+                if "Series" in itypes:
+                    # Deliberately OMIT Series 350389 from Movie,Series listing!
+                    return _Resp({
+                        "Items": [
+                            {"Id": "m1", "Type": "Movie", "Name": "OtherMovie", "ProviderIds": {"Tmdb": "101"}, "Path": "/m1.mkv", "DateCreated": "2026-11-20"},
+                        ],
+                        "TotalRecordCount": 1,
+                    })
+                # Episode 454815 belongs to SeriesId 350389 (S02E18), NOT present in parent_rows!
+                eps = [
+                    {
+                        "Id": "454815",
+                        "Type": "Episode",
+                        "SeriesId": "350389",
+                        "SeriesName": "回归测试剧集",
+                        "Name": "第 18 集",
+                        "ParentIndexNumber": 2,
+                        "IndexNumber": 18,
+                        "Path": "/CloudNAS/CloudDrive/115/媒体库/S02E18.strm",
+                        "DateCreated": "2026-11-27",
+                    }
+                ]
+                if self.fail_series_id == "999001":
+                    eps.append({
+                        "Id": "454999",
+                        "Type": "Episode",
+                        "SeriesId": "999001",
+                        "SeriesName": "BrokenSeries",
+                        "Name": "第 1 集",
+                        "ParentIndexNumber": 1,
+                        "IndexNumber": 1,
+                        "Path": "/CloudNAS/S01E01.strm",
+                        "DateCreated": "2026-11-27",
+                    })
+                return _Resp({"Items": eps, "TotalRecordCount": len(eps)})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FluxaStore(Path(tmp) / "test.sqlite3")
+            cfg = {"baseUrl": "http://emby.local", "apiKey": "k", "userId": "u1"}
+
+            # 1. First snapshot: 454815 -> 350389 not in Series list -> targeted lookup resolves TMDB 295790 -> S02E18
+            emby1 = EmbyAdapter(cfg, session=_MissingSeriesEmbySession(), store=store)
+            snap1 = emby1.fetch_library_snapshot()
+            self.assertTrue(snap1["available"])
+            self.assertTrue(snap1["complete"])
+            self.assertTrue(snap1["identityComplete"])
+            self.assertFalse(is_emby_identity_incomplete(snap1))
+            self.assertEqual(snap1["orphanEpisodeCount"], 0)
+            self.assertEqual(snap1["resolvedMissingSeriesCount"], 1)
+            self.assertEqual(snap1["episodes"]["295790"], [(2, 18)])
+            self.assertIn("S02E18", snap1["episodeDetails"]["295790"])
+            self.assertEqual(snap1["episodeDetails"]["295790"]["S02E18"][0]["itemId"], "454815")
+            self.assertEqual(len(targeted_queries), 1)
+
+            # 2. Second snapshot on a fresh EmbyAdapter instance hits SQLite cache -> ZERO extra targeted queries!
+            targeted_queries.clear()
+            emby2 = EmbyAdapter(cfg, session=_MissingSeriesEmbySession(), store=store)
+            snap2 = emby2.fetch_library_snapshot()
+            self.assertEqual(targeted_queries, [])
+            self.assertEqual(snap2["episodes"]["295790"], [(2, 18)])
+            self.assertTrue(snap2["identityComplete"])
+
+            # 3. When targeted lookup FAILS (e.g. Series 999001 unreachable), NEVER treat mapping failure as "not in library"!
+            store2 = FluxaStore(Path(tmp) / "test_fail.sqlite3")
+            emby_fail = EmbyAdapter(cfg, session=_MissingSeriesEmbySession(fail_series_id="350389"), store=store2)
+            snap_fail = emby_fail.fetch_library_snapshot()
+            self.assertTrue(snap_fail["available"])
+            self.assertTrue(snap_fail["paginationComplete"])
+            self.assertFalse(snap_fail["identityComplete"])
+            self.assertFalse(snap_fail["complete"])
+            self.assertEqual(snap_fail["orphanEpisodeCount"], 1)
+            self.assertIn("350389", snap_fail["failedSeriesLookupIds"])
+            self.assertIn("350389", snap_fail["unresolvedSeriesIds"])
+            self.assertIn("不能把映射失败当作库内不存在", snap_fail["identityWarning"])
+
+            # 4. Downstream build_media_pipeline & detect_existing_version_for_target NEVER assert "absent" when
+            #    identity mapping is incomplete — EVEN IF a snapshot falsely sets complete=True!
+            class _FakeTmdb295790:
+                configured = True
+                def get_details(self, mt, tid):
+                    return {"mediaKey": f"{mt}:{tid}", "mediaType": mt, "tmdbId": tid, "title": "回归测试剧集", "originalTitle": "", "alternativeTitles": [], "year": "2026", "posterUrl": "", "seasons": []}
+                def get_season_episodes(self, tid, snum):
+                    return []
+
+            class _Idle:
+                configured = False
+                def app_url(self, *a, **kw):
+                    return ""
+
+            adapters = {
+                "moviepilot": _Idle(),
+                "torra": _Idle(),
+                "qbittorrent": _Idle(),
+                "symedia": _Idle(),
+                "emby": emby_fail,
+                "tmdb": _FakeTmdb295790(),
+            }
+            # Even with complete=True forced alongside orphanEpisodeCount=1 / failedSeriesLookupIds!
+            legacy_complete_but_incomplete_identity = {
+                **snap_fail,
+                "complete": True,
+                "truncated": False,
+            }
+            self.assertTrue(is_emby_identity_incomplete(legacy_complete_but_incomplete_identity))
+            pipe_snap = {
+                "generatedAt": "2026-11-27T20:00:00+08:00",
+                "services": [],
+                "serviceMap": {"emby": {"connected": True}},
+                "mpSubs": [],
+                "mpHistory": [],
+                "torraSubs": [],
+                "torraSecupload": {"available": False},
+                "qbTasks": [],
+                "saHistory": [],
+                "emby": legacy_complete_but_incomplete_identity,
+            }
+            pipe = build_media_pipeline(media_type="tv", tmdb_id="295790", snapshot=pipe_snap, adapters=adapters, store=store2)
+            emby_step = next(s for s in pipe["steps"] if s["step"] == "emby")
+            self.assertEqual(emby_step["status"], "unconfirmed")
+            self.assertIn("身份关联不完整", emby_step["statusLabel"])
+            self.assertNotIn("尚未进入 Emby", emby_step["statusLabel"])
+
+            # And SA existing-version check must NOT falsely claim "当前 Emby 库内未查到该集"
+            ev = detect_existing_version_for_target(
+                media_type="tv",
+                tmdb_id="295790",
+                target_season=2,
+                target_episode=18,
+                failed_file_name="Show.S02E18.1080p.Baha.WEB-DL.mp4",
+                emby=legacy_complete_but_incomplete_identity,
+                sa_history=[{
+                    "id": "99001", "mediaType": "tv", "tmdbId": "295790",
+                    "seasons": "S02", "episodes": "E18", "seasonEpisode": "S02E18",
+                    "src": "/00-待整理/Show.S02E18.LINETV.mkv", "dest": "/emby/S02E18.strm",
+                    "fileName": "Show.S02E18.LINETV.mkv", "outcome": "archived",
+                }],
+            )
+            self.assertFalse(ev["confirmedInLibrary"])
+            self.assertFalse(ev["autoIgnoreEligible"])
+            self.assertTrue(ev["embyIdentityIncomplete"])
+            self.assertIn("映射失败", ev["summary"])
+            self.assertNotIn("库内未查到", ev["summary"])
+
 
 if __name__ == "__main__":
     unittest.main()
