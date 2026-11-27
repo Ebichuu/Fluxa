@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 
 import requests
 
-from app.adapters.http_utils import safe_web_url, sanitize_text
+from app.adapters.http_utils import redact_text, safe_web_url, sanitize_text, truncate_display_preserving_tail
 
 TIMEOUT = 15
 
@@ -68,20 +68,16 @@ IDENTIFY_FAIL_KEYWORDS = (
 
 
 def classify_symedia_record(row: dict[str, Any]) -> tuple[str, str, str]:
-    """Return (outcome, label, reason_text) purely from real error reason — NEVER by directory name or generic prefix.
+    """Return (outcome, label, reason_text) purely from the FULL, UNTRUNCATED error reason.
 
-    5 explicit failure/rejection categories:
-      - weight_rejected (even if message starts with '文件转移错误', '小于等于/取消覆盖' => normal weight protection!)
-      - version_rejected (version admission filter)
-      - identify_failed (missing media info / TMDB match)
-      - auth_or_connection_error (auth/network outage)
-      - transfer_failed (real IO/file transfer failure)
-    Plus: archived / replaced / unconfirmed.
+    - Redacts sensitive tokens via `redact_text()` WITHOUT dropping any text before classification.
+    - Applies 300-char truncation ONLY to UI display `reason_text` (preserving the tail after long paths).
     """
     raw_status = row.get("status")
-    err_text = sanitize_text(row.get("errmsg") or row.get("message") or row.get("reason") or "")
-    reason_code = str(row.get("reasonCode") or row.get("reason_code") or "").strip()
-    haystack = f"{reason_code} {err_text}".casefold()
+    # CRITICAL: Classify on FULL redacted text (NEVER truncate before keyword matching!)
+    full_err = redact_text(row.get("errmsg") or row.get("message") or row.get("reason") or "")
+    reason_code = redact_text(row.get("reasonCode") or row.get("reason_code") or "")
+    haystack = f"{reason_code} {full_err}".casefold()
 
     src_score = (row.get("src_detail") or {}).get("totalScore") if isinstance(row.get("src_detail"), dict) else None
     dst_score = (row.get("dst_detail") or {}).get("totalScore") if isinstance(row.get("dst_detail"), dict) else None
@@ -90,6 +86,13 @@ def classify_symedia_record(row: dict[str, Any]) -> tuple[str, str, str]:
         if isinstance(src_score, (int, float)) and isinstance(dst_score, (int, float))
         else ""
     )
+    score_lower_or_eq = (
+        isinstance(src_score, (int, float))
+        and isinstance(dst_score, (int, float))
+        and src_score <= dst_score
+    )
+
+    display_err = truncate_display_preserving_tail(full_err, max_len=300) if full_err else ""
 
     if raw_status is True or raw_status == 1:
         if isinstance(src_score, (int, float)) and isinstance(dst_score, (int, float)) and src_score > dst_score:
@@ -97,18 +100,19 @@ def classify_symedia_record(row: dict[str, Any]) -> tuple[str, str, str]:
         return "archived", "归档成功", "已完成整理归档"
 
     if raw_status is False or raw_status == 0:
-        # Check weight & version rejection BEFORE transfer_failed, because SA often prefixes them with '文件转移错误'!
-        if any(k in haystack for k in RULE_PROTECT_KEYWORDS):
-            return "rule_protected", "正常权重拒绝（保留库内版本）", (err_text or "未高于库内版本权重，已保留原版本") + score_note
+        # Check weight & version rejection BEFORE transfer_failed, on FULL untruncated text!
+        if any(k in haystack for k in RULE_PROTECT_KEYWORDS) or score_lower_or_eq:
+            base_msg = display_err or "未高于库内版本权重，已保留原版本"
+            return "rule_protected", "正常权重拒绝（保留库内版本）", truncate_display_preserving_tail(base_msg + score_note, max_len=300)
         if any(k in haystack for k in VERSION_REJECT_KEYWORDS):
-            return "version_rejected", "版本准入拒绝（规则过滤）", err_text or "不满足 SA 版本准入规则，已跳过"
+            return "version_rejected", "版本准入拒绝（规则过滤）", display_err or "不满足 SA 版本准入规则，已跳过"
         if any(k in haystack for k in IDENTIFY_FAIL_KEYWORDS):
-            return "identify_failed", "SA 识别失败", err_text or "没有查询到媒体信息"
+            return "identify_failed", "SA 识别失败", display_err or "没有查询到媒体信息"
         if any(k in haystack for k in AUTH_CONN_KEYWORDS):
-            return "auth_or_connection_error", "连接 / 认证故障", err_text or "SA 上游连接或认证异常"
-        return "failed", "文件转移故障", err_text or "SA 文件转移失败"
+            return "auth_or_connection_error", "连接 / 认证故障", display_err or "SA 上游连接或认证异常"
+        return "failed", "文件转移故障", display_err or "SA 文件转移失败"
 
-    return "unconfirmed", "未确认", err_text or "SA 未返回明确状态"
+    return "unconfirmed", "未确认", display_err or "SA 未返回明确状态"
 
 
 class SymediaAdapter:

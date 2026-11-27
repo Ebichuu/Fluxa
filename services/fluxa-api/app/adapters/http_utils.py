@@ -8,10 +8,30 @@ SENSITIVE_RE = re.compile(
 )
 
 
-def sanitize_text(value: object, max_len: int = 300) -> str:
+def redact_text(value: object) -> str:
+    """Redact sensitive query/header tokens WITHOUT truncating or dropping text."""
     text = str(value or "").strip()
-    text = SENSITIVE_RE.sub(r"\1=***", text)
+    return SENSITIVE_RE.sub(r"\1=***", text)
+
+
+def sanitize_text(value: object, max_len: int | None = 300) -> str:
+    """Redact secrets and optionally truncate for UI display ONLY (never use truncated text for classification)."""
+    text = redact_text(value)
+    if max_len is None or max_len <= 0 or len(text) <= max_len:
+        return text
     return text[:max_len]
+
+
+def truncate_display_preserving_tail(text: str, max_len: int = 300) -> str:
+    """Keep UI display text within `max_len` while preserving the meaningful error tail after long paths."""
+    clean = redact_text(text)
+    if len(clean) <= max_len:
+        return clean
+    if max_len < 40:
+        return clean[:max_len]
+    tail_len = max(120, max_len // 2)
+    head_len = max_len - tail_len - 3
+    return f"{clean[:head_len]} … {clean[-tail_len:]}"
 
 
 def safe_web_url(web_url: str, base_url: str, path: str = "") -> str:

@@ -214,7 +214,7 @@ def collect_upstream_snapshot(
         emby = adapters["emby"]
         empty_lib = {"available": False, "movies": {}, "series": {}, "episodes": {}, "episodeDetails": {}, "recentToday": [], "truncated": False, "truncationWarning": ""}
         if not emby.configured:
-            return _unconfigured_health("emby", "Emby", emby.app_url()), empty_lib
+            return _unconfigured_health("emby", "Emby", emby.app_url()), empty_lib, False, ""
         if store is not None and not force_emby:
             cached = store.get_cache("snapshot:emby")
             if cached and cached["ageSeconds"] <= EMBY_CACHE_TTL_SECONDS and isinstance(cached["payload"], dict) and cached["payload"].get("available"):
@@ -230,11 +230,12 @@ def collect_upstream_snapshot(
                     "count": total,
                     "webUrl": emby.app_url(),
                 }
-                return health, lib
+                return health, lib, True, str(cached.get("updatedAt") or "")
         lib = _safe_call(emby.fetch_library_snapshot, empty_lib)
         if lib.get("available"):
+            now_iso = _now_iso()
             if store is not None:
-                store.set_cache("snapshot:emby", lib)
+                store.set_cache("snapshot:emby", lib, updated_iso=now_iso)
             total = len(lib.get("movies") or {}) + len(lib.get("series") or {})
             health = {
                 "service": "emby",
@@ -246,7 +247,7 @@ def collect_upstream_snapshot(
                 "count": total,
                 "webUrl": emby.app_url(),
             }
-            return health, lib
+            return health, lib, False, now_iso
         return {
             "service": "emby",
             "name": "Emby",
@@ -255,7 +256,7 @@ def collect_upstream_snapshot(
             "status": "error",
             "message": lib.get("error") or "Emby 连接失败",
             "webUrl": emby.app_url(),
-        }, lib
+        }, lib, False, ""
 
     def _fetch_tmdb_health():
         tmdb = adapters["tmdb"]
@@ -282,8 +283,38 @@ def collect_upstream_snapshot(
         tr_h, tr_subs, tr_sec = f_tr.result()
         qb_h, qb_tasks = f_qb.result()
         sa_h, sa_hist = f_sa.result()
-        emby_h, emby_lib = f_emby.result()
+        emby_h, emby_lib, emby_from_cache, emby_cached_at_iso = f_emby.result()
         tmdb_h = f_tmdb.result()
+
+        # If Emby came from 5-min cache but SA has a newer archive/replace record, refresh Emby once
+        # so freshly archived siblings (e.g. 1 min after an identify_failed record) are confirmed immediately.
+        if emby_from_cache and emby_cached_at_iso and adapters["emby"].configured:
+            try:
+                from app.domain.sa_recovery import _parse_sa_dt
+                emby_dt = datetime.fromisoformat(emby_cached_at_iso)
+                if emby_dt.tzinfo is None:
+                    emby_dt = emby_dt.replace(tzinfo=BEIJING_TZ)
+                has_newer_archive = any(
+                    rec.get("outcome") in {"archived", "replaced"}
+                    and (sa_dt := _parse_sa_dt(str(rec.get("date") or ""))) is not None
+                    and sa_dt > emby_dt
+                    for rec in sa_hist
+                )
+                if has_newer_archive:
+                    fresh_lib = _safe_call(adapters["emby"].fetch_library_snapshot, None)
+                    if isinstance(fresh_lib, dict) and fresh_lib.get("available"):
+                        emby_lib = fresh_lib
+                        if store is not None:
+                            store.set_cache("snapshot:emby", fresh_lib, updated_iso=_now_iso())
+                        total = len(fresh_lib.get("movies") or {}) + len(fresh_lib.get("series") or {})
+                        emby_h = {
+                            **emby_h,
+                            "status": "ok",
+                            "message": f"在线 · {total} 部影视",
+                            "count": total,
+                        }
+            except Exception:
+                pass
 
         services = [mp_h, tr_h, qb_h, sa_h, emby_h, tmdb_h]
         return {
@@ -829,6 +860,11 @@ def partition_actionable_issues(
                             resolved_tmdb = sibling["tmdbId"]
                             resolved_ts = sibling["targetSeason"]
                             resolved_te = sibling["targetEpisode"]
+                        elif str(rec.get("tmdbId") or "").isdigit():
+                            resolved_mt = rec.get("mediaType") or p_fail.get("inferredMediaType") or "tv"
+                            resolved_tmdb = str(rec.get("tmdbId"))
+                            resolved_ts = p_fail.get("sourceSeason")
+                            resolved_te = p_fail.get("sourceEpisode")
 
                 if resolved_tmdb:
                     target_mkey = f"{resolved_mt or 'tv'}:{resolved_tmdb}"

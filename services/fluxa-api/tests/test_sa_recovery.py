@@ -876,6 +876,147 @@ class SaRecoveryAcceptanceTests(unittest.TestCase):
             self.assertEqual(ev["existingSourceTag"], "LINETV")
             self.assertIn("Baha版识别失败；同集已有LINETV版入库", ev["shortBanner"])
 
+    def test_long_path_weight_rejection_88721_88722_classified_on_full_error_text(self):
+        """回归 #88721 & #88722：超长路径超过 300 字后才出现「小于等于 / 取消覆盖」，
+        classify_symedia_record() 必须基于完整未截断文本分类（同时脱敏不丢文本），300 字截断仅用于界面展示。
+        """
+        long_src = (
+            "/CloudNAS/CloudDrive/115/00-待整理/00-日漫/"
+            "Very.Long.Series.Title.With.Multiple.Subtitles.And.Tags.S02E09.2026.1080p.WEB-DL.H265.10bit.AAC-ADWeb.mkv"
+        )
+        long_dst = (
+            "/CloudNAS/CloudDrive/115/媒体库/日漫/超长动画剧集名称合集目录（2026）/Season 2/"
+            "超长动画剧集名称合集目录 - S02E09 - 1080p.CR.WEB-DL.H265.10bit.AAC-ADWeb.mkv"
+        )
+        err_88721 = (
+            f"文件转移错误: 源文件 {long_src} (token=secret_abc123) 与目标文件 {long_dst} "
+            "对比结果：源文件权重分 118 小于等于目标文件权重分 156，取消覆盖"
+        )
+        err_88722 = (
+            f"文件转移错误: {long_src} -> {long_dst} 规则校验未通过，新版本得分 120 小于等于库内版本得分 120，跳过覆盖（取消覆盖）"
+        )
+        self.assertGreater(len(err_88721), 300)
+        self.assertGreater(len(err_88722), 300)
+
+        out1, label1, reason1 = classify_symedia_record({"id": "88721", "status": 0, "errmsg": err_88721})
+        out2, label2, reason2 = classify_symedia_record({"id": "88722", "status": 0, "errmsg": err_88722})
+        self.assertEqual(out1, "rule_protected")
+        self.assertEqual(out2, "rule_protected")
+        self.assertIn("权重拒绝", label1)
+        self.assertIn("权重拒绝", label2)
+        # Redaction works without losing classification, and display text is <= 300 chars preserving the tail
+        self.assertNotIn("secret_abc123", reason1)
+        self.assertLessEqual(len(reason1), 300)
+        self.assertLessEqual(len(reason2), 300)
+        self.assertIn("取消覆盖", reason1)
+        self.assertIn("取消覆盖", reason2)
+
+        # Must NOT enter active actionable issues!
+        snap = {
+            "services": [],
+            "mpHistory": [],
+            "mpSubs": [],
+            "torraSubs": [],
+            "qbTasks": [],
+            "torraSecupload": {},
+            "emby": {"available": True, "movies": {}, "series": {}, "episodes": {}},
+            "saHistory": [
+                {"id": "88721", "fileName": "A.mkv", "title": "A", "mediaType": "tv", "outcome": out1, "outcomeLabel": label1, "reasonText": reason1, "seasons": "S02", "episodes": "E09", "webUrl": ""},
+                {"id": "88722", "fileName": "B.mkv", "title": "B", "mediaType": "tv", "outcome": out2, "outcomeLabel": label2, "reasonText": reason2, "seasons": "S02", "episodes": "E09", "webUrl": ""},
+            ],
+        }
+        active, ignored = partition_actionable_issues(snap, {})
+        self.assertEqual(active, [])
+        self.assertEqual(ignored, [])
+
+    def test_redundant_in_library_88733_and_88706_auto_ignored_and_excluded_from_issue_count(self):
+        """回归 #88733 & #88706：同集已有版本入库（非缺库）的冗余识别失败，
+        必须自动进入已忽略列表并退出异常计数，不能仅换个标题仍留在首页。
+        """
+        f_88706 = "Kuroka.de.Seijo.ni.Hyou.S02E09.2026.1080p.Baha.WEB-DL.x264.AAC-ADWeb.mp4"
+        f_88706_sib = "Kizu.darake.Seijo.yori.Houfuku.wo.Komete.S02E09.2026.1080p.LINETV.WEB-DL.H264.AAC-ADWeb.mkv"
+        f_88733 = "Shin.Tennis.no.Oujisama.U.17.World.Cup.Kesshou.Member.Ketteisen.S01E10.2026.1080p.Baha.WEB-DL.H264.AAC-ADWeb.mkv"
+        f_88733_sib = "The.Prince.of.Tennis.II.S03E10.2026.1080p.LINETV.WEB-DL.H264.AAC-ADWeb.mkv"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FluxaStore(Path(tmp) / "test.sqlite3")
+            # Arc mapping saved for Shin Tennis Ketteisen S01 -> TMDB 205493 S03 (covers #88733)
+            p_88733 = parse_media_filename(f_88733)
+            store.save_sa_mapping(
+                arc_key=p_88733["arcKey"],
+                arc_title=p_88733["arcTitle"],
+                source_season=1,
+                media_type="tv",
+                tmdb_id="205493",
+                canonical_title="新网球王子 U-17世界杯篇",
+                target_season=3,
+            )
+
+            # Create temp files to verify ZERO file rename/move/delete occurs during partitioning
+            p1 = Path(tmp) / f_88706
+            p2 = Path(tmp) / f_88733
+            p1.write_bytes(b"fail-88706")
+            p2.write_bytes(b"fail-88733")
+
+            snapshot = {
+                "services": [],
+                "mpHistory": [],
+                "mpSubs": [],
+                "torraSubs": [],
+                "qbTasks": [],
+                "torraSecupload": {},
+                "emby": {
+                    "available": True,
+                    "movies": {},
+                    "series": {},
+                    "episodes": {"293124": [(2, 9)], "205493": [(3, 10)]},
+                    "episodeDetails": {
+                        "293124": {"S02E09": [{"fileName": f_88706_sib, "path": f"/emby/{f_88706_sib}", "isStrm": True}]},
+                        "205493": {"S03E10": [{"fileName": f_88733_sib, "path": f"/emby/{f_88733_sib}", "isStrm": True}]},
+                    },
+                },
+                "saHistory": [
+                    {
+                        "id": "88734", "mediaKey": "tv:205493", "mediaType": "tv", "tmdbId": "205493",
+                        "title": "新网球王子", "seasons": "S03", "episodes": "E10", "seasonEpisode": "S03E10",
+                        "src": f"/00-待整理/{f_88733_sib}", "dest": f"/emby/{f_88733_sib}", "fileName": f_88733_sib,
+                        "outcome": "archived", "outcomeLabel": "归档成功", "reasonText": "已完成", "date": "2026-11-27 01:02:00", "webUrl": "",
+                    },
+                    {
+                        "id": "88733", "mediaKey": "", "mediaType": "tv", "tmdbId": "",
+                        "title": "Shin Tennis Ketteisen", "seasons": "S01", "episodes": "E10", "seasonEpisode": "S01E10",
+                        "src": str(p2), "dest": "", "fileName": f_88733,
+                        "outcome": "identify_failed", "outcomeLabel": "SA 识别失败", "reasonText": "没有查询到媒体信息", "date": "2026-11-27 01:01:00", "webUrl": "",
+                    },
+                    {
+                        "id": "88709", "mediaKey": "tv:293124", "mediaType": "tv", "tmdbId": "293124",
+                        "title": "黑化吧！圣女大人", "seasons": "S02", "episodes": "E09", "seasonEpisode": "S02E09",
+                        "src": f"/00-待整理/00-日漫/{f_88706_sib}", "dest": f"/emby/{f_88706_sib}", "fileName": f_88706_sib,
+                        "outcome": "archived", "outcomeLabel": "归档成功", "reasonText": "已完成", "date": "2026-11-27 00:31:37", "webUrl": "",
+                    },
+                    {
+                        "id": "88706", "mediaKey": "", "mediaType": "tv", "tmdbId": "",
+                        "title": "Kuroka de Seijo ni Hyou", "seasons": "S02", "episodes": "E09", "seasonEpisode": "S02E09",
+                        "src": str(p1), "dest": "", "fileName": f_88706,
+                        "outcome": "identify_failed", "outcomeLabel": "SA 识别失败", "reasonText": "没有查询到媒体信息", "date": "2026-11-27 00:30:18", "webUrl": "",
+                    },
+                ],
+            }
+
+            active, ignored = partition_actionable_issues(snapshot, {}, store=store)
+            # BOTH 88733 & 88706 exit active inbox and enter ignored list!
+            self.assertEqual(len(active), 0)
+            self.assertEqual(len(ignored), 2)
+            ignored_keys = {i["issueKey"] for i in ignored}
+            self.assertEqual(ignored_keys, {"sa:88733", "sa:88706"})
+            for ig in ignored:
+                self.assertEqual(ig["ignoredLabel"], "已有版本，已忽略")
+                self.assertIn("忽略不等于修复成功", ig["ignoredReason"])
+                self.assertTrue(ig["canRestore"])
+            # Files untouched (no retry/move/delete)
+            self.assertTrue(p1.is_file())
+            self.assertTrue(p2.is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
