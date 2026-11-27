@@ -658,16 +658,16 @@ def detect_existing_version_for_target(
     if not confirmed_in_emby:
         if not emby_available:
             unverified_note = "当前 Emby 库存查询不可用"
-        elif emby_id_incomplete:
-            unverified_note = "当前 Emby 存在 SeriesId → TMDB 映射失败或不完整（不能把映射失败当作库内不存在）"
+        elif media_type == "tv" and emby_id_incomplete:
+            unverified_note = "当前 Emby 存在未关联 TMDB 的剧集或映射失败（库存未确认，不能把映射缺口当作库内不存在）"
         else:
             unverified_note = "当前 Emby 库内未查到该集"
-        short_banner = f"{failed_desc}识别失败；仅见旧 SA 归档记录（未确认当前在库）"
+        short_banner = f"{failed_desc}识别失败；仅见旧 SA 归档记录（库存未确认）"
         summary = (
             f"{failed_desc}识别失败；SA 历史虽有 {scope_text} 的{existing_desc}记录{file_hint}，但{unverified_note}，"
             "不能确认当前仍在库，未自动忽略。"
         )
-        badge_label = "身份关联不完整（未自动忽略）" if (emby_available and emby_id_incomplete) else "仅见旧历史（未确认在库）"
+        badge_label = "库存未确认（未自动忽略）" if (emby_available and media_type == "tv" and emby_id_incomplete) else "仅见旧历史（未确认在库）"
     elif exception["isException"]:
         short_banner = f"{failed_desc}识别失败；同集已有{existing_desc}（命中例外，未自动忽略）"
         summary = (

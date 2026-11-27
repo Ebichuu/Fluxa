@@ -9,6 +9,7 @@ import type {
   IntentMode,
   MediaPipelineResponse,
   MediaType,
+  RefreshStatusInfo,
   ReleaseGroupCheck,
   RssAutoOverviewResponse,
   RssAutoRule,
@@ -55,12 +56,21 @@ export const api = {
     }),
   logout: () => requestJson<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
 
-  getDashboard: (days = 7, startDate = '', refresh = false) => {
+  getDashboard: (days = 7, startDate = '', refresh = false, forceEmby = false) => {
     const qs = new URLSearchParams({ days: String(days) });
     if (startDate) qs.set('startDate', startDate);
     if (refresh) qs.set('refresh', '1');
+    if (forceEmby) qs.set('forceEmby', '1');
     return requestJson<DashboardResponse>(`/api/dashboard?${qs.toString()}`);
   },
+
+  triggerRefresh: (forceEmby = false) =>
+    requestJson<{ ok: boolean; started: boolean; coalesced: boolean; refresh: RefreshStatusInfo }>('/api/refresh', {
+      method: 'POST',
+      body: JSON.stringify({ forceEmby }),
+    }),
+
+  getRefreshStatus: () => requestJson<{ ok: boolean; refresh: RefreshStatusInfo }>('/api/refresh/status'),
 
   getMediaPipeline: (mediaType: MediaType, tmdbId: string) =>
     requestJson<MediaPipelineResponse>(`/api/media/${mediaType}/${tmdbId}`),

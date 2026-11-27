@@ -95,7 +95,12 @@ def get_dashboard():
     settings = store.get_settings()
     force_refresh = str(request.args.get("refresh") or "").strip().lower() in {"1", "true", "yes"}
     force_emby = str(request.args.get("forceEmby") or "").strip().lower() in {"1", "true", "yes"}
-    snapshot, cache_meta = _snapshots().get_snapshot(force_refresh=force_refresh, force_emby=force_emby)
+    sync_wait = str(request.args.get("sync") or "").strip().lower() in {"1", "true", "yes"}
+    snapshot, cache_meta = _snapshots().get_snapshot(
+        force_refresh=force_refresh,
+        force_emby=force_emby,
+        wait=sync_wait,
+    )
     adapters = build_adapters(settings, store=store)
     prefs = store.list_preferences()
 
@@ -125,6 +130,22 @@ def get_dashboard():
     ]
     sec = snapshot.get("torraSecupload") or {}
     emby = snapshot.get("emby") or {}
+    from app.adapters.emby import is_emby_identity_incomplete
+    emby_unmapped = emby.get("unmappedSeries") or []
+    emby_identity = {
+        "available": bool(emby.get("available")),
+        "dataReadComplete": bool(emby.get("dataReadComplete", not emby.get("truncated"))),
+        "identityComplete": bool(emby.get("identityComplete", not is_emby_identity_incomplete(emby))),
+        "identityStatus": str(emby.get("identityStatus") or ("complete" if not is_emby_identity_incomplete(emby) else "partial_unmapped")),
+        "totalMoviesAndSeries": int(emby.get("totalMoviesAndSeries") or 0),
+        "totalEpisodes": int(emby.get("totalEpisodes") or 0),
+        "fetchedEpisodes": int(emby.get("fetchedEpisodes") or 0),
+        "orphanEpisodeCount": int(emby.get("orphanEpisodeCount") or 0),
+        "unmappedSeriesCount": len(emby_unmapped) if emby_unmapped else len(emby.get("unresolvedSeriesIds") or []),
+        "failedSeriesLookupCount": len(emby.get("failedSeriesLookupIds") or []),
+        "identityWarning": str(emby.get("identityWarning") or ""),
+        "unmappedSeries": emby_unmapped[:50],
+    }
 
     return jsonify({
         "generatedAt": snapshot["generatedAt"],
@@ -141,11 +162,27 @@ def get_dashboard():
         },
         "issues": issues,
         "ignoredIssues": ignored_issues,
+        "embyIdentity": emby_identity,
         "calendar": calendar,
         "activeDownloads": active_qb[:20],
         "activeUploads": (sec.get("activeRuns") or [])[:10],
         "recentEmby": (emby.get("recentToday") or [])[:20],
     })
+
+
+@api.post("/refresh")
+def trigger_refresh():
+    """Trigger a single-flight non-blocking background refresh (optional forceEmby=true)."""
+    body = request.get_json(silent=True) or {}
+    force_emby = bool(body.get("forceEmby", False))
+    res = _snapshots().trigger_background_refresh(force_emby=force_emby, trigger="manual")
+    return jsonify({"ok": True, **res}), 202
+
+
+@api.get("/refresh/status")
+def get_refresh_status():
+    """Return lightweight background refresh status, timing, error, and cache freshness."""
+    return jsonify({"ok": True, "refresh": _snapshots().get_refresh_status()})
 
 
 # -- Single-Media 5-Step Pipeline -----------------------------------------

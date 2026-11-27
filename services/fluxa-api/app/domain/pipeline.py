@@ -212,48 +212,72 @@ def collect_upstream_snapshot(
 
     def _fetch_emby():
         emby = adapters["emby"]
-        empty_lib = {"available": False, "movies": {}, "series": {}, "episodes": {}, "episodeDetails": {}, "recentToday": [], "truncated": False, "truncationWarning": ""}
+        empty_lib = {
+            "available": False,
+            "complete": False,
+            "dataReadComplete": False,
+            "paginationComplete": False,
+            "identityComplete": False,
+            "identityStatus": "unavailable",
+            "truncated": False,
+            "truncationWarning": "",
+            "identityWarning": "",
+            "orphanEpisodeCount": 0,
+            "unmappedSeries": [],
+            "movies": {},
+            "series": {},
+            "episodes": {},
+            "episodeDetails": {},
+            "recentToday": [],
+        }
         if not emby.configured:
-            return _unconfigured_health("emby", "Emby", emby.app_url()), empty_lib, False, ""
+            return _unconfigured_health("emby", "Emby", emby.app_url()), empty_lib, False, "", 0
         if store is not None and not force_emby:
             cached = store.get_cache("snapshot:emby")
             if cached and cached["ageSeconds"] <= EMBY_CACHE_TTL_SECONDS and isinstance(cached["payload"], dict) and cached["payload"].get("available"):
                 lib = cached["payload"]
                 total = len(lib.get("movies") or {}) + len(lib.get("series") or {})
+                unmapped_n = len(lib.get("unmappedSeries") or lib.get("unresolvedSeriesIds") or [])
+                has_hard_warn = bool(lib.get("failedSeriesLookupIds") or lib.get("truncated"))
+                suffix = f" · {unmapped_n} 剧集待补 TMDB" if unmapped_n else ""
                 health = {
                     "service": "emby",
                     "name": "Emby",
                     "configured": True,
                     "connected": True,
-                    "status": "ok",
-                    "message": f"在线 · {total} 部影视（缓存 {int(cached['ageSeconds'])}s）",
+                    "status": "warn" if has_hard_warn else "ok",
+                    "message": f"在线 · {total} 部影视（缓存 {int(cached['ageSeconds'])}s{suffix}）",
                     "count": total,
                     "webUrl": emby.app_url(),
                 }
-                return health, lib, True, str(cached.get("updatedAt") or "")
+                return health, lib, True, str(cached.get("updatedAt") or ""), 0
+        t0 = time.monotonic()
         lib = _safe_call(emby.fetch_library_snapshot, empty_lib)
+        emby_ms = int(round((time.monotonic() - t0) * 1000))
         if lib.get("available"):
             now_iso = _now_iso()
             if store is not None:
                 store.set_cache("snapshot:emby", lib, updated_iso=now_iso)
             total = len(lib.get("movies") or {}) + len(lib.get("series") or {})
-            id_inc = is_emby_identity_incomplete(lib)
-            orphan_n = int(lib.get("orphanEpisodeCount") or 0)
+            unmapped_n = len(lib.get("unmappedSeries") or lib.get("unresolvedSeriesIds") or [])
+            has_hard_warn = bool(lib.get("failedSeriesLookupIds") or lib.get("truncated"))
+            if has_hard_warn:
+                msg = f"在线 · {total} 部影视（{int(lib.get('orphanEpisodeCount') or 0)} 集未关联）"
+            elif unmapped_n:
+                msg = f"在线 · {total} 部影视（数据完整 · {unmapped_n} 剧集待补 TMDB）"
+            else:
+                msg = f"在线 · {total} 部影视"
             health = {
                 "service": "emby",
                 "name": "Emby",
                 "configured": True,
                 "connected": True,
-                "status": "warn" if (lib.get("failedSeriesLookupIds") or lib.get("truncated")) else "ok",
-                "message": (
-                    f"在线 · {total} 部影视（{orphan_n} 集身份未映射）"
-                    if id_inc
-                    else f"在线 · {total} 部影视"
-                ),
+                "status": "warn" if has_hard_warn else "ok",
+                "message": msg,
                 "count": total,
                 "webUrl": emby.app_url(),
             }
-            return health, lib, False, now_iso
+            return health, lib, False, now_iso, emby_ms
         return {
             "service": "emby",
             "name": "Emby",
@@ -262,7 +286,7 @@ def collect_upstream_snapshot(
             "status": "error",
             "message": lib.get("error") or "Emby 连接失败",
             "webUrl": emby.app_url(),
-        }, lib, False, ""
+        }, lib, False, "", emby_ms
 
     def _fetch_tmdb_health():
         tmdb = adapters["tmdb"]
@@ -289,7 +313,7 @@ def collect_upstream_snapshot(
         tr_h, tr_subs, tr_sec = f_tr.result()
         qb_h, qb_tasks = f_qb.result()
         sa_h, sa_hist = f_sa.result()
-        emby_h, emby_lib, emby_from_cache, emby_cached_at_iso = f_emby.result()
+        emby_h, emby_lib, emby_from_cache, emby_cached_at_iso, emby_duration_ms = f_emby.result()
         tmdb_h = f_tmdb.result()
 
         # If Emby came from 5-min cache but SA has a newer archive/replace record, refresh Emby once
@@ -307,16 +331,25 @@ def collect_upstream_snapshot(
                     for rec in sa_hist
                 )
                 if has_newer_archive:
+                    t_emby = time.monotonic()
                     fresh_lib = _safe_call(adapters["emby"].fetch_library_snapshot, None)
                     if isinstance(fresh_lib, dict) and fresh_lib.get("available"):
+                        emby_duration_ms = int(round((time.monotonic() - t_emby) * 1000))
                         emby_lib = fresh_lib
+                        emby_cached_at_iso = _now_iso()
                         if store is not None:
-                            store.set_cache("snapshot:emby", fresh_lib, updated_iso=_now_iso())
+                            store.set_cache("snapshot:emby", fresh_lib, updated_iso=emby_cached_at_iso)
                         total = len(fresh_lib.get("movies") or {}) + len(fresh_lib.get("series") or {})
+                        unmapped_n = len(fresh_lib.get("unmappedSeries") or fresh_lib.get("unresolvedSeriesIds") or [])
+                        has_hard_warn = bool(fresh_lib.get("failedSeriesLookupIds") or fresh_lib.get("truncated"))
                         emby_h = {
                             **emby_h,
-                            "status": "ok",
-                            "message": f"在线 · {total} 部影视",
+                            "status": "warn" if has_hard_warn else "ok",
+                            "message": (
+                                f"在线 · {total} 部影视（数据完整 · {unmapped_n} 剧集待补 TMDB）"
+                                if (unmapped_n and not has_hard_warn)
+                                else f"在线 · {total} 部影视"
+                            ),
                             "count": total,
                         }
             except Exception:
@@ -325,6 +358,8 @@ def collect_upstream_snapshot(
         services = [mp_h, tr_h, qb_h, sa_h, emby_h, tmdb_h]
         return {
             "generatedAt": _now_iso(),
+            "embyUpdatedAt": emby_cached_at_iso,
+            "embyDurationMs": emby_duration_ms,
             "services": services,
             "serviceMap": {s["service"]: s for s in services},
             "mpSubs": mp_subs,
@@ -340,23 +375,98 @@ def collect_upstream_snapshot(
 class SnapshotCoordinator:
     """SQLite-backed stale-while-revalidate snapshot cache + single-flight background refresher.
 
-    Guarantees homepage/subscriptions/media pages render in milliseconds from SQLite instead of
-    blocking 15-45s on live upstream fetches every refresh.
+    Guarantees homepage/subscriptions/media pages AND manual/full-Emby refreshes return immediately
+    from SQLite while full upstream/Emby scans execute in a deduplicated background job with
+    transparent progress, timing, freshness, and error reporting.
     """
 
     def __init__(self, store: FluxaStore, *, fresh_ttl: float = SNAPSHOT_FRESH_TTL_SECONDS):
         self.store = store
         self.fresh_ttl = fresh_ttl
-        self._refresh_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._done_event = threading.Event()
+        self._done_event.set()
         self._refreshing = False
+        self._current_force_emby = False
+        self._pending_force_emby = False
         self._poller_started = False
+        self._status: dict[str, Any] = {
+            "state": "idle",
+            "mode": "upstream",
+            "trigger": "",
+            "startedAt": "",
+            "completedAt": "",
+            "durationMs": None,
+            "embyDurationMs": None,
+            "error": "",
+        }
+        persisted = self.store.get_cache("snapshot:refresh_status")
+        if persisted and isinstance(persisted.get("payload"), dict):
+            prev = dict(persisted["payload"])
+            if prev.get("state") == "running":
+                prev["state"] = "idle"
+            self._status.update(prev)
 
     @property
     def is_refreshing(self) -> bool:
-        return self._refreshing
+        with self._state_lock:
+            return self._refreshing
+
+    def _persist_status_locked(self) -> None:
+        try:
+            self.store.set_cache("snapshot:refresh_status", dict(self._status), updated_iso=_now_iso())
+        except Exception:
+            pass
+
+    def get_refresh_status(self) -> dict[str, Any]:
+        with self._state_lock:
+            st = dict(self._status)
+            running = self._refreshing
+            pending_emby = self._pending_force_emby
+        snap_cache = self.store.get_cache("snapshot:upstream")
+        emby_cache = self.store.get_cache("snapshot:emby")
+        snap_iso = str(snap_cache.get("updatedIso") or "") if snap_cache else ""
+        emby_iso = str(emby_cache.get("updatedIso") or "") if emby_cache else ""
+        return {
+            **st,
+            "refreshing": running,
+            "pendingFullEmby": pending_emby,
+            "snapshotUpdatedAt": snap_iso,
+            "snapshotAgeSeconds": round(float(snap_cache["ageSeconds"]), 1) if snap_cache else None,
+            "embyUpdatedAt": emby_iso,
+            "embyAgeSeconds": round(float(emby_cache["ageSeconds"]), 1) if emby_cache else None,
+        }
+
+    def _build_cache_meta(
+        self,
+        *,
+        from_cache: bool,
+        stale: bool,
+        cache_age_seconds: float,
+        updated_at: str,
+        coalesced: bool = False,
+    ) -> dict[str, Any]:
+        st = self.get_refresh_status()
+        return {
+            "fromCache": from_cache,
+            "stale": stale,
+            "refreshing": bool(st["refreshing"]),
+            "coalesced": coalesced,
+            "refreshState": st["state"],
+            "refreshMode": st["mode"],
+            "refreshStartedAt": st["startedAt"],
+            "lastRefreshCompletedAt": st["completedAt"],
+            "lastRefreshDurationMs": st["durationMs"],
+            "lastEmbyDurationMs": st["embyDurationMs"],
+            "lastRefreshError": st["error"],
+            "cacheAgeSeconds": round(float(cache_age_seconds), 1),
+            "updatedAt": updated_at,
+            "embyUpdatedAt": st["embyUpdatedAt"],
+            "embyCacheAgeSeconds": st["embyAgeSeconds"],
+        }
 
     def start_background_poller(self, interval_seconds: int = 90) -> None:
-        with self._refresh_lock:
+        with self._state_lock:
             if self._poller_started:
                 return
             self._poller_started = True
@@ -369,79 +479,158 @@ class SnapshotCoordinator:
                     settings = self.store.get_settings()
                     adapters = build_adapters(settings, store=self.store)
                     if any(a.configured for a in adapters.values()):
-                        self.refresh_now(force_emby=False)
+                        self.trigger_background_refresh(force_emby=False, trigger="poller")
                 except Exception:
                     pass
                 time.sleep(max(30, int(interval_seconds)))
 
         threading.Thread(target=_loop, name="fluxa-snapshot-refresher", daemon=True).start()
 
-    def refresh_now(self, *, force_emby: bool = False) -> dict[str, Any]:
-        with self._refresh_lock:
-            self._refreshing = True
-            try:
-                settings = self.store.get_settings()
-                adapters = build_adapters(settings, store=self.store)
-                snap = collect_upstream_snapshot(adapters, store=self.store, force_emby=force_emby)
-                self.store.set_cache("snapshot:upstream", snap, updated_iso=snap["generatedAt"])
-                return snap
-            finally:
+    def _execute_single_pass(self, *, force_emby: bool) -> dict[str, Any]:
+        t0 = time.monotonic()
+        settings = self.store.get_settings()
+        adapters = build_adapters(settings, store=self.store)
+        snap = collect_upstream_snapshot(adapters, store=self.store, force_emby=force_emby)
+        duration_ms = int(round((time.monotonic() - t0) * 1000))
+        self.store.set_cache("snapshot:upstream", snap, updated_iso=snap["generatedAt"])
+        with self._state_lock:
+            self._status.update({
+                "state": "succeeded",
+                "mode": "full_emby" if force_emby else "upstream",
+                "completedAt": _now_iso(),
+                "durationMs": duration_ms,
+                "embyDurationMs": snap.get("embyDurationMs"),
+                "error": "",
+            })
+            self._persist_status_locked()
+        return snap
+
+    def _run_background_loop(self, initial_force_emby: bool) -> None:
+        run_force_emby = initial_force_emby
+        try:
+            while True:
+                try:
+                    self._execute_single_pass(force_emby=run_force_emby)
+                except Exception as exc:
+                    with self._state_lock:
+                        self._status.update({
+                            "state": "failed",
+                            "mode": "full_emby" if run_force_emby else "upstream",
+                            "completedAt": _now_iso(),
+                            "error": sanitize_text(exc),
+                        })
+                        self._persist_status_locked()
+
+                with self._state_lock:
+                    if self._pending_force_emby:
+                        self._pending_force_emby = False
+                        self._current_force_emby = True
+                        run_force_emby = True
+                        self._status.update({
+                            "state": "running",
+                            "mode": "full_emby",
+                            "startedAt": _now_iso(),
+                            "error": "",
+                        })
+                        self._persist_status_locked()
+                        continue
+                    self._refreshing = False
+                    self._current_force_emby = False
+                    self._done_event.set()
+                    break
+        except BaseException:
+            with self._state_lock:
                 self._refreshing = False
+                self._current_force_emby = False
+                self._pending_force_emby = False
+                self._done_event.set()
+            raise
 
-    def trigger_background_refresh(self, *, force_emby: bool = False) -> bool:
-        if self._refreshing:
-            return False
+    def trigger_background_refresh(self, *, force_emby: bool = False, trigger: str = "manual") -> dict[str, Any]:
+        """Start a single-flight background refresh or coalesce into the already-running one."""
+        with self._state_lock:
+            if self._refreshing:
+                if force_emby and not self._current_force_emby:
+                    self._pending_force_emby = True
+                coalesced = True
+                started = False
+            else:
+                self._refreshing = True
+                self._current_force_emby = force_emby
+                self._pending_force_emby = False
+                self._done_event.clear()
+                self._status.update({
+                    "state": "running",
+                    "mode": "full_emby" if force_emby else "upstream",
+                    "trigger": trigger,
+                    "startedAt": _now_iso(),
+                    "error": "",
+                })
+                self._persist_status_locked()
+                coalesced = False
+                started = True
 
-        def _bg():
-            try:
-                self.refresh_now(force_emby=force_emby)
-            except Exception:
-                pass
+        if started:
+            threading.Thread(
+                target=self._run_background_loop,
+                args=(force_emby,),
+                name="fluxa-snapshot-bg",
+                daemon=True,
+            ).start()
+        return {"started": started, "coalesced": coalesced, "refresh": self.get_refresh_status()}
 
-        threading.Thread(target=_bg, name="fluxa-snapshot-bg", daemon=True).start()
-        return True
+    def refresh_now(self, *, force_emby: bool = False, trigger: str = "sync") -> dict[str, Any]:
+        """Single-flight synchronous refresh (joins any in-flight job; never duplicates scans)."""
+        self.trigger_background_refresh(force_emby=force_emby, trigger=trigger)
+        self._done_event.wait()
+        cached = self.store.get_cache("snapshot:upstream")
+        if cached and isinstance(cached.get("payload"), dict):
+            return cached["payload"]
+        settings = self.store.get_settings()
+        adapters = build_adapters(settings, store=self.store)
+        return collect_upstream_snapshot(adapters, store=self.store, force_emby=force_emby)
 
     def get_snapshot(
         self,
         *,
         force_refresh: bool = False,
         force_emby: bool = False,
+        wait: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Return `(snapshot, cache_meta)` using SQLite cache + stale-while-revalidate."""
-        if force_refresh:
-            snap = self.refresh_now(force_emby=force_emby)
-            return snap, {
-                "fromCache": False,
-                "stale": False,
-                "refreshing": False,
-                "cacheAgeSeconds": 0.0,
-                "updatedAt": snap["generatedAt"],
-            }
+        """Return `(snapshot, cache_meta)` using SQLite cache + non-blocking single-flight background refresh.
 
+        Even when `force_refresh=True` (and `force_emby=True`), if a cached snapshot already exists
+        and `wait=False`, returns the existing snapshot immediately while refreshing in the background
+        so the UI never blocks 60+ seconds on a full Emby pagination scan.
+        """
         cached = self.store.get_cache("snapshot:upstream")
-        if cached and isinstance(cached.get("payload"), dict):
+        if cached and isinstance(cached.get("payload"), dict) and not wait:
             age = float(cached["ageSeconds"])
             stale = age > self.fresh_ttl
-            refreshing = self._refreshing
-            if stale and not refreshing:
-                refreshing = self.trigger_background_refresh(force_emby=False)
-            return cached["payload"], {
-                "fromCache": True,
-                "stale": stale,
-                "refreshing": refreshing,
-                "cacheAgeSeconds": age,
-                "updatedAt": cached["updatedIso"],
-            }
+            coalesced = False
+            if force_refresh or force_emby:
+                trig = self.trigger_background_refresh(force_emby=force_emby, trigger="manual")
+                coalesced = bool(trig["coalesced"])
+            elif stale and not self.is_refreshing:
+                trig = self.trigger_background_refresh(force_emby=False, trigger="stale_swr")
+                coalesced = bool(trig["coalesced"])
+            return cached["payload"], self._build_cache_meta(
+                from_cache=True,
+                stale=stale,
+                cache_age_seconds=age,
+                updated_at=str(cached.get("updatedIso") or cached["payload"].get("generatedAt") or ""),
+                coalesced=coalesced,
+            )
 
-        # Cold start (empty cache): if nothing configured, return immediately; otherwise warm once and persist
-        snap = self.refresh_now(force_emby=False)
-        return snap, {
-            "fromCache": False,
-            "stale": False,
-            "refreshing": False,
-            "cacheAgeSeconds": 0.0,
-            "updatedAt": snap["generatedAt"],
-        }
+        # True cold start (no cached snapshot yet) or explicit `wait=True`
+        snap = self.refresh_now(force_emby=force_emby, trigger="cold_start" if not cached else "sync")
+        return snap, self._build_cache_meta(
+            from_cache=False,
+            stale=False,
+            cache_age_seconds=0.0,
+            updated_at=str(snap.get("generatedAt") or ""),
+            coalesced=False,
+        )
 
     def invalidate(self) -> None:
         self.store.clear_cache_prefix("snapshot:")
@@ -1148,24 +1337,53 @@ def build_media_pipeline(
     else:
         s_item = (emby.get("series") or {}).get(tmdb_id)
         emby_id_incomplete = is_emby_identity_incomplete(emby)
+        unmapped_entries = emby.get("unmappedSeries") or []
+        related_unmapped = [
+            u for u in unmapped_entries
+            if str(u.get("explicitTmdbHint") or "") == str(tmdb_id)
+            or (
+                title
+                and _title_matches(
+                    title,
+                    f"{u.get('title') or ''} {u.get('path') or ''}",
+                    extra_titles,
+                    target_year=target_year,
+                    target_tmdb_id=tmdb_id,
+                    media_type="tv",
+                )
+            )
+        ]
         if s_item or emby_episodes:
+            # Positive confirmed Emby evidence MUST stay "ok" — NEVER dragged to unconfirmed by unrelated unmapped Series!
             emby_status = "ok"
             emby_label = f"Emby 已有 {len(emby_episodes)} 集" if emby_episodes else "Emby 已有剧集条目"
             if emby.get("truncated"):
                 emby_summary = "已核对 Emby 分集条目（注意：库存快照存在截断，未列出的分集请以 Emby 为准）"
-            elif emby_id_incomplete:
-                emby_summary = "已核对 Emby 分集条目（注意：存在未映射 TMDB 的 SeriesId/分集，未列出的分集不能断言未入库）"
+            elif related_unmapped:
+                emby_summary = (
+                    f"已核对 Emby 分集条目；另检测到 {len(related_unmapped)} 个疑似同作品未关联目录"
+                    f"（{related_unmapped[0].get('title') or ''}，需人工在 Emby 核对元数据）"
+                )
             else:
                 emby_summary = "已核对 Emby 分集条目（实际播放以 Emby 客户端为准）"
             emby_url = (s_item or {}).get("webUrl") or adapters["emby"].app_url()
         elif emby.get("truncated"):
-            emby_status, emby_label = "unconfirmed", "未确认（库存快照截断）"
+            emby_status, emby_label = "unconfirmed", "库存未确认（快照截断）"
             emby_summary = emby.get("truncationWarning") or "Emby 媒体库过大且快照未完整覆盖，不能确认未入库"
             emby_url = adapters["emby"].app_url()
         elif emby_id_incomplete:
-            emby_status, emby_label = "unconfirmed", "未确认（身份关联不完整）"
-            emby_summary = emby.get("identityWarning") or "Emby 存在 SeriesId → TMDB 映射失败或缺失，不能把映射失败当作库内不存在"
-            emby_url = adapters["emby"].app_url()
+            emby_status, emby_label = "unconfirmed", "库存未确认"
+            if related_unmapped:
+                first_u = related_unmapped[0]
+                emby_summary = (
+                    f"Emby 中检测到疑似未关联目录「{first_u.get('title') or first_u.get('seriesId')}」"
+                    f"（{first_u.get('episodeCount') or 0} 集，{first_u.get('diagnosticHint') or '缺少 TMDB ProviderId'}）；"
+                    "当前不能推断缺集或触发补下载，请在 Emby 确认并修正元数据。"
+                )
+                emby_url = first_u.get("embyUrl") or adapters["emby"].app_url()
+            else:
+                emby_summary = emby.get("identityWarning") or "Emby 存在未关联 TMDB 的剧集条目，当前库存未确认，不能推断缺集或触发补下载"
+                emby_url = adapters["emby"].app_url()
         else:
             emby_status, emby_label = "idle", "尚未进入 Emby"
             emby_summary = "Emby 媒体库中暂未查到该剧集"

@@ -51,12 +51,13 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
   const [saRecoveryRecord, setSaRecoveryRecord] = useState<SaRecordRef | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [showIgnored, setShowIgnored] = useState(false);
+  const [showUnmappedEmby, setShowUnmappedEmby] = useState(false);
 
-  const load = useCallback(async (days = calDays, refresh = false) => {
+  const load = useCallback(async (days = calDays, refresh = false, forceEmby = false) => {
     setLoading(true);
     setError('');
     try {
-      const res = await api.getDashboard(days, '', refresh);
+      const res = await api.getDashboard(days, '', refresh, forceEmby);
       setData(res);
       setSelectedDate((cur) => cur || res.calendar.today);
     } catch (err) {
@@ -67,16 +68,29 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
   }, [calDays]);
 
   useEffect(() => {
-    void load(calDays, false);
+    void load(calDays, false, false);
   }, [calDays, load]);
 
-  // If backend returned instant SQLite cache and triggered a background refresh, quietly re-read once after 2.5s
+  // While a single-flight background refresh is running, poll lightweight /api/refresh/status until it finishes, then reload dashboard once
   useEffect(() => {
     if (!data?.cache?.refreshing) return;
-    const timer = window.setTimeout(() => {
-      void load(calDays, false);
-    }, 2500);
-    return () => window.clearTimeout(timer);
+    let cancelled = false;
+    const poll = window.setInterval(async () => {
+      try {
+        const res = await api.getRefreshStatus();
+        if (cancelled) return;
+        if (!res.refresh.refreshing) {
+          window.clearInterval(poll);
+          void load(calDays, false, false);
+        }
+      } catch {
+        // Ignore transient poll errors; next tick will retry
+      }
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(poll);
+    };
   }, [data?.cache?.refreshing, data?.generatedAt, calDays, load]);
 
   const runBoundedAction = async (actionType: string, payload: Record<string, unknown>) => {
@@ -166,17 +180,40 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
             <p className="hero-eyebrow">
               首页 · 追更日历与链路进度
               {data?.generatedAt ? ` · 快照 ${data.generatedAt.slice(11, 19)}` : ''}
-              {data?.cache?.refreshing ? '（后台同步中…）' : data?.cache?.fromCache ? '（本地缓存秒开）' : ''}
+              {data?.cache?.embyUpdatedAt ? ` · Emby ${data.cache.embyUpdatedAt.slice(11, 19)}` : ''}
+              {data?.cache?.refreshing
+                ? data.cache.refreshMode === 'full_emby'
+                  ? '（后台全量刷新 Emby 中…）'
+                  : '（后台同步中…）'
+                : data?.cache?.lastRefreshDurationMs
+                  ? `（上次刷新 ${(data.cache.lastRefreshDurationMs / 1000).toFixed(1)}s）`
+                  : data?.cache?.fromCache
+                    ? '（本地缓存秒开）'
+                    : ''}
             </p>
             <h1 className="hero-title">{heroHeadline}</h1>
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           {data && !anyServiceConfigured && (
             <button className="btn btn-primary" type="button" onClick={onGoSettings}>配置服务连接</button>
           )}
-          <button className="btn" type="button" onClick={() => void load(calDays, true)} disabled={loading}>
-            <RefreshCw size={14} /> {loading ? '刷新中…' : '刷新'}
+          <button
+            className="btn"
+            type="button"
+            onClick={() => void load(calDays, true, false)}
+            disabled={loading}
+          >
+            <RefreshCw size={14} /> {data?.cache?.refreshing ? '后台刷新中…' : '刷新'}
+          </button>
+          <button
+            className="btn btn-sm"
+            type="button"
+            title="在后台全量扫描 Emby 库存，页面立即保持响应不阻塞"
+            onClick={() => void load(calDays, true, true)}
+            disabled={loading}
+          >
+            全量刷新 Emby
           </button>
         </div>
 
@@ -207,6 +244,11 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
 
       {toast && <div className={`banner ${toast.tone}`}>{toast.text}</div>}
       {error && <div className="banner error">{error}</div>}
+      {data?.cache?.refreshState === 'failed' && data.cache.lastRefreshError && (
+        <div className="banner error">
+          后台刷新失败（当前继续展示上次快照 {data.generatedAt.slice(11, 19)}）：{data.cache.lastRefreshError}
+        </div>
+      )}
 
       {/* 4 Core KPI Chips */}
       <div className="grid-4">
@@ -396,8 +438,52 @@ export function HomePage({ onOpenMedia, onGoSettings }: HomePageProps) {
         )}
         {data?.calendar.embyIdentityIncomplete && data.calendar.embyIdentityWarning && (
           <div className="banner warn" style={{ marginBottom: 10 }}>
-            <AlertTriangle size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
-            {data.calendar.embyIdentityWarning}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+              <span>
+                <AlertTriangle size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+                {data.calendar.embyIdentityWarning}
+              </span>
+              {(data?.embyIdentity?.unmappedSeries?.length || 0) > 0 && (
+                <button
+                  className="btn btn-sm"
+                  type="button"
+                  onClick={() => setShowUnmappedEmby((v) => !v)}
+                >
+                  {showUnmappedEmby
+                    ? '收起未关联清单'
+                    : `查看未关联清单（${data.embyIdentity?.unmappedSeriesCount || 0} 部 / ${data.embyIdentity?.orphanEpisodeCount || 0} 集）`}
+                </button>
+              )}
+            </div>
+            {showUnmappedEmby && (data?.embyIdentity?.unmappedSeries?.length || 0) > 0 && (
+              <div className="list" style={{ marginTop: 10 }}>
+                {(data.embyIdentity?.unmappedSeries || []).map((u) => (
+                  <div key={u.seriesId} className="list-row">
+                    <div className="row-main">
+                      <div className="row-title">
+                        <StatusPill status={u.reason === 'lookup_failed' ? 'error' : 'warn'} label={u.reasonLabel} />
+                        <strong>{u.title}</strong>
+                        <span className="pill idle">{u.episodeCount} 集</span>
+                        {u.explicitTmdbHint && (
+                          <span className="pill protected">目录提示 TMDB #{u.explicitTmdbHint}（待确认）</span>
+                        )}
+                      </div>
+                      <div style={{ marginTop: 4, fontSize: 13 }}>{u.diagnosticHint}</div>
+                      {u.path && (
+                        <div className="muted" style={{ marginTop: 2, wordBreak: 'break-all' }}>{u.path}</div>
+                      )}
+                    </div>
+                    <div className="row-actions">
+                      {u.embyUrl && (
+                        <a className="btn btn-sm" href={u.embyUrl} target="_blank" rel="noreferrer">
+                          打开 Emby 修正元数据 <ExternalLink size={12} />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

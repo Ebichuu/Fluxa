@@ -719,7 +719,7 @@ class AuditSecurityAndAccuracyTests(unittest.TestCase):
             pipe = build_media_pipeline(media_type="tv", tmdb_id="295790", snapshot=pipe_snap, adapters=adapters, store=store2)
             emby_step = next(s for s in pipe["steps"] if s["step"] == "emby")
             self.assertEqual(emby_step["status"], "unconfirmed")
-            self.assertIn("身份关联不完整", emby_step["statusLabel"])
+            self.assertIn("库存未确认", emby_step["statusLabel"])
             self.assertNotIn("尚未进入 Emby", emby_step["statusLabel"])
 
             # And SA existing-version check must NOT falsely claim "当前 Emby 库内未查到该集"
@@ -742,6 +742,245 @@ class AuditSecurityAndAccuracyTests(unittest.TestCase):
             self.assertTrue(ev["embyIdentityIncomplete"])
             self.assertIn("映射失败", ev["summary"])
             self.assertNotIn("库内未查到", ev["summary"])
+
+    # -- 9. Unmapped Series checklist, explicit TMDB hint diagnosis (no auto-bind), and positive-evidence isolation --
+
+    def test_9_emby_unmapped_series_diagnostics_explicit_hint_and_positive_isolation(self):
+        """验收 1：数据读取完整但部分 Series 缺 TMDB ProviderId：
+        - 区分 dataReadComplete 与 identityComplete，且不算 Fluxa 故障；
+        - 提供带 Emby 入口与显式 TMDB 辅助诊断的 unmappedSeries 清单，绝不自动套用 ID；
+        - 多版本/多篇章/冲突目录标 requiresConfirm + hasConflictOrMultiArc；
+        - 已有可靠正向库存证据的作品保持 ok，不被其他未关联目录拖成未确认；
+        - 未关联作品显示「库存未确认」，绝不推断缺集。
+        """
+        from app.domain.sa_recovery import detect_existing_version_for_target
+
+        class _Resp:
+            def __init__(self, body):
+                self.status_code = 200
+                self.content = b"1"
+                self._body = body
+            def json(self):
+                return self._body
+
+        parent_items = [
+            # Positive confirmed series (TMDB 295790)
+            {"Id": "350389", "Type": "Series", "Name": "已关联正常剧集", "ProviderIds": {"Tmdb": "295790"}, "Path": "/lib/NormalShow", "DateCreated": "2026-10-01"},
+            # Unmapped Series 1: 火影忍者 4K with explicit {tmdb-31910} tag in path (diagnostic hint ONLY, never auto-bind!)
+            {"Id": "u-naruto-4k", "Type": "Series", "Name": "火影忍者 4K", "ProviderIds": {}, "Path": "/lib/日漫/火影忍者 4K {tmdb-31910}", "DateCreated": "2025-01-01"},
+            # Unmapped Series 2 & 3: 诡秘之主 two version dirs sharing same explicit TMDB hint -> conflict/multi-version!
+            {"Id": "u-lotm-1", "Type": "Series", "Name": "诡秘之主 1080p", "ProviderIds": {}, "Path": "/lib/国漫/诡秘之主_1080p [tmdbid=240000]", "DateCreated": "2026-06-01"},
+            {"Id": "u-lotm-2", "Type": "Series", "Name": "诡秘之主 4K版", "ProviderIds": {}, "Path": "/lib/国漫/诡秘之主_4K [tmdbid=240000]", "DateCreated": "2026-06-02"},
+            # Unmapped Series 4: 魔道祖师 without any TMDB tag -> never auto-assign by title!
+            {"Id": "u-mdzs", "Type": "Series", "Name": "魔道祖师", "ProviderIds": {}, "Path": "/lib/国漫/魔道祖师", "DateCreated": "2024-01-01"},
+        ]
+        ep_items = [
+            {"Id": "454815", "Type": "Episode", "SeriesId": "350389", "SeriesName": "已关联正常剧集", "ParentIndexNumber": 2, "IndexNumber": 18, "Path": "/lib/NormalShow/S02E18.strm", "DateCreated": "2026-11-27"},
+            {"Id": "ep-n1", "Type": "Episode", "SeriesId": "u-naruto-4k", "SeriesName": "火影忍者 4K", "ParentIndexNumber": 1, "IndexNumber": 1, "Path": "/lib/日漫/火影忍者 4K {tmdb-31910}/S01E01.strm", "DateCreated": "2025-01-01"},
+            {"Id": "ep-n2", "Type": "Episode", "SeriesId": "u-naruto-4k", "SeriesName": "火影忍者 4K", "ParentIndexNumber": 1, "IndexNumber": 2, "Path": "/lib/日漫/火影忍者 4K {tmdb-31910}/S01E02.strm", "DateCreated": "2025-01-02"},
+            {"Id": "ep-l1", "Type": "Episode", "SeriesId": "u-lotm-1", "SeriesName": "诡秘之主 1080p", "ParentIndexNumber": 1, "IndexNumber": 1, "Path": "/lib/国漫/诡秘之主_1080p [tmdbid=240000]/S01E01.strm", "DateCreated": "2026-06-01"},
+            {"Id": "ep-l2", "Type": "Episode", "SeriesId": "u-lotm-2", "SeriesName": "诡秘之主 4K版", "ParentIndexNumber": 1, "IndexNumber": 1, "Path": "/lib/国漫/诡秘之主_4K [tmdbid=240000]/S01E01.strm", "DateCreated": "2026-06-02"},
+            {"Id": "ep-m1", "Type": "Episode", "SeriesId": "u-mdzs", "SeriesName": "魔道祖师", "ParentIndexNumber": 1, "IndexNumber": 1, "Path": "/lib/国漫/魔道祖师/S01E01.strm", "DateCreated": "2024-01-01"},
+        ]
+
+        class _Sess:
+            def get(self, url, **kwargs):
+                from urllib.parse import parse_qs, urlsplit
+                qs = parse_qs(urlsplit(url).query)
+                itypes = (qs.get("IncludeItemTypes") or [""])[0]
+                src = parent_items if "Series" in itypes else ep_items
+                return _Resp({"Items": src, "TotalRecordCount": len(src)})
+
+        emby = EmbyAdapter({"baseUrl": "http://emby.local", "webUrl": "http://emby.web", "apiKey": "k", "userId": "u1"}, session=_Sess())
+        snap = emby.fetch_library_snapshot()
+
+        # 1. Data read complete vs identity incomplete cleanly separated (0 lookup failures)
+        self.assertTrue(snap["dataReadComplete"])
+        self.assertTrue(snap["paginationComplete"])
+        self.assertFalse(snap["identityComplete"])
+        self.assertEqual(snap["identityStatus"], "partial_unmapped")
+        self.assertEqual(snap["failedSeriesLookupIds"], [])
+        self.assertEqual(snap["orphanEpisodeCount"], 5)
+        self.assertEqual(len(snap["unmappedSeries"]), 4)
+        self.assertIn("不是缺库也不是 Fluxa 故障", snap["identityWarning"])
+
+        # 2. Explicit TMDB tag is ONLY diagnostic hint — NEVER auto-bound into series/episodes!
+        self.assertNotIn("31910", snap["series"])
+        self.assertNotIn("31910", snap["episodes"])
+        self.assertNotIn("240000", snap["episodes"])
+        by_sid = {u["seriesId"]: u for u in snap["unmappedSeries"]}
+        self.assertEqual(by_sid["u-naruto-4k"]["explicitTmdbHint"], "31910")
+        self.assertEqual(by_sid["u-naruto-4k"]["episodeCount"], 2)
+        self.assertTrue(by_sid["u-naruto-4k"]["requiresConfirm"])
+        self.assertTrue(by_sid["u-naruto-4k"]["hasConflictOrMultiArc"])  # 4K multi-version signal
+        self.assertIn("emby.web/web/index.html#!/item?id=u-naruto-4k", by_sid["u-naruto-4k"]["embyUrl"])
+        # Shared explicit TMDB hint across 2 dirs of 诡秘之主 -> flagged conflict/multi-version
+        self.assertTrue(by_sid["u-lotm-1"]["hasConflictOrMultiArc"])
+        self.assertIn("多个未关联目录", by_sid["u-lotm-1"]["diagnosticHint"])
+        # 魔道祖师 has no explicit tag -> empty hint, never auto-guessed by title
+        self.assertEqual(by_sid["u-mdzs"]["explicitTmdbHint"], "")
+
+        # 3. Positive confirmed work (TMDB 295790) MUST stay ok — NOT dragged to unconfirmed!
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FluxaStore(Path(tmp) / "test.sqlite3")
+
+            class _Tmdb:
+                configured = True
+                def get_details(self, mt, tid):
+                    titles = {"295790": "已关联正常剧集", "240000": "诡秘之主"}
+                    return {"mediaKey": f"{mt}:{tid}", "mediaType": mt, "tmdbId": tid, "title": titles.get(tid, "未知"), "originalTitle": "", "alternativeTitles": [], "year": "2026", "posterUrl": "", "seasons": []}
+                def get_season_episodes(self, tid, snum):
+                    return []
+
+            class _Idle:
+                configured = False
+                def app_url(self, *a, **kw):
+                    return ""
+
+            adapters = {"moviepilot": _Idle(), "torra": _Idle(), "qbittorrent": _Idle(), "symedia": _Idle(), "emby": emby, "tmdb": _Tmdb()}
+            full_snap = {
+                "generatedAt": "2026-11-27T20:00:00+08:00",
+                "services": [],
+                "serviceMap": {"emby": {"connected": True}},
+                "mpSubs": [], "mpHistory": [], "torraSubs": [], "torraSecupload": {"available": False}, "qbTasks": [], "saHistory": [],
+                "emby": snap,
+            }
+            pipe_ok = build_media_pipeline(media_type="tv", tmdb_id="295790", snapshot=full_snap, adapters=adapters, store=store)
+            step_ok = next(s for s in pipe_ok["steps"] if s["step"] == "emby")
+            self.assertEqual(step_ok["status"], "ok")
+            self.assertIn("Emby 已有 1 集", step_ok["statusLabel"])
+            self.assertNotIn("未关联", step_ok["summary"])  # Unrelated unmapped dirs do not contaminate healthy work!
+
+            # SA existing-version check for positive work 295790 S02E18 ALSO stays confirmedInLibrary=True!
+            ev_ok = detect_existing_version_for_target(
+                media_type="tv", tmdb_id="295790", target_season=2, target_episode=18,
+                failed_file_name="NormalShow.S02E18.Baha.mp4", emby=snap, sa_history=[],
+            )
+            self.assertTrue(ev_ok["confirmedInLibrary"])
+            self.assertTrue(ev_ok["autoIgnoreEligible"])
+
+            # 4. Unassociated work (TMDB 240000 诡秘之主) shows 「库存未确认」 with direct Emby link!
+            pipe_unmapped = build_media_pipeline(media_type="tv", tmdb_id="240000", snapshot=full_snap, adapters=adapters, store=store)
+            step_unm = next(s for s in pipe_unmapped["steps"] if s["step"] == "emby")
+            self.assertEqual(step_unm["status"], "unconfirmed")
+            self.assertEqual(step_unm["statusLabel"], "库存未确认")
+            self.assertIn("诡秘之主", step_unm["summary"])
+            self.assertIn("u-lotm-", step_unm["webUrl"])
+
+    # -- 10. Non-blocking async force refresh + single-flight deduplication + duration/freshness/error tracking --
+
+    def test_10_async_nonblocking_force_refresh_single_flight_and_freshness_metrics(self):
+        """验收 2：/api/dashboard?refresh=true&forceEmby=true 立即返回已有缓存快照并在后台单飞刷新，
+        并发重复请求不触发重复扫描，明确记录缓存响应耗时、后台完成耗时、数据新鲜度及失败状态。
+        """
+        from unittest.mock import patch
+        from app.main import create_app
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app = create_app(db_path=Path(tmp) / "fluxa.sqlite3", enable_poller=False)
+            client = app.test_client()
+            client.post("/api/auth/setup", json={"username": "admin", "password": "password123"})
+
+            # Pre-populate SQLite cache with an initial snapshot
+            store = app.config["FLUXA_STORE"]
+            initial_snap = {
+                "generatedAt": "2026-11-27T19:00:00+08:00",
+                "embyUpdatedAt": "2026-11-27T19:00:00+08:00",
+                "embyDurationMs": 0,
+                "services": [],
+                "serviceMap": {},
+                "mpSubs": [], "mpHistory": [], "torraSubs": [], "torraSecupload": {}, "qbTasks": [], "saHistory": [],
+                "emby": {"available": True, "dataReadComplete": True, "identityComplete": True, "movies": {}, "series": {}, "episodes": {}, "recentToday": []},
+            }
+            store.set_cache("snapshot:upstream", initial_snap, updated_iso=initial_snap["generatedAt"])
+            store.set_cache("snapshot:emby", initial_snap["emby"], updated_iso=initial_snap["embyUpdatedAt"])
+
+            scan_calls = []
+            scan_lock = threading.Lock()
+            should_fail = {"flag": False}
+
+            def _slow_collect(adapters, *, store=None, force_emby=False):
+                with scan_lock:
+                    scan_calls.append(force_emby)
+                time.sleep(0.35)
+                if should_fail["flag"]:
+                    raise RuntimeError("Emby simulated 502 error")
+                fresh_iso = "2026-11-27T20:30:00+08:00"
+                emby_payload = {
+                    "available": True, "dataReadComplete": True, "identityComplete": True,
+                    "movies": {}, "series": {"295790": {"itemId": "350389", "title": "Fresh"}},
+                    "episodes": {"295790": [(2, 18)]}, "recentToday": [],
+                }
+                if store is not None:
+                    store.set_cache("snapshot:emby", emby_payload, updated_iso=fresh_iso)
+                return {
+                    **initial_snap,
+                    "generatedAt": fresh_iso,
+                    "embyUpdatedAt": fresh_iso,
+                    "embyDurationMs": 350,
+                    "emby": emby_payload,
+                }
+
+            with patch("app.domain.pipeline.collect_upstream_snapshot", side_effect=_slow_collect):
+                # 1. Force full Emby refresh via /api/dashboard?refresh=true&forceEmby=true MUST return immediately!
+                t0 = time.monotonic()
+                r1 = client.get("/api/dashboard?refresh=true&forceEmby=true")
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                self.assertEqual(r1.status_code, 200)
+                d1 = r1.get_json()
+                self.assertLess(elapsed_ms, 250)  # Immediate cached response (did NOT block 350ms!)
+                self.assertTrue(d1["cache"]["fromCache"])
+                self.assertTrue(d1["cache"]["refreshing"])
+                self.assertEqual(d1["cache"]["refreshState"], "running")
+                self.assertEqual(d1["cache"]["refreshMode"], "full_emby")
+                self.assertEqual(d1["generatedAt"], "2026-11-27T19:00:00+08:00")
+
+                # 2. Concurrent second request & POST /api/refresh MUST coalesce — NO duplicate scan!
+                r2 = client.get("/api/dashboard?refresh=true&forceEmby=true")
+                self.assertTrue(r2.get_json()["cache"]["coalesced"])
+                r3 = client.post("/api/refresh", json={"forceEmby": True})
+                self.assertEqual(r3.status_code, 202)
+                self.assertTrue(r3.get_json()["coalesced"])
+
+                # 3. Wait for background task to complete via /api/refresh/status
+                deadline = time.monotonic() + 3.0
+                st = None
+                while time.monotonic() < deadline:
+                    st = client.get("/api/refresh/status").get_json()["refresh"]
+                    if not st["refreshing"]:
+                        break
+                    time.sleep(0.05)
+                self.assertIsNotNone(st)
+                self.assertFalse(st["refreshing"])
+                self.assertEqual(st["state"], "succeeded")
+                self.assertGreaterEqual(st["durationMs"], 300)
+                self.assertEqual(st["embyDurationMs"], 350)
+                self.assertEqual(st["snapshotUpdatedAt"], "2026-11-27T20:30:00+08:00")
+                self.assertEqual(st["embyUpdatedAt"], "2026-11-27T20:30:00+08:00")
+                # Only ONE full Emby scan executed despite 3 concurrent refresh triggers!
+                self.assertEqual(scan_calls, [True])
+
+                # 4. Subsequent dashboard read returns the NEW fresh snapshot
+                d_fresh = client.get("/api/dashboard").get_json()
+                self.assertEqual(d_fresh["generatedAt"], "2026-11-27T20:30:00+08:00")
+                self.assertEqual(d_fresh["cache"]["refreshState"], "succeeded")
+
+                # 5. Failure transparency: background error records state='failed' + error message while keeping last good snapshot!
+                should_fail["flag"] = True
+                r_err = client.post("/api/refresh", json={"forceEmby": True})
+                self.assertEqual(r_err.status_code, 202)
+                deadline = time.monotonic() + 3.0
+                while time.monotonic() < deadline:
+                    st_err = client.get("/api/refresh/status").get_json()["refresh"]
+                    if not st_err["refreshing"]:
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(st_err["state"], "failed")
+                self.assertIn("Emby simulated 502 error", st_err["error"])
+                d_after_err = client.get("/api/dashboard").get_json()
+                self.assertEqual(d_after_err["generatedAt"], "2026-11-27T20:30:00+08:00")
+                self.assertEqual(d_after_err["cache"]["refreshState"], "failed")
+                self.assertIn("502", d_after_err["cache"]["lastRefreshError"])
 
 
 if __name__ == "__main__":

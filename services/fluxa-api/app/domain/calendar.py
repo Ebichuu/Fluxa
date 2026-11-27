@@ -139,6 +139,11 @@ def build_following_calendar(
         "truncationWarning": trunc_warning,
         "embyTruncated": bool(emby.get("truncated")),
         "embyTruncationWarning": str(emby.get("truncationWarning") or ""),
+        "embyDataReadComplete": bool(emby.get("dataReadComplete", not emby.get("truncated"))),
+        "embyIdentityComplete": not is_emby_identity_incomplete(emby),
+        "embyIdentityStatus": str(emby.get("identityStatus") or ("complete" if not is_emby_identity_incomplete(emby) else "partial_unmapped")),
+        "embyUnmappedSeriesCount": len(emby.get("unmappedSeries") or emby.get("unresolvedSeriesIds") or []),
+        "embyOrphanEpisodeCount": int(emby.get("orphanEpisodeCount") or 0),
         "embyIdentityIncomplete": is_emby_identity_incomplete(emby),
         "embyIdentityWarning": str(emby.get("identityWarning") or (
             "Emby 存在未映射 TMDB 的 SeriesId/分集，不能把映射失败当作库内不存在"

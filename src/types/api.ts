@@ -268,8 +268,65 @@ export interface SnapshotCacheMeta {
   fromCache: boolean;
   stale: boolean;
   refreshing: boolean;
+  coalesced?: boolean;
+  refreshState?: 'idle' | 'running' | 'succeeded' | 'failed';
+  refreshMode?: 'upstream' | 'full_emby';
+  refreshStartedAt?: string;
+  lastRefreshCompletedAt?: string;
+  lastRefreshDurationMs?: number | null;
+  lastEmbyDurationMs?: number | null;
+  lastRefreshError?: string;
   cacheAgeSeconds: number;
   updatedAt: string;
+  embyUpdatedAt?: string;
+  embyCacheAgeSeconds?: number | null;
+}
+
+export interface RefreshStatusInfo {
+  state: 'idle' | 'running' | 'succeeded' | 'failed';
+  mode: 'upstream' | 'full_emby';
+  trigger: string;
+  startedAt: string;
+  completedAt: string;
+  durationMs: number | null;
+  embyDurationMs: number | null;
+  error: string;
+  refreshing: boolean;
+  pendingFullEmby: boolean;
+  snapshotUpdatedAt: string;
+  snapshotAgeSeconds: number | null;
+  embyUpdatedAt: string;
+  embyAgeSeconds: number | null;
+}
+
+export interface EmbyUnmappedSeriesItem {
+  seriesId: string;
+  title: string;
+  path: string;
+  episodeCount: number;
+  embyUrl: string;
+  reason: 'missing_tmdb_provider_id' | 'lookup_failed';
+  reasonLabel: string;
+  explicitTmdbHint: string;
+  explicitTmdbCandidates: string[];
+  hasConflictOrMultiArc: boolean;
+  requiresConfirm: boolean;
+  diagnosticHint: string;
+}
+
+export interface EmbyIdentitySummary {
+  available: boolean;
+  dataReadComplete: boolean;
+  identityComplete: boolean;
+  identityStatus: 'complete' | 'partial_unmapped' | 'lookup_failed' | 'unavailable';
+  totalMoviesAndSeries: number;
+  totalEpisodes: number;
+  fetchedEpisodes: number;
+  orphanEpisodeCount: number;
+  unmappedSeriesCount: number;
+  failedSeriesLookupCount: number;
+  identityWarning: string;
+  unmappedSeries: EmbyUnmappedSeriesItem[];
 }
 
 export interface DashboardResponse {
@@ -287,6 +344,7 @@ export interface DashboardResponse {
   };
   issues: ActionableIssue[];
   ignoredIssues?: ActionableIssue[];
+  embyIdentity?: EmbyIdentitySummary;
   calendar: {
     today: string;
     startDate: string;
@@ -300,6 +358,11 @@ export interface DashboardResponse {
     truncationWarning?: string;
     embyTruncated?: boolean;
     embyTruncationWarning?: string;
+    embyDataReadComplete?: boolean;
+    embyIdentityComplete?: boolean;
+    embyIdentityStatus?: string;
+    embyUnmappedSeriesCount?: number;
+    embyOrphanEpisodeCount?: number;
     embyIdentityIncomplete?: boolean;
     embyIdentityWarning?: string;
   };
